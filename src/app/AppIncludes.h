@@ -10,6 +10,7 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "core/Settings.h"
+#include "gallery/Gallery.h"
 #include "gallery/ImageLoader.h"
 #include "graph/GraphHost.h"
 #include "graph/WorkflowIO.h"
@@ -24,7 +25,6 @@
 #include <imgui_internal.h>
 #include <misc/cpp/imgui_stdlib.h>
 #include "app/UiState.h"                        // R-S0：应用级 UI 状态（原 g_* 全局）
-#include "app/views/temp/TextureSelfCheck.h"    // R-S0：已搬出 App.cpp（TEMP-G3）
 #include "app/shots/ShotTableView.h"            // P5.3：分镜表（停靠窗口 + 侧栏面板）
 #include <algorithm>
 #include <chrono>

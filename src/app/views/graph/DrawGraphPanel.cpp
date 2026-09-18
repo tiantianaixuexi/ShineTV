@@ -88,7 +88,21 @@ void DrawGraphPanel() {
             const ImVec2 wpos = ImGui::GetWindowPos();
             graph::SpawnNode(type ? type : "", m.x - wpos.x, m.y - wpos.y);
         }
+        // G-S11：图库拖入 —— 本步只记日志 + 反馈；P3 再真正接到 LoadImage / @image
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SHINE_IMAGE_PATH")) {
+            const char* text = static_cast<const char*>(payload->Data);
+            if (text != nullptr && text[0] != '\0') {
+                ::shine::gallery::SetLastGraphDropPath(text);
+                log::Info("drop image path {}", text);
+            }
+        }
         ImGui::EndDragDropTarget();
+    }
+    // 拖入反馈：最近一次图库路径
+    const std::string dropPath = ::shine::gallery::LastGraphDropPath();
+    if (!dropPath.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("· 拖入图片 %s", dropPath.c_str());
     }
     ImGui::EndChild();
 }

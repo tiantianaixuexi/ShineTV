@@ -10,6 +10,8 @@ namespace shine::app {
 void DrawSideBar() {
     // 标题随活动栏切换
     ui::PanelHeader(SideViewTitle(State().sideView)); // R-S2：原 TextDisabled+Separator 改组件
+    // Local scroll only inside the side panel; outer dock/host must not wheel-scroll.
+    ImGui::BeginChild("##side_content", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_None);
     switch (State().sideView) {
     case SideView::Assets: DrawAssetsPanel(); break;
     case SideView::Nodes: DrawNodesPanel(); break;
@@ -19,6 +21,7 @@ void DrawSideBar() {
     case SideView::Gallery: gallery::DrawGallerySidePanel(); break; // G-S5：图库（来源/目录/缩略图/缓存）
     case SideView::Novel: novel::DrawNovelSidePanel(); break;
     }
+    ImGui::EndChild();
 }
 
 } // namespace shine::app

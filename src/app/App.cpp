@@ -6,6 +6,8 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "core/Settings.h"
+#include "db/Db.h"
+#include "db/redis/RedisError.h"
 #include "gallery/Gallery.h" // G-S5：图库模块入口（Init/Shutdown/Tick/RequestScan）
 #include "gallery/ImageLoader.h"
 #include "graph/GraphHost.h"
@@ -26,12 +28,15 @@
 #include "mcp/McpBootstrap.h"
 #include "mcp/HttpServer.h"
 #include "mcp/MCPServer.h"
+#include "mcp/McpHttpClient.h"
 #include "app/novel/NovelView.h"
 #include "novel/NovelDb.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelVisual.h"
 #include "novel/NovelFields.h"
 #include "novel/NovelMcpTools.h"
+#include "novel/NovelImageGen.h"
+#include "novel/NovelImageStore.h"
 #include "theme/Theme.h"
 #include "util/Strings.h"
 
@@ -42,7 +47,6 @@
 #include "app/AppInternal.h"   // R-S0：搬出去的窗口入口声明 + 过渡别名
 #include "theme/ThemeTokens.h" // R-S7：自定义配色（预设 + 覆盖）
 #include "app/UiState.h"                        // R-S0：应用级 UI 状态（原 g_* 全局）
-#include "app/views/temp/TextureSelfCheck.h"    // R-S0：已搬出 App.cpp（TEMP-G3）
 #include "app/shots/ShotTableView.h"            // P5.3：分镜模块 Tick
 #include "video/SceneToImageBuilder.h"          // P5.7：SHINE_SCENE_IMAGE_CHECK
 
@@ -208,30 +212,35 @@ bool Init() {
         const bool chatOk = openai::RunChatSelfCheck();
         const bool sessOk = openai::RunChatSessionSelfCheck();
         const bool anthOk = openai::RunAnthropicSelfCheck();
+        const bool redisNote = true; // Redis 池状态见启动日志；挂了不挡其它自检
         const bool visOk = ::shine::novelcore::NovelVisual::RunSelfCheck();
         const bool fieldsOk = ::shine::novelcore::NovelFields::RunSelfCheck();
         const bool agentsOk = agent::RunMultiAgentSelfCheck();
         const bool jsonOk = app::novel::RunJsonArrayParseSelfCheck();
         const bool novelMcpOk = ::shine::novelcore::RunNovelMcpSelfCheck();
+        const bool imgGenOk = ::shine::novelcore::RunImageGenSelfCheck() &&
+                              ::shine::novelcore::RunImageQueueSelfCheck();
         if (const char* p = std::getenv("SHINE_NOVEL_CHECK_OUT"); p && *p) {
             FILE* f = std::fopen(p, "ab");
             if (f) {
                 const std::string line = fmt::format(
-                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\n",
+                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\n",
                     chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
                     visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
-                    jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail");
+                    jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
+                    imgGenOk ? "ok" : "fail");
                 std::fwrite(line.data(), 1, line.size(), f);
                 std::fclose(f);
             }
         }
         log::Info(
-            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={}",
+            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={}",
             schemaOk ? "ok" : "fail", graphOk ? "ok" : "fail", ctxOk ? "ok" : "fail",
             toolsOk ? "ok" : "fail", dirOk ? "ok" : "fail", mvpOk ? "ok" : "fail",
             chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
             visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
-            jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail");
+            jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
+            imgGenOk ? "ok" : "fail");
         g_selfExitRequested = true;
     }
     // P7.1 自检：SHINE_MCP_CHECK=1 跑 MCP 注册表验收后自动退出（无网络）
@@ -244,8 +253,10 @@ bool Init() {
     // P7.2 自检：SHINE_MCP_HTTP_CHECK=1 跑 HTTP Server 骨架验收（含本机 curl 自测）
     if (const char* raw = std::getenv("SHINE_MCP_HTTP_CHECK"); raw != nullptr && *raw != '\0' &&
         std::string_view{raw} != "0") {
-        const bool pass = ::shine::mcp::RunHttpServerSelfCheck();
-        log::Info("SHINE_MCP_HTTP_CHECK：{}", pass ? "PASS" : "FAIL");
+        const bool httpOk = ::shine::mcp::RunHttpServerSelfCheck();
+        const bool clientOk = ::shine::mcp::RunMcpHttpClientSelfCheck();
+        log::Info("SHINE_MCP_HTTP_CHECK：http={} client={} → {}", httpOk ? "PASS" : "FAIL",
+                  clientOk ? "PASS" : "FAIL", (httpOk && clientOk) ? "PASS" : "FAIL");
         g_selfExitRequested = true;
     }
     // P7.3 自检：SHINE_MCP_PROTO_CHECK=1
@@ -297,7 +308,35 @@ bool Init() {
     graph::Init();
     ::shine::gallery::Init(); // G-S5：图库（读上次来源 + 目录可用就自动扫一次）
     ::shine::gallery::RegisterBuiltinDecoders();     // G-S2：注册内置解码器（PNG）
+    // P10.4：Garnet/Redis 连接池（默认 127.0.0.1:6379；minConn=0 懒连接，挂了不挡启动）
+    {
+        db::DbConfig cfg;
+        cfg.enableRedis = Settings().redisEnabled;
+        cfg.redis.connect.host = Settings().redisHost.empty() ? "127.0.0.1"
+                                                              : Settings().redisHost;
+        cfg.redis.connect.port = Settings().redisPort > 0 ? Settings().redisPort : 6379;
+        cfg.redis.connect.password = Settings().redisPassword;
+        cfg.redis.connect.db = Settings().redisDb;
+        cfg.redis.maxConnections =
+            Settings().redisMaxConn > 0 ? static_cast<std::size_t>(Settings().redisMaxConn) : 8u;
+        cfg.redis.minConnections =
+            Settings().redisMinConn >= 0 ? static_cast<std::size_t>(Settings().redisMinConn) : 0u;
+        cfg.redis.acquireTimeout = std::chrono::milliseconds{2000};
+        if (auto r = db::Init(cfg); !r) {
+            log::Warn("Garnet/Redis 未就绪（{}:{} kind={}）—— MCP/业务缓存降级直连 SQLite",
+                      cfg.redis.connect.host, cfg.redis.connect.port,
+                      db::redis::ToChar(r.error().kind));
+        } else if (db::redisReady()) {
+            const auto st = db::redisStats();
+            log::Info("Garnet/Redis 池就绪 {}:{} max={} idle={}", cfg.redis.connect.host,
+                      cfg.redis.connect.port, st.maxConnections, st.idle);
+        } else {
+            log::Info("Garnet/Redis 池已 Init（lazy，尚未探测） {}:{}", cfg.redis.connect.host,
+                      cfg.redis.connect.port);
+        }
+    }
     ::shine::mcp::RegisterAllModules(::shine::mcp::ToolRegistry::Instance()); // P7.1：MCP 工具注册地基
+    ::shine::novelcore::SetMcpAllowWrite(Settings().mcpAllowWrite); // P10.5
     // P7.2：MCP HTTP Server（Settings.mcpEnabled 时监听；默认 127.0.0.1:8931）
     if (auto r = ::shine::mcp::StartHttpFromSettings(); !r) {
         log::Error("mcp HTTP 启动失败：{}", r.error());
@@ -319,6 +358,7 @@ void Shutdown() {
     comfy::ComfySession::Instance().Shutdown();
     SaveSettings();
     ::shine::gallery::Shutdown(); // G-S5：图库收尾（排在 SaveSettings() 之后、async::Shutdown() 之前）
+    db::Shutdown();               // P10.4：关 Redis 池（async 之前）
     async::Shutdown();
     // 不调用 `log::Shutdown()`：`async::Shutdown()` 已不再 join worker（见其注释），
     // 可能仍有 worker 在写日志；日志器保持存活直到进程退出，避免被后台线程踩到已析构对象。
@@ -356,10 +396,13 @@ void DrawFrame() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    // Host is a fixed full-viewport shell: never scroll the whole window with the wheel.
+    // Only inner panels/children that opt in may scroll.
     const ImGuiWindowFlags hostFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_MenuBar;
+        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_MenuBar |
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("ShineTVHost", nullptr, hostFlags);
     ImGui::PopStyleVar(3);
 

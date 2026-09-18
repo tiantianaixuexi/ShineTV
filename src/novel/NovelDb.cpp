@@ -14,7 +14,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 5;
+constexpr int kTargetSchemaVersion = 6;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -155,6 +155,33 @@ CREATE TABLE IF NOT EXISTS visual_canon_logs(
   status TEXT NOT NULL DEFAULT 'PROPOSED',
   note TEXT NOT NULL DEFAULT '',
   created INTEGER NOT NULL DEFAULT 0);
+)SQL";
+
+// P9.2：出图队列结果（默认 PROPOSED，作者确认 CANON）
+constexpr std::string_view kSchemaV6ImageGen = R"SQL(
+CREATE TABLE IF NOT EXISTS generated_images(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  negative TEXT NOT NULL DEFAULT '',
+  width INTEGER NOT NULL DEFAULT 0,
+  height INTEGER NOT NULL DEFAULT 0,
+  steps INTEGER NOT NULL DEFAULT 0,
+  rel_path TEXT NOT NULL DEFAULT '',
+  source_kind TEXT NOT NULL DEFAULT '',
+  source_id INTEGER NOT NULL DEFAULT 0,
+  chapter_id INTEGER NOT NULL DEFAULT 0,
+  scene_id INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'PROPOSED',
+  error TEXT NOT NULL DEFAULT '',
+  raw_meta TEXT NOT NULL DEFAULT '{}',
+  checklist_json TEXT NOT NULL DEFAULT '{}',
+  created INTEGER NOT NULL DEFAULT 0,
+  updated INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_gimg_status ON generated_images(status);
+CREATE INDEX IF NOT EXISTS idx_gimg_source ON generated_images(source_kind, source_id);
 )SQL";
 
 // v3 全量 schema（IF NOT EXISTS；升级只补缺表/缺列）
@@ -725,6 +752,9 @@ std::expected<void, DbError> NovelDb::Migrate() {
         return r;
     }
     if (auto r = ExecAll(kSchemaV5Agents); !r) {
+        return r;
+    }
+    if (auto r = ExecAll(kSchemaV6ImageGen); !r) {
         return r;
     }
     {

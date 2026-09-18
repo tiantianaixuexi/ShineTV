@@ -11,9 +11,14 @@ void DrawDockedPanels(ImVec2 dockSize) {
     dock::BuildDefaultLayout(dockspaceId, dockSize);
     ImGui::DockSpace(dockspaceId, dockSize, ImGuiDockNodeFlags_None);
 
+    // Docked shells must not scroll with the wheel; content that needs scroll
+    // uses an inner BeginChild / table ScrollY.
+    constexpr ImGuiWindowFlags kDockFlags =
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+
     // 侧栏内容随活动栏切换
     ImGui::SetNextWindowSizeConstraints(ImVec2(160, 0), ImVec2(520, FLT_MAX));
-    ImGui::Begin("侧栏");
+    ImGui::Begin("侧栏", nullptr, kDockFlags);
     if (State().sideOpen) {
         DrawSideBar();
     } else {
@@ -21,7 +26,7 @@ void DrawDockedPanels(ImVec2 dockSize) {
     }
     ImGui::End();
 
-    ImGui::Begin("图");
+    ImGui::Begin("图", nullptr, kDockFlags);
     DrawGraphPanel();
     ImGui::End();
 
@@ -35,12 +40,12 @@ void DrawDockedPanels(ImVec2 dockSize) {
     };
 
     focusTarget(FocusWindow::Shots);
-    ImGui::Begin("分镜"); // P5.3：默认与「图」同区（见 DockLayout.cpp）
+    ImGui::Begin("分镜", nullptr, kDockFlags); // P5.3：默认与「图」同区（见 DockLayout.cpp）
     shots::DrawShotTable();
     ImGui::End();
 
     focusTarget(FocusWindow::Gallery);
-    ImGui::Begin("图库"); // G-S5：与「图」「分镜」同区（见 DockLayout.cpp）
+    ImGui::Begin("图库", nullptr, kDockFlags); // G-S5：与「图」「分镜」同区（见 DockLayout.cpp）
     gallery::DrawGalleryWindow();
     ImGui::End();
 
@@ -49,19 +54,19 @@ void DrawDockedPanels(ImVec2 dockSize) {
         --State().focusFrames;
         ImGui::SetNextWindowFocus();
     }
-    ImGui::Begin("小说");
+    ImGui::Begin("小说", nullptr, kDockFlags);
     novel::DrawNovelWindow();
     ImGui::End();
 
-    ImGui::Begin("属性");
+    ImGui::Begin("属性", nullptr, kDockFlags);
     DrawInspectorPanel();
     ImGui::End();
 
-    ImGui::Begin("预览");
+    ImGui::Begin("预览", nullptr, kDockFlags);
     DrawPreviewPanel();
     ImGui::End();
 
-    ImGui::Begin("底栏"); // 窗口标题 ≠ 内部 Tab「队列」，避免出现两层「队列」
+    ImGui::Begin("底栏", nullptr, kDockFlags); // 窗口标题 ≠ 内部 Tab「队列」，避免出现两层「队列」
     DrawBottomPanel();
     ImGui::End();
 
@@ -69,7 +74,7 @@ void DrawDockedPanels(ImVec2 dockSize) {
         ImGui::ShowDemoWindow(&Settings().showDemoWindow);
     }
     if (State().showStyleEditor) {
-        ImGui::Begin("样式编辑器", &State().showStyleEditor);
+        ImGui::Begin("样式编辑器", &State().showStyleEditor, kDockFlags);
         ImGui::ShowStyleEditor();
         ImGui::End();
     }
@@ -86,12 +91,11 @@ void DrawDockedPanels(ImVec2 dockSize) {
     DrawSettingsWindow();
     DrawTemplateWindow();   // P3.7：工作流模板浏览器（独立浮窗）
     DrawNodeWindow();       // P3.7b：节点浏览器（独立浮窗）
-    if (State().showViewer) { // G-S5：「查看器」浮窗（占位；完整实现在 G-S10）
+    if (State().showViewer) { // G-S6：「查看器」浮窗（适应窗口；完整实现在 G-S10）
         ImGui::Begin("查看器", &State().showViewer);
         gallery::DrawGalleryViewerWindow();
         ImGui::End();
     }
-    // TEMP-G3 的「纹理自检」浮窗已关闭（G-S5 收尾，用户要求；源码留到 G-S6 一起删）
 }
 
 } // namespace shine::app

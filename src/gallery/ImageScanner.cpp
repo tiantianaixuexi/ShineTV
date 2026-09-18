@@ -215,7 +215,7 @@ void ScanAsync(ScanOptions opt, std::move_only_function<void(ScanResult)> onDone
     });
 }
 
-std::vector<std::string> DefaultImageExtensions() { return {"png"}; }
+std::vector<std::string> DefaultImageExtensions() { return {"png", "jpg", "jpeg", "webp"}; }
 
 std::string SourceLabel(SourceKind k) {
     switch (k) {

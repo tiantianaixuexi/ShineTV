@@ -54,6 +54,12 @@ public:
     // path 以 '/' 或 '*' 结尾 → 前缀匹配（如 `/tools/`、`/tools/*`）；否则精确匹配
     // 同 path+method 后注册覆盖先注册
     void Route(std::string path, HttpMethod method, Handler handler);
+    // P10.3：SSE 长连接（libhv async_handler + HttpResponseWriter）
+    // handler 在 libhv 线程池执行；内部可写 SSE 帧后保持连接
+    using StreamHandler =
+        std::function<void(const Request& req, const std::function<void(std::string_view)>& write,
+                           const std::function<void()>& close)>;
+    void RouteStream(std::string path, HttpMethod method, StreamHandler handler);
     void ClearRoutes();
 
     // port=0 表示由系统分配；失败返回中文原因（程序不崩）
@@ -76,7 +82,9 @@ private:
         std::string path;
         HttpMethod method = HttpMethod::Any;
         Handler handler;
+        StreamHandler streamHandler;
         bool prefix = false;
+        bool stream = false;
     };
 
     mutable std::mutex routesMutex_;

@@ -27,4 +27,8 @@ void RegisterDemoModule(ToolRegistry& reg);
 // P7.3：JSON-RPC 协议自检（定义在 MCPServer.cpp）
 [[nodiscard]] bool RunMcpProtocolSelfCheck();
 
+// P10.3：SSE 形态 + HTTP 客户端自检（见 McpSse.h / McpHttpClient.h）
+[[nodiscard]] bool RunSseShapeSelfCheck();
+[[nodiscard]] bool RunMcpHttpClientSelfCheck();
+
 } // namespace shine::mcp

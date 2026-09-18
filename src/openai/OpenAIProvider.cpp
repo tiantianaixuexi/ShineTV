@@ -35,11 +35,17 @@ std::string_view ProviderLabel(Provider p) noexcept {
 
 Protocol ParseProtocol(std::string_view id) noexcept {
     if (id == "responses") return Protocol::Responses;
+    if (id == "anthropic") return Protocol::Anthropic;
     return Protocol::ChatCompletions;
 }
 
 std::string_view ProtocolId(Protocol p) noexcept {
-    return p == Protocol::Responses ? "responses" : "chat_completions";
+    switch (p) {
+    case Protocol::Responses: return "responses";
+    case Protocol::Anthropic: return "anthropic";
+    case Protocol::ChatCompletions:
+    default: return "chat_completions";
+    }
 }
 
 namespace {

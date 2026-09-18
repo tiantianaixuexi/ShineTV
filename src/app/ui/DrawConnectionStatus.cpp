@@ -25,7 +25,11 @@ void DrawConnectionStatus(const char* prefix) {
                               static_cast<long long>(session.SinceLastEvent().count()));
         }
     } else if (!session.LastError().empty()) {
-        ImGui::TextDisabled("%s", session.LastError().c_str());
+        // Clip long error strings; never let them expand/shell-scroll the whole window.
+        ImGui::TextDisabled("%.*s", 200, session.LastError().c_str());
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", session.LastError().c_str());
+        }
     }
 }
 

@@ -3,6 +3,7 @@
 #include "app/Fonts.h"
 #include "core/Log.h"
 #include "gpu/GpuDevice.h"
+#include "mcp/MCPServer.h"
 
 #include <mimalloc.h>
 
@@ -107,9 +108,15 @@ static LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdShow) {
     // mimalloc: take over allocations as early as possible.
     mi_process_init();
+
+    // P10.1：stdio MCP（Claude Desktop 等）—— 不建窗口/D3D，stdout 只走 JSON-RPC
+    if (lpCmdLine != nullptr &&
+        (wcsstr(lpCmdLine, L"--mcp-stdio") != nullptr || wcsstr(lpCmdLine, L"/mcp-stdio") != nullptr)) {
+        return static_cast<int>(shine::mcp::RunStdioServerMain());
+    }
 
     // Alloc console for spdlog stdout sink
     AllocConsole();

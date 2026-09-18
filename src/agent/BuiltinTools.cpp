@@ -1,4 +1,4 @@
-﻿#include "agent/ToolRegistry.h"
+#include "agent/ToolRegistry.h"
 
 #include "core/Log.h"
 #include "novel/NovelGraph.h"
@@ -122,8 +122,9 @@ public:
             e = list->front();
         }
         const auto j = fmt::format(
-            R"({{"id":{},"kind":"{}","name":"{}","summary":"{}","status":"{}"}})", e.id, e.kind,
-            e.name, e.summary, e.status);
+            R"({{"id":{},"kind":"{}","name":"{}","summary":"{}","status":"{}","meta_json":{}}})",
+            e.id, e.kind, e.name, e.summary, e.status,
+            e.meta_json.empty() ? "{}" : e.meta_json);
         return OkDoc(j);
     }
 };
@@ -146,7 +147,8 @@ public:
         for (std::size_t i = 0; i < list->size(); ++i) {
             const auto& e = (*list)[i];
             if (i) arr += ",";
-            arr += fmt::format(R"({{"id":{},"kind":"{}","name":"{}"}})", e.id, e.kind, e.name);
+            arr += fmt::format(R"({{"id":{},"kind":"{}","name":"{}","summary":"{}"}})", e.id,
+                               e.kind, e.name, e.summary);
         }
         arr += "]";
         return OkDoc(arr);

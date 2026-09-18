@@ -7,7 +7,7 @@
 namespace shine::openai {
 
 enum class Provider { OpenAi, MiMo, MiniMax, Custom };
-enum class Protocol { ChatCompletions, Responses };
+enum class Protocol { ChatCompletions, Responses, Anthropic };
 
 [[nodiscard]] Provider ParseProvider(std::string_view id) noexcept;
 [[nodiscard]] std::string_view ProviderId(Provider p) noexcept;

@@ -21,9 +21,11 @@ public:
 
     [[nodiscard]] GpuTextureHandle Find(std::uint64_t key) noexcept; // 命中刷新 LRU；未命中返回空句柄
     void Insert(std::uint64_t key, GpuTextureHandle handle) noexcept; // 同 key 会替换并释放旧纹理
+    void Erase(std::uint64_t key) noexcept; // 删除单键并释放纹理（图库 Reset 只清自己的 key）
     void EvictIfNeeded() noexcept;
     void Clear() noexcept;
     void OnDeviceLost() noexcept; // 纹理已失效 → 条目全清（调用方按需重新上传）
+    void ResetStats() noexcept;
 
     [[nodiscard]] std::size_t Bytes() const noexcept { return bytes_; }
     [[nodiscard]] std::size_t Count() const noexcept { return entries_.size(); }

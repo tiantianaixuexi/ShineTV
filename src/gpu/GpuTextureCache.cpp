@@ -47,6 +47,16 @@ void GpuTextureCache::Insert(std::uint64_t key, GpuTextureHandle handle) noexcep
     EvictIfNeeded();
 }
 
+void GpuTextureCache::Erase(std::uint64_t key) noexcept {
+    const auto it = entries_.find(key);
+    if (it == entries_.end()) {
+        return;
+    }
+    bytes_ -= it->second.bytes;
+    Textures().Release(it->second.handle);
+    entries_.erase(it);
+}
+
 void GpuTextureCache::EvictIfNeeded() noexcept {
     while (bytes_ > budget_ && !entries_.empty()) {
         auto victim = entries_.begin();
@@ -79,6 +89,11 @@ void GpuTextureCache::OnDeviceLost() noexcept {
 
 double GpuTextureCache::HitRate() const noexcept {
     return lookups_ == 0 ? 0.0 : static_cast<double>(hits_) / static_cast<double>(lookups_);
+}
+
+void GpuTextureCache::ResetStats() noexcept {
+    hits_ = 0;
+    lookups_ = 0;
 }
 
 } // namespace shine::gpu

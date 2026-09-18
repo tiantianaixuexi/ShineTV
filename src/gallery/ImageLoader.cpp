@@ -1,8 +1,12 @@
 #include "gallery/ImageLoader.h"
+#include "util/Encoding.h"
 #include "util/File.h"
 
 #include "core/Log.h"
+#include "gallery/ExifOrientation.h"
+#include "gallery/decoders/JpegDecoder.h"
 #include "gallery/decoders/PngDecoder.h"
+#include "gallery/decoders/WebpDecoder.h"
 
 #include <fstream>
 #include <utility>
@@ -38,7 +42,19 @@ std::expected<Image, DecodeError> ImageLoader::Load(const std::filesystem::path&
     }
     for (const auto& decoder : decoders_) {
         if (decoder->can_decode(std::span<const std::byte>(header.data(), header.size()))) {
-            return decoder->decode(path);
+            auto decoded = decoder->decode(path);
+            if (decoded && decoded->valid()) {
+                // G-S13：解码后立刻按 EXIF 摆正（必须在缩略图 ResizeBox 之前）
+                const ExifMeta exif = ReadExif(path);
+                if (exif.orientation != Orientation::Normal) {
+                    const auto w0 = decoded->width;
+                    const auto h0 = decoded->height;
+                    ApplyOrientation(*decoded, exif.orientation);
+                    log::Info("EXIF 方向已校正：{} → {}（{}x{} → {}x{}）", util::FileNameToUtf8(path),
+                              OrientationLabel(exif.orientation), w0, h0, decoded->width, decoded->height);
+                }
+            }
+            return decoded;
         }
     }
     return std::unexpected(DecodeError::Unsupported);
@@ -57,12 +73,13 @@ bool ImageLoader::Supports(const std::filesystem::path& path) const {
     return false;
 }
 
-// 启动时调用一次（幂等）：注册内置解码器
 void RegisterBuiltinDecoders() {
     auto& loader = ImageLoader::Instance();
     if (loader.DecoderCount() == 0) {
         loader.Register(std::make_unique<decoders::PngDecoder>());
-        log::Info("图库解码器已注册：{} 个（png）", loader.DecoderCount());
+        loader.Register(std::make_unique<decoders::JpegDecoder>());
+        loader.Register(std::make_unique<decoders::WebpDecoder>());
+        log::Info("图库解码器已注册：{} 个（png / jpeg / webp）", loader.DecoderCount());
     }
 }
 

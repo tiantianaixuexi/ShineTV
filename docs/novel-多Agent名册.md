@@ -136,6 +136,8 @@
 - MCP 注册：`src/novel/NovelMcpTools.*`（`RegisterMcpTools` 已挂进 `src/mcp/McpBootstrap.cpp`）
 - 调度/白名单：`src/agent/AgentKit.*` → `ResolveTools` / `CallToolAsAgent` / `BuildInvokePackage`
 - 自检：`novelmcp:ok`
+- **客户端配置（HTTP / stdio / Claude）**：`docs/compose/plans/novel-agent/P10-mcp/CLIENT.md`
+- 写开关：设置窗「允许 MCP 写工具」或 `SHINE_MCP_ALLOW_WRITE`；库路径 `mcpNovelDbPath` / `SHINE_NOVEL_DB`
 
 ## 自检证据（2026-09-17）
 

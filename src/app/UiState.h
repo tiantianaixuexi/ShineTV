@@ -80,6 +80,14 @@ struct UiState {
     std::string editMinimaxBaseUrl;
     std::string editMinimaxApiKey;
     std::string editMinimaxModel;
+    // P9.1 出图后端
+    std::string editImageBackend;
+    std::string editImageBaseUrl;
+    std::string editImageApiKey;
+    std::string editImageModel;
+    int editImageWidth = 1024;
+    int editImageHeight = 1024;
+    int editImageSteps = 20;
 };
 
 [[nodiscard]] UiState& State() noexcept;

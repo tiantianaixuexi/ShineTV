@@ -1,6 +1,8 @@
 #include "openai/OpenAIClient.h"
 
 #include "core/Log.h"
+#include "core/Settings.h"
+#include "openai/OpenAIAnthropic.h"
 #include "openai/OpenAIConfig.h"
 #include "openai/OpenAIHttp.h"
 #include "openai/OpenAIProvider.h"
@@ -211,6 +213,11 @@ std::expected<std::string, ApiError>
 LlmComplete(std::string_view instructions, std::string_view userText, std::chrono::seconds timeout,
             const std::atomic<bool>* cancel) {
     const LlmProfile p = ResolveActiveProfile();
+    // Anthropic Messages（MiMo / MiniMax 兼容端；OpenAI 官方无此协议时走错误提示）
+    if (p.protocol == Protocol::Anthropic ||
+        Settings().llmProtocol == "anthropic") {
+        return AnthropicLlmComplete(instructions, userText, timeout, cancel);
+    }
     if (p.protocol == Protocol::Responses && p.provider == Provider::OpenAi) {
         Client c(p.baseUrl, p.apiKey, p.model);
         CreateRequest req;

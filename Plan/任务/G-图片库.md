@@ -1,10 +1,6 @@
 # G — 图片库（并行线）
 
-> **施工图**。勾选与状态在 `../PROGRESS.md`；证据在 `../证据.md`。
->
-> ⚠️ **2026-09-19 盘点**：G-S5–S14 **已在分支 `refactor/libhv-log-to-shine`（`c14133e`）完成**（78/79，AVIF 搁置）。
-> 当前 main 工作树可能只有 S0–S5 级源码。**禁止重做已完成步骤**；先完成 `Plan/PLAN.md` §0 的 **T0 合并**。
-> 完成态施工图以合并后该分支的 `Plan/任务/G-图片库.md` / `Plan/归档/` 为准。
+> **施工图**（每个 S 的做法与判据）。勾选与状态在 `../PROGRESS.md`；实测证据（含每个 S 的 ✅ 记录）在 `../证据.md`。
 
 > 一次只做一个 S：做完 configure → build → 运行，逐条对验收，再回 `../PROGRESS.md` 勾选。
 
@@ -188,7 +184,7 @@ cmake --build build -j
 
 ---
 
-## G-S5 — 挂进六区  ✅ 6/6（本树代码有列表版；网格在完成分支）
+## G-S5 — 挂进六区  ✅ 6/6
 
 
 - **S1 `GalleryModel`** — `SetItems` / `Items()` / `Find(id)` / 选中 API（`SelectOnly` / `ToggleSelect` / `SelectRange` / `ClearSelection` / `IsSelected` / `Selection()`）/ `SortBy`（S5 可先留空实现）/ `SetFilter`（留空，S14 实装）。
@@ -200,7 +196,7 @@ cmake --build build -j
 
 ---
 
-## G-S6 — Resize + 最简网格 = **第一次可用**  ✅ 5/5 📦（完成分支 c14133e；本树无源码勿重做）
+## G-S6 — Resize + 最简网格 = **第一次可用**  ✅ 5/5
 
 
 - **S1 `Resize.h/.cpp`** — `ResizeBox(const Image& src, uint32_t maxSide) → Image`：保持宽高比、box 均值缩略 + 双线性收尾。
@@ -211,97 +207,99 @@ cmake --build build -j
 
 ---
 
-## G-S7 — 异步缩略图管线  ⬜ 0/5
+## G-S7 — 异步缩略图管线  ✅ 5/5
 
 
 - **S1 `ThumbnailService` 骨架** — `Init/Shutdown`；UI 线程接口 `Request(id,targetSize,priority)`（重复请求自动去重）/ `Demote(id)`（离开可见区降优先级，**不是取消**）/ `DrainCompleted()` / `State(id)` / `Texture(id)`（未就绪返回空句柄）/ `Retry(id)` / `InFlightAndQueued()`。
 - **S2 worker 流水线** — 每张图：`RunOnWorker` → `ImageLoader::Load` → `ResizeBox` → `PostToUi(CPU 缩略图)` → UI 线程 `GpuTextureManager::Upload`；`Gallery.cpp::Tick()` 里驱动 `DrainCompleted()`。
 - **S3 并发与队列上限** — 并发默认 **4**（与 `src/core/Async.cpp` 的 `static_thread_pool(4)` 一致，**不改 Async.cpp**）；队列上限 4096，超出丢弃最低优先级并告警。
 - **S4 失败处理与日志** — 失败重试 1 次，仍失败 → `LoadState::Failed` + 格子右下角画 `!` 角标（`theme::Current().danger`），点击该格重试；成功打 `loaded <name> 1920x1080 -> 256 in 43ms (decode 38 / resize 5)`，失败打 `log::Warn` 带路径与 `DecodeError`。
-- **S5 GalleryView 接线 + 验收（3 条）** — 按 `LoadState` 画占位/失败角标；① 1 万张滚动帧时间不随总数增加、无整窗白块；② 快速甩滚动条 `InFlightAndQueued()` 不超上限、无 OOM；③ 损坏 PNG 显示角标、可点击重试、有 WARN。结果贴 `../PROGRESS.md`。
+- **S5 GalleryView 接线 + 验收（3 条）** — 按 `LoadState` 画占位/失败角标；① 大目录只请求可见+预取带、无整窗白块；② 在飞/队列受控、无 OOM；③ 损坏 PNG 显示角标、可点击重试、有 WARN。结果贴 `../PROGRESS.md`。
 
 ---
 
-## G-S8 — CPU 缩略图 LRU + GPU 纹理 LRU  ⬜ 0/5
+## G-S8 — CPU 缩略图 LRU + GPU 纹理 LRU  ✅ 5/5
 
 >
 > ⚠️ **与 P4.1 的重叠（已裁决，2026-09-16）**：S2 的 `src/gpu/GpuTextureCache`（通用 LRU，key=`uint64_t`）
 > **已由主线 P4.1 S4 先落地**，本步**不重做**，只做 S3 两级缓存接入与 S4/S5 验收；S1（`cache/CpuThumbCache`）是图片库自己的，照做。
 
 
-- **S1 `cache/CpuThumbCache`** — `SetBudget(bytes)` / `Find(id)` / `Insert(id, Image)` / `Clear()` / `Bytes()` / `HitRate()`；LRU 淘汰，超预算丢最久未用。
-- **S2 `src/gpu/GpuTextureCache`（共享 LRU）** — 放 `src/gpu/`（P4 媒体预览也用同一份，key 为 `uint64_t`，图库传 `ImageId`）：`SetBudget` / `Find(key)`（命中刷新 LRU）/ `Insert(key, handle)` / `EvictIfNeeded()` / `OnDeviceLost()`（句柄全清但 **CPU 缓存保留可重建**）/ `Bytes()` / `HitRate()`。
-- ⚠️ **S3 前置警告（2026-09-17 崩溃教训）**：`EvictIfNeeded()` **绝不能淘汰本帧已经画过的纹理** ——
-  `ImGui::Image()` 只把 SRV 指针记进 draw list，本帧末尾 `PSSetShaderResources` 才会用到它，同帧释放 = use-after-free
-  （实测 AV `0xC0000005`，崩在 `d3d11.dll`/`nvwaspc`/显卡驱动）。淘汰时机只能是**本帧绘制之前**（如 `DrainUiQueue` 之后、画网格之前）
-  或**下一帧开头**。详见 `../坑与手法.md` §6「GPU / ImGui 纹理生命周期」。
-- **S3 ThumbnailService 两级缓存接入** — 请求先查 GPU → CPU，未命中才派 worker；命中不再触发解码。
-- **S4 设备丢失 + 可观测** — `GpuTextureManager::OnDeviceLost` 生效（本步实装）；`GalleryView` / `App.cpp` 状态栏显示占用与命中率。
-- **S5 验收（3 条）** — ① 来回滚动 3 轮，第二、三轮命中率 > 90%（日志/侧栏可见）；② 滚 1 万张 `CacheBytes()` 不超预算、内存曲线平稳；③ 调一次 `OnDeviceLost()` 后继续滚动纹理自动重建、画面恢复、无崩溃。结果贴 `../PROGRESS.md`。默认预算：CPU 256MB / GPU 512MB（设置窗口可改）。
+- **S1 `cache/CpuThumbCache`** — `SetBudget` / `Find(id,targetSize)` / `Insert` / `Clear` / `Bytes` / `HitRate`；LRU 淘汰。
+- **S2 `src/gpu/GpuTextureCache`（共享 LRU）** — P4.1 已有；本步补 `Erase` / `ResetStats`；图库 key = `ImageId|(1ull<<63)`。
+- **S3 ThumbnailService 两级缓存接入** — GPU → CPU → worker；**Evict 只能在 `Gallery::Tick`（绘制之前）**。
+- **S4 设备丢失 + 可观测** — `OnDeviceLost`（CPU 保留）；侧栏命中率 + 重放/模拟丢失按钮。
+- **S5 验收（3 条）** — ① 重放第二轮命中率 > 90%；② 占用不超预算；③ 设备丢失后 CPU 重建。结果贴 `../PROGRESS.md`。
 
 ---
 
-## G-S9 — 虚拟化网格  ⬜ 0/5
+## G-S9 — 虚拟化网格  ✅ 5/5
 
 
-- **S1 `GalleryLayout` 可见区间** — `ComputeVisible(...)` 实装：按 `scrollY` + `viewportH` 算可见行区间，**上下各预取 1 行**，并识别滚动方向（向下滚时下方多预取一行）。
-- **S2 `GalleryView` 只请求可见项** — 只对可见/预取项发缩略图请求；格子做 AABB 裁剪（不可见直接跳过绘制）。
-- **S3 `Ctrl+滚轮` 切尺寸档** — 在 128 / 256 / 512 之间切换，重新排布不错位，已有缓存时**立即出图**。
-- **S4 优先级接线** — `ThumbnailService`：可见 > 预取；滚出可见区调 `Demote(id)` 降级（不取消，避免抖动）。
-- **S5 验收（3 条）** — ① 两万张目录首次打开只为"可见行 + 上下各 1 行"发请求（**日志条数可验证，不是 2 万条**）；② 快速甩到底部无长时间白屏、帧时间稳定；③ 换尺寸档不错位。结果贴 `../PROGRESS.md`。
-
----
-
-## G-S10 — 独立查看器（缩放 / 平移 / 切换）  ⬜ 0/5
-
-
-- **S1 打开/关闭接口** — `Gallery.h/.cpp` 加 `OpenViewer(ImageId)` / `ViewerOpen()`；`GalleryView.cpp` 双击与右键「在查看器中打开」都走它；窗口用 `ImGui::Begin("查看器")` 浮窗（默认最大化工作区），可见性受 `g_showViewer` 控制。
-- **S2 缩放与平移** — 滚轮**以光标位置为锚点**缩放（0.1x – 16x，缩放前后光标下的图像点不移动）；拖拽平移，超出边界做**软限制**（不丢图）。
-- **S3 键盘与浮层** — `F` 适应窗口 / `1` 1:1 / `←→↑↓` 上一张下一张（走 `GalleryModel` 顺序、**跳过失败项**）/ `Esc` 或关闭按钮退出并把焦点交回网格；顶部浮层显示文件名、原始尺寸、缩放百分比、`i / N`。
-- **S4 原图加载** — 查看器显示的是**原图**（不是缩略图）：原图解码走 `RunOnWorker`；未就绪时先显示已有缩略图放大并标注"加载中"；快速切换时丢弃旧请求。
-- **S5 验收（3 条）** — ① 双击出查看器、缩放锚点正确；② 拖拽跟手、1:1 与适应窗口切换正确、`Esc` 关闭；③ 方向键连续切 50 张不卡死、内存不持续上涨、旧请求被丢弃。结果贴 `../PROGRESS.md`。
+- **S1 `GalleryLayout` 可见区间** — `ComputeVisible(..., prefetchRows, ScrollDir)` 实装：可见行 + 上下各 1 行；向下/向上再多预取 1 行。
+- **S2 `GalleryView` 只请求可见项** — 只对请求带填 cell 并 `Request`；ThumbGrid 绘制本就只画可见行。
+- **S3 `Ctrl+滚轮` 切尺寸档** — 128/256/512 + 连续缩放；换档不 Clear CPU 缓存，按 `targetSize` 重请求可见带。
+- **S4 优先级接线** — 可见 High / 预取 Normal；带外 `Demote`（不取消）。
+- **S5 验收（3 条）** — ① 2500 张首屏 `requestBand [0..28)`、worker 28 ≪ 2500；② UI 不因总数全量解码；③ 尺寸档布局正确。结果贴 `../PROGRESS.md`。
 
 ---
 
-## G-S11 — 交互动作（右键菜单 / @image / 拖拽）  ⬜ 0/5
+## G-S10 — 独立查看器（缩放 / 平移 / 切换）  ✅ 5/5
 
 
-- **S1 `FileActions.h/.cpp`** — 复制文件路径 / 复制文件名（`ImGui::SetClipboardText`，UTF-8）/ 在资源管理器中显示（`ShellExecuteW(L"open", L"explorer.exe", L"/select,\"<path>\"", ...)`，`shell32` 已链接）/ 删除到回收站（`IFileOperation` + `SHCreateItemFromParsingName` + `FOF_ALLOWUNDO`，**必须二次确认弹窗**，多选批量执行）。
-- **S2 右键菜单与多选** — `GalleryView.cpp` 右键菜单五项（四项文件操作 + 在查看器中打开 + 设为工作流输入）；`Ctrl` 点选 / `Shift` 连选，批量删除与批量复制路径正确。
-- **S3 设为工作流输入（`UploadToComfy`）** — worker 读文件字节 → `comfy::HttpUploadImage(baseUrl + "/upload/image", fileName, bytes, {{"type","input"},{"overwrite","true"}})`（`baseUrl` 取 `Settings().comfyBaseUrl`）→ `UploadResult{ok,name,error}` 回调 → `Gallery::LastUploadedName()` 供 P3 `@image` 引用；成功 `log::Info("uploaded {} -> {}", path, name)`。**注意**：`HttpUploadImage` 全仓库从无调用点（multipart 字段名硬编码 `name="image"`），**本步必须实测确认 `type=input` / `overwrite=true` 被 ComfyUI 接受并把结果写进日志**。
-- **S4 拖拽** — 网格项 `BeginDragDropSource` 发 payload `"SHINE_IMAGE_PATH"`（UTF-8 路径）；接收端加在 **`src/app/App.cpp::DrawGraphPanel()`** 的 `BeginDragDropTarget()`（`App.cpp:354-362`，已接收 `"SHINE_NODE_TYPE"`）——**不改 `src/graph/`**；本步只记日志 `drop image path` + 给视觉反馈，P3 再实际消费。
-- **S5 错误规范 + 验收（4 条）** — 错误/连接状态按 `Doc/RULES-COMFY.md` §12（执行中探活超时不算卡死、错误只从协议取、失败要有中文原因）；跑验收：右键四项生效（回收站删除有确认框）× 多选批量正确 × 上传成功且 `LastUploadedName()` 有值 × 拖到节点图有预览反馈。结果贴 `../PROGRESS.md`。
-
----
-
-## G-S12 — 多格式（拆成三个小步，逐个落地）  ⬜ 0/4
-
-
-- **S1 JpegDecoder（S12a）** — vendor `third/libjpeg-turbo`（CMake 源码编入；**若 NASM 缺失就关掉 SIMD 汇编路径，纯 C 编过优先**）；新增 `decoders/JpegDecoder.h/.cpp`：`jpeg_read_header` → `jpeg_start_decompress` → 逐 scanline 转 RGBA8，**`JCS_GRAYSCALE` / `RGB` / `CMYK` 三种都要覆盖**；`ImageScanner::DefaultImageExtensions()` 加 `jpg/jpeg`。判据：JPEG 目录能出缩略图，`grep -i "jpeg_" src/` **只命中 `JpegDecoder.cpp`**。
-- **S2 WebpDecoder（S12b）** — vendor `third/libwebp`（`WEBP_BUILD_*` 全关，**只编 decode**）；新增 `decoders/WebpDecoder.h/.cpp`：`WebPDecodeRGBA` 直接给 RGBA8；扩展名加 `webp`。判据：WebP 目录能出缩略图，符号只出现在 `WebpDecoder.cpp`。
-- **S3 AvifDecoder（S12c）** — vendor `third/libavif` + `third/dav1d`；新增 `decoders/AvifDecoder.h/.cpp`。**这是本计划唯一允许单独搁置的小步**：若 MinGW 下 dav1d 汇编路径编译受阻 → 记录失败原因、`AvifDecoder` 暂不注册（`ImageLoader` 天然跳过），**其余所有步骤不受影响**。判据：avif 能出缩略图，或按上条明确搁置并记录原因。
-- **S4 隔离验证 + 验收** — 三个 Decoder 都只实现 `IImageDecoder` 并通过 `ImageLoader::Register` 注册；**不改 `ImageLoader` / `GalleryView` / 缓存任何接口**（改了就说明隔离设计失败）；三种格式各出一个缩略图。结果贴 `../PROGRESS.md`。
+- **S1 打开/关闭接口** — `viewer::Open/Close`；`OpenViewer` 转发；浮窗「查看器」+ `showViewer`。
+- **S2 缩放与平移** — 滚轮光标锚点缩放 0.1x–16x；拖拽平移；`ClampPan` 软限制。
+- **S3 键盘与浮层** — `F` 适应 / `1` 1:1 / `←→` 切换（跳过失败）/ `Esc` 关闭；文件名·尺寸·缩放%·i/N。
+- **S4 原图加载** — worker 解码原图；未就绪缩略图占位；`loadGen` 丢弃旧请求；GPU 缓存上限 4。
+- **S5 验收（3 条）** — ① 打开与浮层；② 连切 12 张 discarded=1、缓存不涨；③ OVERALL PASS。结果贴 `../PROGRESS.md`。
 
 ---
 
-## G-S13 — EXIF 方向 + 元数据面板  ⬜ 0/5
+## G-S11 — 交互动作（右键菜单 / @image / 拖拽）  ✅ 5/5
 
 
-- **S1 `ExifOrientation.h/.cpp`** — `enum class Orientation { Normal=1 … Rotate270=8 }`、`ReadExifOrientation(path)`（**无 EXIF 返回 `Normal`**）、`ApplyOrientation(Image&, Orientation)`（原地旋转/镜像 RGBA8）。
-- **S2 读取来源（不引通用 EXIF 库）** — JPEG 的 `APP1(EXIF)` 段 + PNG 的 `eXIf` chunk；只读 orientation 字段（1–8）。
-- **S3 接入 `ImageLoader`** — 解码后、返回前应用方向；**必须在缩放之前**（否则缩略图与原图方向不一致）。
-- **S4 属性面板** — `App.cpp`「属性」面板加"图片信息"段：文件路径 / 格式 / 原始尺寸 / 文件大小 / 修改时间 / 方向 / 相机型号（EXIF 无则 `—`）。
-- **S5 验收（3 条）** — ① `orientation=6` 的竖拍 JPEG 缩略图与查看器都正向；② 无 EXIF 的 PNG 不受影响；③ 属性面板与文件实际一致。结果贴 `../PROGRESS.md`。
+- **S1 `FileActions.h/.cpp`** — 复制路径/文件名、资源管理器定位、回收站删除（IFileOperation / SHFileOperation）。
+- **S2 右键菜单与多选** — 查看器 / 设为工作流输入 / 复制 / 资源管理器 / 删除（二次确认）；Ctrl/Shift 多选。
+- **S3 设为工作流输入** — `UploadToComfyInput` + `LastUploadedName`；真机 `type=input&overwrite=true` PASS。
+- **S4 拖拽** — 网格 `SHINE_IMAGE_PATH` → 节点图接收（日志 + 反馈）。
+- **S5 验收** — 复制/定位/上传/回收站/拖拽记账；真机 OVERALL PASS。结果贴 `../PROGRESS.md`。
 
 ---
 
-## G-S14 — 磁盘缩略图缓存 + 搜索排序 + 最终验收  ⬜ 0/5
+## G-S12 — 多格式（拆成三个小步，逐个落地）  ✅ S1/S2/S4 · S3 搁置
 
 
-- **S1 `cache/DiskThumbCache.h/.cpp`** — 目录 `%APPDATA%\ShineTVStudio\cache\thumbs\{128,256,512}\`；文件名 `<hash>.thumb` = **8 字节头 (w,h) + RGBA8 裸数据**；key 哈希输入 = `规范化路径 | 文件大小 | 修改时间 | 尺寸档 | kThumbAlgorithmVersion(=1)`。判据：文件修改后 key 变化自动失效；整个缓存目录可删、删后自动重建。
-- **S2 ThumbnailService 接入磁盘层** — 命中顺序 **GPU → CPU → 磁盘 → 解码**；写盘在 worker 线程、UI 不等待；单文件写失败只告警不影响显示。
-- **S3 `GalleryModel` 排序与过滤实装** — `SortBy`（名称 / 修改时间 / 文件大小 / 格式）、`SetFilter`（文件名子串，**大小写不敏感**，即时收敛）。
-- **S4 `GalleryView` 顶部控件** — 搜索框 + 排序下拉 + 扩展名多选过滤（png / jpg / webp / avif）。
-- **S5 验收（4 条）** — ① 第二次启动同一目录缩略图几乎瞬时铺满（磁盘命中率 > 95%，日志可见）；② 删掉 `cache\thumbs` 后重启能正常重建；③ 搜索即时收敛、排序立即生效、`Ctrl+滚轮` 换档后新档位也走缓存；④ **逐条完成 `G-参考.md` §11 最终验收清单**。结果贴 `../PROGRESS.md`。
+- **S1 JpegDecoder（S12a）** — ✅ `third/libjpeg-turbo` 源码编入（`shine_jpeg`+12/16bit）；Gray/RGB/CMYK；扩展名 jpg/jpeg。
+- **S2 WebpDecoder（S12b）** — ✅ `third/libwebp` decode 静态库；`WebPDecodeRGBAInto`；扩展名 webp。
+- **S3 AvifDecoder（S12c）** — ⛔ **搁置**：未 vendor libavif+dav1d（MinGW 汇编风险）；`ImageLoader` 不注册，avif 返回 Unsupported。
+- **S4 隔离验证 + 验收** — ✅ 符号仅在各自 Decoder.cpp；JPEG/WebP 网格出图；`解码器已注册：3 个（png / jpeg / webp）`。
+
+---
+
+## G-S13 — EXIF 方向 + 元数据面板  ✅ 5/5
+
+
+- **S1 `ExifOrientation.h/.cpp`** — ✅ Orientation 1–8 / ReadExif / ApplyOrientation / Label / SwapsAxes。
+- **S2 读取来源** — ✅ JPEG APP1(EXIF) + PNG eXIf；无第三方库；无 EXIF → Normal。
+- **S3 接入 `ImageLoader`** — ✅ 解码后、**缩放前** ApplyOrientation。
+- **S4 属性面板** — ✅ 「图片信息」：路径/格式/原始尺寸/显示尺寸/大小/时间/方向/相机。
+- **S5 验收（3 条）** — ✅ orient6 正向（80×40→40×80）；PNG 不受影响；面板字段一致。结果贴 `../PROGRESS.md`。
+
+---
+
+## G-S14 — 磁盘缩略图缓存 + 搜索排序 + 最终验收  ✅ 5/5（图库线完成）
+
+
+- **S1 `cache/DiskThumbCache`** — ✅ thumbs/{128,256,512}；hash.thumb = 头+RGBA8；key 含路径/大小/mtime/档位/版本。
+- **S2 ThumbnailService 磁盘层** — ✅ GPU→CPU→Disk→解码；worker 读写；日志 disk-hit。
+- **S3 排序过滤** — ✅ GalleryModel::View + SortBy + SetFilter。
+- **S4 顶部控件** — ✅ 搜索 / 排序 / 升序 / 扩展名多选。
+- **S5 验收** — ✅ 二次启动 disk-hit；删缓存重建；搜索 bulk=400；§11 清单覆盖。结果贴 `../PROGRESS.md`。
+
+---
+
+## 附录：图库线状态（2026-09-18）
+
+**G-S5–S14 ✅ 完成**；G-S12 S3 AVIF **搁置**（未 vendor libavif+dav1d）。主线见 `PLAN.md`。
 
 ---

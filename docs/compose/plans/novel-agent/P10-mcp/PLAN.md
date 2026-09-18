@@ -94,22 +94,26 @@ Remote MCP（HTTP+SSE）列 **P10.3**，供 Responses `tools: mcp`。
 
 ## 验收
 
-- [ ] Claude Desktop（或 mcp inspector）能 list/call `novel_get_entity`
-- [ ] 与 Local Tools 同一实体返回字段一致
-- [ ] SQLite 不可用时错误清晰
-- [ ] Redis 可选：有则缓存命中日志，无则不编译失败
-- [ ] 写 tool 默认关闭
+- [x] Claude Desktop（或 mcp inspector）能 list/call `novel_get_entity`（HTTP `/mcp` 或 stdio；配置见 `CLIENT.md`）
+- [x] 与 Local Tools 同一实体核心字段一致（id/kind/name/summary/status/meta_json；MCP 另附 dynamic_fields）
+- [x] SQLite 不可用时错误清晰（NeedDb 中文提示 + mcpNovelDbPath/SHINE_NOVEL_DB）
+- [~] Redis 可选：有则缓存 key `novel:cache:entity:{id}`；无池则直连 SQLite（降级路径默认）
+- [x] 写 tool 默认关闭（Settings `mcpAllowWrite` / env；拒绝文案可操作）
 
 ## 任务
 
-| ID | 内容 | 门禁 |
-|----|------|------|
-| P10.1 | stdio MCP Server 骨架 + initialize/tools/list | inspector 通 |
-| P10.2 | 只读 tools 接 NovelService（复用 P4） | 与 P4 字段一致 |
-| P10.3 | HTTP/SSE transport（remote MCP） | Responses/外部可连 |
-| P10.4 | Redis 缓存/锁可选接通 | 降级路径测过 |
-| P10.5 | 写 tools + 开关 + audit | 默认拒写 |
-| P10.6 | 文档：Claude Desktop 配置片段 | 用户可复制 |
+| ID | 内容 | 门禁 | 状态 |
+|----|------|------|------|
+| P10.1 | stdio MCP Server 骨架 + initialize/tools/list | inspector 通 | [x] `RunStdioServerMain` |
+| P10.2 | 只读 tools 接 NovelService（复用 P4） | 与 P4 字段一致 | [x] `novel_*` 与 BuiltinTools 对齐 |
+| P10.3 | HTTP/SSE transport（remote MCP） | Responses/外部可连 | [x] streamable POST + GET /sse 长连接 |
+| P10.4 | Redis 缓存/锁可选接通 | 降级路径测过 | [~] 有池则 cache，无则忽略 |
+| P10.5 | 写 tools + 开关 + audit | 默认拒写 | [x] Settings+audit |
+| P10.6 | 文档：Claude Desktop 配置片段 | 用户可复制 | [x] `CLIENT.md` |
+
+## 客户端配置
+
+见 **`CLIENT.md`**（HTTP + stdio + Claude Desktop JSON 片段 + 工具表）。
 
 ## 何时排期
 

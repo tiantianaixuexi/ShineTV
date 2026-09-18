@@ -11,7 +11,8 @@ namespace shine::mcp {
 // 在 HttpServer 上注册 MCP 路由：
 //   GET  /health
 //   POST /mcp  (别名 /messages、/message)
-//   GET  /sse   (别名 /mcp/sse) —— 先回 endpoint 帧；完整长连接心跳见 P7.3 S4 限制说明
+//   GET  /sse   (别名 /mcp/sse) —— P10.3 长连接 SSE：endpoint/session/ping
+//   POST /mcp   —— JSON-RPC；Accept: text/event-stream 时返回 streamable SSE body
 //   GET  /tools
 //   POST /tools/<name>
 void RegisterMcpRoutes(HttpServer& srv);
@@ -33,5 +34,9 @@ struct LastCallInfo {
 
 // P7.3 自检：initialize / tools/list / tools/call / 错误码
 [[nodiscard]] bool RunMcpProtocolSelfCheck();
+
+// P10.1：stdio MCP Server（stdin→JSON-RPC→stdout）。仅 CLI：`--mcp-stdio`
+// 日志走 stderr/文件，不写 stdout。挂库：SHINE_NOVEL_DB 或 Settings.mcpNovelDbPath。
+int RunStdioServerMain();
 
 } // namespace shine::mcp

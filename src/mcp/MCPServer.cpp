@@ -1,8 +1,14 @@
 #include "mcp/MCPServer.h"
 
 #include "core/Log.h"
+#include "core/Settings.h"
 #include "mcp/BuiltinTools.h"
 #include "mcp/McpBootstrap.h"
+#include "mcp/McpSse.h"
+#include "novel/NovelDb.h"
+#include "novel/NovelMcpTools.h"
+#include "novel/NovelProjects.h"
+#include "util/Encoding.h"
 #include "util/Json.h"
 #include "util/Time.h"
 
@@ -10,10 +16,13 @@
 #include <yyjson.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace shine::mcp {
@@ -212,7 +221,7 @@ std::string HandleJsonRpc(std::string_view body) {
     }
 
     if (method == "tools/list") {
-        RegisterAllBuiltinTools(ToolRegistry::Instance());
+        RegisterAllModules(ToolRegistry::Instance());
         const std::string listJson = ToolRegistry::Instance().BuildToolsListJson();
         yyjson_mut_doc* rdoc = yyjson_mut_doc_new(nullptr);
         yyjson_mut_val* result = ParseJsonObjectToMut(rdoc, listJson);
@@ -234,7 +243,7 @@ std::string HandleJsonRpc(std::string_view body) {
     }
 
     if (method == "tools/call") {
-        RegisterAllBuiltinTools(ToolRegistry::Instance());
+        RegisterAllModules(ToolRegistry::Instance());
         std::string toolName;
         yyjson_val* args = nullptr;
         if (params && yyjson_is_obj(params)) {
@@ -264,12 +273,40 @@ std::string HandleJsonRpc(std::string_view body) {
 
 void RegisterMcpRoutes(HttpServer& srv) {
     RegisterHealthRoute(srv);
-    RegisterAllBuiltinTools(ToolRegistry::Instance());
+    RegisterAllModules(ToolRegistry::Instance());
 
     auto handleRpcBody = [](const Request& req, Response& out) {
+        const std::string sessionId = [&]() -> std::string {
+            for (const auto& [k, v] : req.headers) {
+                if (k == "Mcp-Session-Id" || k == "mcp-session-id" || k == "MCP-Session-Id") {
+                    return v;
+                }
+            }
+            return {};
+        }();
+        const bool wantSse =
+            req.query.find("stream=1") != std::string::npos ||
+            [&] {
+                for (const auto& [k, v] : req.headers) {
+                    if ((k == "Accept" || k == "accept") &&
+                        v.find("text/event-stream") != std::string::npos) {
+                        return true;
+                    }
+                }
+                return false;
+            }();
+        const std::string resp = HandleJsonRpc(req.body);
+        if (wantSse) {
+            // Streamable HTTP：单响应 SSE（ping + message）
+            out.status = 200;
+            out.contentType = "text/event-stream; charset=utf-8";
+            out.body = BuildStreamableHttpBody(
+                resp.empty() ? R"({"jsonrpc":"2.0","result":null})" : resp,
+                sessionId.empty() ? NewMcpSessionId() : sessionId);
+            return;
+        }
         out.status = 200;
         out.contentType = "application/json; charset=utf-8";
-        const std::string resp = HandleJsonRpc(req.body);
         out.body = resp.empty() ? std::string{} : resp;
         if (resp.empty()) {
             out.status = 204;
@@ -283,7 +320,7 @@ void RegisterMcpRoutes(HttpServer& srv) {
 
     srv.Route(
         "/tools", HttpMethod::Get, [](const Request&, Response& out) {
-            RegisterAllBuiltinTools(ToolRegistry::Instance());
+            RegisterAllModules(ToolRegistry::Instance());
             out.body = ToolRegistry::Instance().BuildToolsListJson();
         });
 
@@ -299,7 +336,7 @@ void RegisterMcpRoutes(HttpServer& srv) {
                 adoc = yyjson_read(req.body.data(), req.body.size(), 0);
                 if (adoc) args = yyjson_doc_get_root(adoc);
             }
-            RegisterAllBuiltinTools(ToolRegistry::Instance());
+            RegisterAllModules(ToolRegistry::Instance());
             const CallOutcome o = ToolRegistry::Instance().Call(name, args);
             NoteCall(name, o.ok());
             out.body = WrapToolResultAsMcp(o);
@@ -307,14 +344,83 @@ void RegisterMcpRoutes(HttpServer& srv) {
             if (adoc) yyjson_doc_free(adoc);
         });
 
-    // S4 骨架：先回 endpoint（完整长连接心跳后续加强）
-    auto sse = [](const Request&, Response& out) {
-        out.status = 200;
-        out.contentType = "text/event-stream; charset=utf-8";
-        out.body = "event: endpoint\ndata: /mcp\n\n";
+    // P10.3：GET /sse 长连接 —— handshake + 周期 ping（自建 Agent / Inspector）
+    auto sseStream = [](const Request& req,
+                        const std::function<void(std::string_view)>& write,
+                        const std::function<void()>& close) {
+        std::string sid;
+        for (const auto& [k, v] : req.headers) {
+            if (k == "Mcp-Session-Id" || k == "mcp-session-id") sid = v;
+        }
+        if (sid.empty()) sid = NewMcpSessionId();
+        write(BuildSseHandshake(sid, "/mcp"));
+        SseHub::Instance().SetActiveConnections(SseHub::Instance().ActiveConnections() + 1);
+        // 有限次 ping 保活（约 2 分钟）；客户端断开由 libhv 结束本 handler
+        for (int i = 0; i < 24; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds{5});
+            write(WrapSseEvent("ping",
+                                fmt::format(R"({{"ts":{},"seq":{}}})", util::NowMillis(), i + 1)));
+            // 每 4 拍发一次 server info，便于观察长连接
+            if ((i + 1) % 4 == 0) {
+                write(WrapSseEvent(
+                    "message",
+                    fmt::format(R"({{"jsonrpc":"2.0","method":"notifications/message","params":{{"level":"info","data":"sse-alive seq={}"}}}})",
+                                i + 1)));
+            }
+        }
+        write(WrapSseEvent("close", R"({"reason":"server-timeout"})"));
+        SseHub::Instance().SetActiveConnections(SseHub::Instance().ActiveConnections() - 1);
+        close();
     };
-    srv.Route("/sse", HttpMethod::Get, sse);
-    srv.Route("/mcp/sse", HttpMethod::Get, sse);
+    srv.RouteStream("/sse", HttpMethod::Get, sseStream);
+    srv.RouteStream("/mcp/sse", HttpMethod::Get, sseStream);
+}
+
+int RunStdioServerMain() {
+    // 日志只进 stderr，**禁止污染 stdout**（stdio MCP 协议通道）
+    log::Init();
+    LoadSettings();
+    novelcore::SetMcpAllowWrite(Settings().mcpAllowWrite);
+    RegisterAllModules(ToolRegistry::Instance());
+
+    // 挂库：优先 SHINE_NOVEL_DB，其次 Settings.mcpNovelDbPath
+    if (const char* env = std::getenv("SHINE_NOVEL_DB"); env != nullptr && *env != '\0') {
+        Settings().mcpNovelDbPath = env;
+    }
+    if (Settings().mcpNovelDbPath.empty()) {
+        // 默认扫第一个小说工程
+        novelcore::Refresh();
+        const auto& items = novelcore::Items();
+        if (!items.empty() && items.front().hasDb) {
+            Settings().mcpNovelDbPath = util::PathToUtf8(items.front().dbPath);
+        }
+    }
+    if (!Settings().mcpNovelDbPath.empty()) {
+        if (auto r = novelcore::NovelDb::Instance().Open(
+                util::PathFromUtf8(Settings().mcpNovelDbPath));
+            !r) {
+            log::Error("stdio MCP 打开 novel.db 失败：{}", r.error().message);
+        } else {
+            log::Info("stdio MCP 已挂库 {}", Settings().mcpNovelDbPath);
+        }
+    } else {
+        log::Warn("stdio MCP 未配置 novel.db（SHINE_NOVEL_DB / mcpNovelDbPath）");
+    }
+
+    log::Info("mcp stdio 已启动（tools={}）", ToolRegistry::Instance().ToolCount());
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.empty()) continue;
+        const std::string resp = HandleJsonRpc(line);
+        if (resp.empty()) continue; // notification
+        std::fwrite(resp.data(), 1, resp.size(), stdout);
+        std::fputc('\n', stdout);
+        std::fflush(stdout);
+    }
+    novelcore::NovelDb::Instance().Close();
+    log::Info("mcp stdio 退出");
+    return 0;
 }
 
 bool RunMcpProtocolSelfCheck() {

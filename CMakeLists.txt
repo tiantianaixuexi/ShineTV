@@ -53,6 +53,117 @@ target_link_libraries(shine_png PUBLIC zlibstatic)
 # MinGW 下没有 NASM：关掉需要汇编的 SIMD 路径，纯 C 编译
 target_compile_definitions(shine_png PRIVATE PNG_ARM_NEON_OPT=0 PNG_INTEL_SSE_OPT=0)
 
+# --- libjpeg-turbo（G-S12a）：独立源码编入（上游 CMake 禁止 add_subdirectory）---
+# jconfig.h / jconfigint.h / jversion.h 已 vendored（MinGW、WITH_SIMD=0、无 NASM）
+set(SHINE_JPEG_DIR ${THIRD}/libjpeg-turbo)
+add_library(shine_jpeg STATIC
+  ${SHINE_JPEG_DIR}/jaricom.c
+  ${SHINE_JPEG_DIR}/jcapimin.c
+  ${SHINE_JPEG_DIR}/jcapistd.c
+  ${SHINE_JPEG_DIR}/jcarith.c
+  ${SHINE_JPEG_DIR}/jccoefct.c
+  ${SHINE_JPEG_DIR}/jccolor.c
+  ${SHINE_JPEG_DIR}/jcdctmgr.c
+  ${SHINE_JPEG_DIR}/jcdiffct.c
+  ${SHINE_JPEG_DIR}/jchuff.c
+  ${SHINE_JPEG_DIR}/jcicc.c
+  ${SHINE_JPEG_DIR}/jcinit.c
+  ${SHINE_JPEG_DIR}/jclhuff.c
+  ${SHINE_JPEG_DIR}/jclossls.c
+  ${SHINE_JPEG_DIR}/jcmainct.c
+  ${SHINE_JPEG_DIR}/jcmarker.c
+  ${SHINE_JPEG_DIR}/jcmaster.c
+  ${SHINE_JPEG_DIR}/jcomapi.c
+  ${SHINE_JPEG_DIR}/jcparam.c
+  ${SHINE_JPEG_DIR}/jcphuff.c
+  ${SHINE_JPEG_DIR}/jcprepct.c
+  ${SHINE_JPEG_DIR}/jcsample.c
+  ${SHINE_JPEG_DIR}/jctrans.c
+  ${SHINE_JPEG_DIR}/jdapimin.c
+  ${SHINE_JPEG_DIR}/jdapistd.c
+  ${SHINE_JPEG_DIR}/jdarith.c
+  ${SHINE_JPEG_DIR}/jdatadst.c
+  ${SHINE_JPEG_DIR}/jdatasrc.c
+  ${SHINE_JPEG_DIR}/jdcoefct.c
+  ${SHINE_JPEG_DIR}/jdcolor.c
+  ${SHINE_JPEG_DIR}/jddctmgr.c
+  ${SHINE_JPEG_DIR}/jddiffct.c
+  ${SHINE_JPEG_DIR}/jdhuff.c
+  ${SHINE_JPEG_DIR}/jdicc.c
+  ${SHINE_JPEG_DIR}/jdinput.c
+  ${SHINE_JPEG_DIR}/jdlhuff.c
+  ${SHINE_JPEG_DIR}/jdlossls.c
+  ${SHINE_JPEG_DIR}/jdmainct.c
+  ${SHINE_JPEG_DIR}/jdmarker.c
+  ${SHINE_JPEG_DIR}/jdmaster.c
+  ${SHINE_JPEG_DIR}/jdmerge.c
+  ${SHINE_JPEG_DIR}/jdphuff.c
+  ${SHINE_JPEG_DIR}/jdpostct.c
+  ${SHINE_JPEG_DIR}/jdsample.c
+  ${SHINE_JPEG_DIR}/jdtrans.c
+  ${SHINE_JPEG_DIR}/jerror.c
+  ${SHINE_JPEG_DIR}/jfdctflt.c
+  ${SHINE_JPEG_DIR}/jfdctfst.c
+  ${SHINE_JPEG_DIR}/jfdctint.c
+  ${SHINE_JPEG_DIR}/jidctflt.c
+  ${SHINE_JPEG_DIR}/jidctfst.c
+  ${SHINE_JPEG_DIR}/jidctint.c
+  ${SHINE_JPEG_DIR}/jidctred.c
+  ${SHINE_JPEG_DIR}/jmemmgr.c
+  ${SHINE_JPEG_DIR}/jmemnobs.c
+  ${SHINE_JPEG_DIR}/jpeg_nbits.c
+  ${SHINE_JPEG_DIR}/jquant1.c
+  ${SHINE_JPEG_DIR}/jquant2.c
+  ${SHINE_JPEG_DIR}/jutils.c
+)
+target_include_directories(shine_jpeg PUBLIC ${SHINE_JPEG_DIR})
+target_compile_definitions(shine_jpeg PRIVATE WITH_SIMD=0)
+
+# 12/16-bit 精度变体（libjpeg-turbo 3.x 多精度：j12*/j16* 符号）
+set(SHINE_JPEG12_SRC
+  ${SHINE_JPEG_DIR}/jcapistd.c ${SHINE_JPEG_DIR}/jccolor.c ${SHINE_JPEG_DIR}/jcdiffct.c
+  ${SHINE_JPEG_DIR}/jclossls.c ${SHINE_JPEG_DIR}/jcmainct.c ${SHINE_JPEG_DIR}/jcprepct.c
+  ${SHINE_JPEG_DIR}/jcsample.c ${SHINE_JPEG_DIR}/jdapistd.c ${SHINE_JPEG_DIR}/jdcolor.c
+  ${SHINE_JPEG_DIR}/jddiffct.c ${SHINE_JPEG_DIR}/jdlossls.c ${SHINE_JPEG_DIR}/jdmainct.c
+  ${SHINE_JPEG_DIR}/jdpostct.c ${SHINE_JPEG_DIR}/jdsample.c ${SHINE_JPEG_DIR}/jutils.c
+  ${SHINE_JPEG_DIR}/jccoefct.c ${SHINE_JPEG_DIR}/jcdctmgr.c ${SHINE_JPEG_DIR}/jdcoefct.c
+  ${SHINE_JPEG_DIR}/jddctmgr.c ${SHINE_JPEG_DIR}/jdmerge.c ${SHINE_JPEG_DIR}/jfdctfst.c
+  ${SHINE_JPEG_DIR}/jfdctint.c ${SHINE_JPEG_DIR}/jidctflt.c ${SHINE_JPEG_DIR}/jidctfst.c
+  ${SHINE_JPEG_DIR}/jidctint.c ${SHINE_JPEG_DIR}/jidctred.c ${SHINE_JPEG_DIR}/jquant1.c
+  ${SHINE_JPEG_DIR}/jquant2.c
+)
+set(SHINE_JPEG16_SRC
+  ${SHINE_JPEG_DIR}/jcapistd.c ${SHINE_JPEG_DIR}/jccolor.c ${SHINE_JPEG_DIR}/jcdiffct.c
+  ${SHINE_JPEG_DIR}/jclossls.c ${SHINE_JPEG_DIR}/jcmainct.c ${SHINE_JPEG_DIR}/jcprepct.c
+  ${SHINE_JPEG_DIR}/jcsample.c ${SHINE_JPEG_DIR}/jdapistd.c ${SHINE_JPEG_DIR}/jdcolor.c
+  ${SHINE_JPEG_DIR}/jddiffct.c ${SHINE_JPEG_DIR}/jdlossls.c ${SHINE_JPEG_DIR}/jdmainct.c
+  ${SHINE_JPEG_DIR}/jdpostct.c ${SHINE_JPEG_DIR}/jdsample.c ${SHINE_JPEG_DIR}/jutils.c
+)
+add_library(shine_jpeg12 OBJECT ${SHINE_JPEG12_SRC})
+target_include_directories(shine_jpeg12 PUBLIC ${SHINE_JPEG_DIR})
+target_compile_definitions(shine_jpeg12 PRIVATE WITH_SIMD=0 BITS_IN_JSAMPLE=12)
+add_library(shine_jpeg16 OBJECT ${SHINE_JPEG16_SRC})
+target_include_directories(shine_jpeg16 PUBLIC ${SHINE_JPEG_DIR})
+target_compile_definitions(shine_jpeg16 PRIVATE WITH_SIMD=0 BITS_IN_JSAMPLE=16)
+target_link_libraries(shine_jpeg PUBLIC shine_jpeg12 shine_jpeg16)
+
+# --- libwebp（G-S12b）：只编 decode 静态库，工具/示例全关 ---
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBP_JS OFF CACHE BOOL "" FORCE)
+set(WEBP_ENABLE_SIMD OFF CACHE BOOL "" FORCE)
+set(WEBP_NEAR_LOSSLESS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+add_subdirectory(${THIRD}/libwebp EXCLUDE_FROM_ALL)
+
 # --- hiredis：Redis 客户端（src/db 使用；不 add_subdirectory，避免 tests/install）---
 add_library(shine_hiredis STATIC
   ${THIRD}/hiredis/hiredis.c
@@ -87,10 +198,10 @@ add_executable(ShineTVStudio WIN32
   src/main.cpp
   src/app/App.cpp
   src/app/UiState.cpp
-  src/app/views/temp/TextureSelfCheck.cpp
   # R-S0：从 App.cpp 搬出的窗口（一窗口一文件，声明见 app/AppInternal.h）
   src/app/ui/DrawConnectionStatus.cpp
   src/app/ui/Widgets.cpp
+  src/app/ui/ThumbGrid.cpp
   src/theme/ThemeTokens.cpp
   src/app/shell/DrawMenuBar.cpp
   src/app/shell/DrawActivityBar.cpp
@@ -155,9 +266,19 @@ add_executable(ShineTVStudio WIN32
   src/gallery/MetaProbe.cpp
   src/gallery/ImageLoader.cpp
   src/gallery/decoders/PngDecoder.cpp
+  src/gallery/decoders/JpegDecoder.cpp
+  src/gallery/decoders/WebpDecoder.cpp
+  src/gallery/ExifOrientation.cpp
   src/gallery/ImageScanner.cpp
   src/gallery/GalleryModel.cpp
   src/gallery/Gallery.cpp
+  src/gallery/ThumbnailService.cpp
+  src/gallery/Viewer.cpp
+  src/gallery/FileActions.cpp
+  src/gallery/cache/CpuThumbCache.cpp
+  src/gallery/cache/DiskThumbCache.cpp
+  src/gallery/Resize.cpp
+  src/gallery/GalleryLayout.cpp
   src/app/gallery/FolderPicker.cpp
   src/app/gallery/GalleryView.cpp
 
@@ -168,6 +289,8 @@ add_executable(ShineTVStudio WIN32
   src/novel/NovelVisual.cpp
   src/novel/NovelFields.cpp
   src/novel/NovelMcpTools.cpp
+  src/novel/NovelImageGen.cpp
+  src/novel/NovelImageStore.cpp
   src/agent/ContextBuilder.cpp
   src/agent/ToolRegistry.cpp
   src/agent/BuiltinTools.cpp
@@ -200,6 +323,9 @@ add_executable(ShineTVStudio WIN32
   src/mcp/HttpServer.cpp
   # P7.3/P7.4：JSON-RPC 协议 + 内置工具
   src/mcp/MCPServer.cpp
+  src/mcp/McpSse.cpp
+  src/mcp/McpHttpClient.cpp
+  src/mcp/McpRemoteAgent.cpp
   src/mcp/BuiltinTools.cpp
   # net：libhv 就绪 + 出站 HTTP（comfy/openai 共用）
   src/net/LibhvReady.cpp
@@ -258,6 +384,8 @@ target_include_directories(ShineTVStudio PRIVATE
   ${THIRD}/fmt
   ${THIRD}/libpng
   ${THIRD}/imageinfo
+  ${THIRD}/libjpeg-turbo
+  ${THIRD}/libwebp/src
   ${THIRD}
   ${THIRD}/function2
   ${THIRD}/mimalloc/include
@@ -301,6 +429,8 @@ endif()
 target_link_libraries(ShineTVStudio PRIVATE
   hv_static
   shine_png
+  shine_jpeg
+  webp
   shine_hiredis
   shine_sqlite
   d3d11

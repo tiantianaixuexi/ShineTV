@@ -10,6 +10,7 @@
 #include "gallery/GalleryModel.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -46,9 +47,32 @@ bool RescanCurrent();
 
 // 「打开图片文件夹…」编排在 `app/gallery/FolderPicker.h`（UI 层弹框后调 `RequestScan`）。
 
+// 条目表被替换/清空时递增：视图层用它丢弃过期缩略图缓存（G-S6）。
+[[nodiscard]] std::uint64_t ItemsGeneration() noexcept;
+
+// G-S6 查看器（第一版只做适应窗口；完整交互在 G-S10）
+void OpenViewer(ImageId id);
+void CloseViewer() noexcept;
+[[nodiscard]] bool ViewerOpen() noexcept;
+[[nodiscard]] ImageId ViewerImageId() noexcept;
+
+// G-S11：设为工作流输入（上传 ComfyUI /upload/image）
+// 异步：worker 读文件 + HttpUploadImage；结果经 PostToUi 更新 LastUploadedName
+void UploadToComfyInput(const std::filesystem::path& path);
+[[nodiscard]] std::string LastUploadedName() noexcept; // ComfyUI 返回的文件名（@image 用）
+[[nodiscard]] std::string LastUploadError() noexcept;
+[[nodiscard]] bool UploadInFlight() noexcept;
+
+// 拖到节点图的最近路径（G-S11 S4 反馈；P3 再真正消费）
+[[nodiscard]] std::string LastGraphDropPath() noexcept;
+void SetLastGraphDropPath(std::string path);
+
+// 视图层上报「已就绪缩略图」计数（状态栏「已加载」）
+void SetThumbReadyCount(std::size_t n) noexcept;
+
 // —— 统计（状态栏 / 侧栏读；全部只在 UI 线程）——
 [[nodiscard]] std::size_t ItemCount() noexcept;                // 条目总数
-[[nodiscard]] std::size_t LoadedCount() noexcept;              // 已解码进内存的条目数（S5 恒 0；S7 起有意义）
+[[nodiscard]] std::size_t LoadedCount() noexcept;              // 已就绪缩略图数（G-S6 起由视图上报）
 [[nodiscard]] std::size_t CacheBytes() noexcept;               // 纹理缓存占用字节（GPU；CPU 缓存在 G-S8 加入）
 [[nodiscard]] std::filesystem::path CurrentRoot() noexcept;    // 当前来源目录
 

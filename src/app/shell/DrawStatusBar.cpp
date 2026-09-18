@@ -13,7 +13,8 @@ void DrawStatusBar(float width, float height) {
     dl->AddRectFilled(p0, ImVec2(p0.x + width, p0.y + height), bg);
 
     ImGui::BeginChild("##status_bar", ImVec2(width, height), ImGuiChildFlags_None,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoBackground);
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                          ImGuiWindowFlags_NoBackground);
     ImGui::SetCursorPosY(2.f);
     ImGui::SetCursorPosX(8.f);
 

@@ -57,7 +57,6 @@ void LogText(int level, std::string_view text) {
     if (!g_logger) {
         return;
     }
-    // 去掉调用方可能带的尾换行（spdlog 自己会加）：用视图裁剪，不拷贝
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
         text.remove_suffix(1);
     }
@@ -75,7 +74,6 @@ void Init() {
     auto ui = std::make_shared<UiSink<std::mutex>>();
     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks{ui, console};
-    // 验收钩子：`SHINE_LOG_FILE=<abs path>` 追加文件 sink（GUI 抓不到 stdout 时用）
     if (const char* path = std::getenv("SHINE_LOG_FILE"); path != nullptr && *path != '\0') {
         try {
             sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(path, true));
@@ -92,9 +90,8 @@ void Init() {
 void Shutdown() {
     if (g_logger) {
         g_logger->flush();
+        g_logger.reset();
     }
-    spdlog::shutdown();
-    g_logger.reset();
 }
 
 std::vector<Line> LinesSnapshot() {

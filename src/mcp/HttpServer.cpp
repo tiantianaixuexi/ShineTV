@@ -63,6 +63,8 @@ void FillCors(Response& r) {
 struct HttpServer::Impl {
     hv::HttpService service;
     std::unique_ptr<hv::HttpServer> server;
+    // stream path → handler（Start 时拷贝给 libhv async 路由）
+    std::vector<RouteEntry> streamRoutes;
 };
 
 const char* HttpMethodStr(HttpMethod m) noexcept {
@@ -117,6 +119,30 @@ void HttpServer::Route(std::string path, HttpMethod method, Handler handler) {
         if (r.path == e.path && r.method == e.method) {
             r.handler = std::move(e.handler);
             r.prefix = e.prefix;
+            r.stream = false;
+            r.streamHandler = nullptr;
+            return;
+        }
+    }
+    routes_.push_back(std::move(e));
+}
+
+void HttpServer::RouteStream(std::string path, HttpMethod method, StreamHandler handler) {
+    if (path.empty() || path[0] != '/' || !handler) {
+        log::Warn("mcp RouteStream 参数无效");
+        return;
+    }
+    RouteEntry e;
+    e.path = std::move(path);
+    e.method = method;
+    e.streamHandler = std::move(handler);
+    e.stream = true;
+    std::lock_guard lock(routesMutex_);
+    for (auto& r : routes_) {
+        if (r.path == e.path && r.method == e.method) {
+            r.streamHandler = std::move(e.streamHandler);
+            r.stream = true;
+            r.handler = nullptr;
             return;
         }
     }
@@ -240,11 +266,29 @@ std::expected<void, std::string> HttpServer::Start(std::string_view listenAddr, 
 
     // 每次 Start 重建 service/server，避免 stop 后状态残留
     impl_->service = hv::HttpService{};
+    impl_->streamRoutes.clear();
+    {
+        std::lock_guard lock(routesMutex_);
+        for (const auto& r : routes_) {
+            if (r.stream && r.streamHandler) impl_->streamRoutes.push_back(r);
+        }
+    }
+
     impl_->service.processor = [this](HttpRequest* req, HttpResponse* resp) -> int {
+        const std::string path = req->path.empty() ? "/" : std::string{req->path};
+        const std::string method = http_method_str(req->method);
+        // 流式路由交给 router 的 async_handler（HttpResponseWriter）
+        for (const auto& sr : impl_->streamRoutes) {
+            const bool methodOk = sr.method == HttpMethod::Any || method == HttpMethodStr(sr.method);
+            const bool pathOk = sr.prefix ? PathPrefixMatch(sr.path, path) : (sr.path == path);
+            if (methodOk && pathOk) {
+                return HTTP_STATUS_NEXT; // 落到 AddRoute 的 async handler
+            }
+        }
         requestCount_.fetch_add(1, std::memory_order_relaxed);
         Request r;
-        r.method = http_method_str(req->method);
-        r.path = req->path.empty() ? "/" : std::string{req->path};
+        r.method = method;
+        r.path = path;
         // query：FullPath 去掉 path 前缀
         const std::string full = req->FullPath();
         if (full.size() > r.path.size()) {
@@ -266,6 +310,47 @@ std::expected<void, std::string> HttpServer::Start(std::string_view listenAddr, 
         resp->body = out.body;
         return out.status;
     };
+
+    // 注册 stream 路由（async_handler 在 libhv 线程池）
+    for (const auto& sr : impl_->streamRoutes) {
+        StreamHandler sh = sr.streamHandler;
+        const std::string spath = sr.path;
+        const std::string smethod = HttpMethodStr(sr.method);
+        auto makeHvHandler = [sh](const HttpRequestPtr& req, const HttpResponseWriterPtr& writer) {
+            if (!writer) return;
+            Request r;
+            r.method = http_method_str(req->method);
+            r.path = req->path.empty() ? "/" : std::string{req->path};
+            const std::string full = req->FullPath();
+            if (full.size() > r.path.size()) {
+                const auto pos = full.find('?');
+                if (pos != std::string::npos) r.query = full.substr(pos + 1);
+            }
+            r.body = req->body;
+            for (const auto& [k, v] : req->headers) r.headers.emplace(k, v);
+            writer->Begin();
+            writer->WriteStatus(HTTP_STATUS_OK);
+            writer->WriteHeader("Cache-Control", "no-cache");
+            writer->WriteHeader("Connection", "keep-alive");
+            writer->EndHeaders("Content-Type", "text/event-stream; charset=utf-8");
+            auto write = [writer](std::string_view chunk) {
+                if (chunk.empty()) return;
+                writer->write(std::string{chunk});
+            };
+            auto close = [writer]() { writer->End(); };
+            try {
+                sh(r, write, close);
+            } catch (const std::exception& ex) {
+                log::Error("mcp stream handler 异常：{}", ex.what());
+                close();
+            }
+        };
+        impl_->service.AddRoute(
+            spath.c_str(), HTTP_GET, http_async_handler(makeHvHandler));
+        if (smethod == "POST" || sr.method == HttpMethod::Any) {
+            impl_->service.AddRoute(spath.c_str(), HTTP_POST, http_async_handler(makeHvHandler));
+        }
+    }
 
     impl_->server = std::make_unique<hv::HttpServer>(&impl_->service);
     impl_->server->setHost(host.c_str());

@@ -60,6 +60,27 @@ struct AppSettings {
     // protocol: chat_completions | responses | anthropic
     std::string llmProtocol = "chat_completions";
 
+    // —— Garnet / Redis（src/db；客户端已按 Garnet 兼容表选型）——
+    // 默认本机 6379；minConn=0 懒连接：Garnet 未起时 Init 不失败，业务降级 SQLite
+    bool redisEnabled = true;
+    std::string redisHost = "127.0.0.1";
+    int redisPort = 6379;
+    std::string redisPassword; // 空 = 无 AUTH
+    int redisDb = 0;
+    int redisMaxConn = 8;
+    int redisMinConn = 0;
+
+    // —— P9.1：小说出图后端（密钥仅本地/环境变量；日志禁止打印）——
+    // backend: mock | openai_images | comfy
+    std::string imageBackend = "mock";
+    std::string imageBaseUrl; // 空 = 跟随 openaiBaseUrl / comfyBaseUrl
+    std::string imageApiKey;  // 空 = OPENAI_API_KEY 或 openaiApiKey
+    std::string imageModel = "dall-e-3";
+    int imageWidth = 1024;
+    int imageHeight = 1024;
+    int imageSteps = 20; // 扩散/Comfy 用
+    std::string imageOutputRelDir = "visual/gen"; // 相对工程根
+
     bool showDemoWindow = false;
     bool firstRun = true;
 
@@ -67,6 +88,10 @@ struct AppSettings {
     bool mcpEnabled = false;
     std::string mcpListenAddr = "127.0.0.1";
     int mcpPort = 8931;
+    // P10.5：写工具总开关（默认关）；与环境变量 SHINE_MCP_ALLOW_WRITE 任一为真则允许写
+    bool mcpAllowWrite = false;
+    // P10：当前小说工程 novel.db（stdio/HTTP MCP 共用；空 = 不自动打开库）
+    std::string mcpNovelDbPath;
 };
 
 [[nodiscard]] AppSettings& Settings();

@@ -5,6 +5,13 @@
 #include "app/FileDialog.h"    // R-S9：配色导出/导入
 #include "openai/OpenAIClient.h"
 #include "openai/OpenAIProvider.h"
+#include "core/Settings.h"
+#include "db/Db.h"
+#include "db/redis/RedisError.h"
+#include "novel/NovelDb.h"
+#include "novel/NovelImageGen.h"
+#include "novel/NovelMcpTools.h"
+#include "util/Encoding.h"
 #include "core/Async.h"
 #include "mcp/HttpServer.h"
 #include "mcp/MCPServer.h"
@@ -13,6 +20,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <string>
 
 namespace shine::app {
 
@@ -169,10 +177,15 @@ void DrawSettingsWindow() {
         if (ImGui::InputText("默认模型", &State().editOpenaiModelDefault)) {
             Settings().openaiModelDefault = State().editOpenaiModelDefault;
         }
-        int proto = Settings().llmProtocol == "responses" ? 1 : 0;
-        if (ImGui::Combo("协议", &proto, "Chat Completions\0Responses API\0")) {
-            Settings().llmProtocol = proto == 1 ? "responses" : "chat_completions";
+        int proto = Settings().llmProtocol == "responses"   ? 1
+                    : Settings().llmProtocol == "anthropic" ? 2
+                                                            : 0;
+        if (ImGui::Combo("协议", &proto, "Chat Completions\0Responses API\0Anthropic Messages\0")) {
+            Settings().llmProtocol = proto == 1   ? "responses"
+                                     : proto == 2 ? "anthropic"
+                                                  : "chat_completions";
         }
+        ImGui::TextDisabled("Anthropic：MiMo/MiniMax 的 /anthropic 兼容端（x-api-key）");
     }
 
     if (ImGui::Button("保存 LLM 设置")) {
@@ -224,6 +237,137 @@ void DrawSettingsWindow() {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("密钥不进仓库/日志");
+
+    // —— Garnet / Redis（P10.4）——
+    ImGui::SeparatorText("Garnet / Redis");
+    ImGui::Checkbox("启用 Redis 池（Garnet 兼容）", &Settings().redisEnabled);
+    ImGui::SetNextItemWidth(180.f);
+    ImGui::InputText("Redis 主机", &Settings().redisHost);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100.f);
+    ImGui::InputInt("端口", &Settings().redisPort);
+    ImGui::SetNextItemWidth(180.f);
+    if (ImGui::InputText("Redis 密码", &Settings().redisPassword, ImGuiInputTextFlags_Password)) {
+    }
+    ImGui::SetNextItemWidth(80.f);
+    ImGui::InputInt("DB", &Settings().redisDb);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80.f);
+    ImGui::InputInt("最大连接", &Settings().redisMaxConn);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80.f);
+    ImGui::InputInt("最小连接", &Settings().redisMinConn);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("0=懒连接（Garnet 未起也不挡启动）；>0 启动预热");
+    }
+    ImGui::TextDisabled("池状态：ready=%s · max=%zu idle=%zu（挂起时业务走 SQLite）",
+                        db::redisReady() ? "是" : "否", db::redisStats().maxConnections,
+                        db::redisStats().idle);
+    if (ImGui::Button("应用 Redis 设置")) {
+        SaveSettings();
+        db::Shutdown();
+        db::DbConfig cfg;
+        cfg.enableRedis = Settings().redisEnabled;
+        cfg.redis.connect.host =
+            Settings().redisHost.empty() ? "127.0.0.1" : Settings().redisHost;
+        cfg.redis.connect.port = Settings().redisPort > 0 ? Settings().redisPort : 6379;
+        cfg.redis.connect.password = Settings().redisPassword;
+        cfg.redis.connect.db = Settings().redisDb;
+        cfg.redis.maxConnections = Settings().redisMaxConn > 0
+                                       ? static_cast<std::size_t>(Settings().redisMaxConn)
+                                       : 8u;
+        cfg.redis.minConnections = Settings().redisMinConn >= 0
+                                       ? static_cast<std::size_t>(Settings().redisMinConn)
+                                       : 0u;
+        cfg.redis.acquireTimeout = std::chrono::milliseconds{2000};
+        if (auto r = db::Init(cfg); !r) {
+            log::Warn("Redis 重载失败：{}", db::redis::ToChar(r.error().kind));
+        } else {
+            log::Info("Redis 重载 OK ready={}", db::redisReady() ? 1 : 0);
+        }
+    }
+
+    // —— P9.1：小说出图后端 ——
+    ImGui::SeparatorText("出图（小说视觉）");
+    if (State().editImageBaseUrl.empty() && State().editImageModel.empty()) {
+        State().editImageBackend = Settings().imageBackend;
+        State().editImageBaseUrl = Settings().imageBaseUrl;
+        State().editImageApiKey = Settings().imageApiKey;
+        State().editImageModel = Settings().imageModel;
+        State().editImageWidth = Settings().imageWidth;
+        State().editImageHeight = Settings().imageHeight;
+        State().editImageSteps = Settings().imageSteps;
+    }
+    {
+        int backendIdx = 0; // mock
+        if (Settings().imageBackend == "openai_images" || Settings().imageBackend == "openai") {
+            backendIdx = 1;
+        } else if (Settings().imageBackend == "comfy") {
+            backendIdx = 2;
+        }
+        static const char* kImageBackends[] = {"mock（离线占位）", "openai_images（HTTP）", "comfy（P9.2）"};
+        if (ImGui::Combo("出图后端", &backendIdx, kImageBackends, 3)) {
+            switch (backendIdx) {
+            case 1:
+                Settings().imageBackend = "openai_images";
+                break;
+            case 2:
+                Settings().imageBackend = "comfy";
+                break;
+            default:
+                Settings().imageBackend = "mock";
+                break;
+            }
+            State().editImageBackend = Settings().imageBackend;
+            SaveSettings();
+            log::Info("出图后端 -> {}", Settings().imageBackend);
+        }
+    }
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("出图 Base URL", &State().editImageBaseUrl)) {
+        Settings().imageBaseUrl = State().editImageBaseUrl;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("空 = 跟随 OpenAI Base URL；自托管请填到 /v1");
+    }
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("出图 API Key", &State().editImageApiKey, ImGuiInputTextFlags_Password)) {
+        Settings().imageApiKey = State().editImageApiKey;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("空 = OPENAI_API_KEY 或 LLM 的 openaiApiKey；禁止打日志");
+    }
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("出图模型", &State().editImageModel)) {
+        Settings().imageModel = State().editImageModel;
+    }
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputInt("宽", &State().editImageWidth)) {
+        if (State().editImageWidth < 64) State().editImageWidth = 64;
+        Settings().imageWidth = State().editImageWidth;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputInt("高", &State().editImageHeight)) {
+        if (State().editImageHeight < 64) State().editImageHeight = 64;
+        Settings().imageHeight = State().editImageHeight;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::InputInt("步数", &State().editImageSteps)) {
+        if (State().editImageSteps < 1) State().editImageSteps = 1;
+        Settings().imageSteps = State().editImageSteps;
+    }
+    ImGui::TextDisabled("落盘：工程 visual/gen · 生成结果默认 PROPOSED");
+    if (ImGui::Button("保存出图设置")) {
+        SaveSettings();
+        log::Info("出图设置已保存：backend={} model={} {}x{}", Settings().imageBackend,
+                  Settings().imageModel, Settings().imageWidth, Settings().imageHeight);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("出图自检（离线）")) {
+        (void)::shine::novelcore::RunImageGenSelfCheck();
+    }
 
     // —— G-S0 S8：图库设置（本地目录 / ComfyUI output·input / 缩略图档 / 预算）——
     ImGui::SeparatorText("图库");
@@ -374,7 +518,25 @@ void DrawSettingsWindow() {
 
     // —— P7.5：MCP 服务设置（运行时启停 + 端口校验）——
     ImGui::SeparatorText("MCP 服务");
-    ImGui::Checkbox("启用 MCP（仅本机，无鉴权）", &Settings().mcpEnabled);
+    ImGui::Checkbox("启用 MCP HTTP（仅本机，无鉴权）", &Settings().mcpEnabled);
+    ImGui::Checkbox("允许 MCP 写工具（默认关；写仍 PROPOSED）", &Settings().mcpAllowWrite);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("也可用环境变量 SHINE_MCP_ALLOW_WRITE=1\n写路径会记 audit_logs，结果默认 PROPOSED");
+    }
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::InputText("小说库 novel.db（MCP）", &Settings().mcpNovelDbPath)) {
+        // 即时可挂库（若尚未打开）
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("空 = 不自动挂库；stdio/HTTP 调用 novel_* 前需有库\n也可用环境变量 SHINE_NOVEL_DB");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("用当前工程")) {
+        if (::shine::novelcore::NovelDb::Instance().isOpen()) {
+            Settings().mcpNovelDbPath =
+                util::PathToUtf8(::shine::novelcore::NovelDb::Instance().path());
+        }
+    }
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("MCP 监听地址", &Settings().mcpListenAddr);
     ImGui::SetNextItemWidth(160.f);
@@ -391,6 +553,7 @@ void DrawSettingsWindow() {
             log::Warn("MCP 设置拒绝保存：{}", g_mcpPortError);
         } else {
             SaveSettings();
+            ::shine::novelcore::SetMcpAllowWrite(Settings().mcpAllowWrite);
             // 运行时启停：先停旧监听，再按新配置启动
             ::shine::mcp::StopHttpFromSettings();
             if (Settings().mcpEnabled) {
