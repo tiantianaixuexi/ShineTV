@@ -4,7 +4,7 @@
 
 > 一次只做一个 S：做完 configure → build → 运行，逐条对验收，再回 `../PROGRESS.md` 勾选。
 
-## P6.1 — 画布数据模型  ⬜ 0/5
+## P6.1 — 画布数据模型  ✅ 5/5（SHINE_PAINT_CHECK pass=13 fail=0）
 
 
 - **S1 骨架** — 新增 `src/paint/PaintTypes.h`（`Tool` / `MaskMode` / `Settings`）、`PaintCanvas.h/.cpp`（声明全部公开接口，实现先留空）；CMake 登记。判据：编译通过。

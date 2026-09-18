@@ -49,6 +49,7 @@
 #include "app/UiState.h"                        // R-S0：应用级 UI 状态（原 g_* 全局）
 #include "app/shots/ShotTableView.h"            // P5.3：分镜模块 Tick
 #include "video/SceneToImageBuilder.h"          // P5.7：SHINE_SCENE_IMAGE_CHECK
+#include "paint/PaintCanvas.h"                  // P6.1：SHINE_PAINT_CHECK
 
 #include <algorithm>
 #include <chrono>
@@ -271,6 +272,13 @@ bool Init() {
         std::string_view{raw} != "0") {
         const int fail = ::shine::video::RunSceneToImageSelfCheck();
         log::Info("SHINE_SCENE_IMAGE_CHECK：{}", fail == 0 ? "PASS" : "FAIL");
+        g_selfExitRequested = true;
+    }
+    // P6.1 自检：SHINE_PAINT_CHECK=1（无 UI）
+    if (const char* raw = std::getenv("SHINE_PAINT_CHECK"); raw != nullptr && *raw != '\0' &&
+        std::string_view{raw} != "0") {
+        const int fail = ::shine::paint::PaintCanvas::RunSelfCheck();
+        log::Info("SHINE_PAINT_CHECK：{}", fail == 0 ? "PASS" : "FAIL");
         g_selfExitRequested = true;
     }
     // 真实联调：SHINE_LLM_LIVE=1|json|tool（独立开关，需已配置 Key）
