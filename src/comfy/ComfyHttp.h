@@ -8,12 +8,8 @@
 
 namespace shine::comfy {
 
-// 初始化 libhv（**幂等 + 线程安全**）。要求在**任何 libhv 调用之前**、由**主线程**调用一次
-// （目前由 `ComfySession::Init()` 调用）。
-// 原因：libhv 的默认 logger 是惰性初始化且无锁，首次写日志会 `atexit(...)`
-// （`third/libhv/base/hlog.c:534`）；**并发首次使用**会在 msvcrt 的 `_onexit` 上死锁
-// （ComfyUI 连不上时多个 worker 同时报错正是这种情况），进而卡死进程退出。
-// HTTP 侧在 `Send()` 里另有一道 `call_once` 兜底。
+// 初始化 libhv：**转发** `shine::net::EnsureLibhvReady()`（唯一实现，见 net/LibhvReady.h）。
+// 新代码请直接 `#include "net/LibhvReady.h"`；保留本符号以免打断 comfy 调用点。
 void EnsureLibhvReady();
 
 struct HttpResponse {

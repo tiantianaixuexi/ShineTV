@@ -6,6 +6,7 @@
 #include "core/Settings.h"
 #include "mcp/McpBootstrap.h"
 #include "mcp/ToolRegistry.h"
+#include "net/LibhvReady.h"
 #include "util/Encoding.h"
 
 #include <hv/HttpMessage.h>
@@ -419,7 +420,7 @@ bool RunHttpServerSelfCheck() {
 
     // 3) Start port=0 + /health + 端口占用 + 非法端口
     {
-        comfy::EnsureLibhvReady();
+        net::EnsureLibhvReady();
         HttpServer srv;
         srv.SetUiDispatcher([](std::function<void()> fn) { fn(); });
         RegisterHealthRoute(srv);

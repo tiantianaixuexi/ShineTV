@@ -197,6 +197,9 @@ add_executable(ShineTVStudio WIN32
   src/mcp/McpBootstrap.cpp
   # P7.2：libhv HTTP Server（MCP 传输层骨架）
   src/mcp/HttpServer.cpp
+  # net：libhv 就绪 + 出站 HTTP（comfy/openai 共用）
+  src/net/LibhvReady.cpp
+  src/net/HttpClient.cpp
 
   ${IMGUI_DIR}/imgui.cpp
   ${IMGUI_DIR}/imgui_demo.cpp
@@ -252,6 +255,7 @@ target_include_directories(ShineTVStudio PRIVATE
   ${THIRD}/libpng
   ${THIRD}/imageinfo
   ${THIRD}
+  ${THIRD}/function2
   ${THIRD}/mimalloc/include
   ${THIRD}/stdexec/include
   ${THIRD}/libhv

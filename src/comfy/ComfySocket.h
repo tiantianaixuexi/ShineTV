@@ -3,25 +3,27 @@
 
 #include <chrono>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <function2/function2.hpp>
+
 namespace shine::comfy {
 
 // Singleton ComfyUI /ws connection (libhv WebSocketClient + EventLoopThread).
 // All listener callbacks are invoked from the WS thread; Session re-posts to UI.
+// 监听器用 fu2::function（可拷贝、SBO）：WS 事件高频，避免 std::function 额外堆分配/拷贝开销。
 class ComfySocket {
 public:
-    using PromptListener = std::function<void(const PromptEvent&)>;
-    using StatusListener = std::function<void(const StatusEvent&)>;
+    using PromptListener = fu2::function<void(const PromptEvent&)>;
+    using StatusListener = fu2::function<void(const StatusEvent&)>;
     // 回调在 WS 线程同步触发；msg 是视图，需要留存请在回调内自行拷贝
-    using StateListener = std::function<void(ConnectionState, std::string_view)>;
+    using StateListener = fu2::function<void(ConnectionState, std::string_view)>;
     // P4.5：二进制预览帧（帧内数据已是拥有型，可直接搬走）
-    using BinaryListener = std::function<void(const BinaryFrame&)>;
+    using BinaryListener = fu2::function<void(const BinaryFrame&)>;
 
     static ComfySocket& Instance();
 

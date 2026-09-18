@@ -1,7 +1,7 @@
 #include "openai/OpenAIHttp.h"
 
-#include "comfy/ComfyHttp.h" // EnsureLibhvReady
 #include "core/Log.h"
+#include "net/LibhvReady.h"
 #include "util/Encoding.h"
 
 #include <HttpClient.h>
@@ -147,7 +147,7 @@ HttpTransportResult PostJson(std::string_view url, std::string_view bearer, std:
         return FailTransport(parts.error());
     }
 
-    comfy::EnsureLibhvReady();
+    net::EnsureLibhvReady();
 
     HvRequest req;
     req.method = HTTP_POST;
@@ -181,7 +181,7 @@ PostJsonHeaders(std::string_view url, const std::vector<std::pair<std::string, s
     if (const auto parts = ParseUrl(url); !parts) {
         return FailTransport(parts.error());
     }
-    comfy::EnsureLibhvReady();
+    net::EnsureLibhvReady();
     HvRequest req;
     req.method = HTTP_POST;
     req.url = std::string{url};
@@ -222,7 +222,7 @@ HttpTransportResult PostSse(std::string_view url, std::string_view bearer, std::
         return FailTransport(parts.error());
     }
 
-    comfy::EnsureLibhvReady();
+    net::EnsureLibhvReady();
 
     http_client_t* cli = http_client_new(parts->host.c_str(), parts->port, parts->https ? 1 : 0);
     if (!cli) {

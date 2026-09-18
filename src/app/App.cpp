@@ -1,7 +1,7 @@
 #include "app/App.h"
 #include "app/DockLayout.h"
 #include "app/FileDialog.h"
-#include "comfy/ComfyHttp.h" // EnsureLibhvReady()（必须在建线程池前初始化 libhv）
+#include "net/LibhvReady.h" // EnsureLibhvReady()（必须在建线程池前初始化 libhv）
 #include "comfy/ComfySession.h"
 #include "core/Async.h"
 #include "core/Log.h"
@@ -136,7 +136,7 @@ bool Init() {
     // libhv 的默认 logger 惰性初始化且无锁，首次写日志会 `atexit(...)`（`third/libhv/base/hlog.c:534`）；
     // 若第一个碰 libhv 的是 **worker 线程**，而主线程同时也在初始化（或已在 CRT 退出流程里），
     // 就会在 msvcrt 的 `_onexit` 临界区上死锁 → worker 永不返回。详见 `comfy/ComfyHttp.h`。
-    comfy::EnsureLibhvReady();
+    net::EnsureLibhvReady();
     if (const char* raw = std::getenv("SHINE_EXIT_AFTER_SEC"); raw != nullptr && *raw != '\0') {
         g_selfExitAfterSec = std::atof(raw);
         g_selfExitStart = std::chrono::steady_clock::now();

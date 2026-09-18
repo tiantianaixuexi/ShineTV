@@ -43,6 +43,7 @@ main.cpp        入口：mimalloc → 字体 → DX11 → 主循环
 | `src/app/output/` | 底栏输出页（`shine::app::output`） | `OutputView.*` |
 | `src/theme/` | 配色 Token + 预设 | `Theme.h` |
 | `src/core/` | 基础设施 | `Log.*`、`Async.*`、`Settings.*` |
+| `src/net/` | libhv 就绪 + 出站 HTTP（comfy/openai 共用） | `LibhvReady.*`、`HttpClient.*` |
 | `src/comfy/` | ComfyUI 客户端 | skill `shinetv-comfy` |
 | `src/graph/` | VNS 画布 + 节点工厂 + 存盘 | skill `shinetv-graph` |
 | `src/gallery/` | 图库业务（扫描/模型/解码，**无 UI**） | `Gallery.*`、`ImageScanner.*` |
