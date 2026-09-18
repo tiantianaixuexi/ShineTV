@@ -1,0 +1,29 @@
+#ifndef SHINE_TEXTURE_NODE_BREAK_OUT_USH
+#define SHINE_TEXTURE_NODE_BREAK_OUT_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: x=OutputComponentIndex
+
+float4 ShineTexture_EvaluateBreakOut(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV,
+    float4 Param1)
+{
+    float4 Value = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+
+    // When Param1.x is negative, keep the full vector for the Break Out node cache.
+    // Positive component indices are used by AddBreakOutPass to swizzle one channel.
+    if (Param1.x < 0.0)
+    {
+        return Value;
+    }
+
+    int ComponentIndex = clamp((int)round(Param1.x), 0, 3);
+    float Result = ComponentIndex == 1 ? Value.y : (ComponentIndex == 2 ? Value.z : (ComponentIndex == 3 ? Value.w : Value.x));
+    return float4(Result, Result, Result, 1.0);
+}
+
+#endif

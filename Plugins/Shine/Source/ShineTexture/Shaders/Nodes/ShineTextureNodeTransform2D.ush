@@ -1,0 +1,40 @@
+#ifndef SHINE_TEXTURE_NODE_TRANSFORM_2D_USH
+#define SHINE_TEXTURE_NODE_TRANSFORM_2D_USH
+
+// Param packing contract:
+// Param0: x=OffsetX, y=OffsetY, z=RotationDegrees, w=TilingEnabled
+// Param1: x=ScaleX, y=ScaleY, z=unused, w=unused
+
+float4 ShineTexture_EvaluateTransform2D(
+    Texture2D<float4> InInputTexture,
+    SamplerState InInputSampler,
+    bool bValidInput,
+    float2 UV,
+    float4 Param0,
+    float4 Param1)
+{
+    float2 Scale = max(Param1.xy, float2(0.01, 0.01));
+    float2 Offset = Param0.xy;
+    float AngleRadians = radians(Param0.z);
+    float Sine = sin(-AngleRadians);
+    float Cosine = cos(-AngleRadians);
+
+    float2 CenteredUv = UV - 0.5;
+    float2 RotatedUv = float2(
+        CenteredUv.x * Cosine - CenteredUv.y * Sine,
+        CenteredUv.x * Sine + CenteredUv.y * Cosine);
+    float2 SampleUv = RotatedUv / Scale + 0.5 - Offset;
+
+    if (Param0.w > 0.5)
+    {
+        SampleUv = frac(SampleUv);
+    }
+    else if (any(SampleUv < 0.0) || any(SampleUv > 1.0))
+    {
+        return 0.0;
+    }
+
+    return ShineTexture_SampleOrDefault(InInputTexture, InInputSampler, bValidInput, SampleUv, 0.0);
+}
+
+#endif

@@ -1,0 +1,56 @@
+#include "/Engine/Public/Platform.ush"
+
+Texture2D<float4> InputTexture;
+RWTexture2D<float4> OutputTexture;
+uint2 Resolution;
+uint DisplayMode;
+
+// Map negative HDR math results into [0, 1] for preview (0 -> mid-gray). Positive values stay clamped as before.
+float ShineTexture_EncodePreviewChannel(float Channel)
+{
+    return Channel < 0.0 ? saturate(Channel * 0.5 + 0.5) : saturate(Channel);
+}
+
+float3 ShineTexture_EncodePreviewRgb(float3 Rgb)
+{
+    return float3(
+        ShineTexture_EncodePreviewChannel(Rgb.r),
+        ShineTexture_EncodePreviewChannel(Rgb.g),
+        ShineTexture_EncodePreviewChannel(Rgb.b));
+}
+
+float4 ApplyPreviewDisplayMode(float4 Color, uint Mode)
+{
+    switch (Mode)
+    {
+    case 1:
+    {
+        const float Luminance = dot(Color.rgb, float3(0.2126, 0.7152, 0.0722));
+        const float EncodedLuminance = ShineTexture_EncodePreviewChannel(Luminance);
+        return float4(EncodedLuminance, EncodedLuminance, EncodedLuminance, 1.0);
+    }
+    case 2:
+        return float4(ShineTexture_EncodePreviewChannel(Color.r).xxx, 1.0);
+    case 3:
+        return float4(ShineTexture_EncodePreviewChannel(Color.g).xxx, 1.0);
+    case 4:
+        return float4(ShineTexture_EncodePreviewChannel(Color.b).xxx, 1.0);
+    case 5:
+        return float4(ShineTexture_EncodePreviewChannel(Color.a).xxx, 1.0);
+    default:
+        // Inline previews are opaque thumbnails; zero alpha would render as black in Slate.
+        return float4(ShineTexture_EncodePreviewRgb(Color.rgb), 1.0);
+    }
+}
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    if (DispatchThreadId.x >= Resolution.x || DispatchThreadId.y >= Resolution.y)
+    {
+        return;
+    }
+
+    const float4 Color = InputTexture[DispatchThreadId.xy];
+    OutputTexture[DispatchThreadId.xy] = ApplyPreviewDisplayMode(Color, DisplayMode);
+}

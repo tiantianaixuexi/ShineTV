@@ -1,0 +1,21 @@
+#ifndef SHINE_TEXTURE_NODE_BLEND_USH
+#define SHINE_TEXTURE_NODE_BLEND_USH
+
+// Param packing contract:
+// Param0: x=BlendFactor, y=unused, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateBlend(
+    Texture2D<float4> InputTextureA,
+    Texture2D<float4> InputTextureB,
+    SamplerState InputSampler,
+    int2 InputValid,
+    float2 UV,
+    float4 Param0)
+{
+    float4 A = ShineTexture_SampleOrDefault(InputTextureA, InputSampler, InputValid.x != 0, UV, 0.0);
+    float4 B = ShineTexture_SampleOrDefault(InputTextureB, InputSampler, InputValid.y != 0, UV, 0.0);
+    return lerp(A, B, saturate(Param0.x));
+}
+
+#endif

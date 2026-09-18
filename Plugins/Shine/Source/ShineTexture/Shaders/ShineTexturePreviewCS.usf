@@ -1,0 +1,43 @@
+#include "/Engine/Public/Platform.ush"
+
+Texture2D<float4> InputTextureA;
+Texture2D<float4> InputTextureB;
+Texture2D<float4> InputTextureC;
+Texture2D<float4> InputTextureD;
+SamplerState InputSampler;
+RWTexture2D<float4> OutputTexture;
+
+uint NodeType;
+int4 InputValid;
+float4 Param0;
+float4 Param1;
+uint2 Resolution;
+
+#include "ShineTexturePreviewCommon.ush"
+#include "ShineTexturePreviewDispatch.ush"
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    if (DispatchThreadId.x >= Resolution.x || DispatchThreadId.y >= Resolution.y)
+    {
+        return;
+    }
+
+    float2 UV = ShineTexture_GetUV(DispatchThreadId.xy, Resolution);
+    float4 Result = ShineTexture_DispatchNode(
+        NodeType,
+        UV,
+        Resolution,
+        InputTextureA,
+        InputTextureB,
+        InputTextureC,
+        InputTextureD,
+        InputSampler,
+        InputValid,
+        Param0,
+        Param1);
+
+    // Keep intermediate node values in HDR so math such as multiply-by-tiling and frac stay correct.
+    OutputTexture[DispatchThreadId.xy] = Result;
+}

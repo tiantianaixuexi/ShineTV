@@ -1,0 +1,14 @@
+#ifndef SHINE_TEXTURE_NODE_TO_FLOAT_USH
+#define SHINE_TEXTURE_NODE_TO_FLOAT_USH
+
+float4 ShineTexture_EvaluateToFloat(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV)
+{
+    float Value = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0).r;
+    return float4(Value, Value, Value, 1.0);
+}
+
+#endif

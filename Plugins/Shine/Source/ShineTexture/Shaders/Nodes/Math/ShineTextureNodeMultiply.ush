@@ -1,0 +1,20 @@
+#ifndef SHINE_TEXTURE_NODE_MULTIPLY_USH
+#define SHINE_TEXTURE_NODE_MULTIPLY_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateMultiply(
+    Texture2D<float4> InputTextureA,
+    Texture2D<float4> InputTextureB,
+    SamplerState InputSampler,
+    int2 InputValid,
+    float2 UV)
+{
+    float4 A = ShineTexture_SampleOrDefault(InputTextureA, InputSampler, InputValid.x != 0, UV, 1.0);
+    float4 B = ShineTexture_SampleOrDefault(InputTextureB, InputSampler, InputValid.y != 0, UV, 1.0);
+    return ShineTexture_MakeColor(A.rgb * B.rgb);
+}
+
+#endif

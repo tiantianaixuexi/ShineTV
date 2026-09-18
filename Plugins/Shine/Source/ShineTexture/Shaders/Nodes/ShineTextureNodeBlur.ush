@@ -1,0 +1,39 @@
+#ifndef SHINE_TEXTURE_NODE_BLUR_USH
+#define SHINE_TEXTURE_NODE_BLUR_USH
+
+// Param packing contract:
+// Param0: x=Radius, y=unused, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateBlur(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV,
+    float4 Param0,
+    uint2 Resolution)
+{
+    float2 TexelOffset = Param0.x / max(1.0, float2(Resolution));
+    float2 Offsets[9] =
+    {
+        float2(0.0, 0.0),
+        float2(-TexelOffset.x, 0.0),
+        float2(TexelOffset.x, 0.0),
+        float2(0.0, -TexelOffset.y),
+        float2(0.0, TexelOffset.y),
+        float2(-TexelOffset.x, -TexelOffset.y),
+        float2(TexelOffset.x, -TexelOffset.y),
+        float2(-TexelOffset.x, TexelOffset.y),
+        float2(TexelOffset.x, TexelOffset.y)
+    };
+
+    float4 Accumulated = 0.0;
+    for (int SampleIndex = 0; SampleIndex < 9; ++SampleIndex)
+    {
+        Accumulated += ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV + Offsets[SampleIndex], 0.0);
+    }
+
+    return Accumulated / 9.0;
+}
+
+#endif

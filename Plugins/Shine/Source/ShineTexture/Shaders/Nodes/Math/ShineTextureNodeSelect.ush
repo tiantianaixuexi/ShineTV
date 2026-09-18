@@ -1,0 +1,22 @@
+#ifndef SHINE_TEXTURE_NODE_SELECT_USH
+#define SHINE_TEXTURE_NODE_SELECT_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateSelect(
+    Texture2D<float4> InputTextureCondition,
+    Texture2D<float4> InputTextureTrue,
+    Texture2D<float4> InputTextureFalse,
+    SamplerState InputSampler,
+    int3 InputValid,
+    float2 UV)
+{
+    float Condition = ShineTexture_SampleOrDefault(InputTextureCondition, InputSampler, InputValid.x != 0, UV, 0.0).r;
+    float4 TrueValue = ShineTexture_SampleOrDefault(InputTextureTrue, InputSampler, InputValid.y != 0, UV, 0.0);
+    float4 FalseValue = ShineTexture_SampleOrDefault(InputTextureFalse, InputSampler, InputValid.z != 0, UV, 0.0);
+    return Condition > 0.5 ? TrueValue : FalseValue;
+}
+
+#endif

@@ -1,0 +1,23 @@
+#ifndef SHINE_TEXTURE_NODE_NORMAL_BLEND_USH
+#define SHINE_TEXTURE_NODE_NORMAL_BLEND_USH
+
+// Param packing contract:
+// Param0: x=DetailStrength, y=unused, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateNormalBlend(
+    Texture2D<float4> InputTextureA,
+    Texture2D<float4> InputTextureB,
+    SamplerState InputSampler,
+    int2 InputValid,
+    float2 UV,
+    float4 Param0)
+{
+    float3 BaseNormal = ShineTexture_DecodeNormal(ShineTexture_SampleOrDefault(InputTextureA, InputSampler, InputValid.x != 0, UV, float4(0.5, 0.5, 1.0, 1.0)));
+    float3 DetailNormal = ShineTexture_DecodeNormal(ShineTexture_SampleOrDefault(InputTextureB, InputSampler, InputValid.y != 0, UV, float4(0.5, 0.5, 1.0, 1.0)));
+    DetailNormal.xy *= Param0.x;
+    float3 Combined = normalize(float3(BaseNormal.xy + DetailNormal.xy, BaseNormal.z * DetailNormal.z));
+    return ShineTexture_EncodeNormal(Combined);
+}
+
+#endif

@@ -1,0 +1,19 @@
+#ifndef SHINE_TEXTURE_NODE_CLAMP_USH
+#define SHINE_TEXTURE_NODE_CLAMP_USH
+
+// Param packing contract:
+// Param0: x=MinValue, y=MaxValue, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateClamp(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV,
+    float4 Param0)
+{
+    float4 InputValue = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+    return clamp(InputValue, Param0.xxxx, Param0.yyyy);
+}
+
+#endif

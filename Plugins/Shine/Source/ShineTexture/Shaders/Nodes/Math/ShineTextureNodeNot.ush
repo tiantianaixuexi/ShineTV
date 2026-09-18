@@ -1,0 +1,19 @@
+#ifndef SHINE_TEXTURE_NODE_NOT_USH
+#define SHINE_TEXTURE_NODE_NOT_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateNot(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV)
+{
+    float Value = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0).r;
+    float Result = Value > 0.5 ? 0.0 : 1.0;
+    return float4(Result, Result, Result, 1.0);
+}
+
+#endif

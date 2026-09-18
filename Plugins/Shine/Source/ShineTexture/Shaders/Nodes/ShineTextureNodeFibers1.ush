@@ -1,0 +1,93 @@
+#ifndef SHINE_TEXTURE_NODE_FIBERS1_USH
+
+#define SHINE_TEXTURE_NODE_FIBERS1_USH
+
+
+
+// Param packing contract:
+
+// Param0: x=Tiling, y=NonSquareExpansion, z=unused, w=unused
+
+// Param1: unused
+
+//
+
+// SD Fibers 1 (matches Fibers1_MathNodes.json):
+
+//   A = sqrt(sqrt(triangle(frac((X + Y) * tiling))))
+
+//   B = triangle(Y)
+
+//   result = A * B
+
+//   triangle(t) = 1 - 2 * |frac(t) - 0.5|
+
+
+
+float ShineTexture_Fibers1TriangleWave(float Value)
+
+{
+
+    return 1.0 - abs(frac(Value) - 0.5) * 2.0;
+
+}
+
+
+
+float4 ShineTexture_EvaluateFibers1(float2 UV, uint2 InResolution, float4 Param0)
+
+{
+
+    float Tiling = clamp(round(Param0.x), 1.0, 16.0);
+
+    bool bNonSquareExpansion = Param0.y > 0.5;
+
+
+
+    float2 PatternUv = UV;
+
+    if (bNonSquareExpansion && InResolution.x > 0 && InResolution.y > 0)
+
+    {
+
+        float Aspect = (float)InResolution.x / (float)InResolution.y;
+
+        if (Aspect > 1.0)
+
+        {
+
+            PatternUv.x *= Aspect;
+
+        }
+
+        else
+
+        {
+
+            PatternUv.y /= max(Aspect, 0.0001);
+
+        }
+
+    }
+
+
+
+    const float X = PatternUv.x;
+
+    const float Y = PatternUv.y;
+
+    const float BranchA = sqrt(sqrt(saturate(ShineTexture_Fibers1TriangleWave((X + Y) * Tiling))));
+
+    float BranchB = ShineTexture_Fibers1TriangleWave(Y);
+    BranchB = sqrt(BranchB) * BranchB;
+
+    const float Value = BranchA * BranchB;
+
+    return float4(Value, Value, Value, 1.0);
+
+}
+
+
+
+#endif
+

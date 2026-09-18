@@ -1,0 +1,4 @@
+{
+  "displayName": "数据层 src/db 用法",
+  "brief": "ShineTV 数据层：Redis 连接池/编译期命令/反射 Hash + SQLite 封装的正确用法"
+}

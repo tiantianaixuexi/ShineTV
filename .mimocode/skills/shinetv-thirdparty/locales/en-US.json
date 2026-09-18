@@ -1,0 +1,4 @@
+{
+  "displayName": "ShineTV Third-party",
+  "brief": "How mimalloc, spdlog, fmt, stdexec, libhv, and yyjson are wired"
+}

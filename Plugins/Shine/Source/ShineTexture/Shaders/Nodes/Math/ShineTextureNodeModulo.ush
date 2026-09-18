@@ -1,0 +1,21 @@
+#ifndef SHINE_TEXTURE_NODE_MODULO_USH
+#define SHINE_TEXTURE_NODE_MODULO_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateModulo(
+    Texture2D<float4> InputTextureA,
+    Texture2D<float4> InputTextureB,
+    SamplerState InputSampler,
+    int2 InputValid,
+    float2 UV)
+{
+    float4 A = ShineTexture_SampleOrDefault(InputTextureA, InputSampler, InputValid.x != 0, UV, 0.0);
+    float4 B = ShineTexture_SampleOrDefault(InputTextureB, InputSampler, InputValid.y != 0, UV, 1.0);
+    float4 SafeDivisor = max(abs(B), 1e-5);
+    return fmod(A, SafeDivisor);
+}
+
+#endif

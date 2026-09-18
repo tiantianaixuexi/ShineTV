@@ -1,0 +1,84 @@
+#ifndef SHINE_TEXTURE_PREVIEW_COMMON_USH
+#define SHINE_TEXTURE_PREVIEW_COMMON_USH
+
+float2 ShineTexture_GetUV(uint2 PixelIndex, uint2 Resolution)
+{
+    return (float2(PixelIndex) + 0.5f) / float2(Resolution);
+}
+
+float ShineTexture_Frac1(float Value)
+{
+    return Value - floor(Value);
+}
+
+float ShineTexture_Hash12(float2 Position)
+{
+    return ShineTexture_Frac1(sin(dot(Position, float2(127.1, 311.7))) * 43758.5453123);
+}
+
+float ShineTexture_ValueNoise(float2 Position)
+{
+    float2 Cell = floor(Position);
+    float2 Local = frac(Position);
+    float2 Smooth = Local * Local * (3.0 - 2.0 * Local);
+
+    float A = ShineTexture_Hash12(Cell);
+    float B = ShineTexture_Hash12(Cell + float2(1.0, 0.0));
+    float C = ShineTexture_Hash12(Cell + float2(0.0, 1.0));
+    float D = ShineTexture_Hash12(Cell + float2(1.0, 1.0));
+    return lerp(lerp(A, B, Smooth.x), lerp(C, D, Smooth.x), Smooth.y);
+}
+
+float4 ShineTexture_SampleOrDefault(Texture2D<float4> TextureObject, SamplerState InputSampler, bool bValidInput, float2 UV, float4 DefaultValue)
+{
+    if (!bValidInput)
+    {
+        return DefaultValue;
+    }
+
+    // Node graphs evaluate one texel at a time. Use exact loads for the current pixel so
+    // HDR intermediate textures keep values above 1.0 (needed by Multiply, Frac, etc.).
+    const int2 ExactPixel = int2(round(UV * float2(Resolution) - 0.5));
+    const float2 ExpectedUv = (float2(ExactPixel) + 0.5f) / float2(Resolution);
+    if (all(abs(UV - ExpectedUv) <= (0.51f / float2(Resolution))))
+    {
+        const int2 ClampedPixel = clamp(ExactPixel, int2(0, 0), int2(Resolution) - 1);
+        return TextureObject.Load(int4(ClampedPixel.x, ClampedPixel.y, 0, 0));
+    }
+
+    return TextureObject.SampleLevel(InputSampler, saturate(UV), 0);
+}
+
+float3 ShineTexture_DecodeNormal(float4 PackedValue)
+{
+    float3 Normal = PackedValue.xyz * 2.0 - 1.0;
+    float LengthSquared = dot(Normal, Normal);
+    return LengthSquared > 1e-6 ? normalize(Normal) : float3(0.0, 0.0, 1.0);
+}
+
+float4 ShineTexture_EncodeNormal(float3 Normal)
+{
+    Normal = normalize(Normal);
+    return float4(Normal * 0.5 + 0.5, 1.0);
+}
+
+float ShineTexture_EncodePreviewChannel(float Channel)
+{
+    return Channel < 0.0 ? saturate(Channel * 0.5 + 0.5) : saturate(Channel);
+}
+
+// Grayscale/color math nodes write opaque RGB so alpha does not accumulate (SD-style scalar math).
+float4 ShineTexture_MakeColor(float3 Rgb)
+{
+    return float4(Rgb, 1.0);
+}
+
+float3 ShineTexture_PackPreviewColor(float4 Value)
+{
+    return float3(
+        ShineTexture_EncodePreviewChannel(Value.r),
+        ShineTexture_EncodePreviewChannel(Value.g),
+        ShineTexture_EncodePreviewChannel(Value.b));
+}
+
+#endif

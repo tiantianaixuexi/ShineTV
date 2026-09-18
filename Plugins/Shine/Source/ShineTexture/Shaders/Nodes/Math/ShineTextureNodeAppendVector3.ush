@@ -1,0 +1,22 @@
+#ifndef SHINE_TEXTURE_NODE_APPEND_VECTOR3_USH
+#define SHINE_TEXTURE_NODE_APPEND_VECTOR3_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateAppendVector3(
+    Texture2D<float4> InputTextureX,
+    Texture2D<float4> InputTextureY,
+    Texture2D<float4> InputTextureZ,
+    SamplerState InputSampler,
+    int3 InputValid,
+    float2 UV)
+{
+    float ValueX = ShineTexture_SampleOrDefault(InputTextureX, InputSampler, InputValid.x != 0, UV, 0.0).r;
+    float ValueY = ShineTexture_SampleOrDefault(InputTextureY, InputSampler, InputValid.y != 0, UV, 0.0).r;
+    float ValueZ = ShineTexture_SampleOrDefault(InputTextureZ, InputSampler, InputValid.z != 0, UV, 0.0).r;
+    return float4(ValueX, ValueY, ValueZ, 1.0);
+}
+
+#endif

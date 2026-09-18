@@ -1,0 +1,768 @@
+/*
+ * Copyright (c) 2023 Lee Howes
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <catch2/catch_all.hpp>
+
+#define STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY 1
+#include <stdexec/execution.hpp>
+
+#include <exec/async_scope.hpp>
+#include <exec/inline_scheduler.hpp>
+#include <exec/static_thread_pool.hpp>
+#include <exec/variant_sender.hpp>
+#include <test_common/receivers.hpp>
+
+#if STDEXEC_USE_MODULES()
+import std;
+#else
+#  include <atomic>
+#  include <memory>
+#  include <stdexcept>
+#  include <thread>
+#endif
+
+namespace ex  = STDEXEC;
+namespace scr = ex::parallel_scheduler_replacement;
+
+STDEXEC_PRAGMA_IGNORE_GNU("-Wdeprecated-declarations")
+STDEXEC_PRAGMA_IGNORE_MSVC(4996)  // warning C4996: 'function': was declared deprecated
+STDEXEC_PRAGMA_IGNORE_EDG(deprecated_entity)
+STDEXEC_PRAGMA_IGNORE_EDG(deprecated_entity_with_custom_message)
+
+TEST_CASE("get_parallel_scheduler() can return a scheduler", "[scheduler][parallel_scheduler]")
+{
+  auto sched = STDEXEC::get_parallel_scheduler();
+  STATIC_REQUIRE(ex::scheduler<decltype(sched)>);
+}
+
+TEST_CASE("parallel scheduler is not default constructible", "[scheduler][parallel_scheduler]")
+{
+  auto sched    = STDEXEC::get_parallel_scheduler();
+  using sched_t = decltype(sched);
+  STATIC_REQUIRE(!std::is_default_constructible_v<sched_t>);
+  STATIC_REQUIRE(std::is_destructible_v<sched_t>);
+}
+
+TEST_CASE("parallel scheduler is copyable and movable", "[scheduler][parallel_scheduler]")
+{
+  auto sched    = STDEXEC::get_parallel_scheduler();
+  using sched_t = decltype(sched);
+  STATIC_REQUIRE(std::is_copy_constructible_v<sched_t>);
+  STATIC_REQUIRE(std::is_move_constructible_v<sched_t>);
+}
+
+TEST_CASE("a copied parallel scheduler is equal to the original", "[scheduler][parallel_scheduler]")
+{
+  auto sched1 = STDEXEC::get_parallel_scheduler();
+  auto sched2 = sched1;
+  REQUIRE(sched1 == sched2);
+}
+
+TEST_CASE("two parallel schedulers obtained from get_parallel_scheduler() are equal",
+          "[scheduler][parallel_scheduler]")
+{
+  auto sched1 = STDEXEC::get_parallel_scheduler();
+  auto sched2 = STDEXEC::get_parallel_scheduler();
+  REQUIRE(sched1 == sched2);
+}
+
+TEST_CASE("parallel scheduler can produce a sender", "[scheduler][parallel_scheduler]")
+{
+  auto snd       = ex::schedule(STDEXEC::get_parallel_scheduler());
+  using sender_t = decltype(snd);
+
+  STATIC_REQUIRE(ex::sender<sender_t>);
+  STATIC_REQUIRE(ex::sender_of<sender_t, ex::set_value_t()>);
+  STATIC_REQUIRE(ex::sender_of<sender_t, ex::set_stopped_t()>);
+}
+
+TEST_CASE("trivial schedule task on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  ex::sync_wait(ex::schedule(sched));
+}
+
+TEST_CASE("can schedule from parallel scheduler to parallel scheduler",
+          "[scheduler][parallel_scheduler]")
+{
+  auto sched = ex::get_parallel_scheduler();
+  ex::sync_wait(ex::starts_on(sched, ex::starts_on(sched, ex::just())));
+}
+
+TEST_CASE("simple schedule task on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id = std::this_thread::get_id();
+  std::thread::id             pool_id{};
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto snd = ex::then(ex::schedule(sched), [&] { pool_id = std::this_thread::get_id(); });
+
+  ex::sync_wait(std::move(snd));
+
+  REQUIRE(pool_id != std::thread::id{});
+  REQUIRE(this_id != pool_id);
+  (void) snd;
+}
+
+TEST_CASE("simple schedule forward progress guarantee", "[scheduler][parallel_scheduler]")
+{
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+  REQUIRE(ex::get_forward_progress_guarantee(sched) == ex::forward_progress_guarantee::parallel);
+}
+
+TEST_CASE("get_completion_scheduler", "[scheduler][parallel_scheduler]")
+{
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+  REQUIRE(ex::get_completion_scheduler<ex::set_value_t>(ex::get_env(ex::schedule(sched))) == sched);
+}
+
+TEST_CASE("simple chain task on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id = std::this_thread::get_id();
+  std::thread::id             pool_id{};
+  std::thread::id             pool_id2{};
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto snd  = ex::then(ex::schedule(sched), [&] { pool_id = std::this_thread::get_id(); });
+  auto snd2 = ex::then(std::move(snd), [&] { pool_id2 = std::this_thread::get_id(); });
+
+  ex::sync_wait(std::move(snd2));
+
+  REQUIRE(pool_id != std::thread::id{});
+  REQUIRE(this_id != pool_id);
+  REQUIRE(pool_id == pool_id2);
+  (void) snd;
+  (void) snd2;
+}
+
+TEST_CASE("checks stop_token before starting the work", "[scheduler][parallel_scheduler]")
+{
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  exec::async_scope scope;
+  scope.request_stop();
+  REQUIRE(scope.get_stop_source().stop_requested());
+
+  bool called = false;
+  auto snd    = ex::then(ex::schedule(sched), [&called] { called = true; });
+
+  // Start the sender in a stopped scope
+  scope.spawn(std::move(snd));
+
+  // Wait for everything to be completed.
+  ex::sync_wait(scope.on_empty());
+
+  // Assert.
+  REQUIRE_FALSE(called);
+}
+
+TEST_CASE("simple bulk task on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id   = std::this_thread::get_id();
+  constexpr size_t            num_tasks = 16;
+  std::thread::id             pool_ids[num_tasks];
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto bulk_snd = ex::bulk(ex::schedule(sched),
+                           ex::par,
+                           num_tasks,
+                           [&](size_t id) { pool_ids[id] = std::this_thread::get_id(); });
+
+  ex::sync_wait(std::move(bulk_snd));
+
+  for (auto pool_id: pool_ids)
+  {
+    REQUIRE(pool_id != std::thread::id{});
+    REQUIRE(this_id != pool_id);
+  }
+}
+
+TEST_CASE("bulk task on parallel scheduler following a variant sender",
+          "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id   = std::this_thread::get_id();
+  constexpr size_t            num_tasks = 16;
+  std::thread::id             pool_ids[num_tasks];
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+  using sndr1_t                     = decltype(ex::just(42));
+  using sndr2_t                     = decltype(ex::just(42.0));
+  exec::variant_sender<sndr1_t, sndr2_t> var_snd{ex::just(42)};
+
+  auto bulk_snd = std::move(var_snd)       //
+                | ex::continues_on(sched)  //
+                | ex::bulk(ex::par,
+                           num_tasks,
+                           [&](size_t id, auto&) { pool_ids[id] = std::this_thread::get_id(); })
+                | ex::then([](auto data) { return int(data); });
+
+  auto [result] = ex::sync_wait(std::move(bulk_snd)).value();
+  CHECK(result == 42);
+
+  for (auto pool_id: pool_ids)
+  {
+    REQUIRE(pool_id != std::thread::id{});
+    REQUIRE(this_id != pool_id);
+  }
+}
+
+TEST_CASE("simple bulk chaining on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id   = std::this_thread::get_id();
+  constexpr size_t            num_tasks = 16;
+  std::thread::id             pool_id{};
+  std::thread::id             propagated_pool_ids[num_tasks];
+  std::thread::id             pool_ids[num_tasks];
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto snd = ex::then(ex::schedule(sched),
+                      [&]
+                      {
+                        pool_id = std::this_thread::get_id();
+                        return pool_id;
+                      });
+
+  auto bulk_snd = ex::bulk(std::move(snd),
+                           ex::par,
+                           num_tasks,
+                           [&](size_t id, std::thread::id propagated_pool_id)
+                           {
+                             propagated_pool_ids[id] = propagated_pool_id;
+                             pool_ids[id]            = std::this_thread::get_id();
+                           });
+
+  std::optional<std::tuple<std::thread::id>> res = ex::sync_wait(std::move(bulk_snd));
+
+  // Assert: first `schedule` is run on a different thread than the current thread.
+  REQUIRE(pool_id != std::thread::id{});
+  REQUIRE(this_id != pool_id);
+  // Assert: bulk items are run and they propagate the received value.
+  for (size_t i = 0; i < num_tasks; ++i)
+  {
+    REQUIRE(pool_ids[i] != std::thread::id{});
+    REQUIRE(propagated_pool_ids[i] == pool_id);
+    REQUIRE(this_id != pool_ids[i]);
+  }
+  // Assert: the result of the bulk operation is the same as the result of the first `schedule`.
+  CHECK(res.has_value());
+  CHECK(std::get<0>(res.value()) == pool_id);
+}
+
+TEST_CASE("simple bulk_chunked task on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id   = std::this_thread::get_id();
+  constexpr unsigned long     num_tasks = 16;
+  std::thread::id             pool_ids[num_tasks];
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto bulk_snd = ex::bulk_chunked(ex::schedule(sched),
+                                   ex::par,
+                                   num_tasks,
+                                   [&](unsigned long b, unsigned long e)
+                                   {
+                                     for (unsigned long id = b; id < e; ++id)
+                                       pool_ids[id] = std::this_thread::get_id();
+                                   });
+
+  ex::sync_wait(std::move(bulk_snd));
+
+  for (auto pool_id: pool_ids)
+  {
+    REQUIRE(pool_id != std::thread::id{});
+    REQUIRE(this_id != pool_id);
+  }
+}
+
+TEST_CASE("simple bulk_unchunked task on parallel scheduler", "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id   = std::this_thread::get_id();
+  constexpr size_t            num_tasks = 16;
+  std::thread::id             pool_ids[num_tasks];
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto bulk_snd = ex::bulk_unchunked(ex::schedule(sched),
+                                     ex::par,
+                                     num_tasks,
+                                     [&](size_t id) { pool_ids[id] = std::this_thread::get_id(); });
+
+  ex::sync_wait(std::move(bulk_snd));
+
+  for (auto pool_id: pool_ids)
+  {
+    REQUIRE(pool_id != std::thread::id{});
+    REQUIRE(this_id != pool_id);
+  }
+}
+
+TEST_CASE("bulk_unchunked with seq on parallel scheduler will run everything on one thread",
+          "[scheduler][parallel_scheduler]")
+{
+  std::thread::id             this_id   = std::this_thread::get_id();
+  constexpr size_t            num_tasks = 16;
+  std::thread::id             pool_ids[num_tasks];
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto bulk_snd = ex::bulk_unchunked(ex::schedule(sched),
+                                     ex::seq,
+                                     num_tasks,
+                                     [&](size_t id)
+                                     {
+                                       pool_ids[id] = std::this_thread::get_id();
+                                       std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                     });
+
+  ex::sync_wait(std::move(bulk_snd));
+
+  for (auto pool_id: pool_ids)
+  {
+    REQUIRE(pool_id != std::thread::id{});
+    REQUIRE(this_id != pool_id);
+    REQUIRE(pool_id == pool_ids[0]);  // All should be the same
+  }
+}
+
+TEST_CASE("bulk_chunked on parallel_scheduler performs chunking", "[scheduler][parallel_scheduler]")
+{
+  std::atomic<bool> has_chunking = false;
+
+  STDEXEC::parallel_scheduler sched    = STDEXEC::get_parallel_scheduler();
+  auto                        bulk_snd = ex::bulk_chunked(ex::schedule(sched),
+                                   ex::par,
+                                   10'000,
+                                   [&](int b, int e)
+                                   {
+                                     if (e - b > 1)
+                                     {
+                                       has_chunking = true;
+                                     }
+                                   });
+  ex::sync_wait(std::move(bulk_snd));
+
+  REQUIRE(has_chunking.load());
+}
+
+TEST_CASE("bulk_chunked on parallel_scheduler covers the entire range",
+          "[scheduler][parallel_scheduler]")
+{
+  constexpr size_t num_tasks = 200;
+  bool             covered[num_tasks];
+
+  STDEXEC::parallel_scheduler sched    = STDEXEC::get_parallel_scheduler();
+  auto                        bulk_snd = ex::bulk_chunked(ex::schedule(sched),
+                                   ex::par,
+                                   num_tasks,
+                                   [&](size_t b, size_t e)
+                                   {
+                                     for (auto i = b; i < e; ++i)
+                                     {
+                                       covered[i] = true;
+                                     }
+                                   });
+  ex::sync_wait(std::move(bulk_snd));
+
+  for (size_t i = 0; i < num_tasks; ++i)
+  {
+    REQUIRE(covered[i]);
+  }
+}
+
+TEST_CASE("bulk_chunked with seq on parallel_scheduler doesn't do chunking",
+          "[scheduler][parallel_scheduler]")
+{
+  constexpr size_t num_tasks       = 200;
+  std::atomic<int> execution_count = 0;
+
+  STDEXEC::parallel_scheduler sched    = STDEXEC::get_parallel_scheduler();
+  auto                        bulk_snd = ex::bulk_chunked(ex::schedule(sched),
+                                   ex::seq,
+                                   num_tasks,
+                                   [&](size_t b, size_t e)
+                                   {
+                                     REQUIRE(b == 0);
+                                     REQUIRE(e == num_tasks);
+                                     execution_count++;
+                                   });
+  ex::sync_wait(std::move(bulk_snd));
+
+  REQUIRE(execution_count.load() == 1);
+}
+
+struct my_parallel_scheduler_backend_impl
+  : ex::__parallel_scheduler_default_impl::__parallel_scheduler_backend_impl
+{
+  using base_t = ex::__parallel_scheduler_default_impl::__parallel_scheduler_backend_impl;
+
+  my_parallel_scheduler_backend_impl() = default;
+
+  [[nodiscard]]
+  auto num_schedules() const -> int
+  {
+    return count_schedules_;
+  }
+
+  void schedule(scr::receiver_proxy& __r, std::span<std::byte> __s) noexcept override
+  {
+    count_schedules_++;
+    base_t::schedule(__r, __s);
+  }
+
+
+ private:
+  int count_schedules_ = 0;
+};
+
+struct my_inline_scheduler_backend_impl : scr::parallel_scheduler_backend
+{
+  void schedule(scr::receiver_proxy& r, std::span<std::byte>) noexcept override
+  {
+    r.set_value();
+  }
+
+  void schedule_bulk_chunked(size_t                         count,
+                             scr::bulk_item_receiver_proxy& r,
+                             std::span<std::byte>) noexcept override
+  {
+    r.execute(0, count);
+    r.set_value();
+  }
+
+  void schedule_bulk_unchunked(size_t                         count,
+                               scr::bulk_item_receiver_proxy& r,
+                               std::span<std::byte>) noexcept override
+  {
+    for (size_t i = 0; i < count; ++i)
+      r.execute(i, i + 1);
+    r.set_value();
+  }
+};
+
+enum class bulk_completion_kind
+{
+  error,
+  stopped
+};
+
+struct terminal_bulk_scheduler_backend_impl : scr::parallel_scheduler_backend
+{
+  explicit terminal_bulk_scheduler_backend_impl(bulk_completion_kind completion) noexcept
+    : completion_(completion)
+  {}
+
+  void schedule(scr::receiver_proxy& r, std::span<std::byte>) noexcept override
+  {
+    r.set_value();
+  }
+
+  void schedule_bulk_chunked(size_t                         count,
+                             scr::bulk_item_receiver_proxy& r,
+                             std::span<std::byte>) noexcept override
+  {
+    r.execute(0, count);
+    complete(r);
+  }
+
+  void schedule_bulk_unchunked(size_t                         count,
+                               scr::bulk_item_receiver_proxy& r,
+                               std::span<std::byte>) noexcept override
+  {
+    for (size_t i = 0; i < count; ++i)
+      r.execute(i, i + 1);
+    complete(r);
+  }
+
+  void complete(scr::bulk_item_receiver_proxy& r) const noexcept
+  {
+    if (completion_ == bulk_completion_kind::error)
+    {
+      r.set_error(std::make_exception_ptr(std::runtime_error{"bulk"}));
+    }
+    else
+    {
+      r.set_stopped();
+    }
+  }
+
+  bulk_completion_kind completion_;
+};
+
+auto error_bulk_scheduler_backend() -> std::shared_ptr<scr::parallel_scheduler_backend>
+{
+  return std::make_shared<terminal_bulk_scheduler_backend_impl>(bulk_completion_kind::error);
+}
+
+auto stopped_bulk_scheduler_backend() -> std::shared_ptr<scr::parallel_scheduler_backend>
+{
+  return std::make_shared<terminal_bulk_scheduler_backend_impl>(bulk_completion_kind::stopped);
+}
+
+struct backend_factory_guard
+{
+  explicit backend_factory_guard(scr::__parallel_scheduler_backend_factory_t factory)
+    : old_factory_(scr::set_parallel_scheduler_backend(factory))
+  {}
+
+  ~backend_factory_guard()
+  {
+    (void) scr::set_parallel_scheduler_backend(old_factory_);
+  }
+
+  scr::__parallel_scheduler_backend_factory_t old_factory_;
+};
+
+struct destructor_tracked_value
+{
+  explicit destructor_tracked_value(std::shared_ptr<std::atomic<int>> live) noexcept
+    : live_(std::move(live))
+  {
+    live_->fetch_add(1, std::memory_order_relaxed);
+  }
+
+  destructor_tracked_value(destructor_tracked_value const & other) noexcept
+    : live_(other.live_)
+  {
+    live_->fetch_add(1, std::memory_order_relaxed);
+  }
+
+  destructor_tracked_value(destructor_tracked_value&& other) noexcept
+    : live_(other.live_)
+  {
+    live_->fetch_add(1, std::memory_order_relaxed);
+  }
+
+  auto operator=(destructor_tracked_value const &) -> destructor_tracked_value& = delete;
+  auto operator=(destructor_tracked_value&&) -> destructor_tracked_value&       = delete;
+
+  ~destructor_tracked_value()
+  {
+    live_->fetch_sub(1, std::memory_order_relaxed);
+  }
+
+  std::shared_ptr<std::atomic<int>> live_;
+};
+
+struct tracked_value_sender
+{
+  using sender_concept = ex::sender_tag;
+  using completion_signatures =
+    ex::completion_signatures<ex::set_value_t(destructor_tracked_value)>;
+
+  struct env
+  {
+    STDEXEC::parallel_scheduler sched_;
+
+    auto query(ex::get_completion_scheduler_t<ex::set_value_t>, auto const &...) const noexcept
+      -> STDEXEC::parallel_scheduler
+    {
+      return sched_;
+    }
+
+    auto query(ex::get_completion_domain_t<ex::set_value_t>, auto const &...) const noexcept
+    {
+      return ex::get_completion_domain<ex::set_value_t>(sched_);
+    }
+  };
+
+  template <class Receiver>
+  struct operation
+  {
+    using operation_state_concept = ex::operation_state_tag;
+
+    Receiver                 rcvr_;
+    destructor_tracked_value value_;
+
+    void start() & noexcept
+    {
+      ex::set_value(std::move(rcvr_), std::move(value_));
+    }
+  };
+
+  tracked_value_sender(STDEXEC::parallel_scheduler sched, std::shared_ptr<std::atomic<int>> live)
+    : sched_(std::move(sched))
+    , value_(std::move(live))
+  {}
+
+  auto get_env() const noexcept -> env
+  {
+    return {sched_};
+  }
+
+  template <ex::receiver Receiver>
+  auto connect(Receiver rcvr) && noexcept -> operation<Receiver>
+  {
+    return {std::move(rcvr), std::move(value_)};
+  }
+
+  STDEXEC::parallel_scheduler sched_;
+  destructor_tracked_value    value_;
+};
+
+TEST_CASE("can change the implementation of parallel scheduler at runtime",
+          "[scheduler][parallel_scheduler]")
+{
+  static auto my_scheduler_backend = std::make_shared<my_parallel_scheduler_backend_impl>();
+  auto        old_factory          = scr::set_parallel_scheduler_backend(
+    []() -> std::shared_ptr<scr::parallel_scheduler_backend> { return my_scheduler_backend; });
+
+  std::thread::id             this_id = std::this_thread::get_id();
+  std::thread::id             pool_id{};
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto snd = ex::then(ex::schedule(sched), [&] { pool_id = std::this_thread::get_id(); });
+
+  REQUIRE(my_scheduler_backend->num_schedules() == 0);
+  ex::sync_wait(std::move(snd));
+  REQUIRE(my_scheduler_backend->num_schedules() == 1);
+
+  REQUIRE(pool_id != std::thread::id{});
+  REQUIRE(this_id != pool_id);
+
+  (void) scr::set_parallel_scheduler_backend(old_factory);
+}
+
+TEST_CASE("can change the implementation of parallel scheduler at runtime, with an inline "
+          "scheduler",
+          "[scheduler][parallel_scheduler]")
+{
+  auto old_factory = scr::set_parallel_scheduler_backend(
+    []() -> std::shared_ptr<scr::parallel_scheduler_backend>
+    { return std::make_shared<my_inline_scheduler_backend_impl>(); });
+
+  std::thread::id             this_id = std::this_thread::get_id();
+  std::thread::id             pool_id{};
+  STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+
+  auto snd = ex::then(ex::schedule(sched), [&] { pool_id = std::this_thread::get_id(); });
+
+  ex::sync_wait(std::move(snd));
+
+  REQUIRE(this_id == pool_id);
+
+  (void) scr::set_parallel_scheduler_backend(old_factory);
+}
+
+TEST_CASE("bulk on parallel_scheduler destroys stored predecessor values",
+          "[scheduler][parallel_scheduler]")
+{
+  auto live = std::make_shared<std::atomic<int>>(0);
+
+  {
+    auto sched = STDEXEC::get_parallel_scheduler();
+    auto snd   = tracked_value_sender{sched, live}
+             | ex::bulk(ex::par, 16, [](std::size_t, destructor_tracked_value&) noexcept {});
+
+    auto result = ex::sync_wait(std::move(snd));
+    REQUIRE(result.has_value());
+  }
+
+  CHECK(live->load(std::memory_order_relaxed) == 0);
+}
+
+#if !STDEXEC_NO_STDCPP_EXCEPTIONS()
+TEST_CASE("bulk on parallel_scheduler destroys stored predecessor values after error",
+          "[scheduler][parallel_scheduler]")
+{
+  backend_factory_guard guard{error_bulk_scheduler_backend};
+  auto                  live = std::make_shared<std::atomic<int>>(0);
+
+  {
+    STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+    auto                        snd   = tracked_value_sender{sched, live}
+             | ex::bulk(ex::par, 16, [](std::size_t, destructor_tracked_value&) noexcept {});
+
+    CHECK_THROWS_AS(ex::sync_wait(std::move(snd)), std::runtime_error);
+  }
+
+  CHECK(live->load(std::memory_order_relaxed) == 0);
+}
+#endif
+
+TEST_CASE("bulk on parallel_scheduler destroys stored predecessor values after stopped",
+          "[scheduler][parallel_scheduler]")
+{
+  backend_factory_guard guard{stopped_bulk_scheduler_backend};
+  auto                  live = std::make_shared<std::atomic<int>>(0);
+
+  {
+    STDEXEC::parallel_scheduler sched = STDEXEC::get_parallel_scheduler();
+    auto                        snd   = tracked_value_sender{sched, live}
+             | ex::bulk(ex::par, 16, [](std::size_t, destructor_tracked_value&) noexcept {});
+
+    auto result = ex::sync_wait(std::move(snd));
+    CHECK_FALSE(result.has_value());
+  }
+
+  CHECK(live->load(std::memory_order_relaxed) == 0);
+}
+
+TEST_CASE("empty environment always returns nullopt for any query",
+          "[scheduler][parallel_scheduler]")
+{
+  struct my_receiver : scr::receiver_proxy
+  {
+    void __query_env(ex::__type_index, ex::__type_index, void*) const noexcept override {}
+
+    void set_value() noexcept override {}
+
+    void set_error(std::exception_ptr) noexcept override {}
+
+    void set_stopped() noexcept override {}
+  };
+
+  my_receiver rcvr{};
+
+  REQUIRE(rcvr.try_query<ex::inplace_stop_token>(ex::get_stop_token) == std::nullopt);
+  REQUIRE(rcvr.try_query<int>(ex::get_stop_token) == std::nullopt);
+  REQUIRE(rcvr.try_query<std::allocator<int>>(ex::get_allocator) == std::nullopt);
+}
+
+TEST_CASE("environment with a stop token can expose its stop token",
+          "[scheduler][parallel_scheduler]")
+{
+  struct my_receiver : ex::parallel_scheduler_replacement::receiver_proxy
+  {
+    void set_value() noexcept override {}
+
+    void set_error(std::exception_ptr) noexcept override {}
+
+    void set_stopped() noexcept override {}
+
+   protected:
+    void
+    __query_env(ex::__type_index query, ex::__type_index value, void* dest) const noexcept override
+    {
+      if (query == ex::__mtypeid<ex::get_stop_token_t>
+          && value == ex::__mtypeid<ex::inplace_stop_token>)
+      {
+        *static_cast<std::optional<ex::inplace_stop_token>*>(dest) = ss.get_token();
+      }
+    }
+
+   public:
+    ex::inplace_stop_source ss;
+  };
+
+  my_receiver rcvr{};
+
+  auto o1 = rcvr.try_query<ex::inplace_stop_token>(ex::get_stop_token);
+  REQUIRE(o1.has_value());
+  REQUIRE(o1.value().stop_requested() == false);
+  REQUIRE(o1.value() == rcvr.ss.get_token());
+
+  rcvr.ss.request_stop();
+  REQUIRE(o1.value().stop_requested() == true);
+
+  REQUIRE(rcvr.try_query<int>(ex::get_stop_token) == std::nullopt);
+  REQUIRE(rcvr.try_query<std::allocator<int>>(ex::get_allocator) == std::nullopt);
+}

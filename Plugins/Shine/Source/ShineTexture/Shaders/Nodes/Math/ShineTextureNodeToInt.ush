@@ -1,0 +1,15 @@
+#ifndef SHINE_TEXTURE_NODE_TO_INT_USH
+#define SHINE_TEXTURE_NODE_TO_INT_USH
+
+float4 ShineTexture_EvaluateToInt(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV)
+{
+    float Value = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0).r;
+    float IntegerValue = trunc(Value);
+    return float4(IntegerValue, IntegerValue, IntegerValue, 1.0);
+}
+
+#endif

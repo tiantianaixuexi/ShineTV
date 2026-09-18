@@ -1,0 +1,1632 @@
+#include "VisualNodeArea.h"
+#include "../VisualNodeSystem.h"
+using namespace VisNodeSys;
+
+void NodeAreaContextMenuOpenState::Reset()
+{
+	MousePositionRecorded = ImVec2(0, 0);
+	NodeID = "";
+	GroupCommentID = "";
+	SocketID = "";
+}
+
+void NodeAreaContextMenuOpenState::CaptureState(NodeArea* ParentNodeArea)
+{
+	if (ParentNodeArea == nullptr)
+	{
+		Reset();
+		return;
+	}
+
+	NodeAreaID = ParentNodeArea->GetID();
+
+	MousePositionRecorded = ImVec2(ImGui::GetMousePos().x - ImGui::GetWindowPos().x, ImGui::GetMousePos().y - ImGui::GetWindowPos().y) - ParentNodeArea->GetRenderOffset();
+	MousePositionRecorded /= ParentNodeArea->GetZoomFactor();
+
+	if (ParentNodeArea->IsMouseHovered())
+	{
+		if (ParentNodeArea->GetHovered() != nullptr)
+			NodeID = ParentNodeArea->GetHovered()->GetID();
+
+		if (ParentNodeArea->GetHoveredGroupComment() != nullptr)
+			GroupCommentID = ParentNodeArea->GetHoveredGroupComment()->GetID();
+
+		if (ParentNodeArea->GetHoveredSocket() != nullptr)
+		{
+			SocketID = ParentNodeArea->GetHoveredSocket()->GetID();
+			if (NodeID.empty() && ParentNodeArea->GetHoveredSocket()->GetParent() != nullptr)
+				NodeID = ParentNodeArea->GetHoveredSocket()->GetParent()->GetID();
+		}
+	}
+	else
+	{
+		NodeID = "";
+		GroupCommentID = "";
+		SocketID = "";
+	}
+}
+
+std::string NodeAreaContextMenuOpenState::GetNodeID() const
+{
+	return NodeID;
+}
+
+std::string NodeAreaContextMenuOpenState::GetGroupCommentID() const
+{
+	return GroupCommentID;
+}
+
+std::string NodeAreaContextMenuOpenState::GetSocketID() const
+{
+	return SocketID;
+}
+
+Node* NodeAreaContextMenuOpenState::GetNode()
+{
+	if (NodeID.empty())
+		return nullptr;
+
+	NodeArea* ParentNodeArea = NODE_SYSTEM.GetNodeAreaByID(NodeAreaID);
+	if (ParentNodeArea == nullptr)
+		return nullptr;
+
+	return ParentNodeArea->GetNodeByID(NodeID);
+}
+
+GroupComment* NodeAreaContextMenuOpenState::GetGroupComment()
+{
+	if (GroupCommentID.empty())
+		return nullptr;
+
+	NodeArea* ParentNodeArea = NODE_SYSTEM.GetNodeAreaByID(NodeAreaID);
+	if (ParentNodeArea == nullptr)
+		return nullptr;
+
+	return ParentNodeArea->GetGroupCommentByID(GroupCommentID);
+}
+
+NodeSocket* NodeAreaContextMenuOpenState::GetSocket()
+{
+	if (SocketID.empty())
+		return nullptr;
+
+	Node* ParentNode = GetNode();
+	if (ParentNode == nullptr)
+		return nullptr;
+
+	return ParentNode->GetSocketByID(SocketID);
+}
+
+bool NodeArea::IsFocused() const
+{
+	return bFocused;
+}
+
+void NodeArea::SetFocused(bool NewValue)
+{
+	// Although each node area manages its own focus state in update() by checking ImGui child window focus,
+	// it is possible that some node area's update() is not called but we still want to change focus state (e.g., when switching between node areas programmatically).
+	NODE_SYSTEM.OnNodeAreaFocusChanging(this, NewValue);
+	SetFocusedInternal(NewValue);
+}
+
+void NodeArea::SetFocusedInternal(bool NewValue)
+{
+	bFocused = NewValue;
+	if (!bFocused)
+		SocketLookingForConnection = nullptr;
+}
+
+void NodeArea::InputUpdate()
+{
+	MouseInputUpdate();
+	KeyboardInputUpdate();
+}
+
+void NodeArea::MouseInputUpdate()
+{
+	MouseCursorPosition = ImVec2(ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y);
+	
+	bOpenMainContextMenu = false;
+
+	MouseSelectRegionMin = ImVec2(FLT_MAX, FLT_MAX);
+	MouseSelectRegionMax = ImVec2(FLT_MAX, FLT_MAX);
+
+	if (ImGui::GetCurrentContext()->HoveredWindow != NodeAreaWindow)
+	{
+		bMouseHovered = false;
+		return;
+	}
+	bMouseHovered = true;
+
+	if (ImGui::GetIO().MouseClicked[0])
+		MouseDownIn = NodeAreaWindow;
+	
+	if (ImGui::GetIO().MouseReleased[0])
+		MouseDownIn = nullptr;
+
+	bool bLeftMouseClicked = ImGui::GetIO().MouseClicked[0];
+	bool bRightMouseClicked = ImGui::GetIO().MouseClicked[1];
+
+	if (!IsFocused())
+		return;
+
+	MouseInputUpdateNodes();
+	MouseInputUpdateGroupComments();
+
+	if (ImGui::IsMouseDragging(0) && MouseDownIn == NodeAreaWindow && ImGui::GetHoveredID() == 0)
+		MouseDragging();
+
+	if (ImGui::IsMouseDown(0))
+		LeftMouseDown();
+
+	if (ImGui::IsMouseReleased(0))
+		LeftMouseReleased();
+
+	if (bLeftMouseClicked)
+		LeftMouseClick();
+	
+	MouseInputUpdateConnections();
+
+	if (bRightMouseClicked)
+		RightMouseClick();
+
+	// Should we connect two sockets ?
+	if (SocketLookingForConnection != nullptr &&
+		SocketHovered != nullptr &&
+		ImGui::GetIO().MouseReleased[0])
+	{
+		size_t OutSocketIndex = 0;
+		for (size_t i = 0; i < SocketLookingForConnection->GetParent()->Output.size(); i++)
+		{
+			if (SocketLookingForConnection->GetParent()->Output[i] == SocketLookingForConnection)
+			{
+				OutSocketIndex = i;
+				break;
+			}
+		}
+
+		size_t InSocketIndex = 0;
+		for (size_t i = 0; i < SocketHovered->GetParent()->Input.size(); i++)
+		{
+			if (SocketHovered->GetParent()->Input[i] == SocketHovered)
+			{
+				InSocketIndex = i;
+				break;
+			}
+		}
+
+		TryToConnect(SocketLookingForConnection->GetParent(), OutSocketIndex, SocketHovered->GetParent(), InSocketIndex);
+		SocketLookingForConnection = nullptr;
+	}
+	else if (ImGui::GetIO().MouseReleased[0] || SelectedNodes.size() > 1)
+	{
+		SocketLookingForConnection = nullptr;
+	}
+
+	if (ImGui::GetIO().MouseWheel > 0)
+	{
+		ApplyZoom(1.0f);
+	}
+	else if (ImGui::GetIO().MouseWheel < 0)
+	{
+		ApplyZoom(-1.0f);
+	}
+
+	if (!SelectedNodes.empty() || !SelectedRerouteNodes.empty() || !SelectedGroupComments.empty())
+		UnSelectAllConnections();
+}
+
+void NodeArea::LeftMouseDown()
+{
+}
+
+void NodeArea::LeftMouseReleased()
+{
+	LeftMouseReleasedGroupCommentUpdate();
+}
+
+void NodeArea::LeftMouseReleasedGroupCommentUpdate()
+{
+	for (size_t i = 0; i < GroupComments.size(); i++)
+	{
+		GroupComments[i]->bHorizontalResizeActive = false;
+		GroupComments[i]->bVerticalResizeActive = false;
+	}
+}
+
+void NodeArea::MouseInputUpdateNodes()
+{
+	HoveredNodeID.clear();
+	SocketHovered = nullptr;
+
+	for (size_t i = 0; i < Nodes.size(); i++)
+		Nodes[i]->SetIsHovered(false);
+
+	for (size_t i = 0; i < Nodes.size(); i++)
+	{
+		InputUpdateNode(Nodes[i]);
+		if (!HoveredNodeID.empty())
+			break;
+	}
+}
+
+void NodeArea::MouseInputUpdateGroupComments()
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+
+	GroupCommentHovered = nullptr;
+	for (size_t i = 0; i < GroupComments.size(); i++)
+	{
+		GroupComments[i]->bHovered = false;
+		GroupComments[i]->bCaptionHovered = false;
+	}
+
+	if (HoveredNode)
+		return;
+
+	// Going backwards because of the render order.
+	for (int i = static_cast<int>(GroupComments.size()) - 1; i >= 0; i--)
+	{
+		if (IsRectUnderMouse(LocalToScreen(GroupComments[i]->GetPosition()), GroupComments[i]->GetSize() * Zoom))
+		{
+			GroupCommentHovered = GroupComments[i];
+			GroupCommentHovered->bHovered = true;
+
+			if (IsGroupCommentCaptionUnderMouse(GroupComments[i]))
+				GroupCommentHovered->bCaptionHovered = true;
+
+			break;
+		}
+	}
+}
+
+void NodeArea::LeftMouseClick()
+{
+	LeftMouseClickNodesUpdate();
+	LeftMouseClickConnectionsUpdate();
+	LeftMouseClickRerouteUpdate();
+	LeftMouseClickGroupCommentsUpdate();
+}
+
+void NodeArea::LeftMouseClickNodesUpdate()
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+	bool bNothingElseIsSelected = SelectedNodes.size() == 0 && SelectedRerouteNodes.size() == 0 && SelectedGroupComments.size() == 0;
+	bool bCtrlPressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+	bool bHoveredCorrectly = HoveredNode != nullptr;
+
+	if (bNothingElseIsSelected && bHoveredCorrectly)
+	{
+		AddSelected(HoveredNode);
+		return;
+	}
+
+	if (!IsMouseAboveSomethingSelected())
+	{
+		if ((bCtrlPressed && bHoveredCorrectly))
+		{
+			AddSelected(HoveredNode);
+			return;
+		}
+		else if (!bCtrlPressed && bHoveredCorrectly)
+		{
+			UnSelectAll();
+			AddSelected(HoveredNode);
+			return;
+		}
+		else if (!bCtrlPressed)
+		{
+			UnSelectAllNodes();
+			return;
+		}
+	}
+}
+
+void NodeArea::LeftMouseClickConnectionsUpdate()
+{
+	if (HoveredConnection != nullptr)
+	{
+		if (!IsSelected(HoveredConnection) && !ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && !ImGui::IsKeyDown(ImGuiKey_RightCtrl))
+			UnSelectAllConnections();
+
+		// If it is new selection
+		if (!IsSelected(HoveredConnection))
+			UnSelectAllConnections();
+
+		AddSelected(HoveredConnection);
+	}
+	else
+	{
+		UnSelectAllConnections();
+	}
+}
+
+void NodeArea::LeftMouseClickRerouteUpdate()
+{
+	bool bNothingElseIsSelected = SelectedNodes.size() == 0 && SelectedRerouteNodes.size() == 0 && SelectedGroupComments.size() == 0;
+	bool bCtrlPressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+	bool bHoveredCorrectly = RerouteNodeHovered != nullptr;
+
+	if (bNothingElseIsSelected && bHoveredCorrectly)
+	{
+		AddSelected(RerouteNodeHovered);
+		return;
+	}
+
+	if (!IsMouseAboveSomethingSelected())
+	{
+		if (bCtrlPressed && bHoveredCorrectly)
+		{
+			AddSelected(RerouteNodeHovered);
+			return;
+		}
+		else if (!bCtrlPressed && bHoveredCorrectly)
+		{
+			UnSelectAll();
+			AddSelected(RerouteNodeHovered);
+			return;
+		}
+		else if (!bCtrlPressed)
+		{
+			UnSelectAllRerouteNodes();
+			return;
+		}
+	}
+}
+
+void NodeArea::LeftMouseClickGroupCommentsUpdate()
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+	if (HoveredNode == nullptr && RerouteNodeHovered == nullptr)
+	{
+		if (!IsAnyGroupCommentInResizeMode())
+		{
+			for (size_t i = 0; i < GroupComments.size(); i++)
+			{
+				if (IsGroupCommentRightPartUnderMouse(GroupComments[i]))
+					GroupComments[i]->bHorizontalResizeActive = true;
+
+				if (IsGroupCommentBottomPartUnderMouse(GroupComments[i]))
+					GroupComments[i]->bVerticalResizeActive = true;
+
+				if (GroupComments[i]->bHorizontalResizeActive || GroupComments[i]->bVerticalResizeActive)
+					break;
+			}
+		}
+	}
+
+	bool bNothingElseIsSelected = SelectedNodes.size() == 0 && SelectedRerouteNodes.size() == 0 && SelectedGroupComments.size() == 0;
+	bool bCtrlPressed = ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl);
+	bool bHoveredCorrectly = GroupCommentHovered != nullptr && GroupCommentHovered->bCaptionHovered;
+
+	if (bNothingElseIsSelected && bHoveredCorrectly)
+	{
+		AddSelected(GroupCommentHovered);
+		return;
+	}
+
+	if (!IsMouseAboveSomethingSelected())
+	{
+		if (bCtrlPressed && bHoveredCorrectly)
+		{
+			AddSelected(GroupCommentHovered);
+			return;
+		}
+		else if (!bCtrlPressed && bHoveredCorrectly)
+		{
+			UnSelectAll();
+			AddSelected(GroupCommentHovered);
+			return;
+		}
+		else if (!bCtrlPressed)
+		{
+			UnSelectAllGroupComments();
+			return;
+		}
+	}
+}
+
+void NodeArea::RightMouseClick()
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+	if (HoveredNode == nullptr)
+		UnSelectAllNodes();
+
+	if (HoveredNode == nullptr || !GetSelected().empty())
+		bOpenMainContextMenu = true;
+
+	RightMouseClickNodesUpdate();
+	RightMouseClickConnectionsUpdate();
+	RightMouseClickRerouteUpdate();
+
+	ContextMenuOpenState.Reset();
+	ContextMenuOpenState.CaptureState(this);
+}
+
+NodeAreaContextMenuOpenState NodeArea::GetContextMenuOpenState() const
+{
+	return ContextMenuOpenState;
+}
+
+void NodeArea::RightMouseClickNodesUpdate()
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+	if (HoveredNode != nullptr)
+	{
+		if (SelectedNodes.size() <= 1)
+		{
+			if (!HoveredNode->OpenContextMenu())
+			{
+				bOpenMainContextMenu = true;
+			}
+		}
+		else
+		{
+			bOpenMainContextMenu = true;
+		}
+
+		// If hovered node was already selected do nothing
+		if (AddSelected(HoveredNode))
+		{
+			// But if it was not selected before deselect all other nodes.
+			UnSelectAllNodes();
+			AddSelected(HoveredNode);
+		}
+	}
+}
+
+void NodeArea::RightMouseClickConnectionsUpdate()
+{
+
+}
+
+void NodeArea::RightMouseClickRerouteUpdate()
+{
+
+}
+
+bool NodeArea::ShouldDragGrid()
+{
+	for (size_t i = 0; i < GroupComments.size(); i++)
+	{
+		if (GroupComments[i]->bIsRenamingActive)
+			return false;
+
+		if (GroupComments[i]->bHorizontalResizeActive || GroupComments[i]->bVerticalResizeActive)
+			return false;
+	}
+
+	if (IsMouseRegionSelectionActive())
+		return false;
+
+	if (SocketLookingForConnection != nullptr)
+		return false;
+
+	if (!SelectedNodes.empty())
+		return false;
+
+	if (SocketHovered != nullptr)
+		return false;
+
+	if (!SelectedRerouteNodes.empty())
+		return false;
+
+	if (RerouteNodeHovered != nullptr)
+		return false;
+
+	if (!SelectedGroupComments.empty())
+		return false;
+
+	if (GroupCommentHovered != nullptr)
+		return false;
+
+	return true;
+}
+
+void NodeArea::MouseDragging()
+{
+	for (size_t i = 0; i < GroupComments.size(); i++)
+	{
+		if (GroupComments[i]->bIsRenamingActive)
+			return;
+	}
+
+	if (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift))
+	{
+		SocketLookingForConnection = nullptr;
+
+		if (abs(GetMouseDragDelta().x) > 1 || abs(GetMouseDragDelta().y) > 1)
+		{
+			MouseSelectRegionMin = ImGui::GetIO().MouseClickedPos[0];
+			MouseSelectRegionMax = MouseSelectRegionMin + GetMouseDragDelta() / Zoom;
+
+			if (MouseSelectRegionMax.x < MouseSelectRegionMin.x)
+				std::swap(MouseSelectRegionMin.x, MouseSelectRegionMax.x);
+
+			if (MouseSelectRegionMax.y < MouseSelectRegionMin.y)
+				std::swap(MouseSelectRegionMin.y, MouseSelectRegionMax.y);
+		}
+	}
+
+	if (ShouldDragGrid())
+	{
+		RenderOffset.x += GetMouseDelta().x * Zoom;
+		RenderOffset.y += GetMouseDelta().y * Zoom;
+
+		if (RenderOffset.x > Settings.Style.Grid.GRID_SIZE * Zoom)
+			RenderOffset.x = Settings.Style.Grid.GRID_SIZE * Zoom;
+
+		if (RenderOffset.x < -Settings.Style.Grid.GRID_SIZE * Zoom)
+			RenderOffset.x = -Settings.Style.Grid.GRID_SIZE * Zoom;
+
+		if (RenderOffset.y > Settings.Style.Grid.GRID_SIZE * Zoom)
+			RenderOffset.y = Settings.Style.Grid.GRID_SIZE * Zoom;
+
+		if (RenderOffset.y < -Settings.Style.Grid.GRID_SIZE * Zoom)
+			RenderOffset.y = -Settings.Style.Grid.GRID_SIZE * Zoom;
+	}
+
+	if (!IsAnyGroupCommentInResizeMode())
+	{
+		MouseDraggingNodesUpdate();
+		MouseDraggingConnectionsUpdate();
+		MouseDraggingRerouteUpdate();
+	}
+
+	MouseDraggingGroupCommentUpdate();
+}
+
+bool NodeArea::IsRectInMouseSelectionRegion(ImVec2 RectMin, ImVec2 RectSize)
+{
+	// Define the max corner of the rectangle using RectMin and RectSize.
+	ImVec2 RectMax = RectMin + RectSize;
+
+	if (Settings.bRequireFullOverlapToSelect)
+	{
+		// Check if the entire Rect is inside MouseSelectRegion.
+		return IsSecondRectInsideFirstOne(MouseSelectRegionMin, MouseSelectRegionMax - MouseSelectRegionMin, RectMin, RectSize);
+	}
+	else
+	{
+		// Check if a part of the Rect is inside MouseSelectRegion.
+		return IsRectsOverlapping(RectMin, RectSize, MouseSelectRegionMin, MouseSelectRegionMax - MouseSelectRegionMin);
+	}
+
+	return false;
+}
+
+bool NodeArea::IsRectUnderMouse(ImVec2 RectMin, ImVec2 RectSize)
+{
+	static ImVec2 MouseCursorSize = ImVec2(5, 5);
+	return IsRectsOverlapping(RectMin, RectSize, MouseCursorPosition, MouseCursorSize);
+}
+
+void NodeArea::MouseDraggingNodesUpdate()
+{
+	if (IsMouseRegionSelectionActive())
+	{
+		UnSelectAllNodes();
+		const ImVec2 RegionSize = MouseSelectRegionMax - MouseSelectRegionMin;
+
+		for (size_t i = 0; i < Nodes.size(); i++)
+		{
+			if (Nodes[i]->GetStyle() == DEFAULT)
+			{
+				if (IsRectInMouseSelectionRegion(Nodes[i]->LeftTop, Nodes[i]->GetSize() * Zoom))
+					AddSelected(Nodes[i]);
+			}
+			else if (Nodes[i]->GetStyle() == CIRCLE)
+			{
+				if (IsRectInMouseSelectionRegion(Nodes[i]->LeftTop, ImVec2(NODE_DIAMETER, NODE_DIAMETER) * Zoom))
+					AddSelected(Nodes[i]);
+			}
+		}
+	}
+	else
+	{
+		if (SocketLookingForConnection == nullptr && SocketHovered == nullptr)
+		{
+			for (size_t i = 0; i < SelectedNodes.size(); i++)
+			{
+				if (SelectedNodes[i]->CouldBeMoved())
+					SelectedNodes[i]->SetPosition(SelectedNodes[i]->GetPosition() + GetMouseDelta());
+			}
+		}
+	}
+}
+
+void NodeArea::MouseDraggingConnectionsUpdate()
+{
+
+}
+
+void NodeArea::MouseDraggingRerouteUpdate()
+{
+	// Reroute nodes could be selected with nodes
+	if (IsMouseRegionSelectionActive())
+	{
+		UnSelectAllRerouteNodes();
+		for (size_t i = 0; i < Connections.size(); i++)
+		{
+			for (size_t j = 0; j < Connections[i]->RerouteNodes.size(); j++)
+			{
+				const ImVec2 ReroutePosition = LocalToScreen(Connections[i]->RerouteNodes[j]->Position);
+				if (IsRectInMouseSelectionRegion(ReroutePosition, ImVec2(GetRerouteNodeSize(), GetRerouteNodeSize())))
+				{
+					Connections[i]->RerouteNodes[j]->bSelected = true;
+					AddSelected(Connections[i]->RerouteNodes[j]);
+				}
+				else
+				{
+					if (Connections[i]->RerouteNodes[j]->bSelected)
+						UnSelect(Connections[i]->RerouteNodes[j]);
+				}
+			}
+		}
+	}
+	else
+	{
+		if (SocketLookingForConnection == nullptr && SocketHovered == nullptr)
+		{
+			for (size_t i = 0; i < SelectedRerouteNodes.size(); i++)
+			{
+				SelectedRerouteNodes[i]->Position += GetMouseDelta();
+			}
+		}
+	}
+}
+
+void NodeArea::MouseDraggingGroupCommentUpdate()
+{
+	if (IsMouseRegionSelectionActive())
+	{
+		SelectedGroupComments.clear();
+		const ImVec2 RegionSize = MouseSelectRegionMax - MouseSelectRegionMin;
+
+		for (size_t i = 0; i < GroupComments.size(); i++)
+		{
+			// Check if the entire Rect is inside MouseSelectRegion.
+			if (IsSecondRectInsideFirstOne(MouseSelectRegionMin, MouseSelectRegionMax - MouseSelectRegionMin, LocalToScreen(GroupComments[i]->GetPosition()), GroupComments[i]->GetSize() * Zoom))
+				AddSelected(GroupComments[i]);
+		}
+	}
+	else
+	{
+		bool bNothingElseIsSelected = SelectedNodes.size() == 0 && SelectedRerouteNodes.size() == 0 && SelectedGroupComments.size() == 0;
+		int SelectedElementsCount = static_cast<int>(SelectedNodes.size() + SelectedRerouteNodes.size() + SelectedGroupComments.size());
+
+		GroupComment* GroupCommentThatShouldBeResized = nullptr;
+		if (SelectedElementsCount <= 1)
+		{
+			for (size_t i = 0; i < GroupComments.size(); i++)
+			{
+				if (GroupComments[i]->bHorizontalResizeActive || GroupComments[i]->bVerticalResizeActive)
+				{
+					if (bNothingElseIsSelected || GroupComments[i]->bSelected)
+					{
+						GroupCommentThatShouldBeResized = GroupComments[i];
+						break;
+					}
+				}
+			}
+		}
+
+		if (GroupCommentThatShouldBeResized != nullptr)
+		{
+			if (GroupCommentThatShouldBeResized->bHorizontalResizeActive)
+				GroupCommentThatShouldBeResized->SetSize(ImVec2(GroupCommentThatShouldBeResized->GetSize().x + GetMouseDelta().x, GroupCommentThatShouldBeResized->GetSize().y));
+
+			if (GroupCommentThatShouldBeResized->bVerticalResizeActive)
+				GroupCommentThatShouldBeResized->SetSize(ImVec2(GroupCommentThatShouldBeResized->GetSize().x, GroupCommentThatShouldBeResized->GetSize().y + GetMouseDelta().y));
+
+			if (GroupCommentThatShouldBeResized->GetSize().x < 100)
+				GroupCommentThatShouldBeResized->SetSize(ImVec2(100, GroupCommentThatShouldBeResized->GetSize().y));
+
+			if (GroupCommentThatShouldBeResized->GetSize().y < 100)
+				GroupCommentThatShouldBeResized->SetSize(ImVec2(GroupCommentThatShouldBeResized->GetSize().x, 100));
+		}
+		else
+		{
+			// One shared set for the whole selection, so an element attached to several selected comments moves only once.
+			std::unordered_set<std::string> MovedElementIDs;
+			for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+				MovedElementIDs.insert(SelectedGroupComments[i]->GetID());
+
+			for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+				MoveGroupCommentInternal(SelectedGroupComments[i], GetMouseDelta(), MovedElementIDs);
+		}
+	}
+}
+
+void NodeArea::MoveGroupComment(GroupComment* Comment, ImVec2 Delta)
+{
+	if (Comment == nullptr)
+		return;
+
+	std::unordered_set<std::string> MovedElementIDs;
+	MovedElementIDs.insert(Comment->GetID());
+	MoveGroupCommentInternal(Comment, Delta, MovedElementIDs);
+}
+
+void NodeArea::MoveGroupCommentInternal(GroupComment* Comment, ImVec2 Delta, std::unordered_set<std::string>& MovedElementIDs)
+{
+	Comment->Position += Delta;
+
+	if (!Comment->bMoveElementsWithComment)
+		return;
+
+	for (size_t i = 0; i < Comment->AttachedNodeIDs.size(); i++)
+	{
+		Node* AttachedNode = GetNodeByID(Comment->AttachedNodeIDs[i]);
+		// The element was deleted since the snapshot, drop the stale ID.
+		if (AttachedNode == nullptr)
+		{
+			Comment->AttachedNodeIDs.erase(Comment->AttachedNodeIDs.begin() + i);
+			i--;
+			continue;
+		}
+
+		// An element shared between nested comments must be moved only once per pass.
+		if (!IsSelected(AttachedNode) && MovedElementIDs.find(AttachedNode->GetID()) == MovedElementIDs.end())
+		{
+			MovedElementIDs.insert(AttachedNode->GetID());
+			AttachedNode->SetPosition(AttachedNode->GetPosition() + Delta);
+		}
+	}
+
+	for (size_t i = 0; i < Comment->AttachedRerouteNodeIDs.size(); i++)
+	{
+		RerouteNode* AttachedReroute = GetRerouteNodeByID(Comment->AttachedRerouteNodeIDs[i]);
+		if (AttachedReroute == nullptr)
+		{
+			Comment->AttachedRerouteNodeIDs.erase(Comment->AttachedRerouteNodeIDs.begin() + i);
+			i--;
+			continue;
+		}
+
+		if (!IsSelected(AttachedReroute) && MovedElementIDs.find(AttachedReroute->GetID()) == MovedElementIDs.end())
+		{
+			MovedElementIDs.insert(AttachedReroute->GetID());
+			AttachedReroute->Position += Delta;
+		}
+	}
+
+	for (size_t i = 0; i < Comment->AttachedGroupCommentIDs.size(); i++)
+	{
+		GroupComment* AttachedComment = GetGroupCommentByID(Comment->AttachedGroupCommentIDs[i]);
+		if (AttachedComment == nullptr)
+		{
+			Comment->AttachedGroupCommentIDs.erase(Comment->AttachedGroupCommentIDs.begin() + i);
+			i--;
+			continue;
+		}
+
+		if (!IsSelected(AttachedComment) && MovedElementIDs.find(AttachedComment->GetID()) == MovedElementIDs.end())
+		{
+			MovedElementIDs.insert(AttachedComment->GetID());
+			// Move directly instead of going through SetPosition so the set of already moved elements is carried through the whole pass.
+			AttachElementsToGroupComment(AttachedComment);
+			MoveGroupCommentInternal(AttachedComment, Delta, MovedElementIDs);
+		}
+	}
+}
+
+GroupComment* NodeArea::GetHoveredGroupComment() const
+{
+	return GroupCommentHovered;
+}
+
+void NodeArea::KeyboardInputUpdate()
+{
+	if (!IsFocused())
+		return;
+
+	if (ImGui::IsKeyDown(ImGuiKey_Delete) && !ImGui::GetIO().WantTextInput)
+	{
+		for (size_t i = 0; i < SelectedNodes.size(); i++)
+		{
+			if (Delete(SelectedNodes[i]))
+				i--;
+		}
+
+		for (size_t i = 0; i < SelectedConnections.size(); i++)
+		{
+			if (Delete(SelectedConnections[i]))
+				i--;
+		}
+
+		for (size_t i = 0; i < SelectedRerouteNodes.size(); i++)
+		{
+			if (DeleteRerouteNodeByID(SelectedRerouteNodes[i]->GetID()))
+				i--;
+		}
+
+		for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+		{
+			if (Delete(SelectedGroupComments[i]))
+				i--;
+		}
+	}
+
+	static bool bWasCopiedToClipboard = false;
+	if ((ImGui::IsKeyDown(ImGuiKey_LeftCtrl) || ImGui::IsKeyDown(ImGuiKey_RightCtrl)) && !ImGui::GetIO().WantTextInput)
+	{
+		if (ImGui::IsKeyDown(ImGuiKey_C))
+		{
+			if (!SelectedNodes.empty() || !SelectedGroupComments.empty())
+			{
+				std::vector<Node*> NodesToCopy = SelectedNodes;
+				// Check selected nodes for nodes that should not be copyable.
+				for (size_t i = 0; i < NodesToCopy.size(); i++)
+				{
+					if (!NodesToCopy[i]->bCouldBeCopiedByUser)
+					{
+						NodesToCopy.erase(NodesToCopy.begin() + i);
+						i--;
+					}
+				}
+
+				const NodeArea* NewNodeArea = NODE_SYSTEM.CreateNodeArea(NodesToCopy, SelectedGroupComments);
+				NODE_CORE.SetClipboardText(NewNodeArea->ToJson());
+				NODE_SYSTEM.DeleteNodeArea(NewNodeArea);
+			}
+		}
+		else if (ImGui::IsKeyDown(ImGuiKey_X))
+		{
+			if (!SelectedNodes.empty() || !SelectedGroupComments.empty())
+			{
+				std::vector<Node*> NodesToCut = SelectedNodes;
+				// Only nodes that may be copied may also be cut, otherwise the clipboard would not contain what we just removed.
+				for (size_t i = 0; i < NodesToCut.size(); i++)
+				{
+					if (!NodesToCut[i]->bCouldBeCopiedByUser)
+					{
+						NodesToCut.erase(NodesToCut.begin() + i);
+						i--;
+					}
+				}
+
+				const NodeArea* NewNodeArea = NODE_SYSTEM.CreateNodeArea(NodesToCut, SelectedGroupComments);
+				NODE_CORE.SetClipboardText(NewNodeArea->ToJson());
+				NODE_SYSTEM.DeleteNodeArea(NewNodeArea);
+
+				for (size_t i = 0; i < NodesToCut.size(); i++)
+					Delete(NodesToCut[i]);
+
+				for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+				{
+					if (Delete(SelectedGroupComments[i]))
+						i--;
+				}
+			}
+		}
+		else if (ImGui::IsKeyDown(ImGuiKey_V))
+		{
+			if (!bWasCopiedToClipboard)
+			{
+				bWasCopiedToClipboard = true;
+
+				const std::string NodesToImport = NODE_CORE.GetClipboardText();
+				NodeArea* NewNodeArea = new NodeArea();
+				if (!NewNodeArea->LoadFromJson(NodesToImport))
+				{
+					delete NewNodeArea;
+					return;
+				}
+
+				// ***************** Place new nodes in center of a view space *****************
+				const ImVec2 ViewCenter = GetRenderedViewCenter();
+				ImVec2 NodesAABBCenter = NewNodeArea->GetAllElementsAABBCenter();
+				NodesAABBCenter -= NewNodeArea->GetRenderOffset();
+
+				const ImVec2 Shift = ViewCenter - NodesAABBCenter;
+
+				NewNodeArea->RunOnEachNode([Shift](Node* Node) {
+					Node->SetPosition(Node->GetPosition() + Shift);
+				});
+
+				for (size_t i = 0; i < NewNodeArea->Connections.size(); i++)
+				{
+					for (size_t j = 0; j < NewNodeArea->Connections[i]->RerouteNodes.size(); j++)
+						NewNodeArea->Connections[i]->RerouteNodes[j]->Position += Shift;
+				}
+
+				for (size_t i = 0; i < NewNodeArea->GroupComments.size(); i++)
+					NewNodeArea->GroupComments[i]->SetPosition(NewNodeArea->GroupComments[i]->GetPosition() + Shift);
+				// ***************** Place new nodes in center of a view space END *****************
+
+				// Snapshot target sizes before the copy. If not we can get size_t(-1).
+				const size_t NodeCountBefore = Nodes.size();
+				const size_t ConnectionCountBefore = Connections.size();
+				const size_t GroupCommentCountBefore = GroupComments.size();
+
+				NODE_SYSTEM.CopyElementsTo(NewNodeArea, this);
+
+				// Unselect all elements.
+				UnSelectAll();
+
+				// Select all pasted nodes.
+				for (size_t i = NodeCountBefore; i < Nodes.size(); i++)
+					AddSelected(Nodes[i]);
+
+				// Select all pasted reroute nodes.
+				for (size_t i = ConnectionCountBefore; i < Connections.size(); i++)
+				{
+					for (size_t j = 0; j < Connections[i]->RerouteNodes.size(); j++)
+						AddSelected(Connections[i]->RerouteNodes[j]);
+				}
+
+				// Select all pasted group comments.
+				for (size_t i = GroupCommentCountBefore; i < GroupComments.size(); i++)
+					AddSelected(GroupComments[i]);
+
+				delete NewNodeArea;
+			}
+		}
+	}
+
+	if (!ImGui::IsKeyDown(ImGuiKey_V))
+		bWasCopiedToClipboard = false;
+}
+
+Node* NodeArea::GetHovered() const
+{
+	return GetNodeByID(HoveredNodeID);
+}
+
+NodeSocket* NodeArea::GetHoveredSocket() const
+{
+	return SocketHovered;
+}
+
+std::vector<Node*> NodeArea::GetSelected()
+{
+	return SelectedNodes;
+}
+
+bool NodeArea::AddSelected(Node* Node)
+{
+	if (Node == nullptr)
+		return false;
+
+	if (!IsThisAreaResponsibleFor(Node))
+		return false;
+
+	if (IsSelected(Node))
+		return false;
+
+	SelectedNodes.push_back(Node);
+	return true;
+}
+
+bool NodeArea::IsSelected(const Node* Node) const
+{
+	if (Node == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedNodes.size(); i++)
+	{
+		if (SelectedNodes[i] == Node)
+			return true;
+	}
+
+	return false;
+}
+
+bool NodeArea::UnSelect(const Node* Node)
+{
+	if (Node == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedNodes.size(); i++)
+	{
+		if (SelectedNodes[i] == Node)
+		{
+			SelectedNodes.erase(SelectedNodes.begin() + i);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void NodeArea::UnSelectAllNodes()
+{
+	SelectedNodes.clear();
+}
+
+bool NodeArea::AddSelected(Connection* Connection)
+{
+	if (Connection == nullptr)
+		return false;
+
+	// Check if the connection belongs to this node area.
+	if (GetConnection(Connection->Out, Connection->In) != Connection)
+		return false;
+
+	if (IsSelected(Connection))
+		return false;
+
+	Connection->bSelected = true;
+	SelectedConnections.push_back(Connection);
+	return true;
+}
+
+bool NodeArea::IsSelected(const Connection* Connection) const
+{
+	if (Connection == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedConnections.size(); i++)
+	{
+		if (SelectedConnections[i] == Connection)
+			return true;
+	}
+
+	return false;
+}
+
+bool NodeArea::UnSelect(const Connection* Connection)
+{
+	if (Connection == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedConnections.size(); i++)
+	{
+		if (SelectedConnections[i] == Connection)
+		{
+			SelectedConnections[i]->bSelected = false;
+			SelectedConnections.erase(SelectedConnections.begin() + i);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void NodeArea::UnSelectAllConnections()
+{
+	for (size_t i = 0; i < SelectedConnections.size(); i++)
+	{
+		SelectedConnections[i]->bSelected = false;
+	}
+
+	SelectedConnections.clear();
+}
+
+bool NodeArea::AddSelected(GroupComment* GroupComment)
+{
+	if (GroupComment == nullptr)
+		return false;
+
+	if (GroupComment->GetParentArea() != this)
+		return false;
+
+	if (IsSelected(GroupComment))
+		return false;
+
+	GroupComment->bSelected = true;
+	SelectedGroupComments.push_back(GroupComment);
+	AttachElementsToGroupComment(GroupComment);
+
+	return true;
+}
+
+bool NodeArea::IsSelected(const GroupComment* GroupComment) const
+{
+	if (GroupComment == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+	{
+		if (SelectedGroupComments[i] == GroupComment)
+			return true;
+	}
+
+	return false;
+}
+
+bool NodeArea::UnSelect(GroupComment* GroupComment)
+{
+	if (GroupComment == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+	{
+		if (SelectedGroupComments[i] == GroupComment)
+		{
+			SelectedGroupComments[i]->bSelected = false;
+			SelectedGroupComments.erase(SelectedGroupComments.begin() + i);
+
+			GroupComment->AttachedNodeIDs.clear();
+			GroupComment->AttachedRerouteNodeIDs.clear();
+			GroupComment->AttachedGroupCommentIDs.clear();
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void NodeArea::UnSelectAllGroupComments()
+{
+	for (size_t i = 0; i < SelectedGroupComments.size(); i++)
+	{
+		SelectedGroupComments[i]->bSelected = false;
+	}
+
+	SelectedGroupComments.clear();
+}
+
+bool NodeArea::AddSelected(RerouteNode* RerouteNode)
+{
+	if (RerouteNode == nullptr)
+		return false;
+
+	if (RerouteNode->Parent == nullptr)
+		return false;
+
+	// Check if the reroute node belongs to this node area.
+	if (GetConnection(RerouteNode->Parent->Out, RerouteNode->Parent->In) != RerouteNode->Parent)
+		return false;
+
+	if (IsSelected(RerouteNode))
+		return false;
+
+	RerouteNode->bSelected = true;
+	SelectedRerouteNodes.push_back(RerouteNode);
+	return true;
+}
+
+bool NodeArea::IsSelected(const RerouteNode* RerouteNode) const
+{
+	if (RerouteNode == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedRerouteNodes.size(); i++)
+	{
+		if (SelectedRerouteNodes[i] == RerouteNode)
+			return true;
+	}
+
+	return false;
+}
+
+bool NodeArea::UnSelect(const RerouteNode* RerouteNode)
+{
+	if (RerouteNode == nullptr)
+		return false;
+
+	for (size_t i = 0; i < SelectedRerouteNodes.size(); i++)
+	{
+		if (SelectedRerouteNodes[i] == RerouteNode)
+		{
+			SelectedRerouteNodes[i]->bSelected = false;
+			SelectedRerouteNodes.erase(SelectedRerouteNodes.begin() + i);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void NodeArea::UnSelectAllRerouteNodes()
+{
+	for (size_t i = 0; i < SelectedRerouteNodes.size(); i++)
+	{
+		SelectedRerouteNodes[i]->bSelected = false;
+	}
+
+	SelectedRerouteNodes.clear();
+}
+
+void NodeArea::UnSelectAll()
+{
+	UnSelectAllNodes();
+	UnSelectAllConnections();
+	UnSelectAllRerouteNodes();
+	UnSelectAllGroupComments();
+}
+
+void NodeArea::InputUpdateNode(Node* Node)
+{
+	if (Node->GetStyle() == DEFAULT)
+	{
+		if (IsRectUnderMouse(Node->LeftTop, Node->GetSize() * Zoom))
+		{
+			HoveredNodeID = Node->GetID();
+			Node->SetIsHovered(true);
+		}
+	}
+	else if (Node->GetStyle() == CIRCLE)
+	{
+		if (glm::distance(glm::vec2(Node->LeftTop.x + NODE_DIAMETER / 2.0f * Zoom, Node->LeftTop.y + NODE_DIAMETER / 2.0f * Zoom),
+						  glm::vec2(MouseCursorPosition.x, MouseCursorPosition.y)) <= NODE_DIAMETER * Zoom)
+		{
+			HoveredNodeID = Node->GetID();
+			Node->SetIsHovered(true);
+		}
+	}
+
+	if (SocketHovered == nullptr)
+	{
+		for (size_t i = 0; i < Node->Input.size(); i++)
+		{
+			InputUpdateSocket(Node->Input[i]);
+		}
+
+		for (size_t i = 0; i < Node->Output.size(); i++)
+		{
+			InputUpdateSocket(Node->Output[i]);
+		}
+	}
+}
+
+bool NodeArea::IsMouseHovered() const
+{
+	return bMouseHovered;
+}
+
+void NodeArea::InputUpdateSocket(NodeSocket* Socket)
+{
+	const ImVec2 SocketPosition = SocketToPosition(Socket);
+	if (MouseCursorPosition.x >= SocketPosition.x - GetNodeSocketSize() &&
+		MouseCursorPosition.x <= SocketPosition.x + GetNodeSocketSize() &&
+		MouseCursorPosition.y >= SocketPosition.y - GetNodeSocketSize() &&
+		MouseCursorPosition.y <= SocketPosition.y + GetNodeSocketSize())
+	{
+		SocketHovered = Socket;
+	}
+
+	if (SocketHovered == Socket && ImGui::GetIO().MouseClicked[0] && Socket->GetFlowDirection() == NodeSocket::SocketFlow::Output)
+		SocketLookingForConnection = Socket;
+}
+
+void NodeArea::InputUpdateReroute(RerouteNode* Reroute)
+{
+	const ImVec2 ReroutePosition = LocalToScreen(Reroute->Position);
+	if (MouseCursorPosition.x >= ReroutePosition.x - GetRerouteNodeSize() &&
+		MouseCursorPosition.x <= ReroutePosition.x + GetRerouteNodeSize() &&
+		MouseCursorPosition.y >= ReroutePosition.y - GetRerouteNodeSize() &&
+		MouseCursorPosition.y <= ReroutePosition.y + GetRerouteNodeSize())
+	{
+		RerouteNodeHovered = Reroute;
+		Reroute->bHovered = true;
+	}
+}
+
+bool NodeArea::IsMouseOverConnection(Connection* Connection, const int Steps, const float MaxDistance, ImVec2* CollisionPoint)
+{
+	if (Connection->RerouteNodes.empty())
+		return IsMouseOverSegment(SocketToPosition(Connection->Out), SocketToPosition(Connection->In), Settings.Style.GeneralConnection.LineSegments, 10.0f);
+
+	std::vector<ConnectionSegment> Segments = GetConnectionSegments(Connection);
+	for (size_t i = 0; i < Segments.size(); i++)
+	{
+		if (IsMouseOverSegment(Segments[i].Begin, Segments[i].End, Settings.Style.GeneralConnection.LineSegments, 10.0f))
+			return true;
+	}
+
+	return false;
+}
+
+bool NodeArea::IsMouseOverSegment(ImVec2 Begin, ImVec2 End, const int Steps, const float maxDistance, ImVec2* CollisionPoint)
+{
+	std::vector<ImVec2> LineTangents = GetTangentsForLine(Begin, End);
+
+	for (int Step = 0; Step <= Steps; Step++)
+	{
+		ImVec2 SegmentStart = EvaluateHermiteSpline(static_cast<float>(Step) / static_cast<float>(Steps), Begin, End, LineTangents);
+		ImVec2 SegmentEnd = EvaluateHermiteSpline(static_cast<float>(Step + 1) / static_cast<float>(Steps), Begin, End, LineTangents);
+
+		// Compute the shortest distance from mousePos to the line defined by the segment.
+		ImVec2 SegmentDirection = SegmentEnd - SegmentStart;
+		float SegmentLengthSq = ImDot(SegmentDirection, SegmentDirection);
+		ImVec2 ToMousePos = MouseCursorPosition - SegmentStart;
+		float TProj = ImClamp(ImDot(ToMousePos, SegmentDirection) / SegmentLengthSq, 0.0f, 1.0f);
+
+		ImVec2 Projection = SegmentStart + ImVec2(TProj, TProj) * SegmentDirection;
+		float Distance = ImLengthSqr(MouseCursorPosition - Projection);
+
+		// If the distance is less than the threshold, the mouse is over the connection.
+		if (Distance < maxDistance * maxDistance * Zoom)
+		{
+			if(CollisionPoint != nullptr) *CollisionPoint = Projection;
+			//ImGui::GetWindowDrawList()->AddRectFilled(projection, projection + ImVec2(5, 5), IM_COL32(175, 175, 255, 125), 1.0f);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool NodeArea::IsPointInRegion(const ImVec2& Point, const ImVec2& RegionMin, const ImVec2& RegionMax)
+{
+	return (Point.x >= RegionMin.x && Point.x <= RegionMax.x && Point.y >= RegionMin.y && Point.y <= RegionMax.y);
+}
+
+int Orientation(const ImVec2& FirstPoint, const ImVec2& SecondPoint, const ImVec2& ThirdPoint)
+{
+	const float Value = (SecondPoint.y - FirstPoint.y) * (ThirdPoint.x - SecondPoint.x) - (SecondPoint.x - FirstPoint.x) * (ThirdPoint.y - SecondPoint.y);
+
+	// Collinear
+	if (Value == 0)
+		return 0;
+
+	return (Value > 0) ? 1 : 2; // Clockwise or Counterclockwise
+}
+
+bool OnSegment(const ImVec2& SegmentStart, const ImVec2& SegmentEnd, const ImVec2& PointToCheck)
+{
+	if (PointToCheck.x <= std::max(SegmentStart.x, SegmentEnd.x) && PointToCheck.x >= std::min(SegmentStart.x, SegmentEnd.x) &&
+		PointToCheck.y <= std::max(SegmentStart.y, SegmentEnd.y) && PointToCheck.y >= std::min(SegmentStart.y, SegmentEnd.y))
+		return true;
+
+	return false;
+}
+
+bool IsLineSegmentIntersecting(const ImVec2& FirstSegmentStart, const ImVec2& FirstSegmentEnd, const ImVec2& SecondSegmentStart, const ImVec2& SecondSegmentEnd)
+{
+	// Find the four orientations
+	int FirstLineToSecondStart = Orientation(FirstSegmentStart, FirstSegmentEnd, SecondSegmentStart);
+	int FirstLineToSecondEnd = Orientation(FirstSegmentStart, FirstSegmentEnd, SecondSegmentEnd);
+	int SecondLineToFirstStart = Orientation(SecondSegmentStart, SecondSegmentEnd, FirstSegmentStart);
+	int SecondLineToFirstEnd = Orientation(SecondSegmentStart, SecondSegmentEnd, FirstSegmentEnd);
+
+	// General case
+	if (FirstLineToSecondStart != FirstLineToSecondEnd && SecondLineToFirstStart != SecondLineToFirstEnd)
+		return true;
+
+	// Special cases: check if the segments are collinear and overlap
+	if (FirstLineToSecondStart == 0 && OnSegment(FirstSegmentStart, SecondSegmentStart, FirstSegmentEnd)) return true;
+	if (FirstLineToSecondEnd == 0 && OnSegment(FirstSegmentStart, SecondSegmentEnd, FirstSegmentEnd)) return true;
+	if (SecondLineToFirstStart == 0 && OnSegment(SecondSegmentStart, FirstSegmentStart, SecondSegmentEnd)) return true;
+	if (SecondLineToFirstEnd == 0 && OnSegment(SecondSegmentStart, FirstSegmentEnd, SecondSegmentEnd)) return true;
+
+	return false; // If none of the above cases, return false
+}
+
+bool NodeArea::IsConnectionInRegion(Connection* Connection, const int Steps)
+{
+	if (Connection->RerouteNodes.empty())
+		return IsSegmentInRegion(SocketToPosition(Connection->Out), SocketToPosition(Connection->In), Settings.Style.GeneralConnection.LineSegments);
+
+	std::vector<ConnectionSegment> Segments = GetConnectionSegments(Connection);
+	for (size_t i = 0; i < Segments.size(); i++)
+	{
+		if (IsSegmentInRegion(Segments[i].Begin, Segments[i].End, Settings.Style.GeneralConnection.LineSegments))
+			return true;
+	}
+
+	return false;
+}
+
+bool NodeArea::IsSegmentInRegion(ImVec2 Begin, ImVec2 End, const int Steps)
+{
+	const ImVec2 t1 = ImVec2(80.0f, 0.0f);
+	const ImVec2 t2 = ImVec2(80.0f, 0.0f);
+
+	ImVec2 RegionCorners[4] = {
+		MouseSelectRegionMin,
+		ImVec2(MouseSelectRegionMax.x, MouseSelectRegionMin.y),
+		MouseSelectRegionMax,
+		ImVec2(MouseSelectRegionMin.x, MouseSelectRegionMax.y)
+	};
+
+	for (int Step = 0; Step <= Steps; Step++)
+	{
+		ImVec2 SegmentStart = EvaluateHermiteSpline(static_cast<float>(Step) / static_cast<float>(Steps), Begin, End, std::vector<ImVec2>{t1, t2});
+		ImVec2 SegmentEnd = EvaluateHermiteSpline(static_cast<float>(Step + 1) / static_cast<float>(Steps), Begin, End, std::vector<ImVec2>{t1, t2});
+
+		// If either of the segment's points are in the region, the connection is in the region.
+		if (IsPointInRegion(SegmentStart, MouseSelectRegionMin, MouseSelectRegionMax) ||
+			IsPointInRegion(SegmentEnd, MouseSelectRegionMin, MouseSelectRegionMax))
+			return true;
+
+		// Check if the segment intersects with any of the region's edges.
+		for (int i = 0; i < 4; i++)
+		{
+			if (IsLineSegmentIntersecting(RegionCorners[i], RegionCorners[(i + 1) % 4], SegmentStart, SegmentEnd))
+				return true;
+		}
+	}
+
+	return false;
+}
+
+bool NodeArea::IsMouseRegionSelectionActive() const
+{
+	return MouseSelectRegionMin.x != FLT_MAX && MouseSelectRegionMin.y != FLT_MAX && MouseSelectRegionMax.x != FLT_MAX && MouseSelectRegionMax.y != FLT_MAX;
+}
+
+void NodeArea::MouseInputUpdateConnections()
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+
+	for (size_t i = 0; i < Connections.size(); i++)
+		Connections[i]->bHovered = false;
+	HoveredConnection = nullptr;
+
+	RerouteNodeHovered = nullptr;
+	if (HoveredNode == nullptr)
+	{
+		for (size_t i = 0; i < Connections.size(); i++)
+		{
+			for (size_t j = 0; j < Connections[i]->RerouteNodes.size(); j++)
+			{
+				Connections[i]->RerouteNodes[j]->bHovered = false;
+				InputUpdateReroute(Connections[i]->RerouteNodes[j]);
+
+				if (RerouteNodeHovered != nullptr)
+					break;
+			}
+
+			if (RerouteNodeHovered != nullptr)
+				break;
+		}
+	}
+
+	// If any node is hovered, we don't want to check for hovered connections
+	if (HoveredNode == nullptr && RerouteNodeHovered == nullptr)
+	{
+		for (size_t i = 0; i < Connections.size(); i++)
+		{
+			if (HoveredConnection == nullptr && IsMouseOverConnection(Connections[i], Settings.Style.GeneralConnection.LineSegments, 10.0f))
+			{
+				Connections[i]->bHovered = true;
+				HoveredConnection = Connections[i];
+			}
+
+			if (IsMouseRegionSelectionActive() && SelectedNodes.empty())
+			{
+				if (IsConnectionInRegion(Connections[i], Settings.Style.GeneralConnection.LineSegments))
+				{
+					Connections[i]->bSelected = true;
+					AddSelected(Connections[i]);
+				}
+				else
+				{
+					if (Connections[i]->bSelected)
+						UnSelect(Connections[i]);
+				}
+			}
+		}
+	}
+
+	if (!SelectedNodes.empty())
+	{
+		for (size_t i = 0; i < Connections.size(); i++)
+			Connections[i]->bSelected = false;
+
+		SelectedConnections.clear();
+	}
+
+	if (ImGui::IsMouseDoubleClicked(0))
+		DoubleMouseClick();
+}
+
+void NodeArea::DoubleMouseClick()
+{
+	ConnectionsDoubleMouseClick();
+	GroupCommentDoubleMouseClick();
+}
+
+void NodeArea::ConnectionsDoubleMouseClick()
+{
+	if (HoveredConnection != nullptr)
+	{
+		if (HoveredConnection->RerouteNodes.empty())
+		{
+			AddRerouteNode(HoveredConnection, 0, ScreenToLocal(MouseCursorPosition));
+		}
+		else
+		{
+			std::vector<ConnectionSegment> Segments = GetConnectionSegments(HoveredConnection);
+			for (size_t i = 0; i < Segments.size(); i++)
+			{
+				if (IsMouseOverSegment(Segments[i].Begin, Segments[i].End, Settings.Style.GeneralConnection.LineSegments, 10.0f))
+				{
+					AddRerouteNode(HoveredConnection, i, ScreenToLocal(MouseCursorPosition));
+					break;
+				}
+			}
+		}
+	}
+}
+
+bool NodeArea::IsGroupCommentCaptionUnderMouse(GroupComment* GroupComment)
+{
+	ImVec2 LocalPosition = LocalToScreen(GroupComment->GetPosition());
+	ImVec2 CommentSize = GroupComment->GetSize() * Zoom;
+
+	ImVec2 CaptionSize = GroupComment->GetCaptionSize(Zoom);
+	ImVec2 CaptionPosition = LocalPosition + ImVec2(4.0f, 4.0f) * Zoom;
+
+	if (IsRectUnderMouse(CaptionPosition, CaptionSize))
+		return true;
+
+	return false;
+}
+
+bool NodeArea::IsGroupCommentRightPartUnderMouse(GroupComment* GroupComment)
+{
+	if (IsGroupCommentCaptionUnderMouse(GroupComment))
+		return false;
+
+	ImVec2 LocalPosition = LocalToScreen(GroupComment->GetPosition());
+	ImVec2 CommentSize = GroupComment->GetSize() * Zoom;
+
+	ImVec2 CaptionSize = GroupComment->GetCaptionSize(Zoom);
+	ImVec2 CaptionPosition = LocalPosition + ImVec2(4.0f, 4.0f) * Zoom;
+
+	const float LineLength = 7.0f * Zoom;
+	ImVec2 Begining = CaptionPosition + ImVec2(CaptionSize.x - LineLength, CaptionSize.y);
+	
+	if (IsRectUnderMouse(Begining, ImVec2(LineLength, CommentSize.y - CaptionSize.y)))
+		return true;
+
+	return false;
+}
+
+bool NodeArea::IsGroupCommentBottomPartUnderMouse(GroupComment* GroupComment)
+{
+	if (IsGroupCommentCaptionUnderMouse(GroupComment))
+		return false;
+
+	ImVec2 LocalPosition = LocalToScreen(GroupComment->GetPosition());
+	ImVec2 CommentSize = GroupComment->GetSize() * Zoom;
+
+	ImVec2 CaptionSize = GroupComment->GetCaptionSize(Zoom);
+	ImVec2 CaptionPosition = LocalPosition + ImVec2(4.0f, 4.0f) * Zoom;
+
+	const float LineLength = 7.0f * Zoom;
+	ImVec2 Begining = CaptionPosition + ImVec2(0.0f, CommentSize.y - LineLength * 2);
+
+	if (IsRectUnderMouse(Begining, ImVec2(CommentSize.x, LineLength)))
+		return true;
+
+	return false;
+}
+
+void NodeArea::GroupCommentDoubleMouseClick()
+{
+	if (GroupCommentHovered != nullptr)
+	{
+		if (GroupCommentHovered->bHovered)
+		{
+			for (size_t i = 0; i < GroupComments.size(); i++)
+				GroupComments[i]->bIsRenamingActive = false;
+
+			if (GroupCommentHovered->bCaptionHovered)
+				GroupCommentHovered->bIsRenamingActive = true;
+		}
+	}
+}
+
+bool NodeArea::IsMouseAboveSomethingSelected() const
+{
+	Node* HoveredNode = GetNodeByID(HoveredNodeID);
+	if (HoveredNode != nullptr && IsSelected(HoveredNode))
+		return true;
+
+	if (RerouteNodeHovered != nullptr && IsSelected(RerouteNodeHovered))
+		return true;
+
+	if (GroupCommentHovered != nullptr && IsSelected(GroupCommentHovered))
+		return true;
+
+	return false;
+}
+
+bool NodeArea::IsAnyGroupCommentInResizeMode()
+{
+	for (size_t i = 0; i < GroupComments.size(); i++)
+	{
+		if (GroupComments[i]->bHorizontalResizeActive || GroupComments[i]->bVerticalResizeActive)
+			return true;
+	}
+	
+	return false;
+}

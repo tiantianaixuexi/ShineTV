@@ -1,0 +1,21 @@
+#ifndef SHINE_TEXTURE_NODE_SUBTRACT_USH
+#define SHINE_TEXTURE_NODE_SUBTRACT_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateSubtract(
+    Texture2D<float4> InputTextureA,
+    Texture2D<float4> InputTextureB,
+    SamplerState InputSampler,
+    int2 InputValid,
+    float2 UV)
+{
+    float4 A = ShineTexture_SampleOrDefault(InputTextureA, InputSampler, InputValid.x != 0, UV, 0.0);
+    float4 B = ShineTexture_SampleOrDefault(InputTextureB, InputSampler, InputValid.y != 0, UV, 0.0);
+    // Only subtract RGB; keep alpha opaque so inline previews do not vanish (1 - 1 on alpha was showing as black).
+    return float4(A.rgb - B.rgb, 1.0);
+}
+
+#endif

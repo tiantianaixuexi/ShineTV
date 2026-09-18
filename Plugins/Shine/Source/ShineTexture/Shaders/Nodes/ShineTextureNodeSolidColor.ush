@@ -1,0 +1,13 @@
+#ifndef SHINE_TEXTURE_NODE_SOLID_COLOR_USH
+#define SHINE_TEXTURE_NODE_SOLID_COLOR_USH
+
+// Param packing contract:
+// Param0: x=R, y=G, z=B, w=A
+// Param1: unused
+
+float4 ShineTexture_EvaluateSolidColor(float4 Color)
+{
+    return Color;
+}
+
+#endif

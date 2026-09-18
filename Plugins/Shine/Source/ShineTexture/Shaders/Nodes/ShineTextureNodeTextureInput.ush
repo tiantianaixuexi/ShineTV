@@ -1,0 +1,13 @@
+#ifndef SHINE_TEXTURE_NODE_TEXTURE_INPUT_USH
+#define SHINE_TEXTURE_NODE_TEXTURE_INPUT_USH
+
+float4 ShineTexture_EvaluateTextureInput(
+    Texture2D<float4> InTexture,
+    SamplerState InInputSampler,
+    bool bHasTexture,
+    float2 UV)
+{
+    return ShineTexture_SampleOrDefault(InTexture, InInputSampler, bHasTexture, UV, float4(0.0, 0.0, 0.0, 1.0));
+}
+
+#endif

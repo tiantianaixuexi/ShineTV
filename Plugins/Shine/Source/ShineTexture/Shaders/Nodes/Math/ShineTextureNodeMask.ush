@@ -1,0 +1,19 @@
+#ifndef SHINE_TEXTURE_NODE_MASK_USH
+#define SHINE_TEXTURE_NODE_MASK_USH
+
+// Param packing contract:
+// Param0: x=MaskX, y=MaskY, z=MaskZ, w=MaskW
+// Param1: unused
+
+float4 ShineTexture_EvaluateMask(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV,
+    float4 Param0)
+{
+    float4 Value = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+    return Value * Param0;
+}
+
+#endif

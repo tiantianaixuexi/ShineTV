@@ -1,0 +1,1018 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ *
+ * Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <catch2/catch_all.hpp>
+
+#include <stdexec/coroutine.hpp>
+
+#if !STDEXEC_NO_STDCPP_COROUTINES()
+
+#  include <stdexec/execution.hpp>
+
+#  include <exec/just_from.hpp>
+#  include <exec/single_thread_context.hpp>
+#  include <exec/static_thread_pool.hpp>
+
+#  include <test_common/allocators.hpp>
+#  include <test_common/senders.hpp>
+
+#  if STDEXEC_USE_MODULES()
+import std;
+#  else
+#    include <atomic>
+#    include <system_error>
+#    include <tuple>
+#    include <utility>
+#    include <variant>
+#  endif
+
+namespace ex = STDEXEC;
+
+STDEXEC_PRAGMA_IGNORE_GNU("-Wmismatched-new-delete")
+
+namespace
+{
+  constinit std::atomic<int> g_thread_id = 0;
+  thread_local int const     thread_id   = g_thread_id++;
+
+  // This is a work-around for apple clang bugs in Release mode
+  [[maybe_unused]] STDEXEC_PP_WHEN(STDEXEC_APPLE_CLANG(), [[clang::optnone]]) auto get_id() -> int
+  {
+    return thread_id;
+  }
+
+  TEST_CASE("task is a sender", "[types][task]")
+  {
+    STATIC_REQUIRE(ex::sender<ex::task<void>>);
+  }
+
+  auto test_task_void() -> ex::task<void>
+  {
+    CHECK(get_id() == 0);
+    co_await ex::schedule(ex::inline_scheduler{});
+    CHECK(get_id() == 0);
+  }
+
+  TEST_CASE("test task<void>", "[types][task]")
+  {
+    auto t = test_task_void();
+    ex::sync_wait(std::move(t));
+  }
+
+  auto test_task_int() -> ex::task<int>
+  {
+    CHECK(get_id() == 0);
+    co_await ex::schedule(ex::inline_scheduler{});
+    CHECK(get_id() == 0);
+    co_return 42;
+  }
+
+  TEST_CASE("test task<int>", "[types][task]")
+  {
+    auto t   = test_task_int();
+    auto [i] = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 42);
+  }
+
+  auto test_task_int_ref(int &i) -> ex::task<int &>
+  {
+    CHECK(get_id() == 0);
+    co_await ex::schedule(ex::inline_scheduler{});
+    CHECK(get_id() == 0);
+    co_return i;
+  }
+
+  TEST_CASE("test task<int&>", "[types][task]")
+  {
+    int  value = 42;
+    auto t     = test_task_int_ref(value) | ex::then([](int &i) { return std::ref(i); });
+    auto [i]   = ex::sync_wait(std::move(t)).value();
+    STATIC_REQUIRE(std::same_as<decltype(i), std::reference_wrapper<int>>);
+    CHECK(&i.get() == &value);
+  }
+
+  struct test_env : ex::env<>
+  {
+    using allocator_type = test_allocator<std::byte>;
+  };
+
+  template <class Alloc>
+  auto test_task_allocator(std::allocator_arg_t, [[maybe_unused]] Alloc alloc)
+    -> ex::task<void, test_env>
+  {
+    auto alloc2 = co_await ex::read_env(ex::get_allocator);
+    STATIC_REQUIRE(std::same_as<decltype(alloc2), test_allocator<std::byte>>);
+    CHECK(alloc == alloc2);
+    co_return;
+  }
+
+  TEST_CASE("test task with allocator", "[types][task]")
+  {
+    size_t   bytes = 0;
+    ex::prop env{ex::get_allocator, test_allocator<std::byte>{&bytes}};
+    auto     t = test_task_allocator(std::allocator_arg, ex::get_allocator(env));
+    CHECK(bytes > 0);
+    ex::sync_wait(std::move(t) | ex::write_env(env));
+    CHECK(bytes == 0);
+  }
+
+  auto test_task_awaits_just_sender() -> ex::task<int>
+  {
+    co_return co_await ex::just(42);
+  }
+
+  TEST_CASE("test task can await a just sender", "[types][task]")
+  {
+    auto t   = test_task_awaits_just_sender();
+    auto [i] = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 42);
+  }
+
+#  if !STDEXEC_NO_STDCPP_EXCEPTIONS()
+  auto test_task_awaits_just_error_sender() -> ex::task<int>
+  {
+    co_await ex::just_error(std::runtime_error("error"));
+    co_return 42;
+  }
+
+  TEST_CASE("test task can await a just error sender", "[types][task]")
+  {
+    auto t = test_task_awaits_just_error_sender();
+    REQUIRE_THROWS_AS(ex::sync_wait(std::move(t)), std::runtime_error);
+  }
+#  endif
+
+  auto test_task_awaits_just_stopped_sender() -> ex::task<int>
+  {
+    co_await ex::just_stopped();
+    FAIL("Expected co_awaiting just_stopped to stop the task");
+    co_return 42;
+  }
+
+  TEST_CASE("test task can await a just stopped sender", "[types][task]")
+  {
+    auto t   = test_task_awaits_just_stopped_sender();
+    auto res = ex::sync_wait(std::move(t));
+    CHECK(!res.has_value());
+  }
+
+  struct destruction_probe
+  {
+    explicit destruction_probe(bool &destroyed) noexcept
+      : destroyed_(&destroyed)
+    {}
+
+    destruction_probe(destruction_probe &&other) noexcept
+      : destroyed_(std::exchange(other.destroyed_, nullptr))
+    {}
+
+    ~destruction_probe()
+    {
+      if (destroyed_ != nullptr)
+      {
+        *destroyed_ = true;
+      }
+    }
+
+    destruction_probe(destruction_probe const &) = delete;
+
+    bool *destroyed_;
+  };
+
+  auto test_task_destroys_frame_before_propagating_stopped([[maybe_unused]] destruction_probe probe)
+    -> ex::task<int>
+  {
+    co_await ex::just_stopped();
+    FAIL("Expected co_awaiting just_stopped to stop the task");
+    co_return 42;
+  }
+
+  TEST_CASE("task destroys its coroutine frame before propagating stopped", "[types][task]")
+  {
+    bool destroyed = false;
+    auto t = test_task_destroys_frame_before_propagating_stopped(destruction_probe{destroyed})
+           | ex::upon_stopped(
+               [&]() noexcept
+               {
+                 CHECK(destroyed);
+                 return 0;
+               });
+    ex::sync_wait(std::move(t));
+    CHECK(destroyed);
+  }
+
+  auto test_task_yields_stopped([[maybe_unused]] destruction_probe probe) -> ex::task<void>
+  {
+    co_yield ex::with_stopped();
+    FAIL("Expected co_yielding with_stopped to stop the task");
+  }
+
+  TEST_CASE("task can co_yield with_stopped", "[types][task]")
+  {
+    bool destroyed = false;
+    auto t         = test_task_yields_stopped(destruction_probe{destroyed})
+           | ex::upon_stopped([&]() noexcept { CHECK(destroyed); });
+    ex::sync_wait(std::move(t));
+    CHECK(destroyed);
+  }
+
+  auto test_task_returns_stopped([[maybe_unused]] destruction_probe probe) -> ex::task<int>
+  {
+    co_return ex::with_stopped();
+  }
+
+  TEST_CASE("non-void task can co_return with_stopped", "[types][task]")
+  {
+    bool destroyed = false;
+    auto t         = test_task_returns_stopped(destruction_probe{destroyed})
+           | ex::upon_stopped(
+               [&]() noexcept
+               {
+                 CHECK(destroyed);
+                 return 42;
+               });
+    auto [value] = ex::sync_wait(std::move(t)).value();
+    CHECK(value == 42);
+    CHECK(destroyed);
+  }
+
+#  if !STDEXEC_NO_STDCPP_COROUTINE_RETURN_VOID_AND_VALUE()
+  auto test_void_task_returns_stopped([[maybe_unused]] destruction_probe probe) -> ex::task<void>
+  {
+    co_return ex::with_stopped();
+  }
+
+  TEST_CASE("void task can co_return with_stopped", "[types][task]")
+  {
+    bool destroyed = false;
+    auto t         = test_void_task_returns_stopped(destruction_probe{destroyed})
+           | ex::upon_stopped([&]() noexcept { CHECK(destroyed); });
+    ex::sync_wait(std::move(t));
+    CHECK(destroyed);
+  }
+#  endif
+
+  struct stopped_as_value
+  {
+    constexpr stopped_as_value(ex::with_stopped) noexcept {}
+  };
+
+  auto test_task_returns_with_stopped_as_value() -> ex::task<stopped_as_value>
+  {
+    co_return ex::with_stopped();
+  }
+
+  TEST_CASE("task returns with_stopped as a value when it is convertible to the value type",
+            "[types][task]")
+  {
+    auto result = ex::sync_wait(test_task_returns_with_stopped_as_value());
+    CHECK(result.has_value());
+  }
+
+#  if !STDEXEC_NO_STDCPP_EXCEPTIONS()
+  struct long_error_env
+  {
+    using error_types = ex::completion_signatures<ex::set_error_t(long)>;
+  };
+
+  auto test_task_yields_convertible_error() -> ex::task<void, long_error_env>
+  {
+    co_yield ex::with_error{42};
+    FAIL("Expected co_yielding with_error to complete the task with an error");
+  }
+
+  auto test_task_catches_converted_yielded_error() -> ex::task<long>
+  {
+    try
+    {
+      co_await test_task_yields_convertible_error();
+    }
+    catch (long error)
+    {
+      co_return error;
+    }
+    FAIL("Expected co_awaiting the task to throw its declared error type");
+    co_return 0;
+  }
+
+  TEST_CASE("task converts a co_yielded error to its declared error type", "[types][task]")
+  {
+    auto [error] = ex::sync_wait(test_task_catches_converted_yielded_error()).value();
+    CHECK(error == 42);
+  }
+
+  auto test_task_returns_convertible_error() -> ex::task<int, long_error_env>
+  {
+    co_return ex::with_error{42};
+  }
+
+  auto test_task_catches_converted_returned_error() -> ex::task<long>
+  {
+    try
+    {
+      co_await test_task_returns_convertible_error();
+    }
+    catch (long error)
+    {
+      co_return error;
+    }
+    FAIL("Expected co_awaiting the task to throw its declared error type");
+    co_return 0;
+  }
+
+  TEST_CASE("non-void task converts a co_returned error to its declared error type",
+            "[types][task]")
+  {
+    auto [error] = ex::sync_wait(test_task_catches_converted_returned_error()).value();
+    CHECK(error == 42);
+  }
+
+#    if !STDEXEC_NO_STDCPP_COROUTINE_RETURN_VOID_AND_VALUE()
+  auto test_void_task_returns_convertible_error() -> ex::task<void, long_error_env>
+  {
+    co_return ex::with_error{42};
+  }
+
+  auto test_task_catches_void_task_returned_error() -> ex::task<long>
+  {
+    try
+    {
+      co_await test_void_task_returns_convertible_error();
+    }
+    catch (long error)
+    {
+      co_return error;
+    }
+    FAIL("Expected co_awaiting the task to throw its declared error type");
+    co_return 0;
+  }
+
+  TEST_CASE("void task converts a co_returned error to its declared error type", "[types][task]")
+  {
+    auto [error] = ex::sync_wait(test_task_catches_void_task_returned_error()).value();
+    CHECK(error == 42);
+  }
+#    endif
+#  endif
+
+  // Regression test for NVIDIA/stdexec#2222: when a task is given an environment
+  // that declares custom error_types, the task's completion signatures -- and the
+  // errors it delivers when connected to a receiver -- must use those types
+  // rather than always reporting/delivering std::exception_ptr.
+  struct error_code_env
+  {
+    using error_types = ex::completion_signatures<ex::set_error_t(std::error_code)>;
+  };
+
+  auto test_task_yields_error_code() noexcept -> ex::task<int, error_code_env>
+  {
+    co_yield ex::with_error{std::make_error_code(std::errc::invalid_argument)};
+    co_return 1;
+  }
+
+#  if !STDEXEC_NO_STDCPP_EXCEPTIONS()
+  TEST_CASE("task's completion signatures and errors honor custom error_types", "[types][task]")
+  {
+    // This is the repro from issue 2222: it only compiles (and produces the
+    // error_code value at runtime) if the task's error is reported and delivered
+    // as std::error_code, not as std::exception_ptr:
+    auto s = test_task_yields_error_code() | ex::upon_error([](auto err) noexcept { return err; })
+           | ex::into_variant();
+    auto [r] = ex::sync_wait(std::move(s)).value();
+    CHECK(std::holds_alternative<std::tuple<std::error_code>>(r));
+    CHECK(std::get<std::tuple<std::error_code>>(r)
+          == std::make_tuple(std::make_error_code(std::errc::invalid_argument)));
+  }
+#  endif
+
+  // A receiver that can be connected to a task whose environment declares
+  // set_error_t(std::error_code):
+  struct task_connect_env
+  {
+    ex::run_loop *__loop_;
+
+    template <
+      ex::__one_of<ex::get_scheduler_t, ex::get_start_scheduler_t, ex::get_delegation_scheduler_t>
+        _Query>
+    [[nodiscard]]
+    constexpr auto query(_Query) const noexcept -> ex::run_loop::scheduler
+    {
+      return __loop_->get_scheduler();
+    }
+  };
+
+  struct error_code_task_receiver
+  {
+    using receiver_concept = ex::receiver_t;
+
+    struct completion
+    {
+      enum class kind
+      {
+        none,
+        value,
+        error_code,
+        exception_ptr,
+        stopped
+      };
+
+      kind            __kind_  = kind::none;
+      int             __value_ = 0;
+      std::error_code __error_ = {};
+    };
+
+    void set_value(int __value) noexcept
+    {
+      __completion_->__kind_  = completion::kind::value;
+      __completion_->__value_ = __value;
+    }
+
+    void set_error(std::error_code __error) noexcept
+    {
+      __completion_->__kind_  = completion::kind::error_code;
+      __completion_->__error_ = __error;
+    }
+
+    void set_error(std::exception_ptr) noexcept
+    {
+      __completion_->__kind_ = completion::kind::exception_ptr;
+    }
+
+    void set_stopped() noexcept
+    {
+      __completion_->__kind_ = completion::kind::stopped;
+    }
+
+    [[nodiscard]]
+    constexpr auto get_env() const noexcept -> task_connect_env
+    {
+      return {__loop_};
+    }
+
+    completion   *__completion_;
+    ex::run_loop *__loop_;
+  };
+
+  auto test_task_connect_value() noexcept -> ex::task<int, error_code_env>
+  {
+    co_return 42;
+  }
+
+  auto test_task_connect_stopped() noexcept -> ex::task<int, error_code_env>
+  {
+    co_yield ex::with_stopped();
+    co_return 1;
+  }
+
+  TEST_CASE("connecting a task delivers its declared error types to the receiver", "[types][task]")
+  {
+    ex::run_loop loop;
+
+    {
+      error_code_task_receiver::completion completion;
+      auto                                 op = ex::connect(test_task_connect_value(),
+                            error_code_task_receiver{&completion, &loop});
+      ex::start(op);
+      CHECK(completion.__kind_ == error_code_task_receiver::completion::kind::value);
+      CHECK(completion.__value_ == 42);
+    }
+    {
+      // The error must be delivered as std::error_code, not std::exception_ptr:
+      error_code_task_receiver::completion completion;
+      auto                                 op = ex::connect(test_task_yields_error_code(),
+                            error_code_task_receiver{&completion, &loop});
+      ex::start(op);
+      CHECK(completion.__kind_ == error_code_task_receiver::completion::kind::error_code);
+      CHECK(completion.__error_ == std::make_error_code(std::errc::invalid_argument));
+    }
+    {
+      error_code_task_receiver::completion completion;
+      auto                                 op = ex::connect(test_task_connect_stopped(),
+                            error_code_task_receiver{&completion, &loop});
+      ex::start(op);
+      CHECK(completion.__kind_ == error_code_task_receiver::completion::kind::stopped);
+    }
+  }
+
+  struct error_as_value
+  {
+    constexpr error_as_value(ex::with_error<int> error) noexcept
+      : value_(error.error)
+    {}
+
+    int value_;
+  };
+
+  auto test_task_returns_with_error_as_value() -> ex::task<error_as_value>
+  {
+    co_return ex::with_error{42};
+  }
+
+  TEST_CASE("task returns with_error as a value when it is convertible to the value type",
+            "[types][task]")
+  {
+    auto [value] = ex::sync_wait(test_task_returns_with_error_as_value()).value();
+    CHECK(value.value_ == 42);
+  }
+
+  // A sender type that does not claim to complete inline:
+  struct just_int : ex::__result_of<ex::just, int>
+  {
+    explicit just_int(int i)
+      : ex::__result_of<ex::just, int>(ex::just(i))
+    {}
+
+    [[nodiscard]]
+    auto get_env() const noexcept
+    {
+      return ex::env{};
+    }
+  };
+
+  template <ex::scheduler Worker>
+  auto test_task_awaits_task_scheduler(Worker worker) -> ex::task<int>
+  {
+    CHECK(get_id() == 0);
+    int i = co_await ex::starts_on(worker,
+                                   just_int(42)
+                                     | ex::then(
+                                       [](int i)
+                                       {
+                                         CHECK(get_id() != 0);
+                                         return i;
+                                       }));
+    CHECK(get_id() == 0);
+    co_return i;
+  }
+
+  TEST_CASE("test task can await a just_int sender with affinity to task_scheduler",
+            "[types][task]")
+  {
+    exec::single_thread_context ctx;
+    auto                        t = test_task_awaits_task_scheduler(ctx.get_scheduler());
+    auto [i]                      = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 42);
+  }
+
+  auto noop_task() -> ex::task<>
+  {
+    co_return;
+  }
+
+  auto test_task_awaits_starts_on_task() -> ex::task<>
+  {
+    auto sched = co_await ex::read_env(ex::get_start_scheduler);
+    co_await ex::starts_on(sched, noop_task());
+  }
+
+  TEST_CASE("test starts_on(task_scheduler, task) advertises task_scheduler_domain and can be "
+            "sync_wait'ed",
+            "[types][task]")
+  {
+    exec::single_thread_context ctx;
+    ex::task_scheduler          sched{ctx.get_scheduler()};
+    auto                        snd = ex::starts_on(sched, test_task_awaits_starts_on_task());
+    using attrs_t                   = ex::env_of_t<decltype(snd)>;
+    using domain_t =
+      ex::__call_result_t<ex::get_completion_domain_t<ex::set_value_t>, attrs_t, ex::env<>>;
+    STATIC_REQUIRE(std::same_as<domain_t, ex::task_scheduler_domain>);
+    CHECK(ex::sync_wait(std::move(snd)).has_value());
+  }
+
+  // Test affinity with a run_loop scheduler, which is infallible but not inline:
+  struct test_env2
+  {
+    using scheduler_type = ex::run_loop::scheduler;
+    struct environment_type
+    {};
+
+    template <ex::__not_same_as<environment_type> _Env>
+      requires ex::__callable<ex::get_scheduler_t, _Env const &>
+    explicit test_env2(_Env const &other) noexcept
+      : sch(ex::get_scheduler(other))
+    {}
+
+    [[nodiscard]]
+    auto query(ex::get_scheduler_t) const noexcept
+    {
+      return sch;
+    }
+
+    ex::run_loop::scheduler sch;
+  };
+
+  template <ex::scheduler Worker>
+  auto test_task_awaits_run_loop_scheduler(Worker worker) -> ex::task<int, test_env2>
+  {
+    CHECK(get_id() == 0);
+    int i = co_await ex::starts_on(worker,
+                                   just_int(42)
+                                     | ex::then(
+                                       [](int i)
+                                       {
+                                         CHECK(get_id() != 0);
+                                         return i;
+                                       }));
+    CHECK(get_id() == 0);
+    co_return i;
+  }
+
+  TEST_CASE("test task can await a just_int sender with affinity to run_loop", "[types][task]")
+  {
+    exec::single_thread_context ctx;
+    auto                        t = test_task_awaits_run_loop_scheduler(ctx.get_scheduler());
+    auto [i]                      = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 42);
+  }
+
+  // In debug GCC builds, this test can cause a stack overflow due to
+  // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=94794, results in a symmetric
+  // transfer failing to be a tail call. Likewise, when
+  // STDEXEC_MSVC_CORO_DESTROY_BUG_WORKAROUND is defined (MSVC prior to 14.50),
+  // task's final suspend resumes its continuation directly instead of performing
+  // a symmetric transfer, which grows the stack with each nested task completion.
+#  if !STDEXEC_GCC()                                                                               \
+    || (defined(__OPTIMIZE__) && !defined(__SANITIZE_ADDRESS__) && !defined(__SANITIZE_THREAD__))
+#    if !defined(STDEXEC_MSVC_CORO_DESTROY_BUG_WORKAROUND)
+  auto sync() -> ex::task<int>
+  {
+    co_return 42;
+  }
+
+  auto nested() -> ex::task<int>
+  {
+    auto sched = co_await ex::read_env(ex::get_scheduler);
+    static_assert(std::same_as<decltype(sched), ex::task_scheduler>);
+    co_await ex::schedule(sched);
+    co_return 42;
+  }
+
+  auto test_task_awaits_inline_sndr_without_stack_overflow() -> ex::task<int>
+  {
+    int result = co_await nested();
+    for (int i = 0; i < 1'000'000; ++i)
+    {
+      result += co_await sync();
+    }
+    for (int i = 0; i < 1'000'000; ++i)
+    {
+      result += co_await ex::just(42);
+    }
+    co_return result;
+  }
+
+  TEST_CASE("test task can await a just_int sender without stack overflow", "[types][task]")
+  {
+    auto t   = test_task_awaits_inline_sndr_without_stack_overflow();
+    auto [i] = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 84'000'042);
+  }
+#    endif  // !defined(STDEXEC_MSVC_CORO_DESTROY_BUG_WORKAROUND)
+#  endif
+
+  struct my_env
+  {
+    template <class>
+    using env_type = my_env;
+
+    template <class Env>
+      requires std::invocable<ex::get_delegation_scheduler_t, Env const &>
+            && std::same_as<std::invoke_result_t<ex::get_delegation_scheduler_t, Env const &>,
+                            ex::run_loop::scheduler>
+    explicit my_env(Env const &env) noexcept
+      : delegation_scheduler_(ex::get_delegation_scheduler(env))
+    {}
+
+    [[nodiscard]]
+    auto query(ex::get_delegation_scheduler_t) const noexcept
+    {
+      return delegation_scheduler_;
+    }
+
+    ex::run_loop::scheduler delegation_scheduler_;
+  };
+
+  auto
+  test_task_provides_additional_queries_with_a_custom_env(ex::run_loop::scheduler sync_wt_dlgtn_sch)
+    -> ex::task<int, my_env>
+  {
+    // Fetch sync_wait's run_loop scheduler from the environment.
+    ex::run_loop::scheduler tsk_dlgtn_sch = co_await ex::read_env(ex::get_delegation_scheduler);
+    CHECK(tsk_dlgtn_sch == sync_wt_dlgtn_sch);
+    co_return 13;
+  }
+
+  TEST_CASE("task can provide additional queries through a custom environment", "[types][task]")
+  {
+    ex::sync_wait(ex::let_value(ex::read_env(ex::get_delegation_scheduler),
+                                [](ex::run_loop::scheduler sync_wt_dlgtn_sch)
+                                {
+                                  return test_task_provides_additional_queries_with_a_custom_env(
+                                    sync_wt_dlgtn_sch);
+                                }));
+  }
+
+  // Regression test for https://github.com/NVIDIA/stdexec/issues/2239: a task
+  // whose custom env type is built from the enclosing environment must observe
+  // queries written by write_env, even when a let_value sits between
+  // starts_on and the task.
+  struct query_2239_t
+  {
+    static constexpr bool query(ex::forwarding_query_t) noexcept
+    {
+      return true;
+    }
+
+    template <class Env>
+    auto operator()(Env const &env) const noexcept -> decltype(env.query(*this))
+    {
+      return env.query(*this);
+    }
+  };
+
+  inline constexpr query_2239_t query_2239{};
+
+  struct own_env_2239
+  {
+    template <class ParentEnv>
+      requires std::invocable<query_2239_t, ParentEnv const &>
+    explicit own_env_2239(ParentEnv const &parent)
+      : value(query_2239(parent))
+    {}
+
+    int value = -1;
+  };
+
+  struct task_env_2239
+  {
+    template <class ParentEnv>
+    using env_type = own_env_2239;
+
+    explicit task_env_2239(own_env_2239 const &own) noexcept
+      : value(own.value)
+    {}
+
+    [[nodiscard]]
+    auto query(query_2239_t) const noexcept -> int
+    {
+      return value;
+    }
+
+    int value;
+  };
+
+  auto task_with_env_2239() -> ex::task<void, task_env_2239>
+  {
+    int value = co_await ex::read_env(query_2239);
+    CHECK(value == 7);
+    co_return;
+  }
+
+  TEST_CASE("task env built from the enclosing environment observes write_env across let_value",
+            "[types][task]")
+  {
+    exec::single_thread_context ctx;
+    auto                        q = ex::prop{query_2239, 7};
+    // The arrangement from issue #2239: write_env outside starts_on, with a
+    // let_value between starts_on and the task.
+    ex::sync_wait(ex::starts_on(ctx.get_scheduler(), ex::just() | ex::let_value(task_with_env_2239))
+                  | ex::write_env(q));
+  }
+
+  TEST_CASE("task env built from the enclosing environment observes write_env on a direct child",
+            "[types][task]")
+  {
+    exec::single_thread_context ctx;
+    auto                        q = ex::prop{query_2239, 7};
+    ex::sync_wait(ex::starts_on(ctx.get_scheduler(), task_with_env_2239()) | ex::write_env(q));
+  }
+
+  constinit int global_int = 0;
+
+  constexpr auto wrap_ref = ex::then([](auto &i) noexcept { return std::ref(i); });
+
+  auto test_task_of_reference_type() -> ex::task<int &>
+  {
+    int &i = co_await []() -> ex::task<int &>
+    {
+      co_return global_int;
+    }();
+    CHECK(&i == &global_int);
+    co_return i;
+  }
+
+  TEST_CASE("task supports reference types", "[types][task]")
+  {
+    global_int = 42;
+    auto t     = test_task_of_reference_type();
+    auto [i]   = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 42);
+  }
+
+  TEST_CASE("task can co_await a sender of reference type", "[types][task]")
+  {
+    global_int = 42;
+    auto t     = []() -> ex::task<int &>
+    {
+      int &i = co_await wrap_ref(
+        exec::just_from([](auto sink) noexcept { return sink(global_int); }));
+      CHECK(&i == &global_int);
+      co_return i;
+    }();
+    auto [i] = ex::sync_wait(std::move(t)).value();
+    CHECK(i == 42);
+  }
+
+  struct inline_affine_stopped_sender
+  {
+    using sender_concept        = ex::sender_tag;
+    using completion_signatures = ex::completion_signatures<ex::set_stopped_t()>;
+
+    template <class Receiver>
+    struct operation
+    {
+      Receiver rcvr_;
+      bool     complete_inline_ = true;
+
+      void start() & noexcept
+      {
+        if (complete_inline_)
+        {
+          ex::set_stopped(std::move(rcvr_));
+        }
+        else
+        {
+          std::thread([rcvr = std::move(rcvr_)]() mutable noexcept
+                      { ex::set_stopped(std::move(rcvr)); })
+            .detach();
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
+    };
+
+    template <class Receiver>
+    auto connect(Receiver rcvr) && -> operation<Receiver>
+    {
+      return {std::move(rcvr), complete_inline_};
+    }
+
+    struct attrs
+    {
+      [[nodiscard]]
+      static constexpr auto query(ex::__get_completion_behavior_t<ex::set_stopped_t>) noexcept
+      {
+        return ex::__completion_behavior::__inline_completion
+             | ex::__completion_behavior::__asynchronous_affine;
+      }
+    };
+
+    [[nodiscard]]
+    auto get_env() const noexcept -> attrs
+    {
+      return {};
+    }
+
+    bool complete_inline_ = true;
+  };
+
+  TEST_CASE("task co_awaiting inline|async_affine stopped sender does not deadlock",
+            "[types][task]")
+  {
+    auto res = ex::sync_wait(
+      []() -> ex::task<int>
+      {
+        co_await inline_affine_stopped_sender{};
+        FAIL("Expected co_awaiting inline_affine_stopped_sender to stop the task");
+        co_return 42;
+      }());
+    CHECK(!res.has_value());
+  }
+
+  TEST_CASE("test completion domain of task", "[types][task]")
+  {
+    // task is scheduler affine but not inline. Regardless, its completion domain is the
+    // same as the start scheduler's completion domain.
+    using attrs_t = ex::env_of_t<ex::task<int>>;
+    using env_t   = ex::prop<ex::get_start_scheduler_t, ex::parallel_scheduler>;
+    using sched_t =
+      std::invoke_result_t<ex::get_completion_scheduler_t<ex::set_value_t>, attrs_t, env_t>;
+    using domain_t =
+      std::invoke_result_t<ex::get_completion_domain_t<ex::set_value_t>, attrs_t, env_t>;
+    STATIC_REQUIRE(std::same_as<sched_t, ex::parallel_scheduler>);
+    STATIC_REQUIRE(std::same_as<domain_t, ex::__parallel_scheduler_domain>);
+  }
+
+  TEST_CASE("repro for NVIDIA/stdexec#2041", "[types][task]")
+  {
+    auto task = []() -> ex::task<void>
+    {
+      co_return;
+    };
+    auto pool  = exec::static_thread_pool(1);
+    auto scope = ex::counting_scope();
+    for (int i = 0; i < 1000; ++i)
+    {
+      ex::spawn(ex::starts_on(pool.get_scheduler(), task()) | ex::upon_error([](auto) noexcept {}),
+                scope.get_token());
+    }
+    ex::sync_wait(scope.join());
+  }
+
+  struct sink
+  {
+    using receiver_concept = ex::receiver_tag;
+    void set_value() noexcept {}
+    void set_error(std::exception_ptr) noexcept {}
+    void set_stopped() noexcept {}
+  };
+
+  static_assert(!ex::sender_in<ex::task<void>, ex::env<>>);
+  static_assert(!ex::sender_to<ex::task<void>, sink>);
+  static_assert(ex::sender_in<ex::task<void>, ex::__sync_wait::__env>);
+
+  auto await_stopped_sender(bool complete_inline) -> ex::task<void>
+  {
+    co_await inline_affine_stopped_sender{complete_inline};
+  }
+
+  TEST_CASE("repro for NVIDIA/stdexec#2047", "[types][task]")
+  {
+    [[maybe_unused]]
+    // repeat this test 1000 times because it can expose race conditions
+    int  i    = GENERATE(repeat(1000, values({1})));
+    auto pool = exec::static_thread_pool(1);
+
+    auto scope = ex::counting_scope();
+    ex::spawn(ex::starts_on(pool.get_scheduler(), await_stopped_sender(true))
+                | ex::upon_error([](auto) noexcept { std::terminate(); }),
+              scope.get_token());
+    ex::sync_wait(scope.join());
+  }
+
+  TEST_CASE("repro for NVIDIA/stdexec#2047 async completion from another thread", "[types][task]")
+  {
+    [[maybe_unused]]
+    // repeat this test 1000 times because it can expose race conditions
+    int  i    = GENERATE(repeat(1000, values({1})));
+    auto pool = exec::static_thread_pool(1);
+
+    auto scope = ex::counting_scope();
+    ex::spawn(ex::starts_on(pool.get_scheduler(), await_stopped_sender(false))
+                | ex::upon_error([](auto) noexcept { std::terminate(); }),
+              scope.get_token());
+    ex::sync_wait(scope.join());
+  }
+
+  auto await_always_inline_stopped_sender() -> ex::task<void>
+  {
+    co_await ex::just_stopped();
+  }
+
+  TEST_CASE("repro for NVIDIA/stdexec#2047 always inline", "[types][task]")
+  {
+    auto pool = exec::static_thread_pool(1);
+
+    auto scope = ex::counting_scope();
+    ex::spawn(ex::starts_on(pool.get_scheduler(), await_always_inline_stopped_sender())
+                | ex::upon_error([](auto) noexcept { std::terminate(); }),
+              scope.get_token());
+    ex::sync_wait(scope.join());
+  }
+
+  auto await_always_inline_value_sender_loop() -> ex::task<void>
+  {
+    for (size_t i = 0; i < 10000; ++i)
+    {
+      co_await ex::just();
+    }
+  }
+
+  TEST_CASE("repro for NVIDIA/stdexec#2047 no stack overflow", "[types][task]")
+  {
+    auto pool = exec::static_thread_pool(1);
+
+    auto scope = ex::counting_scope();
+    ex::spawn(ex::starts_on(pool.get_scheduler(), await_always_inline_value_sender_loop())
+                | ex::upon_error([](auto) noexcept { std::terminate(); }),
+              scope.get_token());
+    ex::sync_wait(scope.join());
+  }
+
+  // TODO: add tests for stop token support in task
+
+}  // anonymous namespace
+
+#endif  // !STDEXEC_NO_STDCPP_COROUTINES()

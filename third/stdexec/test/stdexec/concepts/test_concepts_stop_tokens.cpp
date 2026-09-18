@@ -1,0 +1,53 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *                         Copyright (c) 2025 Robert Leahy. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ *
+ * Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <catch2/catch_all.hpp>
+
+#include <stdexec/execution.hpp>
+
+#if STDEXEC_USE_MODULES()
+import std;
+#else
+#  include <type_traits>
+#endif
+
+namespace
+{
+
+  struct on_stop_request
+  {
+    void operator()() && noexcept {}
+  };
+
+  TEST_CASE("(un)stoppable_token correctly categorizes various standard stop token types",
+            "[concepts]")
+  {
+    STATIC_REQUIRE(::STDEXEC::stoppable_token<::STDEXEC::never_stop_token>);
+    STATIC_REQUIRE(::STDEXEC::unstoppable_token<::STDEXEC::never_stop_token>);
+    STATIC_REQUIRE(::STDEXEC::stoppable_token<::STDEXEC::inplace_stop_token>);
+    STATIC_REQUIRE(!::STDEXEC::unstoppable_token<::STDEXEC::inplace_stop_token>);
+    STATIC_REQUIRE(
+      std::is_same_v<::STDEXEC::stop_callback_for_t<::STDEXEC::never_stop_token, on_stop_request>,
+                     ::STDEXEC::never_stop_token::callback_type<on_stop_request>>);
+
+#if defined(__cpp_lib_jthread) && __cpp_lib_jthread >= 201911L
+    STATIC_REQUIRE(::STDEXEC::stoppable_token<std::stop_token>);
+    STATIC_REQUIRE(std::is_same_v<::STDEXEC::stop_callback_for_t<std::stop_token, on_stop_request>,
+                                  std::stop_callback<on_stop_request>>);
+#endif
+  }
+}  // namespace

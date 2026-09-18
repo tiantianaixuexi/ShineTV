@@ -1,0 +1,18 @@
+#ifndef SHINE_TEXTURE_NODE_ABS_USH
+#define SHINE_TEXTURE_NODE_ABS_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateAbs(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV)
+{
+    float4 InputValue = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+    return ShineTexture_MakeColor(abs(InputValue.rgb));
+}
+
+#endif

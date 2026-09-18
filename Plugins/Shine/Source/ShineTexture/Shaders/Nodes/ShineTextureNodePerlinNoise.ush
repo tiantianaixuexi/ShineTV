@@ -1,0 +1,71 @@
+#ifndef SHINE_TEXTURE_NODE_PERLIN_NOISE_USH
+#define SHINE_TEXTURE_NODE_PERLIN_NOISE_USH
+
+// Param packing contract:
+// Param0: x=Scale, y=Disorder, z=DisorderSpeed, w=NonSquareExpansion
+// Param1: x=TileOffsetX, y=TileOffsetY, z=unused, w=unused
+
+float2 ShineTexture_PerlinNoiseGradient(float2 Cell)
+{
+    float Angle = ShineTexture_Hash12(Cell) * 6.2831853;
+    return float2(cos(Angle), sin(Angle));
+}
+
+float ShineTexture_PerlinNoiseSample(float2 Position)
+{
+    float2 Cell = floor(Position);
+    float2 Local = frac(Position);
+    float2 Smooth = Local * Local * (3.0 - 2.0 * Local);
+
+    float2 Gradient00 = ShineTexture_PerlinNoiseGradient(Cell);
+    float2 Gradient10 = ShineTexture_PerlinNoiseGradient(Cell + float2(1.0, 0.0));
+    float2 Gradient01 = ShineTexture_PerlinNoiseGradient(Cell + float2(0.0, 1.0));
+    float2 Gradient11 = ShineTexture_PerlinNoiseGradient(Cell + float2(1.0, 1.0));
+
+    float Corner00 = dot(Gradient00, Local);
+    float Corner10 = dot(Gradient10, Local - float2(1.0, 0.0));
+    float Corner01 = dot(Gradient01, Local - float2(0.0, 1.0));
+    float Corner11 = dot(Gradient11, Local - float2(1.0, 1.0));
+
+    float BlendX0 = lerp(Corner00, Corner10, Smooth.x);
+    float BlendX1 = lerp(Corner01, Corner11, Smooth.x);
+    return lerp(BlendX0, BlendX1, Smooth.y);
+}
+
+float4 ShineTexture_EvaluatePerlinNoise(float2 UV, uint2 InResolution, float4 Param0, float4 Param1)
+{
+    float Scale = clamp(round(Param0.x), 1.0, 256.0);
+    float Disorder = saturate(Param0.y);
+    float DisorderSpeed = max(Param0.z, 0.0);
+    bool bNonSquareExpansion = Param0.w > 0.5;
+    float2 TileOffset = Param1.xy;
+
+    float2 PatternUv = UV + TileOffset;
+    if (bNonSquareExpansion && InResolution.x > 0 && InResolution.y > 0)
+    {
+        float Aspect = (float)InResolution.x / (float)InResolution.y;
+        if (Aspect > 1.0)
+        {
+            PatternUv.x *= Aspect;
+        }
+        else
+        {
+            PatternUv.y /= max(Aspect, 0.0001);
+        }
+    }
+
+    float2 NoiseUv = PatternUv * Scale;
+    if (Disorder > 0.0 && DisorderSpeed > 0.0)
+    {
+        float2 DisorderSeed = NoiseUv * float2(3.17, 7.91) + float2(13.7, 29.3);
+        float2 DisorderOffset = float2(
+            ShineTexture_PerlinNoiseSample(DisorderSeed),
+            ShineTexture_PerlinNoiseSample(DisorderSeed + float2(19.1, 5.7)));
+        NoiseUv += DisorderOffset * Disorder * DisorderSpeed;
+    }
+
+    float Value = saturate(ShineTexture_PerlinNoiseSample(NoiseUv) * 0.5 + 0.5);
+    return float4(Value.xxx, 1.0);
+}
+
+#endif

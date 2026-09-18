@@ -1,0 +1,253 @@
+# =============================================================================
+# Copyright 2023 NVIDIA Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy of
+# the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations under
+# the License.
+# =============================================================================
+include(CheckCompilerFlag)
+check_compiler_flag(CXX -Wno-c2y-extensions HAVE_C2Y_EXTENSIONS_WARNING)
+
+function(add_compile_diagnostics TARGET)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL Clang OR CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+    target_compile_options(
+      ${TARGET}
+      PRIVATE -Wall -Wextra -Wpedantic -Werror
+              $<$<BOOL:${HAVE_C2Y_EXTENSIONS_WARNING}>:-Wno-c2y-extensions>)
+  endif()
+endfunction()
+
+set(stdexec_test_sources
+    test_main.cpp
+    stdexec/algos/adaptors/test_associate.cpp
+    stdexec/algos/adaptors/test_bulk.cpp
+    stdexec/algos/adaptors/test_continues_on.cpp
+    stdexec/algos/adaptors/test_finally.cpp
+    stdexec/algos/adaptors/test_into_variant.cpp
+    stdexec/algos/adaptors/test_sequence.cpp
+    stdexec/algos/adaptors/test_spawn_future.cpp
+    stdexec/algos/adaptors/test_starts_on.cpp
+    stdexec/algos/adaptors/test_stop_when.cpp
+    stdexec/algos/adaptors/test_stopped_as_error.cpp
+    stdexec/algos/adaptors/test_stopped_as_optional.cpp
+    stdexec/algos/adaptors/test_then.cpp
+    stdexec/algos/adaptors/test_transfer_when_all.cpp
+    stdexec/algos/adaptors/test_upon_error.cpp
+    stdexec/algos/adaptors/test_upon_stopped.cpp
+    stdexec/algos/adaptors/test_write_env.cpp
+    stdexec/algos/consumers/test_spawn.cpp
+    stdexec/algos/consumers/test_sync_wait.cpp
+    stdexec/algos/factories/test_just.cpp
+    stdexec/algos/factories/test_just_stopped.cpp
+    stdexec/algos/factories/test_read.cpp
+    stdexec/algos/factories/test_schedule.cpp
+    stdexec/algos/factories/test_transfer_just.cpp
+    stdexec/concepts/test_awaitables.cpp
+    stdexec/concepts/test_concept_operation_state.cpp
+    stdexec/concepts/test_concept_scheduler.cpp
+    stdexec/concepts/test_concepts_receiver.cpp
+    stdexec/concepts/test_concepts_scope_association.cpp
+    stdexec/concepts/test_concepts_scope_token.cpp
+    stdexec/concepts/test_concepts_sender.cpp
+    stdexec/concepts/test_concepts_stop_tokens.cpp
+    stdexec/cpos/test_cpo_connect.cpp
+    stdexec/cpos/test_cpo_connect_awaitable.cpp
+    stdexec/cpos/test_cpo_receiver.cpp
+    stdexec/cpos/test_cpo_schedule.cpp
+    stdexec/cpos/test_cpo_start.cpp
+    stdexec/cpos/test_cpo_upon_stopped.cpp
+    stdexec/detail/test_any.cpp
+    stdexec/detail/test_common_domain.cpp
+    stdexec/detail/test_completion_signatures.cpp
+    stdexec/detail/test_demangle.cpp
+    stdexec/detail/test_intrusive_mpsc_queue.cpp
+    stdexec/detail/test_utility.cpp
+    stdexec/queries/test_env.cpp
+    stdexec/queries/test_forwarding_queries.cpp
+    stdexec/queries/test_get_completion_behavior.cpp
+    stdexec/queries/test_get_forward_progress_guarantee.cpp
+    stdexec/schedulers/test_task_scheduler.cpp
+    stdexec/types/test_counting_scopes.cpp
+    stdexec/types/test_task.cpp
+    )
+
+if(NOT STDEXEC_BUILD_MODULES)
+  # these tests don't build in modules mode, yet
+  list(APPEND stdexec_test_sources
+    stdexec/algos/adaptors/test_let_error.cpp
+    stdexec/algos/adaptors/test_let_stopped.cpp
+    stdexec/algos/adaptors/test_let_value.cpp
+    stdexec/algos/adaptors/test_on.cpp
+    stdexec/algos/adaptors/test_on2.cpp
+    stdexec/algos/adaptors/test_on3.cpp
+    stdexec/algos/adaptors/test_when_all.cpp
+    stdexec/algos/factories/test_just_error.cpp
+    stdexec/cpos/test_cpo_bulk.cpp
+    stdexec/cpos/test_cpo_upon_error.cpp
+    stdexec/detail/test_any_allocator.cpp
+    stdexec/schedulers/test_parallel_scheduler.cpp
+    )
+endif()
+
+add_library(common_test_settings INTERFACE)
+set_target_properties(
+  common_test_settings
+  PROPERTIES CXX_STANDARD 20
+             CXX_STANDARD_REQUIRED ON
+             CXX_EXTENSIONS OFF
+             MSVC_DEBUG_INFORMATION_FORMAT Embedded)
+target_include_directories(common_test_settings
+                           INTERFACE "${CMAKE_CURRENT_LIST_DIR}")
+target_compile_definitions(
+  common_test_settings INTERFACE STDEXEC_NAMESPACE=std::execution
+                                 $<$<PLATFORM_ID:Windows>:NOMINMAX>)
+target_compile_options(
+  common_test_settings
+  INTERFACE
+    $<$<CXX_COMPILER_ID:MSVC>:/wd4714> # function marked as __forceinline not
+                                       # inlined
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-maybe-uninitialized> # warnings being emitted
+                                                       # from stdlib headers,
+                                                       # why?
+    $<$<CXX_COMPILER_ID:Clang>:-Wno-gnu-line-marker>)
+target_link_libraries(common_test_settings
+                      INTERFACE $<TARGET_NAME_IF_EXISTS:TBB::tbb>)
+
+add_executable(test.run_loop_finish_repro EXCLUDE_FROM_ALL
+               run_loop_finish_repro.cpp)
+add_compile_diagnostics(test.run_loop_finish_repro)
+target_link_libraries(
+  test.run_loop_finish_repro
+  PUBLIC STDEXEC::stdexec stdexec_executable_flags
+  PRIVATE common_test_settings)
+
+# target_compile_definitions( common_test_settings INTERFACE
+# $<$<NOT:$<AND:$<CXX_COMPILER_ID:NVHPC>,$<COMPILE_LANGUAGE:CXX>>>:STDEXEC_ENABLE_EXTRA_TYPE_CHECKING>)
+
+add_executable(test.stdexec ${stdexec_test_sources})
+
+if(STDEXEC_BUILD_MODULES)
+    set_target_properties(test.stdexec PROPERTIES CXX_MODULE_STD ON)
+endif()
+
+add_compile_diagnostics(test.stdexec)
+target_link_libraries(
+  test.stdexec
+  PUBLIC STDEXEC::stdexec stdexec_executable_flags Catch2::Catch2WithMain
+  PRIVATE common_test_settings)
+
+if(STDEXEC_BUILD_PARALLEL_SCHEDULER)
+  add_executable(
+    test.parallel_scheduler_replacement
+    test_main.cpp stdexec/schedulers/test_parallel_scheduler_replacement.cpp)
+  add_compile_diagnostics(test.parallel_scheduler_replacement)
+  target_link_libraries(
+    test.parallel_scheduler_replacement
+    PUBLIC STDEXEC::stdexec STDEXEC::parallel_scheduler stdexec_executable_flags
+           Catch2::Catch2WithMain
+    PRIVATE common_test_settings)
+endif()
+
+add_executable(test.scratch test_main.cpp test_scratch.cpp)
+add_compile_diagnostics(test.scratch)
+target_link_libraries(
+  test.scratch
+  PUBLIC STDEXEC::stdexec $<TARGET_NAME_IF_EXISTS:STDEXEC::tbbexec>
+         stdexec_executable_flags Catch2::Catch2WithMain
+  PRIVATE common_test_settings)
+
+if(STDEXEC_BUILD_MODULES)
+    set_target_properties(test.scratch PROPERTIES CXX_MODULE_STD ON)
+endif()
+
+# Discover the Catch2 test built by the application
+include(${Catch2_SOURCE_DIR}/extras/Catch.cmake)
+
+# For testing that builds fail as expected
+include(${icm_SOURCE_DIR}/icm_build_failure_testing.cmake)
+
+catch_discover_tests(test.stdexec PROPERTIES TIMEOUT 30)
+
+catch_discover_tests(test.scratch PROPERTIES TIMEOUT 30)
+
+if(STDEXEC_BUILD_PARALLEL_SCHEDULER AND NOT STDEXEC_ENABLE_CUDA)
+  catch_discover_tests(test.parallel_scheduler_replacement PROPERTIES TIMEOUT
+                       30)
+endif()
+
+# __detail/__parallel_scheduler_default_impl_entry.hpp is excluded from
+# VERIFY_INTERFACE_HEADER_SETS because it has a documented precondition
+# (includers must define STDEXEC_PARALLEL_SCHEDULER_INLINE first) that the
+# automatic verification can't express. Compile it here instead, with that
+# precondition satisfied.
+#
+# This is a plain (non-EXCLUDE_FROM_ALL) OBJECT library rather than a
+# dependency hooked onto all_verify_interface_header_sets: CMake creates that
+# aggregate target itself only once the whole build has been configured
+# (confirmed directly - `if(TARGET all_verify_interface_header_sets)` is
+# still false at this point in test/CMakeLists.txt, even though the property
+# enabling it was set earlier in the root CMakeLists.txt), so there's no
+# handle to attach a dependency to from here. Building it unconditionally is
+# simpler and just as effective: it's one small translation unit, so the
+# added cost per build is negligible.
+add_library(verify_parallel_scheduler_default_impl_entry OBJECT
+            stdexec/detail/verify_parallel_scheduler_default_impl_entry.cpp)
+target_link_libraries(verify_parallel_scheduler_default_impl_entry
+                      PRIVATE STDEXEC::stdexec)
+set_target_properties(
+  verify_parallel_scheduler_default_impl_entry
+  PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+
+add_subdirectory(exec)
+
+if(STDEXEC_ENABLE_CUDA)
+  add_subdirectory(nvexec)
+endif()
+
+if(NOT STDEXEC_BUILD_MODULES)
+  # these don't build with modules, yet
+
+  # build failure tests: tests which parse a source file for an expected error
+  # message
+  icm_add_build_failure_test(
+    NAME
+    test_let_fail1
+    TARGET
+    test_let_fail1
+    SOURCES
+    PARSE
+    stdexec/algos/adaptors/test_let_fail1.cpp
+    LIBRARIES
+    stdexec
+    FOLDER
+    test)
+
+  icm_add_build_failure_test(
+    NAME
+    test_then_fail1
+    TARGET
+    test_then_fail1
+    SOURCES
+    PARSE
+    stdexec/algos/adaptors/test_then_fail1.cpp
+    LIBRARIES
+    stdexec
+    FOLDER
+    test)
+
+  if(STDEXEC_BUILD_RELACY_TESTS)
+    add_subdirectory(rrd)
+  endif()
+endif()
+
+# # Adding multiple tests with a glob icm_glob_build_failure_tests( PATTERN
+# *_fail*.cpp LIBRARIES stdexec PREFIX stdexec FOLDER
+# test/stdexec/algos/adaptors )

@@ -1,0 +1,24 @@
+#ifndef SHINE_TEXTURE_NODE_LEVELS_USH
+#define SHINE_TEXTURE_NODE_LEVELS_USH
+
+// Param packing contract:
+// Param0: x=InputLow, y=InputHigh, z=Gamma, w=OutputLow
+// Param1: x=OutputHigh, y=unused, z=unused, w=unused
+
+float4 ShineTexture_EvaluateLevels(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV,
+    float4 Param0,
+    float4 Param1)
+{
+    float4 InputValue = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+    float Range = max(1e-5, Param0.y - Param0.x);
+    float3 NormalizedValue = saturate((InputValue.rgb - Param0.xxx) / Range);
+    float3 GammaAdjusted = pow(NormalizedValue, 1.0 / max(0.1, Param0.z));
+    float3 Remapped = lerp(Param0.www, Param1.xxx, GammaAdjusted);
+    return float4(Remapped, InputValue.a);
+}
+
+#endif

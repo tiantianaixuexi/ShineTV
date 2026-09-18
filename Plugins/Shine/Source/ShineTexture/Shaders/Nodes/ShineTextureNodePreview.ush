@@ -1,0 +1,17 @@
+#ifndef SHINE_TEXTURE_NODE_PREVIEW_USH
+#define SHINE_TEXTURE_NODE_PREVIEW_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluatePreview(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV)
+{
+    return ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+}
+
+#endif

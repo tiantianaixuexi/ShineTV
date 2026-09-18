@@ -1,0 +1,13 @@
+#ifndef SHINE_TEXTURE_NODE_VECTOR2_CONSTANT_USH
+#define SHINE_TEXTURE_NODE_VECTOR2_CONSTANT_USH
+
+// Param packing contract:
+// Param0: x=ValueX, y=ValueY, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateVector2Constant(float4 Param0)
+{
+    return float4(Param0.x, Param0.y, 0.0, 1.0);
+}
+
+#endif

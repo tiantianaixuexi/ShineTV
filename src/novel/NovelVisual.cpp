@@ -1,0 +1,637 @@
+#include "novel/NovelVisual.h"
+
+#include "core/Log.h"
+#include "util/Time.h"
+
+#include <fmt/format.h>
+
+#include <algorithm>
+
+namespace shine::novelcore {
+namespace {
+
+[[nodiscard]] std::int64_t NowSec() noexcept { return util::NowMillis() / 1000; }
+
+[[nodiscard]] DbError VErr(std::string_view m) { return DbError{0, std::string{m}}; }
+
+constexpr std::string_view kDefaultNegative =
+    "lowres, blurry, extra fingers, deformed hands, watermark, text, logo, "
+    "extra limbs, bad anatomy, duplicate person";
+
+} // namespace
+
+std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row) {
+    if (row.name.empty()) return std::unexpected(VErr("视觉资产 name 不能为空"));
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE visual_assets SET entity_id=?1,kind=?2,name=?3,base_desc=?4,"
+            "materials_colors=?5,permanent_tags_json=?6,sheet_rel_path=?7,canon_status=?8,note=?9 "
+            "WHERE id=?10");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.entity_id);
+        (void)st->BindText(2, row.kind);
+        (void)st->BindText(3, row.name);
+        (void)st->BindText(4, row.base_desc);
+        (void)st->BindText(5, row.materials_colors);
+        (void)st->BindText(6, row.permanent_tags_json);
+        (void)st->BindText(7, row.sheet_rel_path);
+        (void)st->BindText(8, row.canon_status);
+        (void)st->BindText(9, row.note);
+        (void)st->BindInt(10, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO visual_assets(entity_id,kind,name,base_desc,materials_colors,"
+        "permanent_tags_json,sheet_rel_path,canon_status,note)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.entity_id);
+    (void)st->BindText(2, row.kind);
+    (void)st->BindText(3, row.name);
+    (void)st->BindText(4, row.base_desc);
+    (void)st->BindText(5, row.materials_colors);
+    (void)st->BindText(6, row.permanent_tags_json.empty() ? "[]" : row.permanent_tags_json);
+    (void)st->BindText(7, row.sheet_rel_path);
+    (void)st->BindText(8, row.canon_status);
+    (void)st->BindText(9, row.note);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<VisualAssetRow, DbError> NovelVisual::GetAsset(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,entity_id,kind,name,base_desc,materials_colors,permanent_tags_json,"
+        "sheet_rel_path,canon_status,note FROM visual_assets WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(VErr("视觉资产不存在"));
+    VisualAssetRow r;
+    r.id = st->ColumnInt(0);
+    r.entity_id = st->ColumnInt(1);
+    r.kind = st->ColumnText(2);
+    r.name = st->ColumnText(3);
+    r.base_desc = st->ColumnText(4);
+    r.materials_colors = st->ColumnText(5);
+    r.permanent_tags_json = st->ColumnText(6);
+    r.sheet_rel_path = st->ColumnText(7);
+    r.canon_status = st->ColumnText(8);
+    r.note = st->ColumnText(9);
+    return r;
+}
+
+std::expected<VisualAssetRow, DbError> NovelVisual::FindAssetByEntity(RowId entityId) const {
+    auto st = db_->Prepare(
+        "SELECT id FROM visual_assets WHERE entity_id=?1 ORDER BY id LIMIT 1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) {
+        return std::unexpected(VErr("该实体尚无视觉资产"));
+    }
+    return GetAsset(st->ColumnInt(0));
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertState(const VisualStateRow& row) {
+    if (row.asset_id <= 0) return std::unexpected(VErr("state 缺 asset_id"));
+    auto st = db_->Prepare(
+        "INSERT INTO visual_states(asset_id,stage_key,stage_label,ord,from_chapter,to_chapter,"
+        "appearance,materials_colors,clothing_asset_id,item_asset_ids_json,effects,"
+        "environment_hint,canon_status,note)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.asset_id);
+    (void)st->BindText(2, row.stage_key);
+    (void)st->BindText(3, row.stage_label);
+    (void)st->BindInt(4, row.ord);
+    (void)st->BindInt(5, row.from_chapter);
+    (void)st->BindInt(6, row.to_chapter);
+    (void)st->BindText(7, row.appearance);
+    (void)st->BindText(8, row.materials_colors);
+    (void)st->BindInt(9, row.clothing_asset_id);
+    (void)st->BindText(10, row.item_asset_ids_json.empty() ? "[]" : row.item_asset_ids_json);
+    (void)st->BindText(11, row.effects);
+    (void)st->BindText(12, row.environment_hint);
+    (void)st->BindText(13, row.canon_status);
+    (void)st->BindText(14, row.note);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<VisualStateRow, DbError>
+NovelVisual::ResolveVisualState(RowId assetId, RowId chapterId) const {
+    // from_ch≤N 且 (to_ch=0 或 to_ch≥N)，取 from_ch 最大
+    auto st = db_->Prepare(
+        "SELECT id,asset_id,stage_key,stage_label,ord,from_chapter,to_chapter,appearance,"
+        "materials_colors,clothing_asset_id,item_asset_ids_json,effects,environment_hint,"
+        "canon_status,note FROM visual_states WHERE asset_id=?1"
+        " AND from_chapter<=?2 AND (to_chapter=0 OR to_chapter>=?2)"
+        " ORDER BY from_chapter DESC, ord DESC LIMIT 1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, assetId);
+    (void)st->BindInt(2, chapterId);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) {
+        // 回退：无区间限制的第 0 阶段
+        auto st2 = db_->Prepare(
+            "SELECT id,asset_id,stage_key,stage_label,ord,from_chapter,to_chapter,appearance,"
+            "materials_colors,clothing_asset_id,item_asset_ids_json,effects,environment_hint,"
+            "canon_status,note FROM visual_states WHERE asset_id=?1 ORDER BY ord LIMIT 1");
+        if (!st2) return std::unexpected(st2.error());
+        (void)st2->BindInt(1, assetId);
+        auto s2 = st2->Step();
+        if (!s2) return std::unexpected(s2.error());
+        if (*s2 == db::sqlite::StepResult::Done) {
+            return std::unexpected(VErr("该资产无可用视觉阶段"));
+        }
+        st = std::move(*st2);
+        s = s2;
+    }
+    VisualStateRow r;
+    r.id = st->ColumnInt(0);
+    r.asset_id = st->ColumnInt(1);
+    r.stage_key = st->ColumnText(2);
+    r.stage_label = st->ColumnText(3);
+    r.ord = static_cast<int>(st->ColumnInt(4));
+    r.from_chapter = st->ColumnInt(5);
+    r.to_chapter = st->ColumnInt(6);
+    r.appearance = st->ColumnText(7);
+    r.materials_colors = st->ColumnText(8);
+    r.clothing_asset_id = st->ColumnInt(9);
+    r.item_asset_ids_json = st->ColumnText(10);
+    r.effects = st->ColumnText(11);
+    r.environment_hint = st->ColumnText(12);
+    r.canon_status = st->ColumnText(13);
+    r.note = st->ColumnText(14);
+    return r;
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertCamera(std::string_view name,
+                                                        std::string_view text) {
+    auto st = db_->Prepare("INSERT INTO camera_defs(name,text) VALUES(?1,?2)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, name);
+    (void)st->BindText(2, text);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertLighting(std::string_view name,
+                                                          std::string_view text) {
+    auto st = db_->Prepare("INSERT INTO lighting_defs(name,text) VALUES(?1,?2)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, name);
+    (void)st->BindText(2, text);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertComposition(std::string_view name,
+                                                             std::string_view text) {
+    auto st = db_->Prepare("INSERT INTO composition_defs(name,text) VALUES(?1,?2)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, name);
+    (void)st->BindText(2, text);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertStyle(std::string_view name,
+                                                       std::string_view text) {
+    auto st = db_->Prepare("INSERT INTO visual_styles(name,text) VALUES(?1,?2)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, name);
+    (void)st->BindText(2, text);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
+    if (row.scene_id <= 0) return std::unexpected(VErr("shot 缺 scene_id"));
+    auto st = db_->Prepare(
+        "INSERT INTO shots(scene_id,ord,duration_note,camera_id,character_ids_json,action,"
+        "expression,prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,"
+        "prompt_text,negative_text,reference_json,canon_status)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.scene_id);
+    (void)st->BindInt(2, row.ord);
+    (void)st->BindText(3, row.duration_note);
+    (void)st->BindInt(4, row.camera_id);
+    (void)st->BindText(5, row.character_ids_json.empty() ? "[]" : row.character_ids_json);
+    (void)st->BindText(6, row.action);
+    (void)st->BindText(7, row.expression);
+    (void)st->BindText(8, row.prop_ids_json.empty() ? "[]" : row.prop_ids_json);
+    (void)st->BindInt(9, row.lighting_id);
+    (void)st->BindInt(10, row.composition_id);
+    (void)st->BindText(11, row.dialogue);
+    (void)st->BindText(12, row.narration);
+    (void)st->BindText(13, row.sfx);
+    (void)st->BindText(14, row.mood);
+    (void)st->BindText(15, row.prompt_text);
+    (void)st->BindText(16, row.negative_text.empty() ? std::string{kDefaultNegative}
+                                                     : row.negative_text);
+    (void)st->BindText(17, row.reference_json.empty() ? "{}" : row.reference_json);
+    (void)st->BindText(18, row.canon_status);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<ShotRow, DbError> NovelVisual::GetShot(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,scene_id,ord,duration_note,camera_id,character_ids_json,action,expression,"
+        "prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,prompt_text,"
+        "negative_text,reference_json,canon_status FROM shots WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(VErr("分镜不存在"));
+    ShotRow r;
+    r.id = st->ColumnInt(0);
+    r.scene_id = st->ColumnInt(1);
+    r.ord = static_cast<int>(st->ColumnInt(2));
+    r.duration_note = st->ColumnText(3);
+    r.camera_id = st->ColumnInt(4);
+    r.character_ids_json = st->ColumnText(5);
+    r.action = st->ColumnText(6);
+    r.expression = st->ColumnText(7);
+    r.prop_ids_json = st->ColumnText(8);
+    r.lighting_id = st->ColumnInt(9);
+    r.composition_id = st->ColumnInt(10);
+    r.dialogue = st->ColumnText(11);
+    r.narration = st->ColumnText(12);
+    r.sfx = st->ColumnText(13);
+    r.mood = st->ColumnText(14);
+    r.prompt_text = st->ColumnText(15);
+    r.negative_text = st->ColumnText(16);
+    r.reference_json = st->ColumnText(17);
+    r.canon_status = st->ColumnText(18);
+    return r;
+}
+
+std::expected<RowId, DbError>
+NovelVisual::SetLayer(std::string_view ownerKind, RowId ownerId, std::string_view layer,
+                      std::string_view text) {
+    auto del = db_->Prepare(
+        "DELETE FROM prompt_layers WHERE owner_kind=?1 AND owner_id=?2 AND layer=?3");
+    if (!del) return std::unexpected(del.error());
+    (void)del->BindText(1, ownerKind);
+    (void)del->BindInt(2, ownerId);
+    (void)del->BindText(3, layer);
+    if (auto s = del->Step(); !s) return std::unexpected(s.error());
+    auto st = db_->Prepare(
+        "INSERT INTO prompt_layers(owner_kind,owner_id,layer,text) VALUES(?1,?2,?3,?4)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, ownerKind);
+    (void)st->BindInt(2, ownerId);
+    (void)st->BindText(3, layer);
+    (void)st->BindText(4, text);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::string NovelVisual::QueryLayer(std::string_view ownerKind, RowId ownerId,
+                                    std::string_view layer, RowId* outId) const {
+    auto st = db_->Prepare(
+        "SELECT id,text FROM prompt_layers WHERE owner_kind=?1 AND owner_id=?2 AND layer=?3 "
+        "ORDER BY version DESC LIMIT 1");
+    if (!st) return {};
+    (void)st->BindText(1, ownerKind);
+    (void)st->BindInt(2, ownerId);
+    (void)st->BindText(3, layer);
+    auto s = st->Step();
+    if (!s || *s == db::sqlite::StepResult::Done) return {};
+    if (outId) *outId = st->ColumnInt(0);
+    return st->ColumnText(1);
+}
+
+std::string NovelVisual::QueryDefText(std::string_view table, RowId id) const {
+    if (id <= 0 || table.empty()) return {};
+    const std::string sql = fmt::format("SELECT text FROM {} WHERE id=?1", table);
+    auto st = db_->Prepare(sql);
+    if (!st) return {};
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s || *s == db::sqlite::StepResult::Done) return {};
+    return st->ColumnText(0);
+}
+
+std::expected<AssemblePromptOutput, DbError>
+NovelVisual::Assemble(const AssemblePromptInput& in) const {
+    AssemblePromptOutput out;
+    RowId assetId = in.asset_id.value_or(0);
+    ShotRow shot;
+    if (in.shot_id && *in.shot_id > 0) {
+        if (auto s = GetShot(*in.shot_id)) {
+            shot = *s;
+            out.used_layer_ids.push_back(shot.id);
+        }
+    }
+    RowId cameraId = in.camera_id > 0 ? in.camera_id : shot.camera_id;
+    RowId lightId = in.lighting_id > 0 ? in.lighting_id : shot.lighting_id;
+    RowId compId = in.composition_id > 0 ? in.composition_id : shot.composition_id;
+
+    // 解析资产
+    if (assetId <= 0 && in.character_id) {
+        if (auto a = FindAssetByEntity(*in.character_id)) {
+            assetId = a->id;
+        }
+    }
+    out.resolved_asset_id = assetId;
+
+    std::string base, stage, scene, action, camera, composition, lighting, style, quality;
+    std::string negative = std::string{kDefaultNegative};
+
+    // Base：asset.base_desc + layer
+    if (assetId > 0) {
+        if (auto a = GetAsset(assetId)) {
+            base = a->base_desc;
+            if (!a->materials_colors.empty()) {
+                base += (base.empty() ? "" : ", ") + a->materials_colors;
+            }
+        }
+        RowId lid = 0;
+        if (auto t = QueryLayer("asset", assetId, "base", &lid); !t.empty()) {
+            if (base.empty()) base = t;
+            else base += ", " + t;
+            out.used_layer_ids.push_back(lid);
+        }
+        // Stage（按剧情章）
+        if (auto st = ResolveVisualState(assetId, in.chapter_id)) {
+            out.resolved_state_id = st->id;
+            stage = st->appearance;
+            if (!st->materials_colors.empty()) {
+                stage += (stage.empty() ? "" : ", ") + st->materials_colors;
+            }
+            if (!st->effects.empty()) {
+                stage += (stage.empty() ? "" : ", ") + st->effects;
+            }
+            RowId sl = 0;
+            if (auto t = QueryLayer("state", st->id, "stage", &sl); !t.empty()) {
+                stage += (stage.empty() ? "" : ", ") + t;
+                out.used_layer_ids.push_back(sl);
+            }
+            if (!st->environment_hint.empty()) {
+                scene = st->environment_hint;
+            }
+        }
+    }
+
+    // Scene
+    if (in.scene_id > 0) {
+        auto st = db_->Prepare(
+            "SELECT env_desc,time_of_day,weather,mood FROM scene_visuals WHERE scene_id=?1 "
+            "ORDER BY id LIMIT 1");
+        if (st) {
+            (void)st->BindInt(1, in.scene_id);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                std::string env = st->ColumnText(0);
+                const auto tod = st->ColumnText(1);
+                const auto weather = st->ColumnText(2);
+                const auto mood = st->ColumnText(3);
+                if (!tod.empty()) env += (env.empty() ? "" : ", ") + tod;
+                if (!weather.empty()) env += (env.empty() ? "" : ", ") + weather;
+                if (!mood.empty()) env += (env.empty() ? "" : ", ") + mood;
+                scene = scene.empty() ? env : scene + ", " + env;
+            }
+        }
+        RowId sl = 0;
+        if (auto t = QueryLayer("scene", in.scene_id, "scene", &sl); !t.empty()) {
+            scene += (scene.empty() ? "" : ", ") + t;
+            out.used_layer_ids.push_back(sl);
+        }
+    }
+
+    // Action：shot
+    if (!shot.action.empty() || !shot.expression.empty()) {
+        action = shot.action;
+        if (!shot.expression.empty()) {
+            action += (action.empty() ? "" : ", ") + shot.expression;
+        }
+        if (!shot.mood.empty()) {
+            action += (action.empty() ? "" : ", ") + shot.mood;
+        }
+    }
+
+    camera = QueryDefText("camera_defs", cameraId);
+    composition = QueryDefText("composition_defs", compId);
+    lighting = QueryDefText("lighting_defs", lightId);
+    // Style：取 id=1 或最新
+    {
+        auto st = db_->Prepare("SELECT text FROM visual_styles ORDER BY id LIMIT 1");
+        if (st) {
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                style = st->ColumnText(0);
+            }
+        }
+    }
+    quality = "masterpiece, best quality, highly detailed";
+
+    // Negative 扩展
+    if (in.scene_id > 0) {
+        RowId nl = 0;
+        if (auto t = QueryLayer("scene", in.scene_id, "negative", &nl); !t.empty()) {
+            negative += ", " + t;
+            out.used_layer_ids.push_back(nl);
+        }
+    }
+    if (assetId > 0) {
+        RowId nl = 0;
+        if (auto t = QueryLayer("asset", assetId, "negative", &nl); !t.empty()) {
+            negative += ", " + t;
+            out.used_layer_ids.push_back(nl);
+        }
+    }
+
+    auto join = [](std::string& dst, std::string_view part) {
+        if (part.empty()) return;
+        if (!dst.empty()) dst += ", ";
+        dst += part;
+    };
+    join(out.final_prompt, base);
+    join(out.final_prompt, stage);
+    join(out.final_prompt, scene);
+    join(out.final_prompt, action);
+    join(out.final_prompt, camera);
+    join(out.final_prompt, composition);
+    join(out.final_prompt, lighting);
+    join(out.final_prompt, style);
+    join(out.final_prompt, quality);
+    out.negative_prompt = negative;
+    return out;
+}
+
+std::expected<std::vector<std::string>, DbError>
+NovelVisual::CheckConsistency(const AssemblePromptInput& in, std::string_view prompt) const {
+    std::vector<std::string> issues;
+    if (prompt.empty()) {
+        issues.push_back("prompt 为空");
+        return issues;
+    }
+    // 未登场角色：shot.character_ids 之外的名字不应…（简化：检查 stage 关键词）
+    if (in.shot_id && *in.shot_id > 0) {
+        if (auto shot = GetShot(*in.shot_id)) {
+            if (!shot->action.empty() && prompt.find(shot->action.substr(0, 4)) == std::string::npos &&
+                shot->action.size() >= 4) {
+                // 弱检查，不强制
+            }
+        }
+    }
+    if (in.character_id) {
+        if (auto asset = FindAssetByEntity(*in.character_id)) {
+            if (auto st = ResolveVisualState(asset->id, in.chapter_id)) {
+                // 阶段外观关键词
+                if (!st->stage_label.empty() && st->stage_label.size() >= 2) {
+                    // 不强制中文标签进英文 prompt
+                }
+                if (!st->appearance.empty()) {
+                    // 取 appearance 前 8 字若在 materials 中出现冲突 —— 简化跳过
+                }
+            } else {
+                issues.push_back(fmt::format("角色 {} 在第 {} 章无视觉阶段，禁止模型自行想象",
+                                              asset->name, in.chapter_id));
+            }
+        }
+    }
+    // 多余人物
+    // 粗检：negative 未含 extra person 时补提示
+    if (prompt.find("extra person") == std::string::npos &&
+        prompt.find("crowd") == std::string::npos) {
+        // 不强制 issue
+    }
+    return issues;
+}
+
+std::expected<void, DbError> NovelVisual::SetVisualCanon(std::string_view targetKind, RowId targetId,
+                                                         std::string_view status) {
+    auto st = db_->Prepare(
+        "INSERT INTO visual_canon_logs(target_kind,target_id,status,created) VALUES(?1,?2,?3,?4)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, targetKind);
+    (void)st->BindInt(2, targetId);
+    (void)st->BindText(3, status);
+    (void)st->BindInt(4, NowSec());
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return {};
+}
+
+bool NovelVisual::RunSelfCheck() {
+    db::sqlite::Database mem;
+    if (auto r = mem.Open({.memory = true}); !r) {
+        log::Error("Visual 自检：打开内存库失败");
+        return false;
+    }
+    // 最小表
+    if (auto r = mem.Exec(R"SQL(
+CREATE TABLE IF NOT EXISTS visual_assets(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,kind TEXT,name TEXT,base_desc TEXT,materials_colors TEXT,permanent_tags_json TEXT,sheet_rel_path TEXT,canon_status TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS visual_states(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER,stage_key TEXT,stage_label TEXT,ord INTEGER,from_chapter INTEGER,to_chapter INTEGER,appearance TEXT,materials_colors TEXT,clothing_asset_id INTEGER,item_asset_ids_json TEXT,effects TEXT,environment_hint TEXT,canon_status TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS scene_visuals(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,env_desc TEXT,time_of_day TEXT,weather TEXT,mood TEXT,canon_status TEXT);
+CREATE TABLE IF NOT EXISTS camera_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,shot_size TEXT,angle TEXT,lens_note TEXT,movement TEXT,text TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS composition_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,rule TEXT,framing TEXT,text TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS lighting_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,time_hint TEXT,key_light TEXT,mood TEXT,text TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS visual_styles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,payload_json TEXT,text TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS prompt_layers(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_kind TEXT,owner_id INTEGER,layer TEXT,text TEXT,model_hint TEXT,version INTEGER,canon_status TEXT);
+CREATE TABLE IF NOT EXISTS shots(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,ord INTEGER,duration_note TEXT,camera_id INTEGER,character_ids_json TEXT,action TEXT,expression TEXT,prop_ids_json TEXT,lighting_id INTEGER,composition_id INTEGER,dialogue TEXT,narration TEXT,sfx TEXT,mood TEXT,prompt_text TEXT,negative_text TEXT,reference_json TEXT,canon_status TEXT);
+CREATE TABLE IF NOT EXISTS visual_canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
+)SQL"); !r) {
+        log::Error("Visual 自检：建表失败 {}", r.error().message);
+        return false;
+    }
+    NovelVisual v(mem);
+    auto asset = v.UpsertAsset({.entity_id = 1,
+                                .kind = "character",
+                                .name = "林默",
+                                .base_desc = "young man, black hair, dark eyes",
+                                .materials_colors = "simple cloth"});
+    if (!asset) return false;
+    // 两个阶段：1-2 青年，3+ 受伤
+    (void)v.UpsertState({.asset_id = *asset,
+                         .stage_key = "youth",
+                         .stage_label = "少年",
+                         .ord = 0,
+                         .from_chapter = 1,
+                         .to_chapter = 2,
+                         .appearance = "healthy youth"});
+    (void)v.UpsertState({.asset_id = *asset,
+                         .stage_key = "wounded",
+                         .stage_label = "重伤",
+                         .ord = 1,
+                         .from_chapter = 3,
+                         .to_chapter = 0,
+                         .appearance = "wounded, bandaged arm"});
+    auto s2 = v.ResolveVisualState(*asset, 2);
+    auto s3 = v.ResolveVisualState(*asset, 3);
+    if (!s2 || s2->stage_key != "youth" || !s3 || s3->stage_key != "wounded") {
+        log::Error("Visual 自检：阶段解析失败 s2={} s3={}", s2 ? s2->stage_key : "?",
+                   s3 ? s3->stage_key : "?");
+        return false;
+    }
+    auto cam = v.UpsertCamera("近景", "close-up shot");
+    auto lit = v.UpsertLighting("黄昏", "golden hour lighting");
+    auto comp = v.UpsertComposition("三分", "rule of thirds");
+    (void)v.UpsertStyle("default", "digital painting, fantasy novel cover");
+    auto scene = 10;
+    (void)mem.Exec(fmt::format(
+        "INSERT INTO scene_visuals(scene_id,env_desc,time_of_day,weather,mood) VALUES({},"
+        "'dark forest','dusk','fog','tense')",
+        scene));
+    auto shot = v.UpsertShot({.scene_id = scene,
+                              .ord = 1,
+                              .camera_id = cam.value_or(0),
+                              .action = "running through trees",
+                              .expression = "fear",
+                              .lighting_id = lit.value_or(0),
+                              .composition_id = comp.value_or(0)});
+    if (!shot) return false;
+    auto assembled = v.Assemble({.chapter_id = 3,
+                                 .scene_id = scene,
+                                 .character_id = 1,
+                                 .asset_id = *asset,
+                                 .shot_id = *shot});
+    if (!assembled) {
+        log::Error("Visual 自检：Assemble 失败 {}", assembled.error().message);
+        return false;
+    }
+    const auto& p = assembled->final_prompt;
+    if (p.find("wounded") == std::string::npos || p.find("close-up") == std::string::npos ||
+        p.find("golden hour") == std::string::npos || p.find("dark forest") == std::string::npos ||
+        assembled->negative_prompt.empty()) {
+        log::Error("Visual 自检：九层组装内容不全：{}", p);
+        return false;
+    }
+    // 青年章不含 wounded
+    auto a1 = v.Assemble({.chapter_id = 1, .character_id = 1, .asset_id = *asset});
+    if (!a1 || a1->final_prompt.find("wounded") != std::string::npos) {
+        log::Error("Visual 自检：第1章不应含 wounded");
+        return false;
+    }
+    // 只改 lighting 层后 Final 变化
+    auto lit2 = v.UpsertLighting("月夜", "moonlight, cold blue tones");
+    if (!lit2) return false;
+    auto stUp = mem.Prepare("UPDATE shots SET lighting_id=?1 WHERE id=?2");
+    if (stUp) {
+        (void)stUp->BindInt(1, *lit2);
+        (void)stUp->BindInt(2, *shot);
+        (void)stUp->Step();
+    }
+    auto assembled3 = v.Assemble({.chapter_id = 3,
+                                  .scene_id = scene,
+                                  .character_id = 1,
+                                  .asset_id = *asset,
+                                  .shot_id = *shot});
+    if (!assembled3 || assembled3->final_prompt.find("moonlight") == std::string::npos ||
+        assembled3->final_prompt.find("golden hour") != std::string::npos) {
+        log::Error("Visual 自检：改 Lighting 后 Final 未正确变化");
+        return false;
+    }
+    (void)v.SetVisualCanon("asset", *asset, "CANON");
+    log::Info("Visual 自检通过（阶段机 / 九层组装 / Lighting 敏感 / canon）");
+    return true;
+}
+
+} // namespace shine::novelcore

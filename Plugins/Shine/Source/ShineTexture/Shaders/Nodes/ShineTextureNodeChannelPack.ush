@@ -1,0 +1,25 @@
+#ifndef SHINE_TEXTURE_NODE_CHANNEL_PACK_USH
+#define SHINE_TEXTURE_NODE_CHANNEL_PACK_USH
+
+// Param packing contract:
+// Param0: x=DefaultAlpha, y=unused, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateChannelPack(
+    Texture2D<float4> InputTextureA,
+    Texture2D<float4> InputTextureB,
+    Texture2D<float4> InputTextureC,
+    Texture2D<float4> InputTextureD,
+    SamplerState InputSampler,
+    int4 InputValid,
+    float2 UV,
+    float4 Param0)
+{
+    float4 RValue = ShineTexture_SampleOrDefault(InputTextureA, InputSampler, InputValid.x != 0, UV, 0.0);
+    float4 GValue = ShineTexture_SampleOrDefault(InputTextureB, InputSampler, InputValid.y != 0, UV, 0.0);
+    float4 BValue = ShineTexture_SampleOrDefault(InputTextureC, InputSampler, InputValid.z != 0, UV, 0.0);
+    float4 AValue = ShineTexture_SampleOrDefault(InputTextureD, InputSampler, InputValid.w != 0, UV, Param0.xxxx);
+    return float4(RValue.r, GValue.r, BValue.r, AValue.r);
+}
+
+#endif

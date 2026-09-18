@@ -1,0 +1,214 @@
+#ifndef SHINE_TEXTURE_PREVIEW_DISPATCH_USH
+#define SHINE_TEXTURE_PREVIEW_DISPATCH_USH
+
+#define SHINE_NODE_SOLID_COLOR 0
+#define SHINE_NODE_TEXTURE_INPUT 1
+#define SHINE_NODE_NOISE 2
+#define SHINE_NODE_FIBERS1 3
+#define SHINE_NODE_UV 4
+#define SHINE_NODE_SCALAR_CONSTANT 5
+#define SHINE_NODE_VECTOR2_CONSTANT 6
+#define SHINE_NODE_SWIZZLE2 7
+#define SHINE_NODE_APPEND_VECTOR2 8
+#define SHINE_NODE_TRANSFORM_2D 9
+#define SHINE_NODE_BLEND 10
+#define SHINE_NODE_MULTIPLY 11
+#define SHINE_NODE_ADD 12
+#define SHINE_NODE_SUBTRACT 13
+#define SHINE_NODE_DIVIDE 14
+#define SHINE_NODE_MIN 15
+#define SHINE_NODE_MAX 16
+#define SHINE_NODE_ABS 17
+#define SHINE_NODE_SQRT 18
+#define SHINE_NODE_ONE_MINUS 19
+#define SHINE_NODE_FLOOR 20
+#define SHINE_NODE_FRAC 21
+#define SHINE_NODE_CLAMP 22
+#define SHINE_NODE_LEVELS 23
+#define SHINE_NODE_BLUR 24
+#define SHINE_NODE_NORMAL_BLEND 25
+#define SHINE_NODE_CHANNEL_PACK 26
+#define SHINE_NODE_GREATER 27
+#define SHINE_NODE_LESS 28
+#define SHINE_NODE_EQUAL 29
+#define SHINE_NODE_STEP 30
+#define SHINE_NODE_AND 31
+#define SHINE_NODE_OR 32
+#define SHINE_NODE_NOT 33
+#define SHINE_NODE_TO_FLOAT 34
+#define SHINE_NODE_TO_INT 35
+#define SHINE_NODE_SWIZZLE4 36
+#define SHINE_NODE_APPEND_VECTOR4 37
+#define SHINE_NODE_LERP 38
+#define SHINE_NODE_MODULO 39
+#define SHINE_NODE_MASK 40
+#define SHINE_NODE_BREAK_OUT 41
+#define SHINE_NODE_SELECT 42
+#define SHINE_NODE_PREVIEW 43
+#define SHINE_NODE_OUTPUT 44
+#define SHINE_NODE_PERLIN_NOISE 45
+#define SHINE_NODE_APPEND_VECTOR3 46
+
+#include "./Nodes/ShineTextureNodeSolidColor.ush"
+#include "./Nodes/ShineTextureNodeTextureInput.ush"
+#include "./Nodes/ShineTextureNodeNoise.ush"
+#include "./Nodes/ShineTextureNodeFibers1.ush"
+#include "./Nodes/ShineTextureNodePerlinNoise.ush"
+#include "./Nodes/ShineTextureNodeUv.ush"
+#include "./Nodes/Math/ShineTextureNodeScalarConstant.ush"
+#include "./Nodes/Math/ShineTextureNodeVector2Constant.ush"
+#include "./Nodes/Math/ShineTextureNodeSwizzle2.ush"
+#include "./Nodes/Math/ShineTextureNodeAppendVector2.ush"
+#include "./Nodes/ShineTextureNodeTransform2D.ush"
+#include "./Nodes/ShineTextureNodeBlend.ush"
+#include "./Nodes/Math/ShineTextureNodeMultiply.ush"
+#include "./Nodes/Math/ShineTextureNodeAdd.ush"
+#include "./Nodes/Math/ShineTextureNodeSubtract.ush"
+#include "./Nodes/Math/ShineTextureNodeDivide.ush"
+#include "./Nodes/Math/ShineTextureNodeMin.ush"
+#include "./Nodes/Math/ShineTextureNodeMax.ush"
+#include "./Nodes/Math/ShineTextureNodeAbs.ush"
+#include "./Nodes/Math/ShineTextureNodeSqrt.ush"
+#include "./Nodes/Math/ShineTextureNodeOneMinus.ush"
+#include "./Nodes/Math/ShineTextureNodeFloor.ush"
+#include "./Nodes/Math/ShineTextureNodeFrac.ush"
+#include "./Nodes/Math/ShineTextureNodeClamp.ush"
+#include "./Nodes/Math/ShineTextureNodeLevels.ush"
+#include "./Nodes/ShineTextureNodeBlur.ush"
+#include "./Nodes/ShineTextureNodeNormalBlend.ush"
+#include "./Nodes/ShineTextureNodeChannelPack.ush"
+#include "./Nodes/Math/ShineTextureNodeGreater.ush"
+#include "./Nodes/Math/ShineTextureNodeLess.ush"
+#include "./Nodes/Math/ShineTextureNodeEqual.ush"
+#include "./Nodes/Math/ShineTextureNodeStep.ush"
+#include "./Nodes/Math/ShineTextureNodeAnd.ush"
+#include "./Nodes/Math/ShineTextureNodeOr.ush"
+#include "./Nodes/Math/ShineTextureNodeNot.ush"
+#include "./Nodes/Math/ShineTextureNodeToFloat.ush"
+#include "./Nodes/Math/ShineTextureNodeToInt.ush"
+#include "./Nodes/Math/ShineTextureNodeSwizzle4.ush"
+#include "./Nodes/Math/ShineTextureNodeAppendVector3.ush"
+#include "./Nodes/Math/ShineTextureNodeAppendVector4.ush"
+#include "./Nodes/Math/ShineTextureNodeLerp.ush"
+#include "./Nodes/Math/ShineTextureNodeModulo.ush"
+#include "./Nodes/Math/ShineTextureNodeMask.ush"
+#include "./Nodes/Math/ShineTextureNodeBreakOut.ush"
+#include "./Nodes/Math/ShineTextureNodeSelect.ush"
+#include "./Nodes/ShineTextureNodePreview.ush"
+#include "./Nodes/ShineTextureNodeOutput.ush"
+
+float4 ShineTexture_DispatchNode(
+    uint InNodeType,
+    float2 UV,
+    uint2 InResolution,
+    Texture2D<float4> InInputTextureA,
+    Texture2D<float4> InInputTextureB,
+    Texture2D<float4> InInputTextureC,
+    Texture2D<float4> InInputTextureD,
+    SamplerState InInputSampler,
+    int4 InInputValid,
+    float4 InParam0,
+    float4 InParam1)
+{
+    switch (InNodeType)
+    {
+    case SHINE_NODE_SOLID_COLOR:
+        return ShineTexture_EvaluateSolidColor(InParam0);
+    case SHINE_NODE_TEXTURE_INPUT:
+        return ShineTexture_EvaluateTextureInput(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_NOISE:
+        return ShineTexture_EvaluateNoise(UV, InParam0);
+    case SHINE_NODE_FIBERS1:
+        return ShineTexture_EvaluateFibers1(UV, InResolution, InParam0);
+    case SHINE_NODE_PERLIN_NOISE:
+        return ShineTexture_EvaluatePerlinNoise(UV, InResolution, InParam0, InParam1);
+    case SHINE_NODE_UV:
+        return ShineTexture_EvaluateUv(UV);
+    case SHINE_NODE_SCALAR_CONSTANT:
+        return ShineTexture_EvaluateScalarConstant(InParam0);
+    case SHINE_NODE_VECTOR2_CONSTANT:
+        return ShineTexture_EvaluateVector2Constant(InParam0);
+    case SHINE_NODE_SWIZZLE2:
+        return ShineTexture_EvaluateSwizzle2(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0);
+    case SHINE_NODE_APPEND_VECTOR2:
+        return ShineTexture_EvaluateAppendVector2(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_TRANSFORM_2D:
+        return ShineTexture_EvaluateTransform2D(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0, InParam1);
+    case SHINE_NODE_BLEND:
+        return ShineTexture_EvaluateBlend(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV, InParam0);
+    case SHINE_NODE_MULTIPLY:
+        return ShineTexture_EvaluateMultiply(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_ADD:
+        return ShineTexture_EvaluateAdd(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_SUBTRACT:
+        return ShineTexture_EvaluateSubtract(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_DIVIDE:
+        return ShineTexture_EvaluateDivide(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_MIN:
+        return ShineTexture_EvaluateMin(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_MAX:
+        return ShineTexture_EvaluateMax(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_ABS:
+        return ShineTexture_EvaluateAbs(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_SQRT:
+        return ShineTexture_EvaluateSqrt(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_ONE_MINUS:
+        return ShineTexture_EvaluateOneMinus(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_FLOOR:
+        return ShineTexture_EvaluateFloor(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_FRAC:
+        return ShineTexture_EvaluateFrac(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_CLAMP:
+        return ShineTexture_EvaluateClamp(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0);
+    case SHINE_NODE_LEVELS:
+        return ShineTexture_EvaluateLevels(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0, InParam1);
+    case SHINE_NODE_BLUR:
+        return ShineTexture_EvaluateBlur(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0, InResolution);
+    case SHINE_NODE_NORMAL_BLEND:
+        return ShineTexture_EvaluateNormalBlend(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV, InParam0);
+    case SHINE_NODE_CHANNEL_PACK:
+        return ShineTexture_EvaluateChannelPack(InInputTextureA, InInputTextureB, InInputTextureC, InInputTextureD, InInputSampler, InInputValid, UV, InParam0);
+    case SHINE_NODE_GREATER:
+        return ShineTexture_EvaluateGreater(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_LESS:
+        return ShineTexture_EvaluateLess(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_EQUAL:
+        return ShineTexture_EvaluateEqual(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV, InParam0);
+    case SHINE_NODE_STEP:
+        return ShineTexture_EvaluateStep(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_AND:
+        return ShineTexture_EvaluateAnd(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_OR:
+        return ShineTexture_EvaluateOr(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_NOT:
+        return ShineTexture_EvaluateNot(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_TO_FLOAT:
+        return ShineTexture_EvaluateToFloat(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_TO_INT:
+        return ShineTexture_EvaluateToInt(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_SWIZZLE4:
+        return ShineTexture_EvaluateSwizzle4(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0);
+    case SHINE_NODE_APPEND_VECTOR4:
+        return ShineTexture_EvaluateAppendVector4(InInputTextureA, InInputTextureB, InInputTextureC, InInputTextureD, InInputSampler, InInputValid, UV);
+    case SHINE_NODE_LERP:
+        return ShineTexture_EvaluateLerp(InInputTextureA, InInputTextureB, InInputTextureC, InInputSampler, InInputValid.xyz, UV);
+    case SHINE_NODE_MODULO:
+        return ShineTexture_EvaluateModulo(InInputTextureA, InInputTextureB, InInputSampler, InInputValid.xy, UV);
+    case SHINE_NODE_MASK:
+        return ShineTexture_EvaluateMask(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam0);
+    case SHINE_NODE_BREAK_OUT:
+        return ShineTexture_EvaluateBreakOut(InInputTextureA, InInputSampler, InInputValid.x != 0, UV, InParam1);
+    case SHINE_NODE_SELECT:
+        return ShineTexture_EvaluateSelect(InInputTextureA, InInputTextureB, InInputTextureC, InInputSampler, InInputValid.xyz, UV);
+    case SHINE_NODE_PREVIEW:
+        return ShineTexture_EvaluatePreview(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_OUTPUT:
+        return ShineTexture_EvaluateOutput(InInputTextureA, InInputSampler, InInputValid.x != 0, UV);
+    case SHINE_NODE_APPEND_VECTOR3:
+        return ShineTexture_EvaluateAppendVector3(InInputTextureA, InInputTextureB, InInputTextureC, InInputSampler, InInputValid.xyz, UV);
+    default:
+        return 0.0;
+    }
+}
+
+#endif

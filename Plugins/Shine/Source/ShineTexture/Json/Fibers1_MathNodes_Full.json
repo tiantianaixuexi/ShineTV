@@ -1,0 +1,213 @@
+{
+  "format": "ShineTextureGraph",
+  "version": 1,
+  "nodes": [
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000001",
+      "class": "/Script/ShineTextureEditor.ShineTextureUvNode",
+      "x": -1120,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000002",
+      "class": "/Script/ShineTextureEditor.ShineTextureBreakOutNode",
+      "x": -800,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000003",
+      "class": "/Script/ShineTextureEditor.ShineTextureScalarConstantNode",
+      "x": -1120,
+      "y": -240,
+      "properties": {
+        "Value": 2.0
+      }
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000004",
+      "class": "/Script/ShineTextureEditor.ShineTextureScalarConstantNode",
+      "x": -1120,
+      "y": 240,
+      "properties": {
+        "Value": 0.5
+      }
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000005",
+      "class": "/Script/ShineTextureEditor.ShineTextureScalarConstantNode",
+      "x": -1120,
+      "y": 400,
+      "properties": {
+        "Value": 2.0
+      }
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000006",
+      "class": "/Script/ShineTextureEditor.ShineTextureSubtractNode",
+      "x": -480,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000007",
+      "class": "/Script/ShineTextureEditor.ShineTextureMultiplyNode",
+      "x": -160,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000008",
+      "class": "/Script/ShineTextureEditor.ShineTextureFracNode",
+      "x": 160,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-000000000009",
+      "class": "/Script/ShineTextureEditor.ShineTextureSubtractNode",
+      "x": 400,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-00000000000a",
+      "class": "/Script/ShineTextureEditor.ShineTextureAbsNode",
+      "x": 640,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-00000000000b",
+      "class": "/Script/ShineTextureEditor.ShineTextureMultiplyNode",
+      "x": 880,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-00000000000c",
+      "class": "/Script/ShineTextureEditor.ShineTextureOneMinusNode",
+      "x": 1120,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-00000000000d",
+      "class": "/Script/ShineTextureEditor.ShineTextureSqrtNode",
+      "x": 1360,
+      "y": 0,
+      "properties": {}
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-00000000000e",
+      "class": "/Script/ShineTextureEditor.ShineTexturePreviewNode",
+      "x": 1600,
+      "y": 0,
+      "properties": {
+        "PreviewResolution": 512
+      }
+    },
+    {
+      "nodeId": "c3000001-0000-4000-8000-00000000000f",
+      "class": "/Script/ShineTextureEditor.ShineTextureOutputNode",
+      "x": 1880,
+      "y": 0,
+      "properties": {
+        "PreviewResolution": 512
+      }
+    }
+  ],
+  "links": [
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000001",
+      "fromPin": "UV",
+      "toNode": "c3000001-0000-4000-8000-000000000002",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000002",
+      "fromPin": "Y",
+      "toNode": "c3000001-0000-4000-8000-000000000006",
+      "toPin": "A"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000002",
+      "fromPin": "X",
+      "toNode": "c3000001-0000-4000-8000-000000000006",
+      "toPin": "B"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000006",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-000000000007",
+      "toPin": "A"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000003",
+      "fromPin": "Value",
+      "toNode": "c3000001-0000-4000-8000-000000000007",
+      "toPin": "B"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000007",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-000000000008",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000008",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-000000000009",
+      "toPin": "A"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000004",
+      "fromPin": "Value",
+      "toNode": "c3000001-0000-4000-8000-000000000009",
+      "toPin": "B"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000009",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-00000000000a",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-00000000000a",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-00000000000b",
+      "toPin": "A"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-000000000005",
+      "fromPin": "Value",
+      "toNode": "c3000001-0000-4000-8000-00000000000b",
+      "toPin": "B"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-00000000000b",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-00000000000c",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-00000000000c",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-00000000000d",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-00000000000d",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-00000000000e",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "c3000001-0000-4000-8000-00000000000e",
+      "fromPin": "Result",
+      "toNode": "c3000001-0000-4000-8000-00000000000f",
+      "toPin": "Surface"
+    }
+  ]
+}

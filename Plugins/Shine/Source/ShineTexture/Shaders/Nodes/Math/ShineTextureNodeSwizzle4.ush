@@ -1,0 +1,40 @@
+#ifndef SHINE_TEXTURE_NODE_SWIZZLE4_USH
+#define SHINE_TEXTURE_NODE_SWIZZLE4_USH
+
+// Param packing contract:
+// Param0: x=XComponent, y=YComponent, z=ZComponent, w=WComponent
+// Param1: unused
+
+float ShineTexture_Swizzle4Component(float4 Value, int ComponentIndex)
+{
+    switch (ComponentIndex)
+    {
+    case 1:
+        return Value.y;
+    case 2:
+        return Value.z;
+    case 3:
+        return Value.w;
+    case 0:
+    default:
+        return Value.x;
+    }
+}
+
+float4 ShineTexture_EvaluateSwizzle4(
+    Texture2D<float4> InputTexture,
+    SamplerState InputSampler,
+    bool bInputValid,
+    float2 UV,
+    float4 Param0)
+{
+    float4 Value = ShineTexture_SampleOrDefault(InputTexture, InputSampler, bInputValid, UV, 0.0);
+    int4 Components = clamp((int4)round(Param0), 0, 3);
+    return float4(
+        ShineTexture_Swizzle4Component(Value, Components.x),
+        ShineTexture_Swizzle4Component(Value, Components.y),
+        ShineTexture_Swizzle4Component(Value, Components.z),
+        ShineTexture_Swizzle4Component(Value, Components.w));
+}
+
+#endif

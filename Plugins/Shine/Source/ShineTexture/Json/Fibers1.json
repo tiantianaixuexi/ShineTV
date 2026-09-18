@@ -1,0 +1,48 @@
+{
+  "format": "ShineTextureGraph",
+  "version": 1,
+  "nodes": [
+    {
+      "nodeId": "b2000001-0000-4000-8000-000000000001",
+      "class": "/Script/ShineTextureEditor.ShineTextureFibers1Node",
+      "x": -320,
+      "y": 0,
+      "properties": {
+        "Tiling": 2,
+        "bNonSquareExpansion": false
+      }
+    },
+    {
+      "nodeId": "b2000001-0000-4000-8000-000000000002",
+      "class": "/Script/ShineTextureEditor.ShineTexturePreviewNode",
+      "x": 80,
+      "y": 0,
+      "properties": {
+        "PreviewResolution": 512
+      }
+    },
+    {
+      "nodeId": "b2000001-0000-4000-8000-000000000003",
+      "class": "/Script/ShineTextureEditor.ShineTextureOutputNode",
+      "x": 480,
+      "y": 0,
+      "properties": {
+        "PreviewResolution": 512
+      }
+    }
+  ],
+  "links": [
+    {
+      "fromNode": "b2000001-0000-4000-8000-000000000001",
+      "fromPin": "颜色 (Color)",
+      "toNode": "b2000001-0000-4000-8000-000000000002",
+      "toPin": "Input"
+    },
+    {
+      "fromNode": "b2000001-0000-4000-8000-000000000002",
+      "fromPin": "Result",
+      "toNode": "b2000001-0000-4000-8000-000000000003",
+      "toPin": "Surface"
+    }
+  ]
+}

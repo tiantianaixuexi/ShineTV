@@ -1,0 +1,28 @@
+#ifndef SHINE_TEXTURE_NODE_NOISE_USH
+#define SHINE_TEXTURE_NODE_NOISE_USH
+
+// Param packing contract:
+// Param0: x=Scale, y=Octaves, z=unused, w=unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateNoise(float2 UV, float4 Param0)
+{
+    float Frequency = max(1.0, Param0.x);
+    int Octaves = max(1, (int)Param0.y);
+    float Amplitude = 1.0;
+    float Value = 0.0;
+    float TotalWeight = 0.0;
+
+    for (int OctaveIndex = 0; OctaveIndex < Octaves; ++OctaveIndex)
+    {
+        Value += ShineTexture_ValueNoise(UV * Frequency) * Amplitude;
+        TotalWeight += Amplitude;
+        Frequency *= 2.0;
+        Amplitude *= 0.5;
+    }
+
+    float NormalizedValue = TotalWeight > 0.0 ? Value / TotalWeight : 0.0;
+    return float4(NormalizedValue.xxx, 1.0);
+}
+
+#endif

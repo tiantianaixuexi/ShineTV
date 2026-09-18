@@ -1,0 +1,21 @@
+#ifndef SHINE_TEXTURE_NODE_STEP_USH
+#define SHINE_TEXTURE_NODE_STEP_USH
+
+// Param packing contract:
+// Param0: unused
+// Param1: unused
+
+float4 ShineTexture_EvaluateStep(
+    Texture2D<float4> InputTextureEdge,
+    Texture2D<float4> InputTextureValue,
+    SamplerState InputSampler,
+    int2 InputValid,
+    float2 UV)
+{
+    float Edge = ShineTexture_SampleOrDefault(InputTextureEdge, InputSampler, InputValid.x != 0, UV, 0.0).r;
+    float Value = ShineTexture_SampleOrDefault(InputTextureValue, InputSampler, InputValid.y != 0, UV, 0.0).r;
+    float Result = Value >= Edge ? 1.0 : 0.0;
+    return float4(Result, Result, Result, 1.0);
+}
+
+#endif

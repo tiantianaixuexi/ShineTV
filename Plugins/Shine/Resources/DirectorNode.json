@@ -1,0 +1,735 @@
+{
+  "preset": "Director",
+  "displayName": "场景 AI 生成",
+  "description": "把 UE 场景捕获的颜色 / 深度 / 法线送进 ComfyUI。EnableImageGen = SD1.5 图片路线（颜色 img2img + 深度/法线双 ControlNet）；EnableVideoGen = LTX-2 视频路线（图像驱动视频生成）。两者互斥，只开一个。",
+  "accentColor": [0.2, 0.55, 0.95],
+
+  "parameters": [
+    {
+      "name": "EnableImageGen",
+      "label": "① 启用图片生成 (SD1.5 + ControlNet)",
+      "type": "Boolean",
+      "default": true
+    },
+    {
+      "name": "EnableVideoGen",
+      "label": "② 启用视频生成 (LTX-2 图像→视频)",
+      "type": "Boolean",
+      "default": false
+    },
+
+    {
+      "name": "Checkpoint",
+      "label": "[图片] 基础模型",
+      "type": "Text",
+      "default": "v1-5-pruned-emaonly.safetensors",
+      "optionsSource": "checkpoints"
+    },
+    {
+      "name": "PositivePrompt",
+      "label": "[图片] 正向提示词",
+      "type": "Text",
+      "default": "cinematic photo of a futuristic desert outpost, modular structures, soft volumetric sunlight, dust in the air, ultra detailed, 8k, sharp focus"
+    },
+    {
+      "name": "NegativePrompt",
+      "label": "[图片] 反向提示词",
+      "type": "Text",
+      "default": "blurry, lowres, watermark, text, signature, deformed geometry, extra limbs, jpeg artifacts, oversaturated"
+    },
+    {
+      "name": "ColorImage",
+      "label": "[图片] 颜色图 (img2img)",
+      "type": "Text",
+      "default": "Scene_Color.png"
+    },
+    {
+      "name": "DepthImage",
+      "label": "[图片] 深度图 (ControlNet)",
+      "type": "Text",
+      "default": "Scene_Depth.png"
+    },
+    {
+      "name": "NormalImage",
+      "label": "[图片] 法线图 (ControlNet)",
+      "type": "Text",
+      "default": "Scene_Normal.png"
+    },
+    {
+      "name": "DepthControlNet",
+      "label": "[图片] 深度 ControlNet",
+      "type": "Text",
+      "default": "control_v11f1p_sd15_depth.pth",
+      "optionsSource": "controlnet"
+    },
+    {
+      "name": "NormalControlNet",
+      "label": "[图片] 法线 ControlNet",
+      "type": "Text",
+      "default": "control_v11p_sd15_normalbae.pth",
+      "optionsSource": "controlnet"
+    },
+    {
+      "name": "Width",
+      "label": "[图片] 宽度",
+      "type": "Integer",
+      "default": 768
+    },
+    {
+      "name": "Height",
+      "label": "[图片] 高度",
+      "type": "Integer",
+      "default": 768
+    },
+    {
+      "name": "Steps",
+      "label": "[图片] 采样步数",
+      "type": "Integer",
+      "default": 30
+    },
+    {
+      "name": "CfgScale",
+      "label": "[图片] CFG",
+      "type": "Float",
+      "default": 7.5
+    },
+    {
+      "name": "Seed",
+      "label": "[图片] 随机种子",
+      "type": "Integer",
+      "default": 12345
+    },
+    {
+      "name": "Denoise",
+      "label": "[图片] 重绘强度",
+      "type": "Float",
+      "default": 0.78
+    },
+    {
+      "name": "DepthStrength",
+      "label": "[图片] 深度控制强度",
+      "type": "Float",
+      "default": 0.7
+    },
+    {
+      "name": "NormalStrength",
+      "label": "[图片] 法线控制强度",
+      "type": "Float",
+      "default": 0.38
+    },
+    {
+      "name": "ControlEndPercent",
+      "label": "[图片] ControlNet 结束步占比",
+      "type": "Float",
+      "default": 0.85
+    },
+    {
+      "name": "SamplerName",
+      "label": "[图片] 采样器",
+      "type": "Text",
+      "default": "dpmpp_2m",
+      "options": ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_sde", "ddim", "heun", "uni_pc"]
+    },
+    {
+      "name": "Scheduler",
+      "label": "[图片] 调度器",
+      "type": "Text",
+      "default": "karras",
+      "options": ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"]
+    },
+    {
+      "name": "OutputPrefix",
+      "label": "[图片] 输出前缀",
+      "type": "Text",
+      "default": "Shine/SceneToImage"
+    },
+
+    {
+      "name": "LTXCheckpoint",
+      "label": "[视频] LTX-2 检查点",
+      "type": "Text",
+      "default": "ltx-2-19b-dev-fp8.safetensors",
+      "optionsSource": "checkpoints"
+    },
+    {
+      "name": "LTXTextEncoder",
+      "label": "[视频] 文本编码器 (Gemma-3 12B)",
+      "type": "Text",
+      "default": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "optionsSource": "text_encoders"
+    },
+    {
+      "name": "LTXDistilledLora",
+      "label": "[视频] 蒸馏 LoRA",
+      "type": "Text",
+      "default": "ltx-2-19b-distilled-lora-384.safetensors",
+      "optionsSource": "loras"
+    },
+    {
+      "name": "LTXUpscaler",
+      "label": "[视频] 空间超分模型",
+      "type": "Text",
+      "default": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
+      "optionsSource": "latent_upscale_models"
+    },
+    {
+      "name": "LTXVideoImage",
+      "label": "[视频] 驱动图（首帧）",
+      "type": "Text",
+      "default": "Scene_Color.png"
+    },
+    {
+      "name": "LTXPositivePrompt",
+      "label": "[视频] 正向提示词",
+      "type": "Text",
+      "default": "A cinematic shot of a futuristic desert outpost at dusk, modular white structures on a wide sand plain, distant mountain ridges, soft blue sky, warm low sunlight, gentle camera push in, ultra detailed, photorealistic"
+    },
+    {
+      "name": "LTXNegativePrompt",
+      "label": "[视频] 反向提示词",
+      "type": "Text",
+      "default": "blurry, low quality, still frame, frames, watermark, overlay, titles, has blurbox, has subtitles, text, logo"
+    },
+    {
+      "name": "LTXWidth",
+      "label": "[视频] 宽度",
+      "type": "Integer",
+      "default": 768
+    },
+    {
+      "name": "LTXHeight",
+      "label": "[视频] 高度",
+      "type": "Integer",
+      "default": 768
+    },
+    {
+      "name": "LTXFrames",
+      "label": "[视频] 帧数 (8n+1)",
+      "type": "Integer",
+      "default": 49
+    },
+    {
+      "name": "LTXFps",
+      "label": "[视频] 帧率",
+      "type": "Float",
+      "default": 25.0
+    },
+    {
+      "name": "LTXSteps",
+      "label": "[视频] 第一遍采样步数",
+      "type": "Integer",
+      "default": 20
+    },
+    {
+      "name": "LTXSeed",
+      "label": "[视频] 随机种子",
+      "type": "Integer",
+      "default": 42
+    },
+    {
+      "name": "LTXOutputPrefix",
+      "label": "[视频] 输出前缀",
+      "type": "Text",
+      "default": "Shine/LTX2_i2v"
+    }
+  ],
+
+  "inputPins": [],
+
+  "outputPins": [
+    { "name": "Image", "category": "Shine.Image" },
+    { "name": "Video", "category": "Shine.Video" }
+  ],
+
+  "expansion": {
+    "nodes": [
+      {
+        "id": "ckpt",
+        "classType": "CheckpointLoaderSimple",
+        "inputs": { "ckpt_name": "{Checkpoint}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "pos",
+        "classType": "CLIPTextEncode",
+        "inputs": { "text": "{PositivePrompt}", "clip": { "$link": ["ckpt", 1] } },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "neg",
+        "classType": "CLIPTextEncode",
+        "inputs": { "text": "{NegativePrompt}", "clip": { "$link": ["ckpt", 1] } },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "color",
+        "classType": "LoadImage",
+        "inputs": { "image": "{ColorImage}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "color_scaled",
+        "classType": "ImageScale",
+        "inputs": {
+          "image": { "$link": ["color", 0] },
+          "upscale_method": "lanczos",
+          "width": "{Width}",
+          "height": "{Height}",
+          "crop": "disabled"
+        },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "vae_encode",
+        "classType": "VAEEncode",
+        "inputs": { "pixels": { "$link": ["color_scaled", 0] }, "vae": { "$link": ["ckpt", 2] } },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "depth",
+        "classType": "LoadImage",
+        "inputs": { "image": "{DepthImage}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "cn_depth",
+        "classType": "ControlNetLoader",
+        "inputs": { "control_net_name": "{DepthControlNet}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "apply_depth",
+        "classType": "ControlNetApplyAdvanced",
+        "inputs": {
+          "positive": { "$link": ["pos", 0] },
+          "negative": { "$link": ["neg", 0] },
+          "control_net": { "$link": ["cn_depth", 0] },
+          "image": { "$link": ["depth", 0] },
+          "strength": "{DepthStrength}",
+          "start_percent": 0.0,
+          "end_percent": "{ControlEndPercent}"
+        },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "normal",
+        "classType": "LoadImage",
+        "inputs": { "image": "{NormalImage}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "cn_normal",
+        "classType": "ControlNetLoader",
+        "inputs": { "control_net_name": "{NormalControlNet}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "apply_normal",
+        "classType": "ControlNetApplyAdvanced",
+        "inputs": {
+          "positive": { "$link": ["apply_depth", 0] },
+          "negative": { "$link": ["apply_depth", 1] },
+          "control_net": { "$link": ["cn_normal", 0] },
+          "image": { "$link": ["normal", 0] },
+          "strength": "{NormalStrength}",
+          "start_percent": 0.0,
+          "end_percent": "{ControlEndPercent}"
+        },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "sampler",
+        "classType": "KSampler",
+        "inputs": {
+          "model": { "$link": ["ckpt", 0] },
+          "seed": "{Seed}",
+          "steps": "{Steps}",
+          "cfg": "{CfgScale}",
+          "sampler_name": "{SamplerName}",
+          "scheduler": "{Scheduler}",
+          "positive": { "$link": ["apply_normal", 0] },
+          "negative": { "$link": ["apply_normal", 1] },
+          "latent_image": { "$link": ["vae_encode", 0] },
+          "denoise": "{Denoise}"
+        },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "decode",
+        "classType": "VAEDecode",
+        "inputs": { "samples": { "$link": ["sampler", 0] }, "vae": { "$link": ["ckpt", 2] } },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "save",
+        "classType": "SaveImage",
+        "inputs": { "images": { "$link": ["decode", 0] }, "filename_prefix": "{OutputPrefix}" },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+      {
+        "id": "preview",
+        "classType": "PreviewImage",
+        "inputs": { "images": { "$link": ["decode", 0] } },
+        "condition": { "$paramTrue": "EnableImageGen" }
+      },
+
+      {
+        "id": "ltx_ckpt",
+        "classType": "CheckpointLoaderSimple",
+        "inputs": { "ckpt_name": "{LTXCheckpoint}" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_te",
+        "classType": "LTXAVTextEncoderLoader",
+        "inputs": {
+          "text_encoder": "{LTXTextEncoder}",
+          "ckpt_name": "{LTXCheckpoint}",
+          "device": "default"
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_lora",
+        "classType": "LoraLoaderModelOnly",
+        "inputs": {
+          "model": { "$link": ["ltx_ckpt", 0] },
+          "lora_name": "{LTXDistilledLora}",
+          "strength_model": 1.0
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_avaev",
+        "classType": "LTXVAudioVAELoader",
+        "inputs": { "ckpt_name": "{LTXCheckpoint}" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_pos",
+        "classType": "CLIPTextEncode",
+        "inputs": { "text": "{LTXPositivePrompt}", "clip": { "$link": ["ltx_te", 0] } },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_neg",
+        "classType": "CLIPTextEncode",
+        "inputs": { "text": "{LTXNegativePrompt}", "clip": { "$link": ["ltx_te", 0] } },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_cond",
+        "classType": "LTXVConditioning",
+        "inputs": {
+          "positive": { "$link": ["ltx_pos", 0] },
+          "negative": { "$link": ["ltx_neg", 0] },
+          "frame_rate": "{LTXFps}"
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_load",
+        "classType": "LoadImage",
+        "inputs": { "image": "{LTXVideoImage}" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_resize",
+        "classType": "ImageScale",
+        "inputs": {
+          "image": { "$link": ["ltx_load", 0] },
+          "upscale_method": "lanczos",
+          "width": "{LTXWidth}",
+          "height": "{LTXHeight}",
+          "crop": "center"
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sizein",
+        "classType": "GetImageSize",
+        "inputs": { "image": { "$link": ["ltx_resize", 0] } },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_emptyimg",
+        "classType": "EmptyImage",
+        "inputs": {
+          "width": { "$link": ["ltx_sizein", 0] },
+          "height": { "$link": ["ltx_sizein", 1] },
+          "batch_size": 1,
+          "color": 0
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_half",
+        "classType": "ImageScaleBy",
+        "inputs": {
+          "image": { "$link": ["ltx_emptyimg", 0] },
+          "upscale_method": "lanczos",
+          "scale_by": 0.5
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sizehalf",
+        "classType": "GetImageSize",
+        "inputs": { "image": { "$link": ["ltx_half", 0] } },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_frames",
+        "classType": "PrimitiveInt",
+        "inputs": { "value": "{LTXFrames}" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_latent0",
+        "classType": "EmptyLTXVLatentVideo",
+        "inputs": {
+          "width": { "$link": ["ltx_sizehalf", 0] },
+          "height": { "$link": ["ltx_sizehalf", 1] },
+          "length": { "$link": ["ltx_frames", 0] },
+          "batch_size": 1
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_edge",
+        "classType": "ResizeImagesByLongerEdge",
+        "inputs": { "images": { "$link": ["ltx_resize", 0] }, "longer_edge": 1536 },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_pre",
+        "classType": "LTXVPreprocess",
+        "inputs": { "image": { "$link": ["ltx_edge", 0] }, "img_compression": 33 },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_i2v0",
+        "classType": "LTXVImgToVideoInplace",
+        "inputs": {
+          "vae": { "$link": ["ltx_ckpt", 2] },
+          "image": { "$link": ["ltx_pre", 0] },
+          "latent": { "$link": ["ltx_latent0", 0] },
+          "strength": 1.0,
+          "bypass": false
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_audiolat",
+        "classType": "LTXVEmptyLatentAudio",
+        "inputs": {
+          "frames_number": { "$link": ["ltx_frames", 0] },
+          "frame_rate": "{LTXFps}",
+          "batch_size": 1,
+          "audio_vae": { "$link": ["ltx_avaev", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_av0",
+        "classType": "LTXVConcatAVLatent",
+        "inputs": {
+          "video_latent": { "$link": ["ltx_i2v0", 0] },
+          "audio_latent": { "$link": ["ltx_audiolat", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_noise1",
+        "classType": "RandomNoise",
+        "inputs": { "noise_seed": "{LTXSeed}" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sel1",
+        "classType": "KSamplerSelect",
+        "inputs": { "sampler_name": "euler" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sch1",
+        "classType": "LTXVScheduler",
+        "inputs": {
+          "steps": "{LTXSteps}",
+          "max_shift": 2.05,
+          "base_shift": 0.95,
+          "stretch": true,
+          "terminal": 0.1,
+          "latent": { "$link": ["ltx_av0", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_guide1",
+        "classType": "CFGGuider",
+        "inputs": {
+          "model": { "$link": ["ltx_lora", 0] },
+          "positive": { "$link": ["ltx_cond", 0] },
+          "negative": { "$link": ["ltx_cond", 1] },
+          "cfg": 4.0
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sampler1",
+        "classType": "SamplerCustomAdvanced",
+        "inputs": {
+          "noise": { "$link": ["ltx_noise1", 0] },
+          "guider": { "$link": ["ltx_guide1", 0] },
+          "sampler": { "$link": ["ltx_sel1", 0] },
+          "sigmas": { "$link": ["ltx_sch1", 0] },
+          "latent_image": { "$link": ["ltx_av0", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_split1",
+        "classType": "LTXVSeparateAVLatent",
+        "inputs": { "av_latent": { "$link": ["ltx_sampler1", 0] } },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_crop",
+        "classType": "LTXVCropGuides",
+        "inputs": {
+          "positive": { "$link": ["ltx_cond", 0] },
+          "negative": { "$link": ["ltx_cond", 1] },
+          "latent": { "$link": ["ltx_split1", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_upsloader",
+        "classType": "LatentUpscaleModelLoader",
+        "inputs": { "model_name": "{LTXUpscaler}" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_ups",
+        "classType": "LTXVLatentUpsampler",
+        "inputs": {
+          "samples": { "$link": ["ltx_crop", 2] },
+          "upscale_model": { "$link": ["ltx_upsloader", 0] },
+          "vae": { "$link": ["ltx_ckpt", 2] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_i2v1",
+        "classType": "LTXVImgToVideoInplace",
+        "inputs": {
+          "vae": { "$link": ["ltx_ckpt", 2] },
+          "image": { "$link": ["ltx_pre", 0] },
+          "latent": { "$link": ["ltx_ups", 0] },
+          "strength": 1.0,
+          "bypass": false
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_av1",
+        "classType": "LTXVConcatAVLatent",
+        "inputs": {
+          "video_latent": { "$link": ["ltx_i2v1", 0] },
+          "audio_latent": { "$link": ["ltx_split1", 1] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_noise2",
+        "classType": "RandomNoise",
+        "inputs": { "noise_seed": 0 },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sel2",
+        "classType": "KSamplerSelect",
+        "inputs": { "sampler_name": "gradient_estimation" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sig2",
+        "classType": "ManualSigmas",
+        "inputs": { "sigmas": "0.909375, 0.725, 0.421875, 0.0" },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_guide2",
+        "classType": "CFGGuider",
+        "inputs": {
+          "model": { "$link": ["ltx_lora", 0] },
+          "positive": { "$link": ["ltx_crop", 0] },
+          "negative": { "$link": ["ltx_crop", 1] },
+          "cfg": 1.0
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_sampler2",
+        "classType": "SamplerCustomAdvanced",
+        "inputs": {
+          "noise": { "$link": ["ltx_noise2", 0] },
+          "guider": { "$link": ["ltx_guide2", 0] },
+          "sampler": { "$link": ["ltx_sel2", 0] },
+          "sigmas": { "$link": ["ltx_sig2", 0] },
+          "latent_image": { "$link": ["ltx_av1", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_split2",
+        "classType": "LTXVSeparateAVLatent",
+        "inputs": { "av_latent": { "$link": ["ltx_sampler2", 1] } },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_decode",
+        "classType": "VAEDecode",
+        "inputs": {
+          "samples": { "$link": ["ltx_split2", 0] },
+          "vae": { "$link": ["ltx_ckpt", 2] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_audio",
+        "classType": "LTXVAudioVAEDecode",
+        "inputs": {
+          "samples": { "$link": ["ltx_split2", 1] },
+          "audio_vae": { "$link": ["ltx_avaev", 0] }
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_video",
+        "classType": "CreateVideo",
+        "inputs": {
+          "images": { "$link": ["ltx_decode", 0] },
+          "audio": { "$link": ["ltx_audio", 0] },
+          "fps": "{LTXFps}"
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      },
+      {
+        "id": "ltx_save",
+        "classType": "SaveVideo",
+        "inputs": {
+          "video": { "$link": ["ltx_video", 0] },
+          "filename_prefix": "{LTXOutputPrefix}",
+          "format": "auto",
+          "codec": "auto"
+        },
+        "condition": { "$paramTrue": "EnableVideoGen" }
+      }
+    ],
+    "outputs": {
+      "Image": ["decode", 0],
+      "Video": ["ltx_video", 0]
+    }
+  }
+}

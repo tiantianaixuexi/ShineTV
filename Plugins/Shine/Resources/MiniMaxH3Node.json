@@ -1,0 +1,255 @@
+{
+  "_comment": "MiniMax H3 视频链路的参数声明与坑位提示。这份文件**不参与 API 图拼装**——图是 FShineMiniMaxH3WorkflowBuilder 纯 C++ 直出的（参考图是变长 ref_images.ref_image_N、跨分镜还有动态连线，JSON 模板那套 {$link}/{$paramTrue} 表达不了）。它只负责两件事：给面板填默认值与可选项、把 P0 实测撞出来的坑贴在对应参数旁边。",
+  "_verified_on": "2026-09-16 / ComfyUI 0.31.1 / RTX 4090 24GB",
+  "_spec": "Scripts/H3/H3-SPEC.md 是唯一权威；对拍基准是 Scripts/H3/probe_ref2va.json（单段）与 probe_chain2.json（两段链式 29 节点）",
+
+  "sampling_defaults": {
+    "width": 1280,
+    "height": 704,
+    "_size_hint": "宽高必须是 32 的倍数。1344x768 跑 ref2va 必卡死，不要往上调。",
+    "length": 124,
+    "_length_hint": "必须在 n % 17 == 5 的网格上（124 的下一档是 141），否则实际帧数和你填的不一样，链式取末帧的下标也会错。",
+    "fps": 24,
+    "_fps_hint": "H3 是 24fps 原生。CreateVideo 的默认值是 30，必须显式改成 24。",
+    "steps": 25,
+    "cfg": 4.0,
+    "_cfg_hint": "CFG > 1 时每步要跑正向+负向两次前向，GPU 时间约翻倍。官方模板用等价 CFG=1 的 BasicGuider，那是画质基线；4.0 是有意增强。",
+    "denoise": 1.0,
+    "scheduler": "simple",
+    "sampler_name": "res_multistep",
+    "shift_video": 12.0,
+    "shift_audio": 3.0,
+    "_shift_hint": "这组值与 supported_models.py 里 MiniMaxH3 自带的 sampling_settings 完全一样，所以 MiniMaxH3SigmaShift 在当前取值下是空操作；保留它是为了让 shift 成为可调旋钮。",
+    "ref_image_size": "match",
+    "_ref_image_size_hint": "match：把参考图缩到与画布同像素量（只缩不放）。max：用参考管线的 2048px 短边，身份更准，但参考 token 会贯穿每个采样步，节点 tooltip 原话是「可能慢好几倍」。"
+  },
+
+  "nodes": [
+    {
+      "class_type": "UNETLoader",
+      "display_name": "底座",
+      "role": "model",
+      "inputs": [
+        { "name": "unet_name", "type": "string", "default": "minimax_h3_ref2va_pruned_int8_convrot.safetensors", "hint": "ref2va / fl2va 是两份不同的权重：一份吃参考图，一份吃首尾帧，别混用。" },
+        { "name": "weight_dtype", "type": "string", "default": "default", "options": ["default", "fp8_e4m3fn", "fp8_e5m2"], "hint": "int8 convrot 权重加载后计算 dtype 仍是 bf16，所以 SageAttention 能正常生效。" }
+      ]
+    },
+    {
+      "class_type": "CLIPLoader",
+      "display_name": "文本编码器",
+      "role": "clip",
+      "inputs": [
+        { "name": "clip_name", "type": "string", "default": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors" },
+        { "name": "type", "type": "string", "default": "minimax", "options": ["minimax"], "hint": "必须是 minimax，换成别的会走错编码器分支。" },
+        { "name": "device", "type": "string", "default": "default", "options": ["default", "cpu"] }
+      ]
+    },
+    {
+      "class_type": "VAELoader",
+      "display_name": "VAE（视频 / 音频各一个）",
+      "role": "vae",
+      "inputs": [
+        { "name": "vae_name", "type": "string", "default": "minimax_h3_video_vae_fp16.safetensors", "hint": "视频 VAE 给 VAEDecode，音频 VAE 给 VAEDecodeAudio，两个都要有。" }
+      ]
+    },
+    {
+      "class_type": "LoraLoader",
+      "display_name": "Turbo LoRA（可选）",
+      "role": "model",
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": true },
+        { "name": "clip", "type": "CLIP", "link": true },
+        { "name": "lora_name", "type": "string", "default": "", "hint": "留空 = 不叠，走 25 步基线。" },
+        { "name": "strength_model", "type": "number", "default": 1.0 },
+        { "name": "strength_clip", "type": "number", "default": 1.0 }
+      ]
+    },
+    {
+      "class_type": "MiniMaxH3SigmaShift",
+      "display_name": "H3 shift",
+      "role": "model",
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": true },
+        { "name": "shift_video", "type": "number", "default": 12.0 },
+        { "name": "shift_audio", "type": "number", "default": 3.0 }
+      ],
+      "hint": "官方三份模板里根本没有这个节点（模型自带默认值）。它是模型级旋钮，一个项目只能有一个值。"
+    },
+    {
+      "class_type": "LoadImage",
+      "display_name": "参考图",
+      "role": "image",
+      "inputs": [
+        { "name": "image", "type": "string", "hint": "ComfyUI input 目录里的文件名（子目录用 sub/name.png）。参考图由任务执行器上传后得到这个值。" }
+      ]
+    },
+    {
+      "class_type": "MiniMaxH3ReferenceToVideo",
+      "display_name": "H3 参考图驱动（ref2va）",
+      "role": "conditioning",
+      "outputs": [
+        { "name": "positive", "type": "CONDITIONING", "slot": 0 },
+        { "name": "latent", "type": "LATENT", "slot": 1 }
+      ],
+      "inputs": [
+        { "name": "clip", "type": "CLIP", "link": true },
+        { "name": "vae", "type": "VAE", "link": true },
+        { "name": "audio_vae", "type": "VAE", "link": true, "hint": "只有 ref2va 有 audio_vae；MiniMaxH3ImageToVideo 没有这个入参。" },
+        { "name": "prompt", "type": "string" },
+        { "name": "width", "type": "number", "default": 1280 },
+        { "name": "height", "type": "number", "default": 704 },
+        { "name": "length", "type": "number", "default": 124 },
+        { "name": "ref_image_size", "type": "string", "default": "match", "options": ["match", "max"] },
+        { "name": "ref_images.ref_image_0..8", "type": "IMAGE", "link": true, "max": 9, "hint": "键名是【带父前缀的 dotted 路径】；最多 9 张，超出的静默忽略。" },
+        { "name": "ref_videos.ref_video_0..2", "type": "VIDEO", "link": true, "max": 3, "hint": "必须是真的视频对象，图片塞不进来。" },
+        { "name": "ref_audios.ref_audio_0..2", "type": "AUDIO", "link": true, "max": 3 }
+      ],
+      "hint": "没有 first_frame / last_frame 输入：上一段的末帧只能作为【参考图】软锚定，接缝不如硬关键帧严。"
+    },
+    {
+      "class_type": "MiniMaxH3ImageToVideo",
+      "display_name": "H3 首尾帧驱动（fl2va）",
+      "role": "conditioning",
+      "outputs": [
+        { "name": "positive", "type": "CONDITIONING", "slot": 0 },
+        { "name": "latent", "type": "LATENT", "slot": 1 }
+      ],
+      "inputs": [
+        { "name": "clip", "type": "CLIP", "link": true },
+        { "name": "vae", "type": "VAE", "link": true },
+        { "name": "prompt", "type": "string" },
+        { "name": "width", "type": "number", "default": 1280 },
+        { "name": "height", "type": "number", "default": 704 },
+        { "name": "length", "type": "number", "default": 124 },
+        { "name": "first_frame", "type": "IMAGE", "link": true, "optional": true },
+        { "name": "last_frame", "type": "IMAGE", "link": true, "optional": true }
+      ],
+      "hint": "【没有参考图输入】，所以身份会随镜头漂。首帧必须是单张图：从上一段的 VAEDecode 取末帧时要先经 ImageFromBatch，不能把整批 124 帧直接塞进来。"
+    },
+    {
+      "class_type": "ConditioningZeroOut",
+      "display_name": "负向（作用在 H3 正向上）",
+      "role": "conditioning",
+      "inputs": [
+        { "name": "conditioning", "type": "CONDITIONING", "link": true, "hint": "必须接 H3 自己的正向 conditioning，不要接裸 CLIPTextEncode 的结果。" }
+      ],
+      "hint": "它 d = t[1].copy() 保留全部扩展键（minimax_frame_count / minimax_refs / minimax_token_tags）、只清零 conditioning 张量：结构一致，而且省掉第二次 32B 文本编码器前向。"
+    },
+    {
+      "class_type": "BasicScheduler",
+      "display_name": "采样调度",
+      "role": "sampling",
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": true },
+        { "name": "scheduler", "type": "string", "default": "simple", "options": ["simple", "normal", "beta", "sgm_uniform"] },
+        { "name": "steps", "type": "number", "default": 25 },
+        { "name": "denoise", "type": "number", "default": 1.0 }
+      ],
+      "hint": "steps / denoise 是分镜级参数，所以每段一个调度器；共享会让改一段影响全片。"
+    },
+    {
+      "class_type": "KSamplerSelect",
+      "display_name": "采样器",
+      "role": "sampling",
+      "inputs": [
+        { "name": "sampler_name", "type": "string", "default": "res_multistep", "options": ["res_multistep", "euler", "dpmpp_2m"] }
+      ]
+    },
+    {
+      "class_type": "CFGGuider",
+      "display_name": "引导（CFG）",
+      "role": "sampling",
+      "inputs": [
+        { "name": "model", "type": "MODEL", "link": true },
+        { "name": "positive", "type": "CONDITIONING", "link": true },
+        { "name": "negative", "type": "CONDITIONING", "link": true },
+        { "name": "cfg", "type": "number", "default": 4.0 }
+      ],
+      "hint": "官方模板用的是 BasicGuider（等价 CFG=1、无负向）。要走 CFGGuider 就必须同时给 negative，否则拿不到增强效果。"
+    },
+    {
+      "class_type": "RandomNoise",
+      "display_name": "噪声",
+      "role": "sampling",
+      "inputs": [
+        { "name": "noise_seed", "type": "number", "default": 42 }
+      ]
+    },
+    {
+      "class_type": "SamplerCustomAdvanced",
+      "display_name": "采样",
+      "role": "sampling",
+      "inputs": [
+        { "name": "noise", "type": "NOISE", "link": true },
+        { "name": "guider", "type": "GUIDER", "link": true },
+        { "name": "sampler", "type": "SAMPLER", "link": true },
+        { "name": "sigmas", "type": "SIGMAS", "link": true },
+        { "name": "latent_image", "type": "LATENT", "link": true, "hint": "接 conditioning 节点的第 1 个输出（第 0 个是 CONDITIONING）。" }
+      ]
+    },
+    {
+      "class_type": "VAEDecode",
+      "display_name": "解码视频",
+      "role": "decode",
+      "inputs": [
+        { "name": "samples", "type": "LATENT", "link": true },
+        { "name": "vae", "type": "VAE", "link": true }
+      ],
+      "hint": "H3 的 latent 是嵌套的 AV latent，VAEDecode 会自动 unbind()[0] 取视频流。"
+    },
+    {
+      "class_type": "VAEDecodeAudio",
+      "display_name": "解码音频",
+      "role": "decode",
+      "inputs": [
+        { "name": "samples", "type": "LATENT", "link": true },
+        { "name": "vae", "type": "VAE", "link": true, "hint": "这里必须接【音频 VAE】。" }
+      ],
+      "hint": "取 unbind()[-1] 的音频流。这一路接错的话 mp4 依然能正常播放，只是【静音】——不查流信息根本发现不了。"
+    },
+    {
+      "class_type": "CreateVideo",
+      "display_name": "封装视频",
+      "role": "output",
+      "inputs": [
+        { "name": "images", "type": "IMAGE", "link": true },
+        { "name": "audio", "type": "AUDIO", "link": true },
+        { "name": "fps", "type": "number", "default": 24.0, "hint": "必须 24；默认 30 会让片段比实际生成的速度快。" },
+        { "name": "bit_depth", "type": "number", "default": 8, "options": [8, 10] }
+      ]
+    },
+    {
+      "class_type": "SaveVideo",
+      "display_name": "保存视频",
+      "role": "output",
+      "inputs": [
+        { "name": "video", "type": "VIDEO", "link": true },
+        { "name": "filename_prefix", "type": "string", "default": "Shine/H3" },
+        { "name": "format", "type": "string", "default": "auto", "options": ["auto", "mp4", "webm"] },
+        { "name": "codec", "type": "string", "default": "auto" }
+      ],
+      "hint": "它走 ui.PreviewVideo，产物落在 history 的 images 键里（和图片同键），只能靠扩展名区分。"
+    },
+    {
+      "class_type": "ImageFromBatch",
+      "display_name": "取末帧",
+      "role": "util",
+      "inputs": [
+        { "name": "image", "type": "IMAGE", "link": true },
+        { "name": "batch_index", "type": "number", "hint": "链式取上一段末帧时 = 上一段【对齐后】帧数 - 1，不能写死 123。" },
+        { "name": "length", "type": "number", "default": 1 }
+      ]
+    }
+  ],
+
+  "pitfalls": [
+    "ComfyUI 对未知输入键是静默忽略、不报错的：node_errors 为空 /「提交成功」完全不能证明参数接对了。唯一可靠的判据是 history 的 status_str + 磁盘上真有产物。",
+    "参考图的键名是 dotted 路径 ref_images.ref_image_0，不是平铺的 ref_image_0，也不是数组。同族还有 ref_videos.ref_video_0 / ref_video_audios.ref_video_audio_0 / ref_audios.ref_audio_0。",
+    "视频产出的 history 键也叫 images（SaveVideo 走 ui.PreviewVideo），只能靠扩展名区分图片和视频。",
+    "负向不能用裸 CLIPTextEncode：缺 minimax_frame_count / minimax_refs / minimax_token_tags 这些扩展键，结构不一致且要多跑一次 32B 文本编码器。",
+    "<Picture i> 标签是 tokenizer 按连接顺序自动生成的，不是提示词里声明的。所以 {{Mixed N}} 是「引用第 N 张」，顺序 = 参考图连接顺序。",
+    "length 必须落在 17k+5 网格上（124 合法，下一档 141）；width/height 必须是 32 的倍数。",
+    "MiniMaxH3ImageToVideo 没有 audio_vae，MiniMaxH3ReferenceToVideo 才有——两个节点的入参不一样，别抄错。",
+    "显存门禁的顺序必须是先 POST /api/free 卸载、再轮询空闲显存：Dynamic VRAM(AIMDO) 的取向是尽量占满显存，模型没卸时「空闲显存偏低」是正常状态，反过来会永远等下去。"
+  ]
+}
