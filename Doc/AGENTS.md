@@ -144,15 +144,10 @@ void RunOnWorker(std::function<void()> fn);                       // 回调本�
 - `Plugins/`：原 UE5.8 插件（只读参考）
 - `Plan/PLAN.md` / `Doc/BUILD.md`
 
-## 当前阶段
+## 当前阶段（2026-09-19 盘点）
 
-- **P0 Shell + 七区布局（含状态栏）已完成**
-- **P1 ComfyCore 代码完成**（HTTP/WS/队列/连接灯）
-- **P2 GraphHost 代码完成**（VNS、节点/注释/存盘、选中属性）
-- **P2.9 存量代码现代化 已完成**（`Plan/PLAN.md` §5.0）：`const std::string&` 75 → 5 处（全部属 `Doc/RULES-LANG.md` §13.5 例外）；新增 `std::string_view` 77 处；`std::format` / `atoi` / `sprintf` 归零
-- **下一阶段**：**P3 NodeKit** —— P3.0 WS 事件与错误采集层（含"忙碌 ≠ 卡死"判定）→ P3.1 object_info → 动态节点 → 图编译提交
-- **§13.2 能力探测结论（GCC 16.1.0 实测）**：静态反射 **可用**（需 `-freflection`；必须 `define_static_array` + `template for` 展开，见 `Doc/RULES-LANG.md` §13.6）；`expected`/`span`/`mdspan`/`ranges`/`to_chars`/`chrono` 可用；`std::stacktrace` 可用但需链接 `-lstdc++exp`
-- 进度见 `Plan/PLAN.md`
+- **P3/P4/P7 ✅**；**P5 余 P5.7**；**P6/P8 ⬜**；**G 线在完成分支 `c14133e` 已做完（勿在 main 重做）**；小说 P1–P8 ✅ + 附加交付（AgentKit/字段/多模型）。
+- **下一步**：合并 `refactor/libhv-log-to-shine@f7a0cb8` → **P5.7**（或 P6/P8）。详见 `Plan/PLAN.md` §0 与 `Plan/PROGRESS.md`。
 
 ## 项目 Skill
 

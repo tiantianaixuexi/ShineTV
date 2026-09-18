@@ -1,112 +1,155 @@
-# ShineTV Studio — 总纲与索引
+# ShineTV Studio — 总纲与索引（2026-09-19 盘点重写）
 
 > 目标：脱离 UE5.8，用 **C++26 + ImGui Docking + VisualNodeSystem** 重做
-> `Plugins/Shine` + `Plugins/ShineMCP` 的 ComfyUI 工作流 / 贴图 / AI 视频 / MCP 能力。
-> 工具链固定 **GCC 16.1.0**（`C:/msys64/mingw64/bin`）。规则见 `../Doc/AGENTS.md`（总入口）。
+> `Plugins/Shine` + `Plugins/ShineMCP` 的 ComfyUI 工作流 / 贴图 / AI 视频 / MCP / 图库 / 小说 Agent 能力。
+> 工具链固定 **GCC 16.1.0**（`C:/msys64/mingw64/bin`）。规则见 `../Doc/AGENTS.md`。
 
-## 0. 文档地图（先看这里）
+---
+
+## 0. 盘点结论（先读，避免重复施工）
+
+### 0.1 根因：文档/代码分叉，不是「图库没做完」
+
+| 引用点 | 内容 | 对开工的影响 |
+|--------|------|----------------|
+| **`main` / 当前工作树**（含误开的 `feat/g-s6-gallery-grid`） | `Plan/*` 仍写「下一步 G-S5」；`src/gallery/` 只有 S0–S5 级代码（列表形态）；**无** ThumbnailService / Viewer / JPEG·WebP / 磁盘缓存 | 若只读这里的 HANDOFF/PROGRESS，会**重做已完成的图库** |
+| **`refactor/libhv-log-to-shine` @ `c14133e` + `f7a0cb8`** | **项目真实最新实现**：G-S5–S14 完成（AVIF 搁置）、小说 P1–P9 完成、P10 大部分完成、`scripts/comfy.ps1`/`studio.ps1`、文档归档到 `Plan/归档/` | **功能与勾选以该提交为准** |
+| 两分支关系 | `c14133e`/`f7a0cb8` **不在 `main` 祖先链上** | 开工前必须先合并/检出该线，否则代码与进度表对不上 |
+
+**已核实（本机 git）**
+
+- `git merge-base --is-ancestor c14133e main` → **否**
+- `git diff --name-status ed6e48f f7a0cb8` → 图库全套源文件、`ThumbGrid`、JPEG/WebP、EXIF、FileActions、Viewer、ThumbnailService、disk/CPU 缓存、novel 出图与 MCP 远程、运维脚本等 **仅存在于 `f7a0cb8` 一侧**
+- 当前树 `Test-Path src/gallery/ThumbnailService.h` → **False**；`src/novel/NovelImageGen.*` → **False**；`scripts/comfy.ps1` → **False**
+
+### 0.2 「做了但没记全 / 记了却不在本树」清单
+
+| 事项 | 实现证据 | 本树文档曾如何写 | 现结论 |
+|------|----------|------------------|--------|
+| G 图库线 G-S5–S14 | `c14133e` 提交说明 + `src/gallery/{ThumbnailService,Viewer,Resize,cache,decoders/Jpeg,Webp,…}` | main PROGRESS：G-S5 ✅、G-S6 起 ⬜；HANDOFF 仍写「继续 G-S5」 | **线完成（AVIF 搁置）**；禁止在 main 重做 |
+| 小说 P9 出图 | `f7a0cb8`：`NovelImageGen/NovelImageStore`；归档 PROGRESS：P9 ✅ `imagegen:ok` | main `docs/.../novel-agent/PROGRESS.md`：P9 全 `[ ]` | **P9 完成（在完成分支）**；main 文档滞后 |
+| 小说 P10 MCP | 归档/f7a0cb8 PROGRESS：P10.1–3/5/6 ✅，P10.4 Garnet `[~]`；`McpRemoteAgent/McpSse/McpHttpClient` | main novel PROGRESS：P10 全 `[ ]` | **P10 除 cache 实测外基本完成** |
+| 主线 P5.1–P5.6 | main 源码已有 `src/video/*`、`ShotTableView`；main PROGRESS 已 ✅ | `Plan/任务/P5-视频分镜.md` 全文仍标 ⬜ | **代码与 PROGRESS 一致为已完成**；施工图状态未回写 |
+| P7 MCP 主线 | main 有 `SHINE_MCP_*CHECK`、HttpServer、MCPServer；PROGRESS ✅ | `Doc/BASELINE.md` 仍写 `WITH_HTTP_SERVER` OFF、object_info 未解析 | **BASELINE 过时**（CMake 现为 ON；P3 已解析） |
+| 运维脚本 | `f7a0cb8`：`scripts/comfy.ps1`、`studio.ps1` | main **无此二文件**（仅 `capture_window.ps1`/`crop_zoom.ps1`）；完成分支 HANDOFF 已写用法 | 合并后才可用；旧文档若写「已有 comfy.ps1」在本树为假 |
+| 小说附加交付 | `AgentKit` / `NovelFields` / `OpenAIProvider·Chat·Anthropic` / `NovelDb` schema **v5** | novel PROGRESS 只勾到 P8，未单列这些 | **代码已完成**，已写入 `PROGRESS.md` §4.2 |
+| 本树 novel P10 部分实现 | `NovelMcpTools` + `SHINE_MCP_ALLOW_WRITE` + bootstrap 注册 | novel PROGRESS 仍全 `[ ]` | **文档漏记**；P10.3 远程与 P9 仍在完成分支 |
+| 施工图状态行 | `任务/P5-*.md`、`任务/G-图片库.md` 头部 ⬜ | 与 PROGRESS/代码矛盾 | 本次已改 P5；G 完成态以合并后完成分支施工图为准 |
+| `Doc/BASELINE.md` / 根 `AGENTS.md`「当前阶段」 | 仍写「下一阶段 P3」、HTTP Server OFF、无 novel 目录 | 与 P3–P7/G/小说代码矛盾 | 本次已改 BASELINE 当前阶段脚注；AGENTS 文档地图合并后按 `Plan/归档/` 再对齐 |
+| 完成分支 `Plan/归档/README.md` | 仍写 G「下一步 G-S7 / 40/79」 | 与同分支 PROGRESS（G 线完成）矛盾 | 合并后改 README |
+| 本会话误做 G-S6 | `feat/g-s6-gallery-grid` 上曾改 GalleryView/Resize 等 | 与 `c14133e` 重复 | **已 `git restore` 还原工作树**；该分支勿再开发 |
+
+### 0.3 开工顺序（硬性）
+
+```text
+T0  把 refactor/libhv-log-to-shine（f7a0cb8）合入工作分支 / 检出该分支
+    → 全量 cmake build 确认可编译
+    → 以合并后的 src/ + Plan/为准（本文件与 PROGRESS 已按「真实完成态」重写）
+T1  主线 P5.7 分镜图（缺 SD 模型时先中文降级）
+T2  主线 P6 画布 inpaint
+T3  主线 P8 收尾
+T4  小说 P10.4 Garnet cache 实测 + LLM Key 联调
+T5  （可选）G-S12c AVIF；文档归档同步到 main
+```
+
+**在 T0 完成前：禁止新写图库功能、禁止勾选 G-S6…G-S14、禁止按旧 HANDOFF 重做 G-S5。**
+
+---
+
+## 0. 文档地图
 
 | 文档 | 放什么 | 何时读 |
 |------|--------|--------|
-| `PLAN.md`（本文件） | 总纲：怎么用 / 大类小类总表 / 产品形态 / 依赖顺序 | 领任务时 |
-| `PROGRESS.md` | **唯一勾选入口**：每个小任务的 `[ ]`/`[x]` 与状态 | 做完一个 S |
-| `任务/<大类>.md` | **施工图**：每个小类的 S 做什么、判据是什么（7 个文件） | 开工前 |
-| `证据.md` | 实测证据（**只保留最近几条**） | 复核时 |
-| `坑与手法.md` | 踩过的坑、事故、验收手法（截图 / 离线 / 无头） | 卡住时 |
-| `归档-已完成.md` | 已完成的旧线（P0 / P1 / P2 / P2.9 / R） | 查历史结论 |
-| `HANDOFF.md` | 新会话交接（开场白 + 现状 + 基础设施 + 本机环境） | 新会话第一眼 |
-| `../Doc/AGENTS.md` | 工具链 / 字体 / 布局 / 技术栈（**硬性规则总入口**） | 每次开工前 |
-| `../Doc/RULES-AI.md` | AI 执行规则（一次一步、验收纪律、线程纪律） | 每次开工前 |
-| `../Doc/RULES-LANG.md` | C++26 语言特性、API 边界例外、反射与 `util` | 写代码时 |
-| `../Doc/RULES-COMFY.md` | ComfyUI 错误捕获与连接健康（"忙碌 ≠ 卡死"） | 动 Comfy 或排查时 |
-| `../Doc/BASELINE.md` | 现状盘点 / 技术栈目录 / **明确不做清单** | 需要背景时 |
+| `PLAN.md`（本文件） | 总纲 + 盘点结论 + 大类表 + 依赖与下一步 | 领任务时（**每次开工先读 §0**） |
+| `PROGRESS.md` | **唯一进度表**（真实完成态 + 工作树缺口） | 每次开工 / 做完一个 S |
+| `任务/<大类>.md` | 施工图（未完成大类） | 做 P5.7 / P6 / P8 时 |
+| `归档/`（完成分支） | 已完成线施工图与 novel P1–P9 | 查历史 |
+| `证据.md` | 实测证据（只保留最近） | 复核 |
+| `坑与手法.md` | 踩坑与验收手法 | 卡住时 |
+| `HANDOFF.md` | 新会话交接 | 新会话第一眼 |
+| `../Doc/AGENTS.md` 等 | 硬性规则 | 每次开工前 |
+| `docs/compose/plans/novel-agent/` | 小说线当前施工图（P10） | 做小说时 |
+| `docs/compose/spec/` | MCP Tool Registry 等 spec | 动 MCP 时 |
+
+---
 
 ## 1. 怎么用（每次开工 4 步）
 
-1. 在本文件 §3 找到**大类**，打开 `任务/<大类>.md`；
-2. 挑**一个小类**里的**一个 S**（只做一个）；
-3. 写码（照 `../Doc/RULES-LANG.md`）→ `cmake --build build -j 8` → 运行 → 逐条对 S 里的判据；
-4. 回 `PROGRESS.md` 勾掉那一行 + 在 `证据.md` 写下实测证据（日期 + 现象 + 关键日志行）。**不通过不勾、不往下走。**
+1. 读 `PROGRESS.md` §0–§2，确认工作树是否已在 **`f7a0cb8` 及之后**；
+2. 在 §3 大类表挑 **一个未完成 S**（先 T0，再 P5.7 / P6 / P8 / novel）；
+3. 照施工图 + `Doc/RULES-LANG.md` 写码 → configure → build → 运行 → 对判据；
+4. 勾 `PROGRESS.md` + 写 `证据.md`。**不通过不勾、不往下走。一次只做一个 S。**
+
+---
 
 ## 2. 产品形态（VS Code 风格七区）
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│  ① 菜单栏：文件 / Comfy / 视图 / 主题 / 帮助  + 连接状态灯    │
-├────┬─────────┬──────────────────────┬───────────────────────┤
-│ ② │  ③ 侧栏 │                      │  ⑤ 属性 / 预览         │
-│ 活 │  随 ②  │   ④ 中央工作区        │                       │
-│ 动 │  切换   │ （节点图 / 图库/画布）│                       │
-│ 栏 ├─────────┴──────────────────────┴───────────────────────┤
-│    │  ⑥ 底栏：队列 | 日志 | 输出                              │
-├────┴─────────────────────────────────────────────────────────┤
-│  ⑦ 状态栏：连接 · 队列 · 图统计 · 图片统计 · 缩放 · 选中 · 主题│
-└──────────────────────────────────────────────────────────────┘
+顶栏菜单+连接灯 | 活动栏 | 侧栏 | 中央（图/分镜/图库/画布/小说） | 右栏属性预览 | 底栏队列日志输出 | 状态栏
 ```
 
-| 区 | 说明 | 归属 |
-|----|------|------|
-| ① 顶栏 | 主菜单 + 右侧 Comfy 连接状态 | P0（已） |
-| ② 活动栏 | 最左 46px：资 / 节 / 流 / C / **图** / ⚙ | P0（已）+ G |
-| ③ 侧栏 | 资源 / 节点面板 / 工作流 / Comfy 操作 / **图库来源** | P0（已）+ P3.3 + G |
-| ④ 中央 | 节点图（VNS）/ **图库网格** / **画布** tab 并列 | P0（已）+ G + P6.2 |
-| ⑤ 右栏 | 属性（节点 / 图片元数据）+ 媒体预览 | P2（已）+ P4.3 + G-S13 |
-| ⑥ 底栏 | 队列 / 日志 / 输出 | P1（已）+ P4.4 |
-| ⑦ 状态栏 | 连接灯 · 队列 · 图统计 · **图片统计** · 缩放 · 选中 · 主题 | P0（已）+ G |
+图库网格、查看器、分镜表、小说工作区在完成分支均已挂进布局（细节见 `f7a0cb8` 的 `DockLayout` / `DrawDockedPanels`）。
 
-## 3. 大类 / 小类总表
+---
 
-状态与勾选在 `PROGRESS.md`（下表只是索引）。
+## 3. 大类 / 小类总表（真实状态）
 
-| 大类 | 内容 | 小类 | 小任务 | 施工图 |
-|------|------|------|--------|--------|
-| **P3** | 节点与图（NodeKit）：WS 错误层 → 节点定义 → 动态注册 → 编译器 → 提交 → 导入导出 | P3.0–P3.6 | 55 | `任务/P3-节点与图.md` |
-| **P4** | 媒体与纹理：共享 GPU 纹理层 + `/view` + 历史缓存 + 预览面板 + 输出列表 + 生成中预览 | P4.1–P4.5 | 27 | `任务/P4-媒体与纹理.md` |
-| **P5** | 视频分镜：工程模型 / `@引用` / 分镜表 / H3 编译器 / 任务执行器 / 结果预览 / 分镜图 | P5.1–P5.7 | 36 | `任务/P5-视频分镜.md` |
-| **P6** | 画布 inpaint：数据模型 / UI / 九节点服务 / 与图库联动 | P6.1–P6.4 | 17 | `任务/P6-画布inpaint.md` |
-| **P7** | MCP 服务：Tool Registry / HTTP Server / MCP 端点 / 内置工具 / 设置与安全 | P7.1–P7.5 | 21 | `任务/P7-MCP.md` |
-| **P8** | 收尾：设置集中 / 快捷键 / 打包 / 稳定性 | P8.1–P8.4 | 13 | `任务/P8-收尾.md` |
-| **G** | 图片库（**并行线**）：扫描 → 网格 → 缩略图 → 缓存 → 查看器 → 动作 → 多格式 → EXIF → 磁盘缓存 | G-S0–G-S14 | 79 | `任务/G-图片库.md` |
-| 归档 | P0 / P0.6 / P1 / P2 / P2.9 / **R 线**（`App.cpp` 拆分 + 主题配色） | — | — | — |
+状态以 **`f7a0cb8` 代码 + 该侧 PROGRESS** 为准；「本树」列 = 当前 main 检出是否已有对应源文件。
 
-> 明细：G 线的参考材料（接口汇总 / 默认参数 / 日志 / 降级 / 边界 / 最终验收清单）见 `任务/G-参考.md`；已完成的旧线结论见 `归档-已完成.md`。
+| 大类 | 内容 | 小类 | 任务数 | 真实状态 | 本树源码 | 施工图 |
+|------|------|------|--------|----------|----------|--------|
+| P0–P2 / P2.9 / R | Shell / ComfyCore / GraphHost / 现代化 / 拆分 | — | 归档 | ✅ 完成 | 有 | `归档-已完成.md` |
+| **P3** | 节点与图 NodeKit（含 P3.7 远端模板） | P3.0–P3.7 | 58 | ✅ 58/58 | 有 | 完成分支 `Plan/归档/任务/P3-*` |
+| **P4** | 媒体与纹理 | P4.1–P4.5 | 27 | ✅ 27/27 | 有 | 归档 |
+| **P5** | 视频分镜 | P5.1–P5.7 | 36 | 🟡 **31/36**（仅剩 **P5.7**） | P5.1–5.6 有；P5.7 无 | `任务/P5-视频分镜.md` |
+| **P6** | 画布 inpaint | P6.1–P6.4 | 17 | ⬜ 0/17 | 无 `src/paint` | `任务/P6-画布inpaint.md` |
+| **P7** | MCP 主线 | P7.1–P7.5 | 21 | ✅ 21/21 | 有（HTTP Server 已 ON） | 归档 |
+| **P8** | 收尾 | P8.1–P8.4 | 13 | ⬜ 0/13 | 无 | `任务/P8-收尾.md` |
+| **G** | 图片库 | G-S0–G-S14 | 79 | ✅ **78/79**（**线完成**；仅 AVIF S12c 搁置） | 本树仅 S0–S5 级；全套在 f7a0cb8 | 完成分支 `任务/G-图片库.md` |
+| 小说 Agent | compose 线 | P1–P10 | — | 🟡 **P1–P9 ✅（P9 源码在 f7a0cb8）**；P10.1–3/5/6 ✅（本树已有 tools/写开关）；**P10.4** cache 实测；**附加交付**：AgentKit / NovelFields / 多模型 LLM / schema v5 **已完成但旧 PROGRESS 未单列 | 本树缺 P9 与 P10 远程 MCP 文件 | `docs/compose/plans/novel-agent/`（P10）+ 归档 |
 
-**合计 248 个小任务**（不含已归档的 P2.9 6 个与 R 线）。
+**合计口径**：主线+G 约 251 个小任务；按真实完成态 ≈ **P3+P4+P5(31)+P7+G(78)** 已完，余 **P5.7(5)+P6(17)+P8(13)+AVIF(搁置)+novel P10.4/联调**。
 
-## 4. 大类之间的关系与"重叠"裁决
+---
 
-- **P3–P8 是主线**（严格按 §5 的依赖顺序）；**G 是并行线**（不占 P 编号，可插在任何两个 P 任务之间）；
-  **R 已完成**（代码结构重构，不新增功能）。
-- 三条线**不重复**，交集只有 3 处，均已裁决为"**只保留一份实现**"：
+## 4. 重叠与裁决（保持）
 
-| 重叠点 | 谁先做 | 裁决 |
-|--------|--------|------|
-| `src/gpu/` 纹理层（G-S3 / G-S8 S2 ↔ P4.1 S2/S3/S4） | **P4.1 先做** | 统一放 `src/gpu/`；G-S3 的 S1/S2 与 G-S8 的 S2 **已由 P4.1 落地**，那几步只做"接入 + 验收"，**不重做** |
-| CPU 图对象 + libpng 入口（G-S1/S2 ↔ P4.1 的 `src/media/PngDecoder.*`） | G 先定 | **已合并**：全仓库只留 `gallery::Image` 与 `gallery/decoders/PngDecoder.*` |
-| `@image` / 拖拽 payload（G-S11 ↔ P3.5 / P5.2） | G 产出 | 只读接口：`gallery::LastUploadedName()` + `SHINE_IMAGE_PATH`，主线只消费 |
+| 重叠点 | 裁决 |
+|--------|------|
+| `src/gpu/` | P4.1 先建；图库只接入 |
+| CPU 图 + libpng | 全仓 `gallery::Image` + `PngDecoder` |
+| `@image` / `SHINE_IMAGE_PATH` | G 产出，主线只读 |
 
-## 5. 依赖顺序
+---
+
+## 5. 依赖顺序（更新）
 
 ```text
-P2.9 ─► P3.0 ─► P3.1 ─► P3.2 ─► P3.3 ─► P3.4 ─► P3.5 ─► P3.6   主线，严格按序
-                    │       │
-                    │       └─► P4.1（共享 src/gpu/ + /view）
-                    │                └─► P4.2 ─► P4.3 ─► P4.5
-                    │                         └─► P4.4
-                    ├─► P5.1 ─► P5.2 ─► P5.3（可与 P3 并行）
-                    │                  └─► P5.4 ─► P5.5 ─► P5.6 / P5.7
-                    └─► P6.1 ─► P6.2（可与 P3 并行）─► P6.3 ─► P6.4
-P7.1 ─► P7.2 ─► P7.3 ─► P7.4 ─► P7.5        （P7.4 依赖 P3.5 / P4.2 / G）
-P8.1 ─► P8.2 ─► P8.3 ─► P8.4                 最后
-并行线 G（S0–S14）：除共享 src/gpu/ 外互不影响，可插在任何两个 P 任务之间
+T0 合并 f7a0cb8 ──► 真实代码与 PROGRESS 对齐
+        │
+        ├─► P5.7 分镜图（可先降级）
+        ├─► P6 画布 inpaint（依赖 P4 + 图库选图，完成分支已具备图库）
+        └─► P8 收尾（建议最后）
+小说线可并行：P10.4 Garnet / Key 联调
+G AVIF 可选、可永久搁置
 ```
 
-**建议实际推进顺序**：
+---
 
-1. **P3 全过 → P4 全过**（✅ 已完成）；
-2. **G S0 → G-S6**（并行线）：第一次能看图库，顺带把共享 `src/gpu/` 做出来（S0–S4 已完成，下一步 **G-S5**）；
-3. **P5 / P6**：视频工程与画布（两者可交叉进行）；
-4. **P7**：把能力暴露给外部 AI 客户端；
-5. **P8**：收口。
+## 6. 明确不做（摘 `Doc/BASELINE.md` §8）
 
-**明确不做清单**（SQLite 索引 / RAW / libvips / Texture Atlas / 自建线程池…）见 `../Doc/BASELINE.md` §8。
+SQLite 图库索引 / RAW / libvips / Texture Atlas / 自建线程池 / 图片批量重命名编码等 —— 仍不做。
+
+---
+
+## 7. 相关文档同步说明
+
+本次重写同步了：
+
+- `Plan/PROGRESS.md` — 真实进度表 + 本树缺口 + 下一步
+- `Plan/HANDOFF.md` — 交接改为「禁止重做 G；先 T0 合并」
+- `Plan/任务/P5-视频分镜.md` — 小类标题状态与 PROGRESS 对齐（P5.1–5.6 ✅）
+- `docs/compose/plans/novel-agent/PROGRESS.md` — 按 f7a0cb8 真实小说进度回写
+- `Doc/BASELINE.md` — 「当前阶段」与过时基线事实脚注
+
+未在 main 删除 `Plan/任务/P3|P4|P7`：完成分支已移到 `Plan/归档/任务/`，合并后自动对齐。

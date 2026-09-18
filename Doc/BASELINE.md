@@ -64,7 +64,20 @@ E:\c++\ShineTV\
 ---
 
 
-## 4. 已完成基线（后续步骤可直接依赖的事实，不要重新发明）
+## 当前阶段（2026-09-19 盘点后，以 `Plan/PROGRESS.md` 为准）
+
+- **P3 / P4 / P7 主线已完成**；**P5.1–P5.6 完成，余 P5.7**；**P6 / P8 未开始**。
+- **G 图片库线在 `refactor/libhv-log-to-shine`（`c14133e`）已完成 G-S5–S14**（AVIF 搁置）—— **当前 main 工作树可能没有全套源码，禁止重做**。
+- **小说 Agent**：P1–P8 本树代码完成；P9/P10 远程部分在完成分支；**AgentKit / NovelFields / 多模型 LLM / schema v5 已实现**（见 `docs/compose/plans/novel-agent/PROGRESS.md`）。
+- 开工顺序：**T0 合并 f7a0cb8 → P5.7 → P6 → P8**（+ novel P10.4 / Key）。
+- 进度与盘点：`Plan/PLAN.md` §0、`Plan/PROGRESS.md`。
+
+> 下列 §4「已完成基线」中的部分条目（HTTP Server 未编译、无 `/view`、无 GraphCompiler 等）为 **P3/P4 之前的历史快照**，
+> **不要当作当前能力清单**；当前能力以源码与 `Plan/PROGRESS.md` 为准。
+
+---
+
+## 4. 已完成基线（历史快照，后续步骤可直接依赖的事实，不要重新发明）
 
 | 事实 | 位置 |
 |------|------|

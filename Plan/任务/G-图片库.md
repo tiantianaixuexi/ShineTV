@@ -1,6 +1,10 @@
 # G — 图片库（并行线）
 
-> **施工图**（每个 S 的做法与判据）。勾选与状态在 `../PROGRESS.md`；实测证据（含每个 S 的 ✅ 记录）在 `../证据.md`。
+> **施工图**。勾选与状态在 `../PROGRESS.md`；证据在 `../证据.md`。
+>
+> ⚠️ **2026-09-19 盘点**：G-S5–S14 **已在分支 `refactor/libhv-log-to-shine`（`c14133e`）完成**（78/79，AVIF 搁置）。
+> 当前 main 工作树可能只有 S0–S5 级源码。**禁止重做已完成步骤**；先完成 `Plan/PLAN.md` §0 的 **T0 合并**。
+> 完成态施工图以合并后该分支的 `Plan/任务/G-图片库.md` / `Plan/归档/` 为准。
 
 > 一次只做一个 S：做完 configure → build → 运行，逐条对验收，再回 `../PROGRESS.md` 勾选。
 
@@ -184,7 +188,7 @@ cmake --build build -j
 
 ---
 
-## G-S5 — 挂进六区  ⬜ 0/6
+## G-S5 — 挂进六区  ✅ 6/6（本树代码有列表版；网格在完成分支）
 
 
 - **S1 `GalleryModel`** — `SetItems` / `Items()` / `Find(id)` / 选中 API（`SelectOnly` / `ToggleSelect` / `SelectRange` / `ClearSelection` / `IsSelected` / `Selection()`）/ `SortBy`（S5 可先留空实现）/ `SetFilter`（留空，S14 实装）。
@@ -196,7 +200,7 @@ cmake --build build -j
 
 ---
 
-## G-S6 — Resize + 最简网格 = **第一次可用**  ⬜ 0/5
+## G-S6 — Resize + 最简网格 = **第一次可用**  ✅ 5/5 📦（完成分支 c14133e；本树无源码勿重做）
 
 
 - **S1 `Resize.h/.cpp`** — `ResizeBox(const Image& src, uint32_t maxSide) → Image`：保持宽高比、box 均值缩略 + 双线性收尾。
