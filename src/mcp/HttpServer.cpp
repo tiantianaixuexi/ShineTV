@@ -4,6 +4,7 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "core/Settings.h"
+#include "mcp/MCPServer.h"
 #include "mcp/McpBootstrap.h"
 #include "mcp/ToolRegistry.h"
 #include "net/LibhvReady.h"
@@ -357,8 +358,9 @@ std::expected<void, std::string> StartHttpFromSettings() {
         return {};
     }
     auto& srv = HttpServer::Instance();
-    RegisterHealthRoute(srv);
     InstallDefaultUiDispatcher(srv);
+    // P7.3：协议路由 + 内置工具（含 /health /mcp /tools …）
+    RegisterMcpRoutes(srv);
     return srv.Start(s.mcpListenAddr, s.mcpPort);
 }
 

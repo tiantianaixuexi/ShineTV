@@ -197,6 +197,9 @@ add_executable(ShineTVStudio WIN32
   src/mcp/McpBootstrap.cpp
   # P7.2：libhv HTTP Server（MCP 传输层骨架）
   src/mcp/HttpServer.cpp
+  # P7.3/P7.4：JSON-RPC 协议 + 内置工具
+  src/mcp/MCPServer.cpp
+  src/mcp/BuiltinTools.cpp
   # net：libhv 就绪 + 出站 HTTP（comfy/openai 共用）
   src/net/LibhvReady.cpp
   src/net/HttpClient.cpp

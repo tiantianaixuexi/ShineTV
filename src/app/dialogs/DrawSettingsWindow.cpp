@@ -6,6 +6,8 @@
 #include "openai/OpenAIClient.h"
 #include "openai/OpenAIProvider.h"
 #include "core/Async.h"
+#include "mcp/HttpServer.h"
+#include "mcp/MCPServer.h"
 #include "theme/ThemeTokens.h"  // R-S7/S8：外观段遍历 token 表
 
 #include <cstdlib>
@@ -369,6 +371,53 @@ void DrawSettingsWindow() {
         }
     }
     ImGui::NewLine();
+
+    // —— P7.5：MCP 服务设置（运行时启停 + 端口校验）——
+    ImGui::SeparatorText("MCP 服务");
+    ImGui::Checkbox("启用 MCP（仅本机，无鉴权）", &Settings().mcpEnabled);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("MCP 监听地址", &Settings().mcpListenAddr);
+    ImGui::SetNextItemWidth(160.f);
+    ImGui::InputInt("MCP 端口", &Settings().mcpPort);
+    static std::string g_mcpPortError;
+    if (Settings().mcpPort < 1024 || Settings().mcpPort > 65535) {
+        g_mcpPortError = "端口必须在 1024–65535（默认 8931）";
+        ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.f), "%s", g_mcpPortError.c_str());
+    } else {
+        g_mcpPortError.clear();
+    }
+    if (ImGui::Button("应用 MCP 设置")) {
+        if (!g_mcpPortError.empty()) {
+            log::Warn("MCP 设置拒绝保存：{}", g_mcpPortError);
+        } else {
+            SaveSettings();
+            // 运行时启停：先停旧监听，再按新配置启动
+            ::shine::mcp::StopHttpFromSettings();
+            if (Settings().mcpEnabled) {
+                if (auto r = ::shine::mcp::StartHttpFromSettings(); !r) {
+                    log::Error("MCP 启动失败：{}", r.error());
+                }
+            } else {
+                log::Info("MCP 已停用");
+            }
+        }
+    }
+    ImGui::SameLine();
+    const auto& mcpSrv = ::shine::mcp::HttpServer::Instance();
+    ImGui::Text("状态：%s%s", mcpSrv.Running() ? "运行中" : "未监听",
+                mcpSrv.Running() ? "" : "（启用后点「应用」）");
+    if (mcpSrv.Running()) {
+        ImGui::TextDisabled("http://%s:%d/mcp  tools=%llu", mcpSrv.ListenAddr().c_str(),
+                            mcpSrv.Port(),
+                            static_cast<unsigned long long>(::shine::mcp::McpRequestCount()));
+    }
+    {
+        const auto last = ::shine::mcp::GetLastCallInfo();
+        if (!last.tool.empty()) {
+            ImGui::TextDisabled("最近 tools/call：%s %s %s", last.tool.c_str(),
+                                last.ok ? "成功" : "失败", last.timeText.c_str());
+        }
+    }
 
     ImGui::SeparatorText("关于");
     ImGui::TextUnformatted("ShineTV Studio 0.2.0（P2 GraphHost）");

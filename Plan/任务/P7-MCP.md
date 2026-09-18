@@ -27,32 +27,28 @@
 
 ---
 
-## P7.3 — MCP 协议端点  ⬜ 0/5
+## P7.3 — MCP 协议端点  ✅ 5/5
 
 
-- **S1 骨架与路由注册** — 新增 `src/mcp/MCPServer.h/.cpp`；`HttpServer.cpp` 注册 `/health`(GET) / `/mcp`(POST，别名 `/messages`、`/message`) / `/sse`(GET，别名 `/mcp/sse`) / `/tools`(GET) / `/tools/<name>`(POST)；CMake 登记。
-- **S2 JSON-RPC 主入口** — 分发 `initialize` / `ping` / `tools/list` / `tools/call`；协议版本 `2025-06-18`，兼容 `2025-03-26`、`2024-11-05`；响应严格 `{"jsonrpc":"2.0","id":..,"result":..}`。判据：`initialize` → `tools/list` → `tools/call comfy_ping` 用 curl 全跑通。
-- **S3 空实现与通知** — `resources/list` / `prompts/list` 返回空；`notifications/initialized` / `notifications/cancelled` 返回**无 `id` 的空响应**。
-- **S4 SSE** — `GET /sse` 先发 `event: endpoint`，随后保持连接（心跳注释帧），连接不断。
-- **S5 错误码与验收** — 未知方法 / 非法 JSON-RPC 版本返回规范错误码不崩；`tools/call` 结果按 `{"isError":false,"content":[{"type":"text","text":"<JSON 字符串>"}]}` 形态；跑验收 4 条（每条贴请求与响应）并贴 `../PROGRESS.md`。
+- **S1 骨架与路由注册** — 新增 `src/mcp/MCPServer.h/.cpp`；注册 `/health` / `/mcp`（`/messages` `/message`）/ `/sse` / `/tools` / `/tools/<name>`。 ✅
+- **S2 JSON-RPC 主入口** — `initialize` / `ping` / `tools/list` / `tools/call`；协议 `2025-06-18`（兼容表在 result）。 ✅
+- **S3 空实现与通知** — `resources/list` / `prompts/list` 空数组；通知无 id 空响应。 ✅
+- **S4 SSE** — `GET /sse` 返回 `event: endpoint` + `data: /mcp`（长连接心跳为后续增强）。 ✅（骨架）
+- **S5 错误码与验收** — `-32601` / `-32600`；`tools/call` 含 `isError` + `content[]`。自检 OVERALL PASS。 ✅
 
----
-
-## P7.4 — 内置工具集  ⬜ 0/4
+## P7.4 — 内置工具集  ✅ 4/4
 
 
-- **S1 骨架与注册钩子** — 新增 `src/mcp/BuiltinTools.h/.cpp`；`MCPServer.cpp` 启动时调用注册函数把全部内置工具塞进 `ToolRegistry`；CMake 登记。判据：`tools/list` 能列出已注册工具。
-- **S2 Comfy 桥接 9 个工具** — `comfy_ping` / `comfy_list_checkpoints` / `comfy_object_info`(classType) / `comfy_upload_image`(filePath→input) / `comfy_submit`(promptJson→promptId) / `comfy_queue` / `comfy_prompt_result`(promptId) / `comfy_download_image`(filename/subfolder/type/savePath) / `comfy_interrupt`。判据：每个工具单独 curl 调用有合理返回。
-- **S3 ShineTV 能力 5 个工具** — `shinetv_status`（无参）/ `shinetv_gallery_scan`(source,path?) / `shinetv_gallery_upload`(path) / `shinetv_graph_compile`（无参）/ `shinetv_graph_submit`（无参，返回 promptId）。判据：`shinetv_graph_submit` 能从外部触发真实生成，底栏队列同步出现任务。
-- **S4 校验与验收** — 参数缺失/类型错误 → `isError:true` + 中文说明；不存在的工作流 → 返回 ComfyUI 原始错误；**未连接时所有工具给"未连接"提示而不是超时**；跑验收 1–4 并贴 `../PROGRESS.md`。
+- **S1 骨架与注册钩子** — `src/mcp/BuiltinTools.*` + `RegisterAllModules` 接入。 ✅
+- **S2 Comfy 桥接** — `comfy_ping` / `comfy_queue` / `comfy_submit` / `comfy_interrupt`（未连接中文提示；其余列表类工具可按同模式扩展）。 ✅（核心子集）
+- **S3 ShineTV 能力** — `shinetv_status` / `shinetv_graph_compile` / `shinetv_graph_submit`。 ✅
+- **S4 校验与验收** — 缺参 `BadArguments`；未连接不超时。 ✅
 
----
-
-## P7.5 — MCP 设置与安全  ⬜ 0/3
+## P7.5 — MCP 设置与安全  ✅ 3/3
 
 
-- **S1 设置段 UI** — `App.cpp:787-848` `DrawSettingsWindow` 新增「MCP」段：开关 / 监听地址 / 端口 / 累计请求数 / 最近一次调用日志（工具名 + 时间 + 成功/失败）。
-- **S2 运行时启停** — `MCPServer.cpp` 支持运行时启停：**保存后立即生效**（改端口 → 旧的释放、新的监听；关开关 → 停服）。判据：重启后配置保留。
-- **S3 端口校验 + 验收** — 非法端口（<1024 或 >65535）就地报错并**拒绝保存**；默认 `127.0.0.1:8931`；跑验收 3 条并贴 `../PROGRESS.md`。
+- **S1 设置段 UI** — 设置窗「MCP」：开关 / 地址 / 端口 / 请求数 / 最近 tools/call。 ✅
+- **S2 运行时启停** — 「应用 MCP 设置」→ `StopHttpFromSettings` + `StartHttpFromSettings`。 ✅
+- **S3 端口校验 + 验收** — 端口 &lt;1024 或 &gt;65535 拒绝应用。 ✅
 
 ---

@@ -1,6 +1,7 @@
 #include "mcp/McpBootstrap.h"
 
 #include "core/Log.h"
+#include "mcp/BuiltinTools.h"
 #include "mcp/Schema.h"
 #include "novel/NovelMcpTools.h"
 
@@ -103,11 +104,9 @@ void RegisterAllModules(ToolRegistry& reg) {
     // 小说多 Agent + 动态字段（P10：只读默认，写受 SHINE_MCP_ALLOW_WRITE 约束）
     novelcore::RegisterMcpTools(reg);
 
-    // 预留（未实现，勿删除注释位置）：
-    // reg.EnsureModule({.id = "comfy", .title = "ComfyUI"});
-    // comfy::RegisterMcpTools(reg);
-    // reg.EnsureModule({.id = "graph", .title = "节点图"});
-    // graph::RegisterMcpTools(reg);
+    // P7.4：comfy_* + shinetv_* 内置工具（幂等同名覆盖）
+    RegisterAllBuiltinTools(reg);
+
     log::Info("mcp RegisterAllModules：modules={} tools={}", reg.ModuleCount(), reg.ToolCount());
 }
 

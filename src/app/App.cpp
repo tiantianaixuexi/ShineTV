@@ -25,6 +25,7 @@
 #include "agent/AgentKit.h"
 #include "mcp/McpBootstrap.h"
 #include "mcp/HttpServer.h"
+#include "mcp/MCPServer.h"
 #include "app/novel/NovelView.h"
 #include "novel/NovelDb.h"
 #include "novel/NovelGraph.h"
@@ -244,6 +245,13 @@ bool Init() {
         std::string_view{raw} != "0") {
         const bool pass = ::shine::mcp::RunHttpServerSelfCheck();
         log::Info("SHINE_MCP_HTTP_CHECK：{}", pass ? "PASS" : "FAIL");
+        g_selfExitRequested = true;
+    }
+    // P7.3 自检：SHINE_MCP_PROTO_CHECK=1
+    if (const char* raw = std::getenv("SHINE_MCP_PROTO_CHECK"); raw != nullptr && *raw != '\0' &&
+        std::string_view{raw} != "0") {
+        const bool pass = ::shine::mcp::RunMcpProtocolSelfCheck();
+        log::Info("SHINE_MCP_PROTO_CHECK：{}", pass ? "PASS" : "FAIL");
         g_selfExitRequested = true;
     }
     // 真实联调：SHINE_LLM_LIVE=1|json|tool（独立开关，需已配置 Key）
