@@ -15,7 +15,7 @@ description: ShineTV third/ 库接入方式：mimalloc、spdlog+fmt、stdexec、
 | **fmt** | header-only | `FMT_HEADER_ONLY`；include 路径 `third/fmt` |
 | **spdlog** | header-only + 外部 fmt | `SPDLOG_FMT_EXTERNAL`；include **父目录 `third/`**，写 `#include <spdlog/spdlog.h>` |
 | **stdexec** | header-only | include `third/stdexec/include`；用 `exec::start_detached` + `exec::static_thread_pool` |
-| **libhv** | `add_subdirectory` → `hv_static` | `HV_STATICLIB`；`BUILD_SHARED=OFF` `WITH_HTTP_SERVER=**ON**`（P7.2 MCP）`SHINE_SKIP_LIBHV_RC=ON`；**HTTPS 走 WITH_WINTLS（Schannel）**，`WITH_OPENSSL` 保持 OFF（与 `libcrypto.a` 符号冲突）；服务端头文件 `#include <hv/HttpServer.h>` |
+| **libhv** | `add_subdirectory` → `hv_static` | `HV_STATICLIB`；`WITH_HTTP_SERVER=**ON**`（P7.2 MCP）；日志：`net::EnsureLibhvReady` 把 `hlog*` **重定向到 `shine::log`（spdlog）**，见 `src/net/LibhvReady.cpp`；`WITH_OPENSSL` 保持 OFF |
 | **yyjson** | 编 `yyjson.c` | 设置 + Comfy JSON |
 | **imgui** | docking 分支源文件直编 | win32 + dx11 backend |
 | **VisualNodeSystem** | 源文件列表直编；业务经 `src/graph/GraphHost` | jsoncpp + GLM；P2 起用画布；Node 析构 protected |
