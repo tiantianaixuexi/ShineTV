@@ -4,6 +4,7 @@
 #include "app/ui/Widgets.h" // R-S2：面板标题统一走 ui::PanelHeader
 #include "app/gallery/GalleryView.h" // G-S5：侧栏「图库」
 #include "app/novel/NovelView.h"
+#include "app/paint/PaintCanvasView.h" // P6.2
 
 namespace shine::app {
 
@@ -20,6 +21,7 @@ void DrawSideBar() {
     case SideView::Shots: shots::DrawVideoSidePanel(); break; // P5.3：分镜工程面板
     case SideView::Gallery: gallery::DrawGallerySidePanel(); break; // G-S5：图库（来源/目录/缩略图/缓存）
     case SideView::Novel: novel::DrawNovelSidePanel(); break;
+    case SideView::Paint: paint::DrawPaintSidePanel(); break; // P6.2
     }
     ImGui::EndChild();
 }

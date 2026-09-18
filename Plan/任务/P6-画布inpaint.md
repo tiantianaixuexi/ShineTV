@@ -15,7 +15,7 @@
 
 ---
 
-## P6.2 — 画布 UI  ⬜ 0/4
+## P6.2 — 画布 UI  ✅ 4/4（自检 + 截图：侧栏工具 + 中央「画布」tab）
 
 
 - **S1 视图骨架 + 中心 tab** — 新增 `src/paint/ui/PaintCanvasView.h/.cpp`（`Draw()`）；`src/app/App.cpp` 中央区增加「画布」tab（与「图」「图库」并列）；CMake 登记。判据：切到画布 tab 显示空白画布。

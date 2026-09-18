@@ -58,6 +58,10 @@ void DrawActivityBar(float height) {
                 State().focusWindow = FocusWindow::Novel;
                 State().focusFrames = 8;
             }
+            if (item.id == SideView::Paint) {
+                State().focusWindow = FocusWindow::Paint;
+                State().focusFrames = 8;
+            }
         }
         ImGui::PopStyleColor(4);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {

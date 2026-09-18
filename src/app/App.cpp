@@ -160,13 +160,14 @@ bool Init() {
         else if (want == "comfy") target = SideView::Comfy;
         else if (want == "shots") target = SideView::Shots;
         else if (want == "gallery") target = SideView::Gallery;
+        else if (want == "paint") target = SideView::Paint;
         else matched = false;
         if (matched) {
             State().sideView = target;
             State().sideOpen = true;
             log::Info("自检模式：侧栏停在「{}」（SHINE_SIDE_VIEW={}）", SideViewTitle(target), raw);
         } else {
-            log::Warn("SHINE_SIDE_VIEW={} 不认识（可用：assets/nodes/workflows/comfy/shots/gallery）", raw);
+            log::Warn("SHINE_SIDE_VIEW={} 不认识（可用：assets/nodes/workflows/comfy/shots/gallery/paint）", raw);
         }
     }
     // 自检辅助（截图验收用）：`SHINE_WINDOW=nodes|templates|shots|gallery` 直接把对应的独立浮窗/中央页打开
@@ -178,13 +179,16 @@ bool Init() {
         } else if (want == "templates") {
             State().showTemplateWindow = true;
             log::Info("自检模式：打开工作流模板窗（SHINE_WINDOW=templates）");
-        } else if (want == "shots" || want == "gallery") {
-            // 中央区切到「分镜」/「图库」页（dock 的选中页由 imgui.ini 决定 → 开局抢几帧焦点）
+        } else if (want == "shots" || want == "gallery" || want == "paint") {
+            // 中央区切到「分镜」/「图库」/「画布」页（dock 选中页由 imgui.ini 决定 → 开局抢焦点）
             State().focusFrames = 10;
-            State().focusWindow = (want == "shots") ? FocusWindow::Shots : FocusWindow::Gallery;
-            log::Info("自检模式：中央区切到「{}」（SHINE_WINDOW={}）", want == "shots" ? "分镜" : "图库", raw);
+            State().focusWindow = (want == "shots")   ? FocusWindow::Shots
+                                  : (want == "paint") ? FocusWindow::Paint
+                                                      : FocusWindow::Gallery;
+            log::Info("自检模式：中央区切到「{}」（SHINE_WINDOW={}）",
+                      want == "shots" ? "分镜" : (want == "paint" ? "画布" : "图库"), raw);
         } else {
-            log::Warn("SHINE_WINDOW={} 不认识（可用：nodes/templates/shots/gallery）", raw);
+            log::Warn("SHINE_WINDOW={} 不认识（可用：nodes/templates/shots/gallery/paint）", raw);
         }
     }
     if (gpu::Ready()) {

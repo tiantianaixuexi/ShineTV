@@ -3,6 +3,7 @@
 #include "app/AppIncludes.h"
 #include "app/gallery/GalleryView.h" // G-S5：中央「图库」窗口 + 「查看器」浮窗
 #include "app/novel/NovelView.h"
+#include "app/paint/PaintCanvasView.h" // P6.2
 
 namespace shine::app {
 
@@ -58,6 +59,11 @@ void DrawDockedPanels(ImVec2 dockSize) {
     novel::DrawNovelWindow();
     ImGui::End();
 
+    focusTarget(FocusWindow::Paint);
+    ImGui::Begin("画布", nullptr, kDockFlags); // P6.2
+    paint::DrawPaintCanvasWindow();
+    ImGui::End();
+
     ImGui::Begin("属性", nullptr, kDockFlags);
     DrawInspectorPanel();
     ImGui::End();
@@ -95,6 +101,10 @@ void DrawDockedPanels(ImVec2 dockSize) {
         ImGui::Begin("查看器", &State().showViewer);
         gallery::DrawGalleryViewerWindow();
         ImGui::End();
+    }
+    // 活动栏在「画布」时把中央 dock 页切过来（imgui.ini 的 Selected= 代码改不动，每帧纠偏）
+    if (State().sideView == SideView::Paint) {
+        ImGui::SetWindowFocus("画布");
     }
 }
 

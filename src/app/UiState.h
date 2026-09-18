@@ -24,6 +24,7 @@ enum class SideView : int {
     Shots,      // 分镜（P5.3）
     Gallery,    // 图库（G-S5）
     Novel,      // 小说
+    Paint,      // 画布（P6.2）
 };
 
 struct ActivityItem {
@@ -32,12 +33,12 @@ struct ActivityItem {
     const char* title; // tooltip / 侧栏标题
 };
 
-// 活动栏固定 7 项（顺序即显示顺序）
-[[nodiscard]] const std::array<ActivityItem, 7>& Activities() noexcept;
+// 活动栏固定 8 项（顺序即显示顺序）
+[[nodiscard]] const std::array<ActivityItem, 8>& Activities() noexcept;
 
-// 验收截图用的"中央区抢焦点"目标（`SHINE_WINDOW=shots|gallery`；
-// 同区多窗口的选中 tab 由 imgui.ini 决定，代码改不动 → 只能开局抢几帧焦点）
-enum class FocusWindow : int { None = 0, Shots, Gallery, Novel };
+// 验收截图用的"中央区抢焦点"目标（`SHINE_WINDOW=shots|gallery|paint`）
+// 同区多窗口的选中 tab 由 imgui.ini 决定，代码改不动 → 只能开局抢几帧焦点
+enum class FocusWindow : int { None = 0, Shots, Gallery, Novel, Paint };
 
 struct UiState {
     // —— 浮窗可见性 ——

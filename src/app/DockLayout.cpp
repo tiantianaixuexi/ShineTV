@@ -36,6 +36,7 @@ void BuildDefaultLayout(ImGuiID dockspaceId, ImVec2 dockSize) {
     ImGui::DockBuilderDockWindow("分镜", center); // P5.3：与「图」同区互相切页
     ImGui::DockBuilderDockWindow("图库", center); // G-S5：图库列表（与「图」「分镜」同区互相切页）
     ImGui::DockBuilderDockWindow("小说", center); // 小说工程（新建 + 列表）
+    ImGui::DockBuilderDockWindow("画布", center); // P6.2：inpaint 画布
     ImGui::DockBuilderDockWindow("属性", right);
     ImGui::DockBuilderDockWindow("预览", right);
     ImGui::DockBuilderDockWindow("底栏", bottom); // 内含 Tab：队列/日志/输出（外层不再叫「队列」，避免双标题）
