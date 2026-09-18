@@ -27,7 +27,7 @@
 |------|------|--------|--------|------|------|
 | P3 | 节点与图 | 58 | 58 | ✅ | 含 P3.7 远端工作流/节点浏览器 |
 | P4 | 媒体与纹理 | 27 | 27 | ✅ | |
-| P5 | 视频分镜 | 36 | 31 | 🟡 | **仅剩 P5.7** |
+| P5 | 视频分镜 | 36 | 36 | ✅ 代码完成 | **P5.7 离线自检 PASS**；真机出图待 SD 模型 |
 | P6 | 画布 inpaint | 17 | 0 | ⬜ | |
 | P7 | MCP 主线 | 21 | 21 | ✅ | `WITH_HTTP_SERVER=ON` |
 | P8 | 收尾 | 13 | 0 | ⬜ | |
@@ -37,11 +37,11 @@
 
 **下一步（按序）**
 
-0. **T0** 合并 `f7a0cb8` 进工作分支并 build 通过  
-1. **P5.7** 分镜图 — `任务/P5-视频分镜.md`（无 SD 模型 → 中文降级）  
-2. **P6** 画布 inpaint — `任务/P6-画布inpaint.md`  
-3. **P8** 收尾 — `任务/P8-收尾.md`  
-4. **小说 P10.4** Garnet cache 实测 + **LLM Key** 联调  
+0. **T0** 合并 `f7a0cb8` 进工作分支并 build 通过（**本会话隔离禁止 merge，待编排层**）  
+1. **P6** 画布 inpaint — `任务/P6-画布inpaint.md`（P5.7 代码已齐）  
+2. **P8** 收尾 — `任务/P8-收尾.md`  
+3. **小说 P10.4** Garnet cache 实测 + **LLM Key** 联调  
+4. （可选）本机放入 SD checkpoint 后真机验收 P5.7 出图  
 
 ---
 
@@ -66,7 +66,7 @@
 - [x] P4.4 输出列表 5/5  
 - [x] P4.5 生成中预览 4/4  
 
-### P5 — 视频分镜 🟡 31/36
+### P5 — 视频分镜 🟡 31+/36
 
 - [x] P5.1 工程模型 + JSON 5/5  
 - [x] P5.2 `@image`/`@char`/`{{Mixed}}` 5/5  
@@ -74,12 +74,13 @@
 - [x] P5.4 H3 工作流编译器 7/7  
 - [x] P5.5 视频任务执行器 6/6  
 - [x] P5.6 视频结果预览 3/3  
-- [ ] **P5.7 分镜图生成 0/5**（SceneToImage / SD1.5；缺模型时降级）  
-  - [ ] S1 骨架 `SceneToImageBuilder`  
-  - [ ] S2 基础 img2img 线（64 对齐）  
-  - [ ] S3 ControlNet 线（可选）  
-  - [ ] S4 参数与降级  
-  - [ ] S5 UI「出分镜图」+ 验收  
+- [x] **P5.7 分镜图生成 5/5（离线自检 PASS；真机出图待 SD 模型）**  
+  - [x] S1 骨架 `SceneToImageBuilder`（`src/video/SceneToImageBuilder.*` + CMake）  
+  - [x] S2 基础 img2img / 无图 EmptyLatent 降级（宽高 **64 对齐**，dpmpp_2m+karras，Save+Preview）  
+  - [x] S3 ControlNet 串接（depth/normal；配置但无控制图 → 自动降级 + 告警）  
+  - [x] S4 参数进 `VideoProject.scene*`（反射存盘）+ Sanitize 对齐 64 + 缺 checkpoint 中文错误  
+  - [x] S5 UI「出分镜图」+ `SHINE_SCENE_IMAGE_CHECK=1` **pass=10 fail=0**；Done 回填 `firstFramePath`  
+  - 备注：本机无 SD/SDXL → 真机 `/prompt` 仍会失败，属预期降级；放置模型后即可用 `StartSceneImage` 通路  
 
 ### P6 — 画布 inpaint ⬜ 0/17
 

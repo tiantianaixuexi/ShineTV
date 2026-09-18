@@ -1,11 +1,13 @@
 #include "core/Log.h"
 
 #include <spdlog/sinks/base_sink.h>
+#include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
 #include <fmt/format.h>
 
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -72,7 +74,15 @@ void Init() {
     }
     auto ui = std::make_shared<UiSink<std::mutex>>();
     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    g_logger = std::make_shared<spdlog::logger>("shine", spdlog::sinks_init_list{ui, console});
+    std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks{ui, console};
+    // 验收钩子：`SHINE_LOG_FILE=<abs path>` 追加文件 sink（GUI 抓不到 stdout 时用）
+    if (const char* path = std::getenv("SHINE_LOG_FILE"); path != nullptr && *path != '\0') {
+        try {
+            sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(path, true));
+        } catch (...) {
+        }
+    }
+    g_logger = std::make_shared<spdlog::logger>("shine", sinks.begin(), sinks.end());
     g_logger->set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
     g_logger->set_level(spdlog::level::trace);
     spdlog::set_default_logger(g_logger);

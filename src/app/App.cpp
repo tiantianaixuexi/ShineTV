@@ -44,6 +44,7 @@
 #include "app/UiState.h"                        // R-S0：应用级 UI 状态（原 g_* 全局）
 #include "app/views/temp/TextureSelfCheck.h"    // R-S0：已搬出 App.cpp（TEMP-G3）
 #include "app/shots/ShotTableView.h"            // P5.3：分镜模块 Tick
+#include "video/SceneToImageBuilder.h"          // P5.7：SHINE_SCENE_IMAGE_CHECK
 
 #include <algorithm>
 #include <chrono>
@@ -252,6 +253,13 @@ bool Init() {
         std::string_view{raw} != "0") {
         const bool pass = ::shine::mcp::RunMcpProtocolSelfCheck();
         log::Info("SHINE_MCP_PROTO_CHECK：{}", pass ? "PASS" : "FAIL");
+        g_selfExitRequested = true;
+    }
+    // P5.7 自检：SHINE_SCENE_IMAGE_CHECK=1（离线，不依赖 SD 模型）
+    if (const char* raw = std::getenv("SHINE_SCENE_IMAGE_CHECK"); raw != nullptr && *raw != '\0' &&
+        std::string_view{raw} != "0") {
+        const int fail = ::shine::video::RunSceneToImageSelfCheck();
+        log::Info("SHINE_SCENE_IMAGE_CHECK：{}", fail == 0 ? "PASS" : "FAIL");
         g_selfExitRequested = true;
     }
     // 真实联调：SHINE_LLM_LIVE=1|json|tool（独立开关，需已配置 Key）

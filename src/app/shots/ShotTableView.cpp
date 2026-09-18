@@ -21,6 +21,7 @@
 #include "util/Shell.h" // P5.6 S1：交给系统播放器
 #include "util/Strings.h"
 #include "video/MentionResolver.h"
+#include "video/SceneToImageBuilder.h"
 #include "video/VideoTaskRunner.h"
 
 #include <imgui.h>
@@ -1037,6 +1038,45 @@ void DrawRunSection() {
     if (!shot.IsSubmittable()) {
         ImGui::SameLine();
         ImGui::TextDisabled("（先填提示词并把规格设正）");
+    }
+
+    // —— P5.7：出分镜图（SD1.5 SceneToImage；缺 checkpoint 时给中文降级提示）——
+    ImGui::Spacing();
+    ImGui::BeginDisabled(task.Busy() || shot.prompt.empty());
+    if (ImGui::Button("出分镜图")) {
+        const std::size_t index = ed.selected;
+        const bool started = video::StartSceneImage(
+            ed.project, index, MediaLibraryDir(), [index](const VideoTaskState& state) {
+                EditorState& current = Editor();
+                if (index >= current.project.shots.size()) {
+                    return;
+                }
+                Shot& target = current.project.shots[index];
+                target.lastPromptId = state.promptId;
+                if (state.phase == VideoTaskPhase::Done) {
+                    target.lastOutputFiles = state.savedFiles;
+                    target.lastError.clear();
+                    // 出图结果回填「首帧图」，便于 fl2va / 再出图引用
+                    if (!state.savedFiles.empty()) {
+                        const std::filesystem::path newest = util::PathFromUtf8(state.savedFiles.back());
+                        target.firstFramePath = state.savedFiles.back();
+                        media::MediaLibrary::Instance().RefreshAndSelectLatest(util::FileNameToUtf8(newest));
+                    }
+                } else {
+                    target.lastError = state.error;
+                }
+                current.dirty = true;
+                current.message = "分镜图「" + state.label + "」" + VideoTaskPhaseLabel(state.phase) + "：" + state.detail;
+            });
+        if (!started) {
+            ed.message = "无法出分镜图：已有任务在跑，或缺少提示词 / Checkpoint（本机可能没有 SD 模型）";
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("SD1.5 线 · 宽高按 64 对齐 · 缺 checkpoint 会中文提示");
+    if (ed.project.sceneCheckpoint.empty()) {
+        ImGui::TextColored(ToneColor(Tone::Bad), "工程尚未配置分镜图 Checkpoint（本机若无 SD/SDXL 请先放置模型）");
     }
 
     if (task.phase == VideoTaskPhase::Idle) {

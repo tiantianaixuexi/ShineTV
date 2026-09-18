@@ -26,6 +26,23 @@ struct VideoProject {
     double loraStrength = 1.0;
     double fps = kDefaultFps;  // 成片帧率（CreateVideo）
 
+    // —— P5.7 分镜图（SD1.5 SceneToImage；宽高按 64 对齐，与 H3 的 32 不同）——
+    std::string sceneCheckpoint;           // CheckpointLoaderSimple；空 = 无法出图（中文降级提示）
+    std::string sceneControlNetDepth;      // 可空
+    std::string sceneControlNetNormal;     // 可空
+    std::string sceneControlDepthPath;     // 控制图（depth）
+    std::string sceneControlNormalPath;    // 控制图（normal）
+    double sceneControlStrength = 1.0;
+    std::string sceneOutputPrefix = "scene/shine";
+    std::string sceneNegativePrompt = "lowres, bad anatomy, watermark, text";
+    int sceneWidth = 0;                    // 0 = 跟随当前分镜 width，再对齐 64
+    int sceneHeight = 0;
+    int sceneSteps = 20;
+    double sceneCfg = 7.0;
+    double sceneDenoise = 0.75;            // 无颜色图时编译器强制 1.0
+    std::string sceneSampler = "dpmpp_2m";
+    std::string sceneScheduler = "karras";
+
     // —— 分镜 ——
     std::vector<Shot> shots;
 

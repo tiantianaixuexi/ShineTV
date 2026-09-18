@@ -149,6 +149,7 @@ add_executable(ShineTVStudio WIN32
   src/video/H3WorkflowBuilder.cpp
   src/video/ApiGraphValidator.cpp
   src/video/VideoTaskRunner.cpp
+  src/video/SceneToImageBuilder.cpp
   src/app/shots/ShotTableView.cpp
   src/gallery/Image.cpp
   src/gallery/MetaProbe.cpp

@@ -5,6 +5,7 @@
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Reflect.h"
+#include "video/SceneToImageBuilder.h"
 
 #include <yyjson.h>
 
@@ -80,6 +81,26 @@ bool VideoProject::Sanitize() {
             log::Warn("分镜 #{} 参考图 {} 张 → {} 张（超出上限，截断末尾）", no, before, kMaxReferenceImagesPerShot);
             changed = true;
         }
+    }
+
+    // P5.7：分镜图宽高（>0 时）对齐到 64 的倍数
+    if (sceneWidth > 0) {
+        if (const int aligned = AlignSceneSize(sceneWidth); aligned != sceneWidth) {
+            log::Warn("分镜图宽度 {} → {}（对齐到 64 的倍数）", sceneWidth, aligned);
+            sceneWidth = aligned;
+            changed = true;
+        }
+    }
+    if (sceneHeight > 0) {
+        if (const int aligned = AlignSceneSize(sceneHeight); aligned != sceneHeight) {
+            log::Warn("分镜图高度 {} → {}（对齐到 64 的倍数）", sceneHeight, aligned);
+            sceneHeight = aligned;
+            changed = true;
+        }
+    }
+    if (sceneSteps <= 0) {
+        sceneSteps = 20;
+        changed = true;
     }
 
     return changed;
