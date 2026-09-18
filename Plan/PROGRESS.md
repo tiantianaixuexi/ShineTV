@@ -15,15 +15,15 @@
 | P5 | 视频分镜 | 36 | 36 | ✅ 代码（P5.7 离线 PASS） |
 | P6 | 画布 inpaint | 17 | 17 | ✅ 代码（离线自检 PASS；真机 inpaint 待 SD 模型） |
 | P7 | MCP | 21 | 21 | ✅ |
-| P8 | 收尾 | 13 | 8 | 🟡 快捷键帮助/版本/日志落盘/设置字段 已做 |
+| P8 | 收尾 | 13 | 11 | 🟡 版本单一来源/Shutdown 顺序/worker 兜底/日志落盘/设置画布段/首启开设置窗 |
 | G | 图片库 | 79 | 78 | ✅ 线完成（AVIF ⏸） |
 | 小说 | P1–P10 | — | P1–P9 ✅；P10 余 1 | 🟡 |
 | 归档 | P0–P2.9/R/P3/P4/P7 | — | ✅ | `归档/` |
 
 **现在做哪个**
 
-1. 真机：放 SD checkpoint 后验 P6.3 inpaint / P5.7 出图  
-2. P8 剩余：打包静态单文件 / Shutdown 压测 / 设置窗分区打磨  
+分支 eat/p8-stability 已推送。\n1. 真机：放 SD checkpoint 后验 P6.3 inpaint / P5.7 出图  
+2. P8 剩余：静态链接已有（-static*）；可再做 10 次开关机压测与设置窗滚动验收  
 3. 小说 P10.4 Garnet cache + LLM Key  
 4. （可选）G AVIF
 

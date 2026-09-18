@@ -1,6 +1,16 @@
 // R-S0：从 App.cpp 机械搬出 —— 函数体一字未改（只去掉了参数默认值，声明在头里）。
 #include "app/dialogs/DrawSettingsWindow.h"
 #include "app/AppIncludes.h"
+#include "app/ui/Widgets.h"
+#include "core/Log.h"
+#include "core/Settings.h"
+#include "util/Encoding.h"
+
+#include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
+
+#include <filesystem>
+#include "app/AppIncludes.h"
 #include "app/ui/Widgets.h"     // R-S1：PathPickerRow（同一段"路径+浏览"原先手写了三遍）
 #include "app/FileDialog.h"    // R-S9：配色导出/导入
 #include "openai/OpenAIClient.h"
@@ -582,12 +592,52 @@ void DrawSettingsWindow() {
         }
     }
 
+    // —— P6.3 画布 inpaint 参数（P8.1 集中进设置窗）——
+    ImGui::SeparatorText("画布 inpaint");
+    ImGui::InputText("Checkpoint##paint_ckpt", &Settings().paintCheckpoint);
+    ImGui::InputTextMultiline("默认提示词##paint_prompt", &Settings().paintPrompt, ImVec2(-1.f, 48.f));
+    ImGui::InputInt("Steps##paint_steps", &Settings().paintSteps);
+    if (Settings().paintSteps < 1) {
+        ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f), "Steps 必须 ≥ 1");
+        Settings().paintSteps = 1;
+    }
+    ImGui::InputDouble("CFG##paint_cfg", &Settings().paintCfg, 0.1, 1.0, "%.2f");
+    ImGui::InputDouble("Denoise##paint_denoise", &Settings().paintDenoise, 0.01, 0.1, "%.2f");
+    if (Settings().paintDenoise <= 0.0 || Settings().paintDenoise > 1.0) {
+        ImGui::TextColored(ImVec4(1.f, 0.35f, 0.35f, 1.f), "Denoise 应在 (0, 1]");
+    }
+    if (ui::PathPickerRow("画布输出目录", "空 = %APPDATA%\\ShineTVStudio\\paint", State().editPaintOutputDir,
+                          "选择画布输出目录", true)) {
+        Settings().paintOutputDir = State().editPaintOutputDir;
+    }
+    if (Settings().paintOutputDir.empty()) {
+        ImGui::TextDisabled("输出目录：（默认 %%APPDATA%%\\ShineTVStudio\\paint）");
+    } else if (!std::filesystem::exists(util::PathFromUtf8(Settings().paintOutputDir))) {
+        ImGui::TextColored(ImVec4(1.f, 0.75f, 0.2f, 1.f), "目录不存在（生成时会尝试创建）");
+    }
+    if (ImGui::Button("保存画布设置")) {
+        SaveSettings();
+        log::Info("画布设置已保存：ckpt={} steps={} out={}", Settings().paintCheckpoint, Settings().paintSteps,
+                  Settings().paintOutputDir.empty() ? "(default)" : Settings().paintOutputDir);
+    }
+
     ImGui::SeparatorText("关于");
-    ImGui::TextUnformatted("ShineTV Studio 0.2.0（P2 GraphHost）");
+    ImGui::TextUnformatted(("ShineTV Studio " + Settings().appVersion).c_str());
     ImGui::TextUnformatted("C++26 / ImGui Docking / VisualNodeSystem");
     ImGui::TextUnformatted("GCC 16.1.0 (MinGW64)");
     ImGui::TextUnformatted("mimalloc / spdlog+fmt / stdexec / libhv / yyjson");
     ImGui::TextUnformatted("界面字体：微软雅黑（简体中文）");
+    if (ImGui::Button("导出日志目录…")) {
+        const std::filesystem::path dir =
+            std::filesystem::path(util::PathFromUtf8(SettingsPath())).parent_path() / L"logs";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        const std::string u = util::PathToUtf8(dir);
+        log::Info("日志目录：{}", u);
+        ImGui::SetClipboardText(u.c_str());
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("默认写 logs\\shine.log");
     ImGui::End();
 }
 

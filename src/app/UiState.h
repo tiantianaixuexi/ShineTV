@@ -67,6 +67,7 @@ struct UiState {
     std::string editGalleryLocalDir;
     std::string editGalleryOutputDir;
     std::string editGalleryInputDir;
+    std::string editPaintOutputDir;
     // P1 OpenAI（密钥用密码框；空 = 尚未从 Settings 填充）
     std::string editOpenaiBaseUrl;
     std::string editOpenaiApiKey;

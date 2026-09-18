@@ -12,7 +12,10 @@ namespace shine::mcp {
 
 // 协议层 initialize 用；P7.3 消费
 inline constexpr std::string_view kServerName = "ShineTVStudio";
-inline constexpr std::string_view kServerVersion = "0.1.0";
+#ifndef SHINE_VERSION
+#define SHINE_VERSION "0.2.0"
+#endif
+inline constexpr std::string_view kServerVersion = SHINE_VERSION;
 
 enum class CallStatus { Ok, NotFound, BadArguments, InternalError };
 

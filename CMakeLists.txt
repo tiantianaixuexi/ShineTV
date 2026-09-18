@@ -418,6 +418,7 @@ target_compile_definitions(ShineTVStudio PRIVATE
   SPDLOG_FMT_EXTERNAL
   HV_STATICLIB
   MI_MALLOC_OVERRIDE=0
+  SHINE_VERSION="0.2.0"
 )
 
 if(MINGW)

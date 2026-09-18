@@ -1,6 +1,8 @@
 // R-S0：从 App.cpp 机械搬出 —— 函数体一字未改（只去掉了参数默认值，声明在头里）。
 #include "app/shell/DrawStatusBar.h"
 #include "app/AppIncludes.h"
+
+#include <string>
 #include "gallery/Gallery.h" // G-S5：图库统计（前缀「图片」）
 
 namespace shine::app {
@@ -89,17 +91,17 @@ void DrawStatusBar(float width, float height) {
         ImGui::TextDisabled("（扫描中）");
     }
 
-    // 右侧：主题 + 版本
-    const char* ver = "ShineTV 0.2.0 · P2";
+    // 右侧：主题 + 版本（单一来源 Settings.appVersion / SHINE_VERSION）
+    const std::string ver = std::string("ShineTV ") + Settings().appVersion;
     const theme::ThemePreset* preset = theme::FindPreset(Settings().themeId);
     const char* themeName = preset ? preset->name.c_str() : Settings().themeId.c_str();
-    const float rightW = ImGui::CalcTextSize(ver).x + ImGui::CalcTextSize(themeName).x + 48.f;
+    const float rightW = ImGui::CalcTextSize(ver.c_str()).x + ImGui::CalcTextSize(themeName).x + 48.f;
     ImGui::SameLine(std::max(80.f, width - rightW));
     ImGui::TextDisabled("%s", themeName);
     ImGui::SameLine();
     ImGui::TextDisabled("·");
     ImGui::SameLine();
-    ImGui::TextDisabled("%s", ver);
+    ImGui::TextDisabled("%s", ver.c_str());
 
     ImGui::EndChild();
 }

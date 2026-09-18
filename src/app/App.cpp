@@ -52,6 +52,7 @@
 #include "video/SceneToImageBuilder.h"          // P5.7：SHINE_SCENE_IMAGE_CHECK
 #include "paint/PaintCanvas.h"                  // P6.1：SHINE_PAINT_CHECK
 #include "paint/PaintService.h"                 // P6.3：SHINE_INPAINT_CHECK
+#include "video/VideoTaskRunner.h"              // P8.4 Shutdown Cancel
 
 #include <algorithm>
 #include <chrono>
@@ -210,6 +211,16 @@ bool Init() {
                          .ctrl = true, .action = [] { graph::RunCurrentGraph(); }});
     shortcuts::Register({.id = "open_gallery", .combo = "Ctrl+O", .label = "打开图片文件夹", .imguiKey = ImGuiKey_O,
                          .ctrl = true, .action = [] { gallery::PickAndScanLocalFolder(); }});
+
+    // P8.3 S3：首启引导（无 settings 或 firstRun）
+    if (Settings().firstRun) {
+        log::Info("首启引导：请在设置中配置主题 / ComfyUI 地址 / 图库与视频目录");
+        State().showSettings = true;
+        State().editComfyUrl = Settings().comfyBaseUrl;
+        State().editGalleryLocalDir = Settings().galleryLocalDir;
+        State().editPaintOutputDir = Settings().paintOutputDir;
+        Settings().firstRun = false; // 打开设置窗即视为已提示；真正落盘在 SaveSettings
+    }
     // P1 自检：SHINE_OPENAI_CHECK=1 跑离线验收后自动退出（不发网络）
     if (const char* raw = std::getenv("SHINE_OPENAI_CHECK"); raw != nullptr && *raw != '\0' &&
         std::string_view{raw} != "0") {
@@ -380,19 +391,27 @@ bool Init() {
 }
 
 void Shutdown() {
-    ::shine::mcp::StopHttpFromSettings(); // P7.2：先停 MCP HTTP（P8 顺序：mcp 最先）
+    // P8.4 S1：顺序 mcp → inpaint/video → media → gallery → graph → comfy → SaveSettings → db → async
+    ::shine::mcp::StopHttpFromSettings();
+    if (::shine::paint::InpaintBusy()) {
+        ::shine::paint::CancelInpaint();
+    }
+    // 视频任务：不 join，仅打断（执行器状态机自会收束）
+    video::VideoTaskRunner::Instance().Cancel();
     media::MediaLibrary::Instance().Shutdown();
-    gpu::TextureCache().Clear();  // 纹理必须先于设备销毁（P4.1 S8：退出无 D3D11 Live Object 报错）
-    gpu::Textures().ReleaseAll();
-    log::Info("GPU 纹理已释放：剩余 {} 张 / {} 字节", gpu::Textures().TextureCount(), gpu::Textures().UsedBytes());
+    ::shine::gallery::Shutdown();
     graph::Shutdown();
     comfy::ComfySession::Instance().Shutdown();
     SaveSettings();
-    ::shine::gallery::Shutdown(); // G-S5：图库收尾（排在 SaveSettings() 之后、async::Shutdown() 之前）
-    db::Shutdown();               // P10.4：关 Redis 池（async 之前）
+    // DX11 纹理必须在设备销毁前释放（main.cpp ImGui_ImplDX11_Shutdown 之前）
+    gpu::TextureCache().Clear();
+    gpu::TextureCache().OnDeviceLost();
+    gpu::Textures().OnDeviceLost();
+    gpu::Textures().ReleaseAll();
+    log::Info("GPU 纹理已释放：剩余 {} 张 / {} 字节", gpu::Textures().TextureCount(), gpu::Textures().UsedBytes());
+    db::Shutdown();
     async::Shutdown();
-    // 不调用 `log::Shutdown()`：`async::Shutdown()` 已不再 join worker（见其注释），
-    // 可能仍有 worker 在写日志；日志器保持存活直到进程退出，避免被后台线程踩到已析构对象。
+    // 不调用 log::Shutdown()：async 可能仍有未 join 的 worker 在写日志
 }
 
 void DrawFrame() {

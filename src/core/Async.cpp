@@ -1,9 +1,11 @@
 #include "core/Async.h"
+#include "core/Log.h"
 
 #include <exec/start_detached.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <stdexec/execution.hpp>
 
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -45,7 +47,16 @@ void RunOnWorker(std::move_only_function<void()> fn) {
     if (!g_pool || !fn) {
         return;
     }
-    auto work = stdexec::schedule(g_pool->get_scheduler()) | stdexec::then([fn = std::move(fn)]() mutable { fn(); });
+    auto work = stdexec::schedule(g_pool->get_scheduler()) | stdexec::then([fn = std::move(fn)]() mutable {
+                    // P8.4 S3：worker 兜底 —— 异常转日志，避免 std::terminate
+                    try {
+                        fn();
+                    } catch (const std::exception& e) {
+                        log::Error("worker 异常：{}", e.what());
+                    } catch (...) {
+                        log::Error("worker 异常：未知类型");
+                    }
+                });
     exec::start_detached(std::move(work));
 }
 
@@ -64,7 +75,13 @@ void DrainUiQueue() {
         batch.swap(g_uiQueue);
     }
     for (auto& fn : batch) {
-        fn();
+        try {
+            fn();
+        } catch (const std::exception& e) {
+            log::Error("UI 信箱任务异常：{}", e.what());
+        } catch (...) {
+            log::Error("UI 信箱任务异常：未知类型");
+        }
     }
 }
 

@@ -1,6 +1,11 @@
 #pragma once
 #include <string>
 
+#ifndef SHINE_VERSION
+#define SHINE_VERSION "0.2.0"
+#endif
+#define SHINE_VERSION_DEFAULT SHINE_VERSION
+
 namespace shine {
 
 struct AppSettings {
@@ -103,7 +108,7 @@ struct AppSettings {
     double paintGrowMaskBy = 8.0;
     std::string paintOutputPrefix = "paint/shine";
     std::string paintOutputDir; // 空 = %APPDATA%\ShineTVStudio\paint
-    std::string appVersion = "0.2.0";
+    std::string appVersion = SHINE_VERSION_DEFAULT;
 };
 
 [[nodiscard]] AppSettings& Settings();
