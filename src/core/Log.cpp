@@ -7,9 +7,13 @@
 
 #include <fmt/format.h>
 
+#include <windows.h>
+
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -74,9 +78,24 @@ void Init() {
     auto ui = std::make_shared<UiSink<std::mutex>>();
     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
     std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks{ui, console};
-    if (const char* path = std::getenv("SHINE_LOG_FILE"); path != nullptr && *path != '\0') {
+    std::string logFile;
+    if (const char* env = std::getenv("SHINE_LOG_FILE"); env != nullptr && *env != '\0') {
+        logFile = env;
+    } else {
+        wchar_t appdata[MAX_PATH];
+        const DWORD n = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            std::filesystem::path dir = std::filesystem::path(appdata) / L"ShineTVStudio" / L"logs";
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            const std::filesystem::path file = dir / L"shine.log";
+            // spdlog on MinGW: narrow path (APPDATA 用户名若含中文可能失败 → 静默跳过)
+            logFile = file.string();
+        }
+    }
+    if (!logFile.empty()) {
         try {
-            sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(path, true));
+            sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(logFile, true));
         } catch (...) {
         }
     }

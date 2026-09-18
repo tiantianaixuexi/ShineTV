@@ -77,6 +77,7 @@ void DrawMenuBar() {
     }
     if (ImGui::BeginMenu("帮助")) {
         if (ImGui::MenuItem("关于")) State().showAbout = true;
+        if (ImGui::MenuItem("快捷键…")) State().showShortcuts = true;
         ImGui::EndMenu();
     }
 

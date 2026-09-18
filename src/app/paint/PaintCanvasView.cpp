@@ -6,13 +6,24 @@
 #include "core/Log.h"
 #include "gpu/GpuTextureManager.h"
 #include "paint/PaintCanvas.h"
+#include "paint/PaintService.h"
+#include "core/Settings.h"
+#include "gallery/ImageLoader.h"
+#include "media/MediaLibrary.h"
 #include "theme/Theme.h"
+#include "util/Encoding.h"
+#include "util/Strings.h"
 
 #include <imgui.h>
+#include <misc/cpp/imgui_stdlib.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -25,6 +36,11 @@ using ::shine::paint::Rgba8;
 using ::shine::paint::Tool;
 using ::shine::paint::ToolLabel;
 using ::shine::paint::Vec2;
+
+[[nodiscard]] ImVec4 FailColor() {
+    const theme::ThemeColors& c = theme::Current();
+    return ImVec4(c.danger[0], c.danger[1], c.danger[2], 1.f);
+}
 
 PaintCanvas& Canvas() {
     static PaintCanvas c;
@@ -265,6 +281,11 @@ void DrawPaintSidePanel() {
         }
     }
     ImGui::Checkbox("显示遮罩", &ps.showMask);
+    {
+        int mode = static_cast<int>(ps.maskMode);
+        ImGui::Combo("遮罩语义", &mode, "白=可重绘\0白=保护\0");
+        ps.maskMode = static_cast<::shine::paint::MaskMode>(mode);
+    }
 
     app::ui::SectionText("操作");
     if (ImGui::Button("填充颜色", ImVec2(-1.f, 0.f))) {
@@ -280,12 +301,100 @@ void DrawPaintSidePanel() {
         c.ResetToInitial();
         g_uploadedRev = 0;
     }
+    if (ImGui::Button("导出 PNG…", ImVec2(-1.f, 0.f))) {
+        const std::filesystem::path dir =
+            Settings().paintOutputDir.empty()
+                ? util::PathFromUtf8(SettingsPath()).parent_path() / L"paint"
+                : util::PathFromUtf8(Settings().paintOutputDir);
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        const auto path = dir / (std::string("canvas_export_") + util::FromInt(
+            static_cast<long long>(std::chrono::system_clock::now().time_since_epoch().count() / 1000000)) + ".png");
+        std::string err;
+        if (::shine::paint::ExportCanvasPng(c, util::PathToUtf8(path), &err)) {
+            media::MediaLibrary::Instance().Refresh(50);
+            app::ui::KvRow("已导出", util::PathToUtf8(path));
+        } else {
+            ImGui::TextColored(FailColor(), "%s", err.c_str());
+        }
+    }
+
+    app::ui::SectionText("inpaint（P6.3）");
+    auto& st = Settings();
+    if (st.paintCheckpoint.empty() && !std::getenv("SHINE_PAINT_CHECK")) {
+        ImGui::TextWrapped("提示：先在设置里填 checkpoint，或用工程默认");
+    }
+    ImGui::InputText("Checkpoint", &st.paintCheckpoint);
+    ImGui::InputTextMultiline("提示词", &st.paintPrompt, ImVec2(-1.f, 60.f));
+    ImGui::InputTextMultiline("负向", &st.paintNegative, ImVec2(-1.f, 40.f));
+    ImGui::DragInt("Steps", &st.paintSteps, 1, 1, 100);
+    ImGui::DragScalar("CFG", ImGuiDataType_Double, &st.paintCfg, 0.1f, nullptr, nullptr, "%.2f");
+    ImGui::DragScalar("Denoise", ImGuiDataType_Double, &st.paintDenoise, 0.01f, nullptr, nullptr, "%.2f");
+    ImGui::DragScalar("GrowMask", ImGuiDataType_Double, &st.paintGrowMaskBy, 0.5f, nullptr, nullptr, "%.1f");
+    ImGui::InputText("输出前缀", &st.paintOutputPrefix);
+
+    const auto& run = ::shine::paint::InpaintState();
+    ImGui::BeginDisabled(::shine::paint::InpaintBusy());
+    if (ImGui::Button("生成（inpaint）", ImVec2(-1.f, 0.f))) {
+        ::shine::paint::InpaintParams params;
+        params.checkpoint = st.paintCheckpoint;
+        params.prompt = st.paintPrompt;
+        params.negative = st.paintNegative;
+        params.steps = st.paintSteps;
+        params.cfg = st.paintCfg;
+        params.denoise = st.paintDenoise;
+        params.growMaskBy = st.paintGrowMaskBy;
+        params.outputPrefix = st.paintOutputPrefix;
+        params.maskMode = ps.maskMode;
+        ::shine::paint::StartInpaint(c, params, [](const ::shine::paint::InpaintRunState& s) {
+            if (s.phase == ::shine::paint::InpaintPhase::Done && !s.resultPath.empty()) {
+                auto img = gallery::ImageLoader::Instance().Load(util::PathFromUtf8(s.resultPath));
+                if (img && img->valid()) {
+                    const std::span<const std::byte> px(img->data, img->bytes);
+                    if (Canvas().LoadFromRgba(img->width, img->height, px)) {
+                        g_uploadedRev = 0;
+                    }
+                }
+                media::MediaLibrary::Instance().Refresh(50);
+            }
+        });
+    }
+    ImGui::EndDisabled();
+    if (::shine::paint::InpaintBusy()) {
+        ImGui::SameLine();
+        if (ImGui::Button("中断")) {
+            ::shine::paint::CancelInpaint();
+        }
+    }
+    ImGui::TextDisabled("%s：%s", ::shine::paint::InpaintPhaseLabel(run.phase), run.detail.c_str());
+    if (run.phase == ::shine::paint::InpaintPhase::Failed) {
+        ImGui::TextWrapped("%s", run.error.c_str());
+    }
 
     app::ui::SectionText("画布");
     app::ui::KvRow("尺寸", std::to_string(c.Width()) + " × " + std::to_string(c.Height()));
     app::ui::KvRow("Revision", std::to_string(c.Revision()));
     app::ui::KvRow("缩放", std::to_string(static_cast<int>(g_zoom * 100)) + "%");
-    ImGui::TextDisabled("inpaint 提交在 P6.3 接入");
+}
+
+bool LoadImageToCanvas(std::string_view utf8Path) {
+    EnsureCanvas();
+    auto img = gallery::ImageLoader::Instance().Load(util::PathFromUtf8(utf8Path));
+    if (!img || !img->valid()) {
+        return false;
+    }
+    const std::span<const std::byte> px(img->data, img->bytes);
+    if (!Canvas().LoadFromRgba(img->width, img->height, px)) {
+        return false;
+    }
+    g_uploadedRev = 0;
+    g_zoom = 1.f;
+    g_panX = g_panY = 0.f;
+    ::shine::app::State().sideView = SideView::Paint;
+    ::shine::app::State().sideOpen = true;
+    ::shine::app::State().focusWindow = FocusWindow::Paint;
+    ::shine::app::State().focusFrames = 8;
+    return true;
 }
 
 } // namespace shine::app::paint

@@ -92,6 +92,18 @@ struct AppSettings {
     bool mcpAllowWrite = false;
     // P10：当前小说工程 novel.db（stdio/HTTP MCP 共用；空 = 不自动打开库）
     std::string mcpNovelDbPath;
+
+    // —— P6.3 画布 inpaint ——
+    std::string paintCheckpoint;
+    std::string paintPrompt = "high quality photo";
+    std::string paintNegative = "lowres, bad anatomy, watermark, text";
+    int paintSteps = 20;
+    double paintCfg = 7.0;
+    double paintDenoise = 0.85;
+    double paintGrowMaskBy = 8.0;
+    std::string paintOutputPrefix = "paint/shine";
+    std::string paintOutputDir; // 空 = %APPDATA%\ShineTVStudio\paint
+    std::string appVersion = "0.2.0";
 };
 
 [[nodiscard]] AppSettings& Settings();

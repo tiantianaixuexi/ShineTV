@@ -48,6 +48,7 @@ struct UiState {
     bool showTemplateWindow = false; // P3.7：工作流模板浏览器（工具栏「模板」/ 文件菜单打开）
     bool showNodeWindow = false;     // P3.7b：节点浏览器（工具栏「节点」/ 视图菜单打开）
     bool showViewer = false;         // G-S5：「查看器」浮窗（完整实现在 G-S10）
+    bool showShortcuts = false;      // P8.2：帮助 → 快捷键
 
     // —— 侧栏 ——
     SideView sideView = SideView::Assets;

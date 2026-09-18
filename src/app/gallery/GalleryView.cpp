@@ -5,6 +5,7 @@
 // 纪律：条目与选中只在 `gallery::Model()`（UI 线程）；缩略图纹理由 ThumbnailService 持有。
 #include "app/gallery/GalleryView.h"
 #include "app/gallery/FolderPicker.h"
+#include "app/paint/PaintCanvasView.h" // P6.4 发送到画布
 
 #include "app/UiState.h"
 #include "app/ui/ThumbGrid.h"
@@ -226,6 +227,11 @@ void DrawGalleryContextMenu(const std::vector<ImageInfo>& items) {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("上传到 ComfyUI input（type=input, overwrite=true）\n"
                               "成功后 LastUploadedName 可供 @image 引用");
+        }
+        if (ImGui::MenuItem("发送到画布", nullptr, false, primary != nullptr) && primary != nullptr) {
+            if (!paint::LoadImageToCanvas(util::PathToUtf8(primary->path))) {
+                log::Warn("图库：发送到画布失败 {}", util::PathToUtf8(primary->path));
+            }
         }
         ImGui::Separator();
         const auto paths = SelectedPaths();

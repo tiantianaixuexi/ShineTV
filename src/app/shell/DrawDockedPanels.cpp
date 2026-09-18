@@ -4,6 +4,7 @@
 #include "app/gallery/GalleryView.h" // G-S5：中央「图库」窗口 + 「查看器」浮窗
 #include "app/novel/NovelView.h"
 #include "app/paint/PaintCanvasView.h" // P6.2
+#include "app/Shortcuts.h"             // P8.2
 
 namespace shine::app {
 
@@ -88,10 +89,11 @@ void DrawDockedPanels(ImVec2 dockSize) {
         ImGui::Begin("关于", &State().showAbout, ImGuiWindowFlags_AlwaysAutoResize);
         ImGui::TextUnformatted("ShineTV Studio");
         ImGui::TextUnformatted("独立 C++26 ComfyUI 工作站");
+        ImGui::TextUnformatted("版本 0.2.0");
         ImGui::TextUnformatted("重写自 UE Plugins/Shine + ShineMCP");
         ImGui::Separator();
-        ImGui::TextDisabled("阶段 P2：GraphHost / VNS 节点图");
-        ImGui::TextDisabled("布局：活动栏 | 侧栏 | 图 | 属性/预览 | 底栏 | 状态栏");
+        ImGui::TextDisabled("P3–P5/G 完成 · P6 画布 inpaint · P7 MCP");
+        ImGui::TextDisabled("布局：活动栏 | 侧栏 | 图/分镜/图库/画布 | 属性/预览 | 底栏 | 状态栏");
         ImGui::End();
     }
     DrawSettingsWindow();
@@ -102,6 +104,10 @@ void DrawDockedPanels(ImVec2 dockSize) {
         gallery::DrawGalleryViewerWindow();
         ImGui::End();
     }
+    if (State().showShortcuts) { // P8.2
+        shortcuts::DrawHelpWindow(&State().showShortcuts);
+    }
+    shortcuts::Poll(); // P8.2：全局快捷键（文本框聚焦时不触发）
     // 活动栏在「画布」时把中央 dock 页切过来（imgui.ini 的 Selected= 代码改不动，每帧纠偏）
     if (State().sideView == SideView::Paint) {
         ImGui::SetWindowFocus("画布");

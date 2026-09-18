@@ -48,8 +48,10 @@
 #include "theme/ThemeTokens.h" // R-S7：自定义配色（预设 + 覆盖）
 #include "app/UiState.h"                        // R-S0：应用级 UI 状态（原 g_* 全局）
 #include "app/shots/ShotTableView.h"            // P5.3：分镜模块 Tick
+#include "app/Shortcuts.h"                      // P8.2
 #include "video/SceneToImageBuilder.h"          // P5.7：SHINE_SCENE_IMAGE_CHECK
 #include "paint/PaintCanvas.h"                  // P6.1：SHINE_PAINT_CHECK
+#include "paint/PaintService.h"                 // P6.3：SHINE_INPAINT_CHECK
 
 #include <algorithm>
 #include <chrono>
@@ -198,6 +200,16 @@ bool Init() {
     }
     async::Init();
     LoadSettings();
+    // P8.2：注册帮助页展示用的快捷键清单（触发点在各面板，带 WantTextInput 守卫）
+    shortcuts::Clear();
+    shortcuts::Register({.id = "sidebar", .combo = "Ctrl+B", .label = "显示/隐藏侧栏", .imguiKey = ImGuiKey_B,
+                         .ctrl = true, .action = [] { State().sideOpen = !State().sideOpen; }});
+    shortcuts::Register({.id = "save_graph", .combo = "Ctrl+S", .label = "保存节点图", .imguiKey = ImGuiKey_S,
+                         .ctrl = true, .action = [] { graph::SaveGraph(); }});
+    shortcuts::Register({.id = "run_graph", .combo = "Ctrl+Enter", .label = "运行当前图", .imguiKey = ImGuiKey_Enter,
+                         .ctrl = true, .action = [] { graph::RunCurrentGraph(); }});
+    shortcuts::Register({.id = "open_gallery", .combo = "Ctrl+O", .label = "打开图片文件夹", .imguiKey = ImGuiKey_O,
+                         .ctrl = true, .action = [] { gallery::PickAndScanLocalFolder(); }});
     // P1 自检：SHINE_OPENAI_CHECK=1 跑离线验收后自动退出（不发网络）
     if (const char* raw = std::getenv("SHINE_OPENAI_CHECK"); raw != nullptr && *raw != '\0' &&
         std::string_view{raw} != "0") {
@@ -283,6 +295,13 @@ bool Init() {
         std::string_view{raw} != "0") {
         const int fail = ::shine::paint::PaintCanvas::RunSelfCheck();
         log::Info("SHINE_PAINT_CHECK：{}", fail == 0 ? "PASS" : "FAIL");
+        g_selfExitRequested = true;
+    }
+    // P6.3 自检：SHINE_INPAINT_CHECK=1（PngCodec + 九节点图，无网络）
+    if (const char* raw = std::getenv("SHINE_INPAINT_CHECK"); raw != nullptr && *raw != '\0' &&
+        std::string_view{raw} != "0") {
+        const int fail = ::shine::paint::RunInpaintSelfCheck();
+        log::Info("SHINE_INPAINT_CHECK：{}", fail == 0 ? "PASS" : "FAIL");
         g_selfExitRequested = true;
     }
     // 真实联调：SHINE_LLM_LIVE=1|json|tool（独立开关，需已配置 Key）
@@ -386,7 +405,7 @@ void DrawFrame() {
     shots::Tick();      // P5.3：分镜模块每帧（执行延迟命令 + 取队列快照）
     ::shine::gallery::Tick(); // G-S5：图库每帧（**必须有**：G-S7 的缩略图落地/淘汰都挂在这里）
 
-    // 全局快捷键
+    // 全局快捷键（P8.2：注册表展示；触发仍在下方按面板语义 + WantTextInput 守卫）
     const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_B, false)) {
         State().sideOpen = !State().sideOpen;
