@@ -197,7 +197,7 @@ private:
 
 } // namespace
 
-void ScanAsync(ScanOptions opt, std::function<void(ScanResult)> onDone) {
+void ScanAsync(ScanOptions opt, std::move_only_function<void(ScanResult)> onDone) {
     const std::uint64_t seq = g_latestRequest.fetch_add(1, std::memory_order_relaxed) + 1;
     async::RunOnWorker([opt = std::move(opt), seq, onDone = std::move(onDone)]() mutable {
         ScanResult result = ScanDirectory(opt, seq);

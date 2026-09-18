@@ -103,7 +103,7 @@ mimalloc / spdlog+fmt / stdexec / libhv / yyjson 均在根 `CMakeLists.txt`。�
 | 返回值标注 | `[[nodiscard]]`（所有纯查询与可失败函数）、`noexcept`（不会抛的函数） | — |
 | 格式化 | `fmt`（`fmt::format` / `log::Info("{}", x)`） | **禁止 `std::format`**（与已链入的 `FMT_HEADER_ONLY` + `SPDLOG_FMT_EXTERNAL` 冲突）；禁止 `vsnprintf` |
 | 枚举 | `enum class` + `using enum`（需要时） | 禁止裸 `enum` 作标志位（用 `enum class` + `\|\|`/`&` 或位掩码包装） |
-| 回调 | `std::function` / `function2`（项目已链 `function2`） | 热路径（每帧/每像素）禁止 `std::function`，用模板或函数指针 |
+| 回调 | **异步 `*Cb`：`std::move_only_function`**（GCC 16 可用）；WS 监听：`fu2::function`；其余可用 `std::function` | 热路径（每帧/每像素）禁止 `std::function` |
 | 模板约束 | `concepts` | 禁止 SFINAE 技巧 |
 | 结构化绑定 / 指定初始化 | `auto [a, b] = …`；`Foo{.x = 1, .y = 2}` | — |
 | 反射 | **C++26 静态反射**（字段枚举 / 序列化）—— 已实测可用，`-freflection` 已加入 CMake | 必须 `define_static_array` + `template for` 展开；**禁止**运行时 `for` 迭代反射结果；骨架见 `Doc/RULES-LANG.md` §13.6 |

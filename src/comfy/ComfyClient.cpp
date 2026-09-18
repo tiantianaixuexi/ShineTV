@@ -163,8 +163,16 @@ void ParseOutputMedia(yyjson_val* outputs, std::string_view promptId, HistoryEnt
 
 template <typename T, typename MakeWork, typename OnUi>
 void RunPipeline(MakeWork makeWork, OnUi onUi) {
+    // move_only_function：用 shared_ptr 进入 stdexec，避免 sender 状态要求可拷贝
+    auto cb = std::make_shared<OnUi>(std::move(onUi));
     auto work = stdexec::schedule(Pool().get_scheduler()) | stdexec::then(makeWork) |
-                stdexec::then([onUi](T result) { async::PostToUi([onUi, result = std::move(result)]() mutable { onUi(std::move(result)); }); });
+                stdexec::then([cb](T result) {
+                    async::PostToUi([cb, result = std::move(result)]() mutable {
+                        if (*cb) {
+                            (*cb)(std::move(result));
+                        }
+                    });
+                });
     exec::start_detached(std::move(work));
 }
 

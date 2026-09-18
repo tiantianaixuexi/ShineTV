@@ -275,7 +275,7 @@ void ComfySession::SubmitPromptJson(std::string_view promptGraphJson, PromptCb c
     PromptSubmitRequest req;
     req.promptJson = std::string{promptGraphJson};
     req.clientId = clientId_;
-    SubmitPromptAsync(baseUrl_, req, [this, cb = std::move(cb)](PromptSubmitResult r) {
+    SubmitPromptAsync(baseUrl_, req, [this, cb = std::move(cb)](PromptSubmitResult r) mutable {
         if (r.ok) {
             log::Info("已提交 prompt {}", ShortId(r.promptId));
             historyFallbackRequested_ = false;
@@ -313,7 +313,7 @@ void ComfySession::SubmitPromptJson(std::string_view promptGraphJson, PromptCb c
 }
 
 void ComfySession::Interrupt(OpCb cb) {
-    InterruptAsync(baseUrl_, [cb = std::move(cb)](OperationResult r) {
+    InterruptAsync(baseUrl_, [cb = std::move(cb)](OperationResult r) mutable {
         if (r.ok) {
             log::Info("已发送 /interrupt");
         } else {

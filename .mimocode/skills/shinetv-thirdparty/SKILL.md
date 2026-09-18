@@ -23,13 +23,17 @@ description: ShineTV third/ 库接入方式：mimalloc、spdlog+fmt、stdexec、
 | **hiredis** | `shine_hiredis` 静态库（`src/db/redis/`） | 不 `add_subdirectory`；业务经 `db/Db.h` / `db/redis/Redis.h` |
 | **sqlite3** | `shine_sqlite` 静态库（`third/sqlite/sqlite3.c` amalgamation） | `SQLITE_ENABLE_FTS5`；路径用 `std::filesystem::path` |
 
+| **function2** | header-only `third/function2` | include `function2/function2.hpp`；WS 高频监听用 `fu2::function`（可拷贝+SBO） |
+| **ImAnim** | `third/ImAnim/`（ImGui 动画库，**已 vendored，CMake 尚未编入 exe**） | 以后做 UI 动效/补间再 `add_executable` 接入；先读 `third/ImAnim/docs/quickstart.md`，**不要**在业务里手写一套动画曲线 |
+
 ## 使用入口
 
 | 需求 | 用法 |
 |------|------|
 | 日志 | `#include "core/Log.h"` → `log::Info("{}", x)` |
-| 后台任务 | `#include "core/Async.h"` → `RunOnWorker` / `PostToUi` / `DrainUiQueue` |
-| HTTP/WS | `#include "comfy/ComfyHttp.h"` 或 Session API，不要散写 socket |
+| 后台任务 | `#include "core/Async.h"` → `RunOnWorker` / `PostToUi` / `DrainUiQueue`（参数已是 `std::move_only_function`） |
+| 异步回调类型 | `comfy::*Cb` / `gallery::ScanAsync` / `media::VideoThumbCb` → **`std::move_only_function`**（GCC 16 可用） |
+| HTTP/WS | `#include "net/HttpClient.h"` 或 `comfy/ComfyHttp.h`（业务语境包装） |
 | JSON | `#include <yyjson.h>` |
 | 分配 | `#include <mimalloc.h>` → `mi_malloc` / `mi_free`（大缓冲） |
 

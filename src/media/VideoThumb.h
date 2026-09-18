@@ -14,7 +14,7 @@
 //   * 本模块自己按需 `CoInitializeEx`（线程级缓存，不要求调用方先初始化 COM）。
 #include <cstdint>
 #include <filesystem>
-#include <functional>
+#include <functional> // std::move_only_function
 #include <string>
 
 #include "gallery/Image.h"
@@ -29,7 +29,7 @@ struct VideoThumbResult {
     double ms = 0.0;   // 提取耗时（日志/证据用）
 };
 
-using VideoThumbCb = std::function<void(VideoThumbResult)>; // **UI 线程**回调
+using VideoThumbCb = std::move_only_function<void(VideoThumbResult)>; // **UI 线程**回调
 
 // 同步提取（**worker 线程专用**；自检程序可直接调，但不要在 UI 线程调）
 [[nodiscard]] VideoThumbResult VideoThumbnailSync(const std::filesystem::path& file);

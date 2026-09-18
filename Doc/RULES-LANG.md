@@ -76,7 +76,7 @@ template for + splice 输出 -> {"themeId": "dark", "thumbSize": 512, "showDemoW
 | 遍历/查找 | `std::ranges`；索引确有必要时注明原因 | 无脑 `for (size_t i …)` |
 | 编译期常量 | `constexpr` / `consteval` / `constinit` / `std::to_underlying` | `#define` 定义常量 |
 | 模板约束 | `concepts` | SFINAE |
-| 热路径回调 | 模板参数 / 函数指针 | `std::function` |
+| 热路径回调 | 模板参数 / 函数指针；异步业务回调用 **`std::move_only_function`**（GCC 16 可用） | `std::function` 做热路径；禁止把已迁 `move_only` 的 `*Cb` 改回 `std::function` |
 | 其他可用 | 结构化绑定、指定初始化 `Foo{.x=1}`、`if consteval`、`std::bit_cast`、`std::unreachable`、`[[likely]]`、`std::source_location`（日志封装） | `using namespace std;` |
 
 **跨模块改造边界**：只现代化"本任务触碰到的文件"；调用点 > 5 处时，先加 `std::string_view` 重载或调用处写 `std::string(sv)` 显式转换，**不为了风格统一去改别人的模块**。

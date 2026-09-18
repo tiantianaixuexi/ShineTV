@@ -9,13 +9,14 @@ namespace shine::comfy {
 
 // High-level REST helpers. All *Async methods hop to worker via stdexec,
 // then PostToUi so callbacks run on the UI thread.
+// 回调用 std::move_only_function：允许持有 move-only 状态，避免为进 std::function 多一次拷贝。
 
-using QueueCb = std::function<void(QueueResult)>;
-using ObjectInfoCb = std::function<void(ObjectInfoResult)>;
-using PromptCb = std::function<void(PromptSubmitResult)>;
-using HistoryCb = std::function<void(HistoryResult)>;
-using OpCb = std::function<void(OperationResult)>;
-using StatsCb = std::function<void(SystemStatsResult)>;
+using QueueCb = std::move_only_function<void(QueueResult)>;
+using ObjectInfoCb = std::move_only_function<void(ObjectInfoResult)>;
+using PromptCb = std::move_only_function<void(PromptSubmitResult)>;
+using HistoryCb = std::move_only_function<void(HistoryResult)>;
+using OpCb = std::move_only_function<void(OperationResult)>;
+using StatsCb = std::move_only_function<void(SystemStatsResult)>;
 
 // P3.0 S6：`GET /history/{prompt_id}` 的结论（成功 / 失败 / 未找到）—— WS 漏收结果事件时用它收尾
 struct HistoryOutcome {
@@ -23,7 +24,7 @@ struct HistoryOutcome {
     bool failed = false;
     ErrorDetail error;   // failed 时尽力填全（status.messages 可能已被清理）
 };
-using HistoryOutcomeCb = std::function<void(HistoryOutcome)>;
+using HistoryOutcomeCb = std::move_only_function<void(HistoryOutcome)>;
 
 void FetchQueueAsync(std::string_view baseUrl, QueueCb cb);
 void FetchObjectInfoAsync(std::string_view baseUrl, ObjectInfoCb cb);
@@ -42,7 +43,7 @@ struct BinaryResult {
     std::string error;
     std::string bytes; // 原始文件字节（PNG/…）
 };
-using BinaryCb = std::function<void(BinaryResult)>;
+using BinaryCb = std::move_only_function<void(BinaryResult)>;
 
 // `/view?filename=…&subfolder=…&type=output`（文件名做百分号转义）
 [[nodiscard]] std::string BuildViewUrl(std::string_view baseUrl, std::string_view fileName,

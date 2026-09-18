@@ -43,7 +43,7 @@ struct ScanResult {
 // 固定签名同 `Plan/任务/G-图片库.md`「新增接口」。
 // **连续多次调用只有最后一次的回调会被执行**（内部递增 `requestSeq` 校验），
 // 因此"重复点打开文件夹"不会让旧结果覆盖新结果；旧任务发现被取代会提前退出。
-void ScanAsync(ScanOptions opt, std::function<void(ScanResult)> onDone);
+void ScanAsync(ScanOptions opt, std::move_only_function<void(ScanResult)> onDone);
 
 // G-S4 阶段只有 PNG（`{"png"}`）；S12 起逐个加入 jpeg / webp / avif
 [[nodiscard]] std::vector<std::string> DefaultImageExtensions();

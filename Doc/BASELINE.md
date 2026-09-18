@@ -20,7 +20,7 @@
 | 纹理图 | `ShineTextureEditor` | 纹理节点图（部分） | **不做** |
 | 媒体预览 | `SShineComfyMediaPreview` | 图/视频预览 | `src/media/`（P4；视频不内嵌播放） |
 
-`third/` 已有：imgui（**docking**）、VisualNodeSystem、libhv、yyjson、zmij、zlib、spdlog、fmt、mimalloc、function2、stdexec。
+`third/` 已有：imgui（**docking**）、VisualNodeSystem、libhv、yyjson、zmij、zlib、spdlog、fmt、mimalloc、function2、stdexec、**ImAnim**（ImGui 动画，待接入）。
 
 ---
 
