@@ -271,6 +271,38 @@ struct MysteryBeatRow {
     int ord = 0;
 };
 
+// —— 初始化链（S3-pre）：`10` §2.3 门禁的硬依赖，原先零写入口 ——
+
+// character_arcs：角色弧光阶段（「不同时间段不同性格」的正规落点）。
+// `stage` 例：懦弱少年 → 第一次杀人 → 心理变化 → 保护同伴 → 蜕变；`trigger_event_id` 指向触发转变的事件。
+struct CharacterArcRow {
+    RowId id = 0;
+    RowId entity_id = 0;
+    int ord = 0; // 阶段序；0 = 未指定
+    std::string stage;
+    RowId trigger_event_id = 0; // 0 = 无外部触发
+    std::string note;
+};
+
+// dialogue_styles：**角色级**说话方式（一人一行）。
+// 与 `writing_style` 的「全书级单行」分工不同、不能互替（`01` §2.8.2 已定为 P1）。
+struct DialogueStyleRow {
+    RowId entity_id = 0;
+    std::string sentence_len; // 句长倾向
+    std::string vocabulary;   // 用词特征
+    std::string catchphrase;  // 口头禅
+    std::string taboo_words;  // 忌语
+    std::string habit;        // 说话习惯（停顿/语气词/尊称…）
+};
+
+// themes：主题（`10` 初始化要写；`04` L4 已在读）
+struct ThemeRow {
+    RowId id = 0;
+    std::string title;
+    std::string statement;    // 主题陈述
+    RowId linked_plot_id = 0; // 关联剧情线
+};
+
 // 供 ContextBuilder 的切片
 struct CharacterSlice {
     EntityRow entity;

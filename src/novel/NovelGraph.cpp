@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS plots(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,
 CREATE TABLE IF NOT EXISTS plot_beats(id INTEGER PRIMARY KEY AUTOINCREMENT,plot_id INTEGER,chapter_id INTEGER,ord INTEGER,beat_type TEXT,title TEXT,summary TEXT,cast_json TEXT);
 CREATE TABLE IF NOT EXISTS mysteries(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,question TEXT,answer TEXT,status TEXT,ask_ch INTEGER,answer_ch INTEGER,importance INTEGER);
 CREATE TABLE IF NOT EXISTS mystery_beats(id INTEGER PRIMARY KEY AUTOINCREMENT,mystery_id INTEGER,beat_type TEXT,chapter_id INTEGER,content TEXT,target_entity_id INTEGER,ord INTEGER);
+CREATE TABLE IF NOT EXISTS character_arcs(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER NOT NULL,ord INTEGER NOT NULL DEFAULT 0,stage TEXT NOT NULL DEFAULT '',trigger_event_id INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS dialogue_styles(entity_id INTEGER PRIMARY KEY,sentence_len TEXT NOT NULL DEFAULT '',vocabulary TEXT NOT NULL DEFAULT '',catchphrase TEXT NOT NULL DEFAULT '',taboo_words TEXT NOT NULL DEFAULT '',habit TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS world_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS themes(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,statement TEXT NOT NULL DEFAULT '',linked_plot_id INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,target_kind TEXT,target_id INTEGER,detail TEXT,created INTEGER);
 CREATE TABLE IF NOT EXISTS canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
 )SQL";
@@ -1376,6 +1380,167 @@ NovelGraph::ListMysteryBeats(RowId mysteryId) const {
     return out;
 }
 
+// —— 初始化链（S3-pre）：`10` §2.3 门禁的硬依赖，原先这四张表零写入口 ——
+
+// 角色弧光（character_arcs）——「不同时间段不同性格」的正规落点
+std::expected<RowId, DbError> NovelGraph::UpsertArc(const CharacterArcRow& row) {
+    if (row.entity_id <= 0) return std::unexpected(Err("弧光必须指定 entity_id"));
+    if (row.stage.empty()) return std::unexpected(Err("弧光 stage 不能为空"));
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE character_arcs SET entity_id=?1,ord=?2,stage=?3,trigger_event_id=?4,note=?5"
+            " WHERE id=?6");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.entity_id);
+        (void)st->BindInt(2, row.ord);
+        (void)st->BindText(3, row.stage);
+        (void)st->BindInt(4, row.trigger_event_id);
+        (void)st->BindText(5, row.note);
+        (void)st->BindInt(6, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO character_arcs(entity_id,ord,stage,trigger_event_id,note)"
+        " VALUES(?1,?2,?3,?4,?5)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.entity_id);
+    (void)st->BindInt(2, row.ord);
+    (void)st->BindText(3, row.stage);
+    (void)st->BindInt(4, row.trigger_event_id);
+    (void)st->BindText(5, row.note);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<CharacterArcRow>, DbError> NovelGraph::ListArcs(RowId entityId) const {
+    std::string sql = "SELECT id,entity_id,ord,stage,trigger_event_id,note FROM character_arcs";
+    if (entityId > 0) sql += " WHERE entity_id=?1";
+    sql += " ORDER BY ord, id";
+    auto st = db_->Prepare(sql);
+    if (!st) return std::unexpected(st.error());
+    if (entityId > 0) (void)st->BindInt(1, entityId);
+    std::vector<CharacterArcRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        CharacterArcRow r;
+        r.id = st->ColumnInt(0);
+        r.entity_id = st->ColumnInt(1);
+        r.ord = static_cast<int>(st->ColumnInt(2));
+        r.stage = st->ColumnText(3);
+        r.trigger_event_id = st->ColumnInt(4);
+        r.note = st->ColumnText(5);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// 角色级说话方式（dialogue_styles，一人一行；主键就是 entity_id）
+std::expected<RowId, DbError> NovelGraph::UpsertDialogueStyle(const DialogueStyleRow& row) {
+    if (row.entity_id <= 0) return std::unexpected(Err("说话方式必须指定 entity_id"));
+    (void)db_->Exec(fmt::format("DELETE FROM dialogue_styles WHERE entity_id={}", row.entity_id));
+    auto st = db_->Prepare(
+        "INSERT INTO dialogue_styles(entity_id,sentence_len,vocabulary,catchphrase,taboo_words,"
+        "habit) VALUES(?1,?2,?3,?4,?5,?6)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.entity_id);
+    (void)st->BindText(2, row.sentence_len);
+    (void)st->BindText(3, row.vocabulary);
+    (void)st->BindText(4, row.catchphrase);
+    (void)st->BindText(5, row.taboo_words);
+    (void)st->BindText(6, row.habit);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return row.entity_id;
+}
+
+std::expected<DialogueStyleRow, DbError> NovelGraph::GetDialogueStyle(RowId entityId) const {
+    auto st = db_->Prepare(
+        "SELECT entity_id,sentence_len,vocabulary,catchphrase,taboo_words,habit"
+        " FROM dialogue_styles WHERE entity_id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) {
+        return std::unexpected(Err("该角色没有说话方式记录"));
+    }
+    DialogueStyleRow r;
+    r.entity_id = st->ColumnInt(0);
+    r.sentence_len = st->ColumnText(1);
+    r.vocabulary = st->ColumnText(2);
+    r.catchphrase = st->ColumnText(3);
+    r.taboo_words = st->ColumnText(4);
+    r.habit = st->ColumnText(5);
+    return r;
+}
+
+// 世界级键值（world_meta）——`10` §2.3 N1 的 `book_title` 走这里
+std::expected<void, DbError> NovelGraph::SetWorldMeta(std::string_view key,
+                                                     std::string_view value) {
+    if (key.empty()) return std::unexpected(Err("world_meta key 不能为空"));
+    auto st = db_->Prepare(
+        "INSERT INTO world_meta(key,value) VALUES(?1,?2)"
+        " ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, key);
+    (void)st->BindText(2, value);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return {};
+}
+
+std::expected<std::string, DbError> NovelGraph::GetWorldMeta(std::string_view key) const {
+    auto st = db_->Prepare("SELECT value FROM world_meta WHERE key=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, key);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(Err("world_meta 键不存在"));
+    return st->ColumnText(0);
+}
+
+// 主题（themes）
+std::expected<RowId, DbError> NovelGraph::UpsertTheme(const ThemeRow& row) {
+    if (row.title.empty()) return std::unexpected(Err("主题 title 不能为空"));
+    if (row.id > 0) {
+        auto st =
+            db_->Prepare("UPDATE themes SET title=?1,statement=?2,linked_plot_id=?3 WHERE id=?4");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindText(1, row.title);
+        (void)st->BindText(2, row.statement);
+        (void)st->BindInt(3, row.linked_plot_id);
+        (void)st->BindInt(4, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare("INSERT INTO themes(title,statement,linked_plot_id) VALUES(?1,?2,?3)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, row.title);
+    (void)st->BindText(2, row.statement);
+    (void)st->BindInt(3, row.linked_plot_id);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<ThemeRow>, DbError> NovelGraph::ListThemes() const {
+    auto st = db_->Prepare("SELECT id,title,statement,linked_plot_id FROM themes ORDER BY id");
+    if (!st) return std::unexpected(st.error());
+    std::vector<ThemeRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        ThemeRow r;
+        r.id = st->ColumnInt(0);
+        r.title = st->ColumnText(1);
+        r.statement = st->ColumnText(2);
+        r.linked_plot_id = st->ColumnInt(3);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 bool NovelGraph::RunGraphSelfCheck() {
     // 依赖全量 schema（NovelDb 自检）
     if (!NovelDb::RunSchemaSelfCheck()) {
@@ -1542,7 +1707,100 @@ bool NovelGraph::RunGraphSelfCheck() {
             return false;
         }
     }
-    log::Info("NovelGraph 自检通过（实体/关系/因果/伏笔/章节/切片 + P0 八表）");
+    // —— 初始化链（S3-pre）：`10` §2.3 门禁的三个硬依赖 ——
+    constexpr RowId kGhost = 999999; // 不存在的实体，用于负向断言
+    {
+        // 角色弧光：门禁要求「主角必须有 arc，stage 至少含起点与终点」
+        auto a1 = g.UpsertArc({.entity_id = *pid, .ord = 1, .stage = "懦弱少年"});
+        auto a2 = g.UpsertArc({.entity_id = *pid,
+                               .ord = 2,
+                               .stage = "第一次杀人",
+                               .trigger_event_id = *e1,
+                               .note = "转折点"});
+        auto a3 = g.UpsertArc({.entity_id = *pid, .ord = 3, .stage = "蜕变"});
+        auto arcs = g.ListArcs(*pid);
+        auto noArcs = g.ListArcs(kGhost);
+        if (!a1 || !a2 || !a3 || !arcs || arcs->size() != 3 || (*arcs)[0].stage != "懦弱少年" ||
+            (*arcs)[2].stage != "蜕变" || (*arcs)[1].trigger_event_id != *e1 || !noArcs ||
+            !noArcs->empty()) {
+            log::Error("NovelGraph 自检：character_arcs CRUD / 按 ord 排序 / 按实体过滤失败");
+            return false;
+        }
+        bool hasStart = false;
+        bool hasEnd = false;
+        for (const auto& a : *arcs) {
+            if (a.ord == 1) hasStart = true;
+            if (a.ord == 3) hasEnd = true;
+        }
+        if (!hasStart || !hasEnd) {
+            log::Error("NovelGraph 自检：弧光缺起点或终点（`10` §2.3 门禁应可判定）");
+            return false;
+        }
+        // 角色级说话方式（一人一行，重复写覆盖）
+        if (!g.UpsertDialogueStyle({.entity_id = *pid,
+                                    .sentence_len = "短句",
+                                    .vocabulary = "少用形容词",
+                                    .catchphrase = "……嗯",
+                                    .taboo_words = "绝不称「大人」",
+                                    .habit = "先沉默半拍"})) {
+            log::Error("NovelGraph 自检：UpsertDialogueStyle 失败");
+            return false;
+        }
+        auto ds = g.GetDialogueStyle(*pid);
+        if (!ds || ds->catchphrase != "……嗯" || ds->taboo_words != "绝不称「大人」") {
+            log::Error("NovelGraph 自检：GetDialogueStyle 失败");
+            return false;
+        }
+        if (!g.UpsertDialogueStyle({.entity_id = *pid, .catchphrase = "换了口头禅"})) {
+            log::Error("NovelGraph 自检：覆盖说话方式失败");
+            return false;
+        }
+        auto ds2 = g.GetDialogueStyle(*pid);
+        if (!ds2 || ds2->catchphrase != "换了口头禅" || !ds2->sentence_len.empty()) {
+            log::Error("NovelGraph 自检：说话方式未按一人一行覆盖");
+            return false;
+        }
+        if (g.GetDialogueStyle(kGhost)) {
+            log::Error("NovelGraph 自检：未写的角色不该有说话方式");
+            return false;
+        }
+        // 世界级键值：`10` §2.3 N1 的 book_title
+        if (!g.SetWorldMeta("book_title", "雨的信號")) {
+            log::Error("NovelGraph 自检：SetWorldMeta 失败");
+            return false;
+        }
+        if (!g.SetWorldMeta("book_title", "雨的信號·改")) {
+            log::Error("NovelGraph 自检：SetWorldMeta 覆盖失败");
+            return false;
+        }
+        auto bt = g.GetWorldMeta("book_title");
+        if (!bt || *bt != "雨的信號·改") {
+            log::Error("NovelGraph 自检：GetWorldMeta 未拿到覆盖后的值");
+            return false;
+        }
+        if (g.GetWorldMeta("no_such_key")) {
+            log::Error("NovelGraph 自检：不存在的 world_meta 键应报错");
+            return false;
+        }
+        // 主题
+        auto th = g.UpsertTheme({.title = "身份与代价", .statement = "伪装久了会变成真的"});
+        auto th2 = g.UpsertTheme({.title = "忠诚", .statement = "忠诚是选择不是天性"});
+        auto themes = g.ListThemes();
+        if (!th || !th2 || !themes || themes->size() != 2 || (*themes)[0].title != "身份与代价") {
+            log::Error("NovelGraph 自检：themes CRUD 失败");
+            return false;
+        }
+        if (!g.UpsertTheme({.id = *th, .title = "身份与代价", .statement = "改写后的陈述"})) {
+            log::Error("NovelGraph 自检：UpsertTheme 同 id 更新失败");
+            return false;
+        }
+        auto thGet = g.ListThemes();
+        if (!thGet || thGet->size() != 2 || (*thGet)[0].statement != "改写后的陈述") {
+            log::Error("NovelGraph 自检：themes 同 id 更新语义失败");
+            return false;
+        }
+    }
+    log::Info("NovelGraph 自检通过（实体/关系/因果/伏笔/章节/切片 + P0 八表 + 初始化链四表）");
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {
