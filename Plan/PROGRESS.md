@@ -35,7 +35,7 @@
 - [x] **S-doc** 文档集入库（14 卷 + `Doc/AGENTS.md`）— `docs-novel-system`｜`git ls-files` = 14、全 LF
 - [x] **S0-pre** 孤儿回收 `ReapStaleImageJobs` — `s0pre-orphan-reap`｜`imagegen:ok`
 - [x] **S0** MCP `input_schema` 修复（G22）+ 自检写保护 — `s0-mcp-schema`｜警告 94→0、`novelmcp=ok`
-- [ ] **S1** `visual_assets.status` + `visual_artifacts`（schema v7）— `s1-visual-status-artifacts`
+- [x] **S1** `visual_assets.status` + `visual_artifacts`（schema v7）— `s1-visual-status-artifacts`｜自检 v7 全绿；真实 v6 库迁移后旧数据零变化
 - [ ] **S2** P0 八表补 API — `s2-p0-graph-api`
 - [ ] **S3** `V0 ASSET_PIPELINE` 编排 + 依赖等待 C+B — `s3-asset-pipeline`
 - [ ] **S4** 生成侧严谨性（`object_info` 不跳过 + 降级记账）— `s4-gen-strictness`
