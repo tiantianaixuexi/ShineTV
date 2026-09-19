@@ -64,6 +64,13 @@ public:
     [[nodiscard]] static bool IsValidLayer(std::string_view layer);
     static constexpr std::string_view kLayerEnum = "global|public|mask|true|private";
     static constexpr std::string_view kValueTypeEnum = "text|number|json|enum";
+    // `08` §2.3 硬上限：单个工程 field_defs 条数。只约束「新增键」，更新既有键不受限。
+    static constexpr int kMaxFieldDefs = 500;
+
+    // 字段表的**唯一定义来源**：建 field_defs / entity_fields / field_aliases + 旧库 ALTER 回填。
+    // 规格 `08` §2.3。`NovelDb::Migrate`、`AgentKit::EnsureSchemaAndSeed`、自检都调这个 ——
+    // 原先三处各写一份 DDL，漏更新一处就静默丢种子（S2b 已踩）。幂等，可重复调用。
+    [[nodiscard]] static std::expected<void, DbError> EnsureSchema(db::sqlite::Database& db);
 
     // 别名：读取与写入都先过别名表（`08` §2.4）。命中 → 用规范键。
     [[nodiscard]] std::expected<void, DbError> UpsertFieldAlias(std::string_view alias,
