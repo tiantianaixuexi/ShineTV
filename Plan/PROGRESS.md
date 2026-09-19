@@ -38,7 +38,7 @@
 - [x] **S0** MCP `input_schema` 修复（G22）+ 自检写保护 — `s0-mcp-schema`｜警告 94→0、`novelmcp=ok`
 - [x] **S1** `visual_assets.status` + `visual_artifacts`（schema v7）— `s1-visual-status-artifacts`｜自检 v7 全绿；真实 v6 库迁移后旧数据零变化
 - [x] **S2** P0 八表补 API（`plots`/`plot_beats`/`mysteries`/`mystery_beats`/`character_knowledge`/`event_participants`/`scene_cast`/`scene_foreshadows`）— `s2-p0-graph-api`｜8/8 表各有 `Upsert*`+`List*`（21 个接口）；`graph=ok`；K04/K05 入口可用
-- [x] **S2b** 字段门禁（`08` §2.2 三步：归一化/查定义/校值）+ `field_defs.status`（schema v8）+ `field_aliases` 别名表 + `layer` 枚举化 + JSON 转义 — `s2b-field-gate`｜`fields=ok agents=ok novelmcp=ok`、**15 项全 ok**、ExitCode=0；`schema=v8` 自检覆盖 status 加列与回填
+- [x] **S2b** 字段门禁（`08` §2.2 三步：归一化/查定义/校值）+ `field_defs.status`（schema v8）+ `field_aliases` 别名表 + `layer` 枚举化 + JSON 转义 — `s2b-field-gate`｜`fields=ok agents=ok novelmcp=ok`、**15 项全 ok**、ExitCode=0；`schema=v8` 自检覆盖 status 加列与回填 ⚠️ **本 S 未先建分支**，提交直接落在 `main`（`68d9aec`，无合并提交）
 - [ ] **S3-pre** 初始化链 API 前置（`character_arcs`/`dialogue_styles`/`world_meta`/`themes`）— `s3pre-init-api`
 - [ ] **S3** `V0 ASSET_PIPELINE` 编排 + 依赖等待 C+B — `s3-asset-pipeline`
 - [ ] **S4** 生成侧严谨性（`object_info` 不跳过 + 降级记账）— `s4-gen-strictness`
