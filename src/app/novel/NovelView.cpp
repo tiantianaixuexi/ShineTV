@@ -204,6 +204,82 @@ void DrawProjectList() {
     };
 }
 
+// 真实流程（S15）：把「生成本章」的 worker 段抽成函数 —— 按钮与 `SHINE_NOVEL_GENERATE`
+// 验收开关**共用同一条路**（同一份 worker / 进度回调 / 状态），不另造一条并行实现。
+// `09` §2.1 前置③（LLM 可用）在这里判：**没配 Key 就明确说清楚并停住**，不发请求（否则
+// 用户点一下等半天才从网络层报错，auto 连跑更会白跑一整套）。
+void StartChapterGeneration(std::int64_t chapterId) {
+    if (chapterId <= 0 || !biz::NovelDb::Instance().isOpen()) {
+        g_genStatus = "请先选中一章（或先「新建空章节」）";
+        return;
+    }
+    const auto profile = openai::ResolveActiveProfile();
+    if (profile.apiKey.empty()) {
+        g_genStatus = fmt::format("未配置 {} 的 API Key：设置 → LLM 里填好后重试",
+                                  std::string{openai::ProviderLabel(profile.provider)});
+        log::Warn("章节 #{} 未开始生成：{} 的 API Key 为空", chapterId,
+                  std::string{openai::ProviderLabel(profile.provider)});
+        return;
+    }
+    g_generating = true;
+    g_cancelGen = false;
+    g_streamBuf.clear();
+    g_genStatus = "排队中…";
+    const auto dbPath = biz::NovelDb::Instance().path();
+    const std::string projectDir = util::PathToUtf8(dbPath.parent_path());
+    async::RunOnWorker([chapterId, dbPath, projectDir]() {
+        ::shine::db::sqlite::Database db;
+        std::string fail;
+        if (auto r = db.Open({.path = dbPath}); !r) {
+            fail = r.error().message;
+        } else {
+            auto call = MakeLlmCall(&g_cancelGen);
+            shine::agent::NovelDirector dir(db, call);
+            // 工程根与快照目录**显式下发**（原先靠 `NovelDb` 单例推；`work/` 与 `snapshots/`
+            // 都按它落盘，单例没开就会写错地方 —— S12/S15）
+            auto out = dir.GenerateChapter(
+                {.chapter_id = chapterId,
+                 .user_hint = "续写本章",
+                 .max_revisions = 2,
+                 .snapshot_dir = fmt::format("{}/snapshots", projectDir),
+                 .project_dir = projectDir},
+                [](const shine::agent::GenerateChapterProgress& p) {
+                    if (g_cancelGen.load()) return;
+                    if (!p.text_delta.empty()) {
+                        async::PostToUi([d = p.text_delta]() { g_streamBuf += d; });
+                    }
+                    if (!p.note.empty()) {
+                        async::PostToUi([n = p.note, ph = p.phase]() {
+                            g_genStatus =
+                                fmt::format("{} · {}", shine::agent::PhaseName(ph), n);
+                        });
+                    }
+                });
+            if (!out) {
+                fail = out.error().message;
+            } else {
+                async::PostToUi([body = out->body, rev = out->revisions,
+                                 committed = out->state_committed, note = out->commit_note,
+                                 retries = out->validation_retries]() {
+                    g_streamBuf = body;
+                    g_genStatus =
+                        fmt::format("完成（修订 {} 次，校验重做 {} 次，{} 字）· {}", rev, retries,
+                                    body.size(), note.empty() ? "未回写状态" : note);
+                    g_generating = false;
+                    if (committed) {
+                        Refresh();
+                    }
+                });
+                return;
+            }
+        }
+        async::PostToUi([fail]() {
+            g_genStatus = (fail == "已取消") ? "已取消" : ("失败：" + fail);
+            g_generating = false;
+        });
+    });
+}
+
 void DrawWorkspace() {
     if (g_openProject.empty()) {
         return;
@@ -262,52 +338,8 @@ void DrawWorkspace() {
     if (profile.apiKey.empty()) {
         ImGui::TextDisabled("未配置该 Provider 的 API Key，「生成本章」将失败");
     }
-    if (ImGui::Button(g_generating ? "生成中…" : "生成本章", ImVec2(140, 0)) && !g_generating &&
-        g_lastChapterId > 0 && biz::NovelDb::Instance().isOpen()) {
-        g_generating = true;
-        g_cancelGen = false;
-        g_streamBuf.clear();
-        g_genStatus = "排队中…";
-        const auto chapterId = g_lastChapterId;
-        const auto dbPath = biz::NovelDb::Instance().path();
-        async::RunOnWorker([chapterId, dbPath]() {
-            ::shine::db::sqlite::Database db;
-            std::string fail;
-            if (auto r = db.Open({.path = dbPath}); !r) {
-                fail = r.error().message;
-            } else {
-                auto call = MakeLlmCall(&g_cancelGen);
-                shine::agent::NovelDirector dir(db, call);
-                auto out = dir.GenerateChapter(
-                    {.chapter_id = chapterId, .user_hint = "续写本章", .max_revisions = 2},
-                    [](const shine::agent::GenerateChapterProgress& p) {
-                        if (g_cancelGen.load()) return;
-                        if (!p.text_delta.empty()) {
-                            async::PostToUi([d = p.text_delta]() { g_streamBuf += d; });
-                        }
-                        if (!p.note.empty()) {
-                            async::PostToUi([n = p.note, ph = p.phase]() {
-                                g_genStatus = fmt::format("{} · {}",
-                                                          shine::agent::PhaseName(ph), n);
-                            });
-                        }
-                    });
-                if (!out) {
-                    fail = out.error().message;
-                } else {
-                    async::PostToUi([body = out->body, rev = out->revisions]() {
-                        g_streamBuf = body;
-                        g_genStatus = fmt::format("完成（修订 {} 次，{} 字）", rev, body.size());
-                        g_generating = false;
-                    });
-                    return;
-                }
-            }
-            async::PostToUi([fail]() {
-                g_genStatus = (fail == "已取消") ? "已取消" : ("失败：" + fail);
-                g_generating = false;
-            });
-        });
+    if (ImGui::Button(g_generating ? "生成中…" : "生成本章", ImVec2(140, 0)) && !g_generating) {
+        StartChapterGeneration(g_lastChapterId);
     }
     if (g_generating) {
         ImGui::SameLine();
@@ -358,6 +390,14 @@ void DrawWorkspace() {
         if (!g_runLoopRunning) {
             if (ImGui::Button("连跑", ImVec2(140, 0)) && !g_generating &&
                 biz::NovelDb::Instance().isOpen()) {
+                // S15（`09` §2.1 前置③）：没配 Key 直接说清楚，不进 worker（连跑会一章都成不了）
+                const auto runProfile = openai::ResolveActiveProfile();
+                if (runProfile.apiKey.empty()) {
+                    g_runLoopStatus = fmt::format("未配置 {} 的 API Key：设置 → LLM 里填好后重试",
+                                                  std::string{openai::ProviderLabel(runProfile.provider)});
+                    log::Warn("连跑未启动：{} 的 API Key 为空",
+                              std::string{openai::ProviderLabel(runProfile.provider)});
+                } else {
                 g_runLoopRunning = true;
                 g_cancelGen = false;
                 g_runLoopStatus = "连跑：准备中…";
@@ -386,6 +426,9 @@ void DrawWorkspace() {
                     req.max_chapters = maxChapters;
                     req.checkpoint_every = checkpointEvery;
                     req.auto_create_chapters = autoCreate;
+                    // S15（`09` §2.1 前置③）：LLM 是否可用**真判** —— 空 Key 就别启动 auto，
+                    // 由 `CheckAutoPrecondition` 给出可读的拒绝原因（原先这里硬编码 true）
+                    req.llm_ready = !openai::ResolveActiveProfile().apiKey.empty();
                     req.cancel = []() { return g_cancelGen.load(); };
                     req.on_progress = [](const biz::RunProgress& p) {
                         async::PostToUi([ord = p.chapter_ord, ph = p.phase, n = p.note]() {
@@ -411,6 +454,7 @@ void DrawWorkspace() {
                         g_runLoopRunning = false;
                     });
                 });
+                } // S15：无 Key 的 else 分支结束
             }
         } else {
             if (ImGui::Button("停止连跑", ImVec2(140, 0))) {
@@ -945,6 +989,47 @@ void DrawNovelWindow() {
             --autoOpenFrames;
             if (!want.empty() && g_openProject.empty()) {
                 (void)OpenProjectDb(want);
+            }
+        }
+    }
+    // 真实流程验收（S15）：`SHINE_NOVEL_GENERATE=<chapter_id>` 开局自动跑一次「生成本章」——
+    // **走的就是按钮那条路**（`StartChapterGeneration`：同一份 worker / 进度回调 / 状态），
+    // 只是不用手点。`=0` → 库里第一张未完成的章。配合 `SHINE_NOVEL_OPEN=<书名>`，一条命令
+    // 就能跑真实流程（`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0`）。
+    {
+        // ⚠️ 用**时间**而不是帧数：帧率受 GPU/后台加载影响（实测 12 秒内可能跑不到 30 帧），
+        // 帧计数会让「等 N 帧」变成不确定的等待。
+        static double readyAt = -1.0;
+        static bool started = false;
+        static const std::string genWant = []() -> std::string {
+            const char* raw = std::getenv("SHINE_NOVEL_GENERATE");
+            const std::string v = (raw == nullptr || *raw == '\0') ? std::string{} : util::AcpToUtf8(raw);
+            // 这条**每次启动都打**：开关状态要能一眼看见（否则「没触发」时无从判断是没传还是没到帧）
+            log::Info("真实流程验收：SHINE_NOVEL_GENERATE 原始=[{}] 解析=[{}]",
+                      raw == nullptr ? "(null)" : raw, v);
+            return v;
+        }();
+        if (!started && !genWant.empty()) {
+            if (g_openProject.empty()) {
+                readyAt = -1.0; // 还没开工程 → 重新计时
+            } else if (readyAt < 0.0) {
+                readyAt = ImGui::GetTime(); // 工程刚打开 → 起算
+            } else if (ImGui::GetTime() - readyAt >= 1.5) {
+                started = true;
+                std::int64_t cid = static_cast<std::int64_t>(std::atoll(genWant.c_str()));
+                if (cid <= 0 && biz::NovelDb::Instance().isOpen()) {
+                    if (auto list = biz::NovelGraph(biz::NovelDb::Instance().raw()).ListChapters(200);
+                        list) {
+                        for (const auto& c : *list) {
+                            if (c.status != "done") {
+                                cid = c.id;
+                                break;
+                            }
+                        }
+                    }
+                }
+                log::Info("真实流程验收：自动生成章节 #{}（SHINE_NOVEL_GENERATE={}）", cid, genWant);
+                StartChapterGeneration(cid);
             }
         }
     }

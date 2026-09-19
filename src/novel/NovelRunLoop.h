@@ -166,6 +166,10 @@ struct RunRequest {
     int max_chapters = 0;              // 0 = 不限（`auto_create_chapters` 时必须 > 0）
     RunMode mode = RunMode::Manual;
     RunLimits limits{};
+    // `09` §2.1 前置③：**LLM 是否可用**（provider 的 API Key 非空 / 连通性自检通过）。
+    // 由调用方给 —— `novel` 层不做 HTTP 层的事。⚠️ 默认 `true` 只为兼容既有自检与测试；
+    // **生产路径（UI / 验收开关）必须传真实值**，否则 `auto` 会带着空 Key 白跑（S15 修）。
+    bool llm_ready = true;
     int checkpoint_every = 10;         // `09` §2.5（0 = 关）
     bool resume = true;                // `09` §2.6
     bool auto_create_chapters = false; // 无非完成章时自动建下一章（`03` CHAPTER_GOAL 未实现前的替代）
