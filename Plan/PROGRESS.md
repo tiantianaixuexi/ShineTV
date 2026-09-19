@@ -28,7 +28,7 @@
 
 ---
 
-## 0.1 小说系统实施（15 个 S：S-doc-fix / S-doc / S0-pre / S0–S2 / S2b / S3-pre / S3–S8 / S-cleanup）🟡
+## 0.1 小说系统实施（16 个 S：S-doc-fix / S-doc / S0-pre / S0–S2 / S2b / S3-pre / S3–S9 / S-cleanup）🟡
 
 > **规格**：`Doc/小说系统/00-总纲与索引.md` **§6**。**一个 S 一个分支**，八步：起分支 → 实现 → `cmake --build` → **自验** → 更新本表 + `证据.md` → 提交（只 add 本 S 文件）→ 合并 `main` → 下一个。⚠️ **建分支必须先于第一处编辑**（`00` §6.4 R7）。
 
@@ -47,6 +47,7 @@
 - [ ] **S6** `ToGenShot` 桥（小说分镜 → `VideoProject`）— `s6-togen-shot-bridge`
 - [ ] **S7** P1 余下五表补 API + 快照（`entity_versions`/`location_distances`/`scene_visuals`/`writing_style`/`author_rules`；`dependencies` 延后）— `s7-p1-graph-api`
 - [ ] **S8** 闭环回写（`StateDiff` + 门禁 G1–G5）— `s8-state-commit`
+- [ ] **S9-auto-run** 无人值守运行骨架（运行模式 / 停止条件 S1–S12 / **检查点每 10 章**（含 `08` §2.3 自动升格）/ 断点续跑 / 重试退避 / 单章调用上限 / `stop_report.md`）— `s9-auto-run`｜⚠️ **它才是「连跑几百章不停」的主线**：`09` 卷 5 条严重度 `S`（09-1~09-4、09-9）全挂在这里；本 S 还收 09-5/09-6/09-10 与 09-2 的计数部分；**留后续** 09-7/09-8（模型路由与交叉复核）、09-11（限流）、09-12（全书预算）
 
 **基线坑**：`main` 上仍有**他人**的 `src/novel/NovelMcpTools.cpp`；`runtime/` 未跟踪（**不要提交**）。**每个 S 只 `git add` 自己那几个文件，绝不 `git add -A`。**
 
