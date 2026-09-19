@@ -417,17 +417,30 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         cctx.canon_mode = req.canon_mode.empty() ? "manual" : req.canon_mode;
         cctx.chapter_summary = summary;
         cctx.snapshot_dir = req.snapshot_dir;
-        if (cctx.snapshot_dir.empty() && novelcore::NovelDb::Instance().isOpen()) {
+        if (novelcore::NovelDb::Instance().isOpen()) {
             // 工程根 = novel.db 的父目录（与 `NovelImageStore::ProjectDirOfDb` 同口径）
-            cctx.snapshot_dir =
-                util::PathToUtf8(novelcore::NovelDb::Instance().path().parent_path() / "snapshots");
+            const auto projectRoot = novelcore::NovelDb::Instance().path().parent_path();
+            if (cctx.snapshot_dir.empty()) {
+                cctx.snapshot_dir = util::PathToUtf8(projectRoot / "snapshots");
+            }
+            // S11：K 校验要用它找 `work/`（K12）与降级账（K28）
+            cctx.project_dir = util::PathToUtf8(projectRoot);
         }
         const novelcore::CommitResult commit = novelcore::CommitChapterState(*db_, diff, cctx);
         // S9（`09` §2.2 S4/S9）：契约类问题的观测量 —— 缺失引用处数 + G4（契约非空/合法）失败
         for (const auto& iss : commit.gates.issues) {
             if (iss.code == "contract") {
                 ++result.missing_entity_refs;
+            } else if (iss.code.starts_with("K02")) {
+                // S11：K02 `entity.exists` 的失败同样是「引用不存在实体」，计入 S9 的观测量
+                ++result.missing_entity_refs;
             }
+        }
+        // S11：把 K01–K29 的不通过项交给运行循环（`09` §2.2 S1 的唯一数据来源）
+        result.failed_check_ids = commit.failed_check_ids;
+        if (!result.failed_check_ids.empty()) {
+            log::Warn("章节 {} 的 K01–K29 校验未通过（{} 项）：{}", req.chapter_id,
+                      result.failed_check_ids.size(), commit.checks_describe);
         }
         if (!commit.ok && !commit.gates.g4_diff_valid) {
             ++result.contract_failures;

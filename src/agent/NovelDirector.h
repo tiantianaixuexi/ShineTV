@@ -87,6 +87,8 @@ struct GenerateChapterResult {
     bool semantic_only = false;       // 仅语义判断且 FAIL（`06` §2.7 M2）
     int contract_failures = 0;        // 契约校验失败（含 1 次重试后）
     int missing_entity_refs = 0;      // `code=contract` 的缺失引用处数（`09` §2.2 S9）
+    // S11：G2 的 K01–K29 报告里不通过的 check_id（**重复条目 = 失败次数**，供 `09` §2.2 S1 计数）
+    std::vector<std::string> failed_check_ids;
 };
 
 struct AgentError {

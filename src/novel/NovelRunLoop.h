@@ -138,6 +138,10 @@ struct ChapterRunInfo {
     int missing_entity_refs = 0;
     int llm_network_failures = 0;
     int field_def_count = 0;
+    // S11：G2（`06` §2.3 K01–K29）不通过的 check_id。**重复条目 = 失败次数** ——
+    // `09` §2.2 S1「同章同 check_id 连续失败 2 次」的唯一输入（默认 runner 从
+    // `GenerateChapterResult::failed_check_ids` 填）。
+    std::vector<std::string> failed_check_ids;
     std::vector<std::string> stages; // `GenerateChapter` 报告的 Phase（写 `_manifest.json`）
     std::string note;
 };
