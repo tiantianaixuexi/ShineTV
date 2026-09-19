@@ -39,6 +39,12 @@ public:
     // （它在每次 MCP 工具分发前都会调一次，不能跑整套建表）。DDL 同样以 NovelDb.cpp 的常量为唯一来源。
     [[nodiscard]] static std::expected<void, DbError> EnsureAgentSchema(db::sqlite::Database& db);
 
+    // v9（S13）：给旧库的 `shots` 补 `start_state_json` / `end_state_json` / `timeline_json`
+    //（`12` §1.4 缺的就是这三列：K09 连续性、K24 Beat 时间轴的受检对象）。
+    // 新库由 `kSchemaV4Visual` 的建表直接带这三列，本函数只服务旧库；**列已存在即忽略**。
+    // **唯一来源**：`Migrate()` 与 `RunSchemaSelfCheck` 都调它（别再各抄一遍 ALTER）。
+    static void AddShotStateColumns(db::sqlite::Database& db);
+
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();
 

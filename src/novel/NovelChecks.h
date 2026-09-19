@@ -14,14 +14,15 @@
 // （`06` §2.7 M1：`checks_run` 必须列出实际执行的 check_id）。
 //
 // 数据源分三类（`CheckSpec::availability`），决定「谁传对象进来」：
-//   - `Library`      直接查库/查工程产物（K01–K08 / K10–K18 / K22 / K23 / K25–K29）
+//   - `Library`      直接查库（K02–K08 / K10–K11 / K14–K18 / K22–K28 / K29 …）
 //   - `Artifact`     读工程落盘产物（K12 `work/ch*/12_state_diff.json`、K13 `snapshots/ch*.json`）
-//   - `ContractInput` 上游阶段产物**在库里没有承载**，只能由调用方传只读对象
-//                    （K09 叙事分镜起止状态 / K19–K21 生成侧 / K24 Beat 时间轴）
+//   - `ContractInput` 结论**产生在别处**、库里没有承载，只能由调用方传
+//                    （K19–K21：生成侧 `ApiGraphValidator` / `Sanitize` 的结论）
 //
-// ⚠️ `ContractInput` 的四组**当前没有生产者**（`shots` 表无起止状态列 → `12` §1.4 已记；
-// `PromptArtifact` / `Beat[]` 无表存储 → `03` 的阶段产物未落地）。它们传空即
-// `NotApplicable`，**不伪造通过**；生产者落地后本模块一行不用改。
+// **v9（S13）起**：K09 / K22 / K23 / K24 的受检对象已落地进库（`shots.start_state_json` /
+// `end_state_json` / `timeline_json` + `prompt_artifacts`），于是它们从 `contract-input` 升为
+// `library` —— 调用方显式传值仍然优先（桥 / 生成侧可直接给），不传才查库。
+// 传空且库里也没有 ⇒ `NotApplicable`（空真，**不伪造通过**）。
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -88,7 +89,7 @@ struct CheckSpec {
 // ———— ContractInput 三组只读对象 ————
 
 // K09（`12` §2.7）：相邻镜的 `end_state` 与 `start_state` **逐字段比对**。
-// 当前 `shots` 表无起止状态列（`12` §1.4）→ 调用方不传即 NotApplicable。
+// v9（S13）起 `shots` 有 `start_state_json`/`end_state_json` 两列 → 不传也会查库。
 struct ShotStateSnapshot {
     RowId shot_id = 0;
     int ord = 0;

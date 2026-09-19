@@ -16,7 +16,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 8;
+constexpr int kTargetSchemaVersion = 9;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -148,6 +148,12 @@ CREATE TABLE IF NOT EXISTS shots(
   prompt_text TEXT NOT NULL DEFAULT '',
   negative_text TEXT NOT NULL DEFAULT '',
   reference_json TEXT NOT NULL DEFAULT '{}',
+  -- v9（S13）：叙事分镜的**可校验结构**（`12` §1.4 原先缺的正是这三列）
+  --   `start_state_json` / `end_state_json` = `02` §2.7 的 `StateSnapshot`（K09 连续性逐字段比对的对象）
+  --   `timeline_json` = `{"duration_s":N,"beats":[{"begin_s":..,"end_s":..}]}`（`02` §2.9 Beat[]；K24）
+  start_state_json TEXT NOT NULL DEFAULT '{}',
+  end_state_json TEXT NOT NULL DEFAULT '{}',
+  timeline_json TEXT NOT NULL DEFAULT '{}',
   canon_status TEXT NOT NULL DEFAULT 'PROPOSED');
 CREATE INDEX IF NOT EXISTS idx_shots_scene ON shots(scene_id);
 
@@ -210,6 +216,33 @@ CREATE TABLE IF NOT EXISTS visual_artifacts(
 CREATE INDEX IF NOT EXISTS idx_vartifact_asset ON visual_artifacts(asset_id);
 CREATE INDEX IF NOT EXISTS idx_vartifact_layer ON visual_artifacts(asset_id, layer);
 CREATE INDEX IF NOT EXISTS idx_vartifact_status ON visual_artifacts(status);
+)SQL";
+
+// v9（S13）：**PromptArtifact 落地**（契约 `02` §2.10）。原先这张表不存在
+// → `visual_artifacts.prompt_artifact_id` 是空指针、K23（`prompt.state_hash_match`）没有受检对象。
+// `input_state_hash` 的算法见 `04` §2.5（`NovelChecks::ComputeInputStateHash`）。
+// 注意：`shots` 的三列（`start_state_json`/`end_state_json`/`timeline_json`）写在
+// `kSchemaV4Visual` 的建表里（新库直接带），旧库走 `Migrate()` 的 ALTER。
+constexpr std::string_view kSchemaV9PromptArtifacts = R"SQL(
+CREATE TABLE IF NOT EXISTS prompt_artifacts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chapter_id INTEGER NOT NULL DEFAULT 0,
+  scene_id INTEGER NOT NULL DEFAULT 0,
+  shot_id INTEGER NOT NULL DEFAULT 0,
+  target_kind TEXT NOT NULL DEFAULT 'shot',
+  target_id INTEGER NOT NULL DEFAULT 0,
+  chain TEXT NOT NULL DEFAULT 'visual',
+  stage TEXT NOT NULL DEFAULT '',
+  input_state_hash TEXT NOT NULL DEFAULT '',
+  model_hint TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  negative TEXT NOT NULL DEFAULT '',
+  references_json TEXT NOT NULL DEFAULT '[]',
+  canon_status TEXT NOT NULL DEFAULT 'DRAFT',
+  created INTEGER NOT NULL DEFAULT 0,
+  updated INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_partifact_chapter ON prompt_artifacts(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_partifact_shot ON prompt_artifacts(shot_id);
 )SQL";
 
 // v3 全量 schema（IF NOT EXISTS；升级只补缺表/缺列）
@@ -756,8 +789,9 @@ std::expected<void, DbError> NovelDb::ExecAll(std::string_view sql) {
 
 std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database& db) {
     // 与 `Migrate()` 的**表 DDL 段**共用同一批常量 —— 别再各抄一份（本函数就是为此而存在）
-    constexpr std::string_view kParts[] = {kSchemaV3, kSchemaV4Visual, kSchemaV5Agents, kSchemaV6ImageGen,
-                                          kSchemaV7VisualArtifacts};
+    constexpr std::string_view kParts[] = {kSchemaV3,        kSchemaV4Visual, kSchemaV5Agents,
+                                          kSchemaV6ImageGen, kSchemaV7VisualArtifacts,
+                                          kSchemaV9PromptArtifacts};
     for (const std::string_view sql : kParts) {
         if (auto r = db.Exec(sql); !r) {
             return r;
@@ -789,6 +823,15 @@ void NovelDb::Close() noexcept {
     schemaVersion_ = 0;
 }
 
+void NovelDb::AddShotStateColumns(db::sqlite::Database& db) {
+    // v9（S13）：`shots` 的可校验结构三列。SQLite 没有 `ADD COLUMN IF NOT EXISTS`，
+    // 列已存在时 ALTER 会失败 —— 忽略即可（与 v1→v3 的 tryAlter 同款）。
+    // **唯一来源**：`Migrate()` 与 `RunSchemaSelfCheck` 都调它，别再各抄一遍。
+    (void)db.Exec("ALTER TABLE shots ADD COLUMN start_state_json TEXT NOT NULL DEFAULT '{}'");
+    (void)db.Exec("ALTER TABLE shots ADD COLUMN end_state_json TEXT NOT NULL DEFAULT '{}'");
+    (void)db.Exec("ALTER TABLE shots ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '{}'");
+}
+
 std::expected<void, DbError> NovelDb::Migrate() {
     if (auto r = ExecAll(kSchemaV3); !r) {
         return r;
@@ -805,9 +848,15 @@ std::expected<void, DbError> NovelDb::Migrate() {
     if (auto r = ExecAll(kSchemaV7VisualArtifacts); !r) {
         return r;
     }
+    // —— v9（S13）：叙事分镜的可校验结构 + PromptArtifact 承载表 ——
+    if (auto r = ExecAll(kSchemaV9PromptArtifacts); !r) {
+        return r;
+    }
     // v7：visual_assets 补生产状态列。列已存在则 ALTER 报错，忽略即可
     //（与上面 v1→v3 的 tryAlter 同款；SQLite 没有 ADD COLUMN IF NOT EXISTS）。
     (void)db_.Exec("ALTER TABLE visual_assets ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'");
+    // v9（S13）：旧库的 `shots` 补三列（新库由 `kSchemaV4Visual` 的建表直接带）
+    NovelDb::AddShotStateColumns(db_);
     // —— v8（S2b）：字段门禁 ——
     // 字段表（field_defs / entity_fields / field_aliases）的 DDL **只保留在
     // `NovelFields::EnsureSchema` 一处**（规格 `08` §2.3）。原先这里自带一份建表，
@@ -988,8 +1037,55 @@ bool NovelDb::RunSchemaSelfCheck() {
             return false;
         }
     }
+    // —— v9（S13）：shots 三列（**走旧库迁移路径**）+ prompt_artifacts ——
+    // 先按「旧库」形状建一张**只有 id/scene_id/ord** 的 shots 并塞一行，再调 AddShotStateColumns，
+    // 证明的是「旧库平滑迁移」这条路真的成立（而不是只在新建库里碰巧有列）。
+    if (auto r = mem.Exec("CREATE TABLE IF NOT EXISTS shots("
+                          "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                          "scene_id INTEGER NOT NULL DEFAULT 0,"
+                          "ord INTEGER NOT NULL DEFAULT 0)");
+        !r) {
+        log::Error("NovelDb 自检：v9 旧形状 shots 建表失败 {}", r.error().message);
+        return false;
+    }
+    if (auto r = mem.Exec("INSERT INTO shots(scene_id,ord) VALUES(1,1)"); !r) {
+        log::Error("NovelDb 自检：v9 写旧形状 shots 失败 {}", r.error().message);
+        return false;
+    }
+    NovelDb::AddShotStateColumns(mem);
+    NovelDb::AddShotStateColumns(mem); // 幂等：列已存在也不应炸（失败被忽略）
+    {
+        auto st = mem.Prepare(
+            "SELECT start_state_json,end_state_json,timeline_json FROM shots LIMIT 1");
+        if (!st || !st->Step() || st->ColumnText(0) != "{}" || st->ColumnText(1) != "{}" ||
+            st->ColumnText(2) != "{}") {
+            log::Error("NovelDb 自检：v9 shots 三列未按默认空对象 '{{}}' 补出");
+            return false;
+        }
+    }
+    if (auto r = mem.Exec(kSchemaV9PromptArtifacts); !r) {
+        log::Error("NovelDb 自检：v9 prompt_artifacts 建表失败 {}", r.error().message);
+        return false;
+    }
+    {
+        auto pa = mem.Prepare("INSERT INTO prompt_artifacts(chapter_id,scene_id,shot_id,chain,stage,"
+                              "input_state_hash,prompt,negative,references_json,created,updated) "
+                              "VALUES(1,1,1,'visual','V10','sha1:abc','a black ring','bad',"
+                              "'[\"a.png\"]',1,1)");
+        if (!pa || !pa->Step()) {
+            log::Error("NovelDb 自检：v9 写 prompt_artifacts 失败");
+            return false;
+        }
+        auto ps = mem.Prepare("SELECT input_state_hash,chain,references_json FROM prompt_artifacts "
+                              "WHERE chapter_id=1 AND shot_id=1");
+        if (!ps || !ps->Step() || ps->ColumnText(0) != "sha1:abc" || ps->ColumnText(1) != "visual" ||
+            ps->ColumnText(2) != "[\"a.png\"]") {
+            log::Error("NovelDb 自检：v9 读 prompt_artifacts 失败");
+            return false;
+        }
+    }
     log::Info("NovelDb schema 自检通过（v{} 全表 + CRUD + visual_artifacts + field_defs.status + "
-              "field_aliases）",
+              "field_aliases + shots 三列 + prompt_artifacts）",
               kTargetSchemaVersion);
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");

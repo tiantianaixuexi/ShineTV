@@ -412,8 +412,9 @@ std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
     auto st = db_->Prepare(
         "INSERT INTO shots(scene_id,ord,duration_note,camera_id,character_ids_json,action,"
         "expression,prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,"
-        "prompt_text,negative_text,reference_json,canon_status)"
-        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)");
+        "prompt_text,negative_text,reference_json,start_state_json,end_state_json,timeline_json,"
+        "canon_status)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, row.scene_id);
     (void)st->BindInt(2, row.ord);
@@ -433,7 +434,10 @@ std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
     (void)st->BindText(16, row.negative_text.empty() ? std::string{kDefaultNegative}
                                                      : row.negative_text);
     (void)st->BindText(17, row.reference_json.empty() ? "{}" : row.reference_json);
-    (void)st->BindText(18, row.canon_status);
+    (void)st->BindText(18, row.start_state_json.empty() ? "{}" : row.start_state_json);
+    (void)st->BindText(19, row.end_state_json.empty() ? "{}" : row.end_state_json);
+    (void)st->BindText(20, row.timeline_json.empty() ? "{}" : row.timeline_json);
+    (void)st->BindText(21, row.canon_status);
     if (auto s = st->Step(); !s) return std::unexpected(s.error());
     return db_->LastInsertRowId();
 }
@@ -442,7 +446,8 @@ std::expected<ShotRow, DbError> NovelVisual::GetShot(RowId id) const {
     auto st = db_->Prepare(
         "SELECT id,scene_id,ord,duration_note,camera_id,character_ids_json,action,expression,"
         "prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,prompt_text,"
-        "negative_text,reference_json,canon_status FROM shots WHERE id=?1");
+        "negative_text,reference_json,start_state_json,end_state_json,timeline_json,canon_status "
+        "FROM shots WHERE id=?1");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, id);
     auto s = st->Step();
@@ -467,8 +472,177 @@ std::expected<ShotRow, DbError> NovelVisual::GetShot(RowId id) const {
     r.prompt_text = st->ColumnText(15);
     r.negative_text = st->ColumnText(16);
     r.reference_json = st->ColumnText(17);
-    r.canon_status = st->ColumnText(18);
+    r.start_state_json = st->ColumnText(18);
+    r.end_state_json = st->ColumnText(19);
+    r.timeline_json = st->ColumnText(20);
+    r.canon_status = st->ColumnText(21);
     return r;
+}
+
+std::expected<std::vector<ShotRow>, DbError> NovelVisual::ListShotsByChapter(RowId chapterId) const {
+    std::vector<ShotRow> out;
+    if (chapterId <= 0) return out;
+    auto st = db_->Prepare(
+        "SELECT s.id,s.scene_id,s.ord,s.duration_note,s.camera_id,s.character_ids_json,s.action,"
+        "s.expression,s.prop_ids_json,s.lighting_id,s.composition_id,s.dialogue,s.narration,s.sfx,"
+        "s.mood,s.prompt_text,s.negative_text,s.reference_json,s.start_state_json,s.end_state_json,"
+        "s.timeline_json,s.canon_status "
+        "FROM shots s JOIN scenes sc ON sc.id=s.scene_id WHERE sc.chapter_id=?1 "
+        "ORDER BY sc.ord,s.ord,s.id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, chapterId);
+    while (true) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        ShotRow r;
+        r.id = st->ColumnInt(0);
+        r.scene_id = st->ColumnInt(1);
+        r.ord = static_cast<int>(st->ColumnInt(2));
+        r.duration_note = st->ColumnText(3);
+        r.camera_id = st->ColumnInt(4);
+        r.character_ids_json = st->ColumnText(5);
+        r.action = st->ColumnText(6);
+        r.expression = st->ColumnText(7);
+        r.prop_ids_json = st->ColumnText(8);
+        r.lighting_id = st->ColumnInt(9);
+        r.composition_id = st->ColumnInt(10);
+        r.dialogue = st->ColumnText(11);
+        r.narration = st->ColumnText(12);
+        r.sfx = st->ColumnText(13);
+        r.mood = st->ColumnText(14);
+        r.prompt_text = st->ColumnText(15);
+        r.negative_text = st->ColumnText(16);
+        r.reference_json = st->ColumnText(17);
+        r.start_state_json = st->ColumnText(18);
+        r.end_state_json = st->ColumnText(19);
+        r.timeline_json = st->ColumnText(20);
+        r.canon_status = st->ColumnText(21);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<RowId, DbError> NovelVisual::UpsertPromptArtifact(const PromptArtifactRow& row) {
+    if (row.chapter_id <= 0 && row.shot_id <= 0) {
+        return std::unexpected(VErr("prompt_artifact 至少要有 chapter_id 或 shot_id"));
+    }
+    const auto now = util::NowMillis() / 1000;
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE prompt_artifacts SET chapter_id=?1,scene_id=?2,shot_id=?3,target_kind=?4,"
+            "target_id=?5,chain=?6,stage=?7,input_state_hash=?8,model_hint=?9,prompt=?10,"
+            "negative=?11,references_json=?12,canon_status=?13,updated=?14 WHERE id=?15");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.chapter_id);
+        (void)st->BindInt(2, row.scene_id);
+        (void)st->BindInt(3, row.shot_id);
+        (void)st->BindText(4, row.target_kind);
+        (void)st->BindInt(5, row.target_id);
+        (void)st->BindText(6, row.chain);
+        (void)st->BindText(7, row.stage);
+        (void)st->BindText(8, row.input_state_hash);
+        (void)st->BindText(9, row.model_hint);
+        (void)st->BindText(10, row.prompt);
+        (void)st->BindText(11, row.negative);
+        (void)st->BindText(12, row.references_json.empty() ? "[]" : row.references_json);
+        (void)st->BindText(13, row.canon_status);
+        (void)st->BindInt(14, now);
+        (void)st->BindInt(15, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO prompt_artifacts(chapter_id,scene_id,shot_id,target_kind,target_id,chain,stage,"
+        "input_state_hash,model_hint,prompt,negative,references_json,canon_status,created,updated)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.chapter_id);
+    (void)st->BindInt(2, row.scene_id);
+    (void)st->BindInt(3, row.shot_id);
+    (void)st->BindText(4, row.target_kind);
+    (void)st->BindInt(5, row.target_id);
+    (void)st->BindText(6, row.chain);
+    (void)st->BindText(7, row.stage);
+    (void)st->BindText(8, row.input_state_hash);
+    (void)st->BindText(9, row.model_hint);
+    (void)st->BindText(10, row.prompt);
+    (void)st->BindText(11, row.negative);
+    (void)st->BindText(12, row.references_json.empty() ? "[]" : row.references_json);
+    (void)st->BindText(13, row.canon_status);
+    (void)st->BindInt(14, now);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<PromptArtifactRow, DbError> NovelVisual::GetPromptArtifact(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,chapter_id,scene_id,shot_id,target_kind,target_id,chain,stage,input_state_hash,"
+        "model_hint,prompt,negative,references_json,canon_status,created,updated "
+        "FROM prompt_artifacts WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(VErr("PromptArtifact 不存在"));
+    PromptArtifactRow r;
+    r.id = st->ColumnInt(0);
+    r.chapter_id = st->ColumnInt(1);
+    r.scene_id = st->ColumnInt(2);
+    r.shot_id = st->ColumnInt(3);
+    r.target_kind = st->ColumnText(4);
+    r.target_id = st->ColumnInt(5);
+    r.chain = st->ColumnText(6);
+    r.stage = st->ColumnText(7);
+    r.input_state_hash = st->ColumnText(8);
+    r.model_hint = st->ColumnText(9);
+    r.prompt = st->ColumnText(10);
+    r.negative = st->ColumnText(11);
+    r.references_json = st->ColumnText(12);
+    r.canon_status = st->ColumnText(13);
+    r.created = st->ColumnInt(14);
+    r.updated = st->ColumnInt(15);
+    return r;
+}
+
+std::expected<std::vector<PromptArtifactRow>, DbError>
+NovelVisual::ListPromptArtifacts(RowId chapterId, RowId shotId, int limit) const {
+    std::vector<PromptArtifactRow> out;
+    if (chapterId <= 0) return out;
+    const int lim = limit > 0 ? limit : 50;
+    auto st = db_->Prepare(
+        "SELECT id,chapter_id,scene_id,shot_id,target_kind,target_id,chain,stage,input_state_hash,"
+        "model_hint,prompt,negative,references_json,canon_status,created,updated "
+        "FROM prompt_artifacts WHERE chapter_id=?1 AND (?2=0 OR shot_id=?2) "
+        "ORDER BY updated DESC,id DESC LIMIT ?3");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, chapterId);
+    (void)st->BindInt(2, shotId);
+    (void)st->BindInt(3, lim);
+    while (true) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        PromptArtifactRow r;
+        r.id = st->ColumnInt(0);
+        r.chapter_id = st->ColumnInt(1);
+        r.scene_id = st->ColumnInt(2);
+        r.shot_id = st->ColumnInt(3);
+        r.target_kind = st->ColumnText(4);
+        r.target_id = st->ColumnInt(5);
+        r.chain = st->ColumnText(6);
+        r.stage = st->ColumnText(7);
+        r.input_state_hash = st->ColumnText(8);
+        r.model_hint = st->ColumnText(9);
+        r.prompt = st->ColumnText(10);
+        r.negative = st->ColumnText(11);
+        r.references_json = st->ColumnText(12);
+        r.canon_status = st->ColumnText(13);
+        r.created = st->ColumnInt(14);
+        r.updated = st->ColumnInt(15);
+        out.push_back(std::move(r));
+    }
+    return out;
 }
 
 std::expected<RowId, DbError>
@@ -846,6 +1020,82 @@ bool NovelVisual::RunSelfCheck() {
                               .lighting_id = lit.value_or(0),
                               .composition_id = comp.value_or(0)});
     if (!shot) return false;
+    // —— v9（S13）：`shots` 的可校验结构三列 + `prompt_artifacts` + `ListShotsByChapter` ——
+    // 给 `scene=10` 补一条真正的 `scenes` 行，`ListShotsByChapter` 的 JOIN 才有东西可对
+    if (auto sc = mem.Prepare(
+            "INSERT OR REPLACE INTO scenes(id,chapter_id,ord,title) VALUES(10,3,1,'场 1')");
+        !sc || !sc->Step()) {
+        log::Error("Visual 自检：v9 建 scenes 行失败");
+        return false;
+    }
+    auto sh2 = v.UpsertShot({.scene_id = scene,
+                             .ord = 2,
+                             .action = "kneeling",
+                             .start_state_json = R"({"lighting":"夜","props":{"ring":1}})",
+                             .end_state_json = R"({"lighting":"夜","props":{"ring":1}})",
+                             .timeline_json =
+                                 R"({"duration_s":3.0,"beats":[{"begin_s":0,"end_s":3.0}]})"});
+    if (!sh2) {
+        log::Error("Visual 自检：v9 写 shots 三列失败 {}", sh2.error().message);
+        return false;
+    }
+    {
+        auto read = v.GetShot(*sh2);
+        if (!read || read->start_state_json != R"({"lighting":"夜","props":{"ring":1}})" ||
+            read->end_state_json != read->start_state_json ||
+            read->timeline_json.find("\"duration_s\":3.0") == std::string::npos) {
+            log::Error("Visual 自检：v9 shots 三列写后读失败");
+            return false;
+        }
+        auto list = v.ListShotsByChapter(3);
+        if (!list || list->size() != 2 || (*list)[0].ord != 1 || (*list)[1].ord != 2) {
+            log::Error("Visual 自检：ListShotsByChapter 结果不符（期望 2 镜按 ord 排）");
+            return false;
+        }
+        // 未指定时默认 '{}'（不是空串）
+        auto dflt = v.GetShot(*shot);
+        if (!dflt || dflt->start_state_json != "{}" || dflt->timeline_json != "{}") {
+            log::Error("Visual 自检：v9 shots 三列的默认值应为空对象 '{{}}'");
+            return false;
+        }
+    }
+    {
+        auto pa1 = v.UpsertPromptArtifact({.chapter_id = 3,
+                                          .scene_id = scene,
+                                          .shot_id = *shot,
+                                          .chain = "visual",
+                                          .stage = "V10",
+                                          .input_state_hash = "sha1:aaa",
+                                          .prompt = "a wounded youth",
+                                          .negative = "bad hands",
+                                          .references_json = R"(["visual/gen/front.png"])"});
+        auto pa2 = v.UpsertPromptArtifact({.chapter_id = 3,
+                                          .shot_id = *shot,
+                                          .stage = "V10",
+                                          .input_state_hash = "sha1:bbb",
+                                          .prompt = "a wounded youth (retry)"});
+        if (!pa1 || !pa2) {
+            log::Error("Visual 自检：v9 写 prompt_artifacts 失败");
+            return false;
+        }
+        auto read = v.GetPromptArtifact(*pa2);
+        if (!read || read->input_state_hash != "sha1:bbb" || read->chain != "visual" ||
+            read->references_json != "[]" || read->canon_status != "DRAFT") {
+            log::Error("Visual 自检：v9 prompt_artifacts 写后读失败");
+            return false;
+        }
+        auto byCh = v.ListPromptArtifacts(3);
+        auto byShot = v.ListPromptArtifacts(3, *shot);
+        if (!byCh || byCh->size() != 2 || !byShot || byShot->size() != 2 ||
+            (*byCh)[0].input_state_hash != "sha1:bbb") { // updated DESC,id DESC → 新的在前
+            log::Error("Visual 自检：v9 ListPromptArtifacts 结果不符");
+            return false;
+        }
+        if (v.ListPromptArtifacts(3, 9999)->size() != 0 || v.GetPromptArtifact(9999)) {
+            log::Error("Visual 自检：v9 未知产物应查不到");
+            return false;
+        }
+    }
     auto assembled = v.Assemble({.chapter_id = 3,
                                  .scene_id = scene,
                                  .character_id = 1,
@@ -888,7 +1138,8 @@ bool NovelVisual::RunSelfCheck() {
         return false;
     }
     (void)v.SetVisualCanon("asset", *asset, "CANON");
-    log::Info("Visual 自检通过（阶段机 / 九层组装 / Lighting 敏感 / canon / scene_visuals 写入口）");
+    log::Info("Visual 自检通过（阶段机 / 九层组装 / Lighting 敏感 / canon / scene_visuals 写入口 / "
+              "v9 shots 三列 + prompt_artifacts + ListShotsByChapter）");
     return true;
 }
 
