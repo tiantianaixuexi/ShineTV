@@ -49,6 +49,8 @@
 - [ ] **S8** 闭环回写（`StateDiff` + 门禁 G1–G5）— `s8-state-commit`
 - [ ] **S9-auto-run** 无人值守运行骨架（运行模式 / 停止条件 S1–S12 / **检查点每 10 章**（含 `08` §2.3 自动升格）/ 断点续跑 / 重试退避 / 单章调用上限 / `stop_report.md`）— `s9-auto-run`｜⚠️ **它才是「连跑几百章不停」的主线**：`09` 卷 5 条严重度 `S`（09-1~09-4、09-9）全挂在这里；本 S 还收 09-5/09-6/09-10 与 09-2 的计数部分；**留后续** 09-7/09-8（模型路由与交叉复核）、09-11（限流）、09-12（全书预算）
 
+> 🔧 **schema 单一来源（2026-09-19，chore，非 S）**：删掉 **9 处自检夹具**与 `AgentKit` 手抄的建表 SQL（合计 **121 条 `CREATE TABLE`**），统一走 `NovelDb::ApplyCanonicalSchema()`（夹具，幂等全量）/ `NovelDb::EnsureAgentSchema()`（`EnsureSchemaAndSeed` 这种**高频**入口只建 agent 表）。此后全仓 `CREATE TABLE` 只剩 **`NovelDb.cpp`（规范 v3–v8，75 条）**+ **`NovelFields.cpp`（字段三表，5 条，S-cleanup 已定）**；`graph=ok context=ok … asset=ok` 16 项全 ok、视频侧 21 项 PASS。
+
 > 📄 **文档对齐（2026-09-19，doc-only，非 S）**：S4/S5/S6 落地后把规格回写实现 —— `02` §2.8 运行期字段改 `jobs`；`11` §2.5 补「实现」+ 链式/seed 细化、§2.7 **W2** 补降级账数据源、**W4/W5** 标已实现、差距 **11-16** 标已修、§4 勾 W4/W5 判据；`12` §1.3 状态隔离改为多 jobId；`13` **U8** 改为"已能承载"；`00` §6.2 S5 行注明实际字段名。理由与逐条对照见 `Plan/证据.md`「文档对齐」。
 
 **基线坑**：`main` 上仍有**他人**的 `src/novel/NovelMcpTools.cpp`；`runtime/` 未跟踪（**不要提交**）。**每个 S 只 `git add` 自己那几个文件，绝不 `git add -A`。**
