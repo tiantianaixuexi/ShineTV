@@ -46,8 +46,7 @@ constexpr CheckSpec kCatalog[] = {
      "character_status / entity_ownerships", "不变式 I5"},
     {"K08", "invariant.order_monotonic", "high", CheckAvailability::Library,
      "chapters / scenes / plot_beats", "不变式 I6"},
-    {"K09", "invariant.shot_continuity", "high", CheckAvailability::ContractInput, "continuity",
-     "NarrativeShot.start_state/end_state", "`12` §1.4：shots 表无起止状态列 → 传空即空真"},
+    {"K09", "invariant.shot_continuity", "high", CheckAvailability::Library, "shots", "不变式 I7"},
     {"K10", "foreshadow.overdue", "high", CheckAvailability::Library, "foreshadowings", "不变式 I8；超期告警记 low"},
     {"K11", "foreshadow.no_regress", "high", CheckAvailability::Artifact, "foreshadowings + StateDiff",
      "状态反向迁移即 high"},
@@ -67,10 +66,11 @@ constexpr CheckSpec kCatalog[] = {
     {"K20", "gen.size_aligned", "low", CheckAvailability::ContractInput, "VideoProject.Sanitize",
      "自动纠正 + 记 low（放行）"},
     {"K21", "gen.ref_limit", "high", CheckAvailability::ContractInput, "video::Shot.referenceImages", "上限 9"},
-    {"K22", "visual.state_resolvable", "medium", CheckAvailability::ContractInput, "visual_states",
-     "受检对象是 NarrativeShot 的角色（`04` A4：不阻塞正文生成）"},
-    {"K23", "prompt.state_hash_match", "high", CheckAvailability::ContractInput, "04 §2.5", "不变式 I9"},
-    {"K24", "beat.timeline_covered", "high", CheckAvailability::ContractInput, "02 §2.9 Beat[]",
+    {"K22", "visual.state_resolvable", "medium", CheckAvailability::Library, "visual_states",
+     "受检对象 = 分镜的角色（`04` A4：不阻塞正文生成）"},
+    {"K23", "prompt.state_hash_match", "high", CheckAvailability::Library,
+     "prompt_artifacts + 04 §2.5", "不变式 I9"},
+    {"K24", "beat.timeline_covered", "high", CheckAvailability::Library, "shots.timeline_json",
      "首尾覆盖 [0,duration] 且互不重叠"},
     {"K25", "word.count_in_range", "low", CheckAvailability::Library, "chapters.words",
      "word_target ±30%；越界记 low（不阻断）"},
@@ -1188,6 +1188,144 @@ struct Ref {
                           unknown));
 }
 
+// 前向声明：下面的库来源聚合要用它（定义在 K24 段）
+[[nodiscard]] CheckResult ImplBeatTimeline(std::span<const BeatSpan> beats, double duration_s);
+
+// ———— v9（S13）：K09 / K22 / K24 的**库来源**（`shots` 的起止状态与 Beat 时间轴）————
+// 受检对象优先用调用方显式传入的（桥/生成侧可以直接给），没给就从库里读 —— 于是这三条从
+// `contract-input` 升为 `library`（数据来源落地后 `CheckSpec::availability` 也随之改）。
+[[nodiscard]] std::vector<ShotStateSnapshot> LoadShotSnapshots(db::sqlite::Database& db,
+                                                             RowId chapterId) {
+    std::vector<ShotStateSnapshot> out;
+    if (chapterId <= 0) {
+        return out;
+    }
+    auto st = db.Prepare(
+        "SELECT s.id,s.ord,s.start_state_json,s.end_state_json,s.character_ids_json "
+        "FROM shots s JOIN scenes sc ON sc.id=s.scene_id WHERE sc.chapter_id=?1 "
+        "ORDER BY sc.ord,s.ord,s.id");
+    if (!st) {
+        return out;
+    }
+    (void)st->BindInt(1, chapterId);
+    while (true) {
+        auto s = st->Step();
+        if (!s || *s != db::sqlite::StepResult::Row) {
+            break;
+        }
+        ShotStateSnapshot snap;
+        snap.shot_id = st->ColumnInt(0);
+        snap.ord = static_cast<int>(st->ColumnInt(1));
+        snap.start_state_json = st->ColumnText(2);
+        snap.end_state_json = st->ColumnText(3);
+        snap.character_ids = ParseIdArray(st->ColumnText(4));
+        out.push_back(std::move(snap));
+    }
+    return out;
+}
+
+// K24 的库来源：`shots.timeline_json` = `{"duration_s":N,"beats":[{begin_s,end_s}]}`（`02` §2.9）。
+// 逐镜跑一遍覆盖/重叠判定并汇总（任一一镜不合规即 fail）。
+[[nodiscard]] CheckResult CheckTimelineFromDb(db::sqlite::Database& db, RowId chapterId) {
+    if (chapterId <= 0) {
+        return Mk("K24", CheckOutcome::NotApplicable, "未给 chapter_id");
+    }
+    auto st = db.Prepare("SELECT s.id,s.timeline_json FROM shots s JOIN scenes sc "
+                         "ON sc.id=s.scene_id WHERE sc.chapter_id=?1 ORDER BY sc.ord,s.ord,s.id");
+    if (!st) {
+        return Mk("K24", CheckOutcome::Missing, "查询 shots 失败");
+    }
+    (void)st->BindInt(1, chapterId);
+    int withTimeline = 0;
+    std::string bad;
+    int badCount = 0;
+    while (true) {
+        auto s = st->Step();
+        if (!s || *s != db::sqlite::StepResult::Row) {
+            break;
+        }
+        const RowId shotId = st->ColumnInt(0);
+        const std::string text = st->ColumnText(1);
+        if (text.empty() || text == "{}") {
+            continue; // 该镜没产出时间轴
+        }
+        ++withTimeline;
+        double duration = 0.0;
+        std::vector<BeatSpan> beats;
+        yyjson_doc* doc = yyjson_read(text.data(), text.size(), 0);
+        if (doc == nullptr) {
+            ++badCount;
+            bad += fmt::format("{}镜 #{} 的 timeline_json 不是合法 JSON",
+                               bad.empty() ? "" : "；", shotId);
+            continue;
+        }
+        yyjson_val* root = yyjson_doc_get_root(doc);
+        if (yyjson_is_obj(root)) {
+            if (yyjson_val* d = yyjson_obj_get(root, "duration_s"); yyjson_is_num(d)) {
+                duration = yyjson_get_real(d);
+            }
+            if (yyjson_val* arr = yyjson_obj_get(root, "beats"); yyjson_is_arr(arr)) {
+                std::size_t idx = 0;
+                std::size_t max = 0;
+                yyjson_val* item = nullptr;
+                yyjson_arr_foreach(arr, idx, max, item) {
+                    BeatSpan span;
+                    if (yyjson_val* b = yyjson_obj_get(item, "begin_s"); yyjson_is_num(b)) {
+                        span.begin_s = yyjson_get_real(b);
+                    }
+                    if (yyjson_val* e = yyjson_obj_get(item, "end_s"); yyjson_is_num(e)) {
+                        span.end_s = yyjson_get_real(e);
+                    }
+                    beats.push_back(span);
+                }
+            }
+        }
+        yyjson_doc_free(doc);
+        const CheckResult one = ImplBeatTimeline(beats, duration);
+        if (one.outcome == CheckOutcome::Fail || one.outcome == CheckOutcome::Missing) {
+            ++badCount;
+            if (badCount <= 3) {
+                bad += fmt::format("{}镜 #{}：{}", bad.empty() ? "" : "；", shotId, one.detail);
+            }
+        }
+    }
+    if (withTimeline == 0) {
+        return Mk("K24", CheckOutcome::NotApplicable,
+                  "本章没有镜产出 Beat 时间轴（`shots.timeline_json` 全空）");
+    }
+    if (badCount > 0) {
+        return Mk("K24", CheckOutcome::Fail,
+                  fmt::format("{} 面镜的 Beat 时间轴不合规：{}", badCount, bad));
+    }
+    return Mk("K24", CheckOutcome::Pass, fmt::format("{} 面镜的 Beat 时间轴覆盖合规", withTimeline));
+}
+
+// K23 的库来源：本章最新的 PromptArtifact（`02` §2.10）。没有则返回空（= NotApplicable）。
+struct PromptHashSource {
+    std::string hash;
+    std::string chain = "visual";
+    std::string stage;
+    RowId artifactId = 0;
+};
+
+[[nodiscard]] PromptHashSource LoadPromptHash(db::sqlite::Database& db, RowId chapterId) {
+    PromptHashSource out;
+    if (chapterId <= 0) {
+        return out;
+    }
+    NovelVisual visual(db);
+    auto list = visual.ListPromptArtifacts(chapterId);
+    if (!list || list->empty()) {
+        return out;
+    }
+    // `ListPromptArtifacts` 已按 updated DESC,id DESC → 第一条即最新
+    out.hash = (*list)[0].input_state_hash;
+    out.chain = (*list)[0].chain.empty() ? std::string{"visual"} : (*list)[0].chain;
+    out.stage = (*list)[0].stage;
+    out.artifactId = (*list)[0].id;
+    return out;
+}
+
 // ———— K19–K21（ContractInput：生成侧结论由 video 侧回填，规则不在这里重复实现）————
 [[nodiscard]] std::vector<CheckResult> ImplGeneration(const GenerationCheckInput& gen) {
     std::vector<CheckResult> out;
@@ -1836,12 +1974,20 @@ ValidationReport RunChapterChecks(db::sqlite::Database& db, const CheckInputs& i
     c.projectDir = &in.project_dir;
     c.snapshotDir = &snapDir;
     c.wordTarget = in.word_target > 0 ? in.word_target : 3000;
-    c.shots = in.shots;
+    // v9（S13）：受检对象**优先用调用方给的**（桥 / 生成侧可直接给），没给就从库读 ——
+    // 于是 K09 / K22 / K23 / K24 由 `contract-input` 升为 `library`（数据来源落地）。
+    // 注意这两个局部量必须活到函数结束（`ReadCtx` 里的 span / string_view 指向它们）。
+    const std::vector<ShotStateSnapshot> shotsFromDb =
+        in.shots.empty() ? LoadShotSnapshots(db, in.chapter_id) : std::vector<ShotStateSnapshot>{};
+    const PromptHashSource hashFromDb =
+        in.prompt_state_hash.empty() ? LoadPromptHash(db, in.chapter_id) : PromptHashSource{};
+    c.shots = in.shots.empty() ? std::span<const ShotStateSnapshot>(shotsFromDb) : in.shots;
     c.beats = in.beats;
     c.duration = in.scene_duration_s;
-    c.promptHash = in.prompt_state_hash;
-    c.chain = in.prompt_chain;
-    c.stage = in.prompt_stage;
+    c.promptHash = in.prompt_state_hash.empty() ? std::string_view{hashFromDb.hash}
+                                               : in.prompt_state_hash;
+    c.chain = in.prompt_state_hash.empty() ? std::string_view{hashFromDb.chain} : in.prompt_chain;
+    c.stage = in.prompt_state_hash.empty() ? std::string_view{hashFromDb.stage} : in.prompt_stage;
     c.gen = &in.gen;
     c.orphanStaleSeconds = in.orphan_stale_seconds;
 
@@ -1880,7 +2026,9 @@ ValidationReport RunChapterChecks(db::sqlite::Database& db, const CheckInputs& i
     }
     report.checks.push_back(CheckK22(c));
     report.checks.push_back(CheckK23(c));
-    report.checks.push_back(ImplBeatTimeline(c.beats, c.duration));
+    // K24：显式给了 beat 就用它，否则逐镜读 `shots.timeline_json`（v9 起）
+    report.checks.push_back(c.beats.empty() ? CheckTimelineFromDb(db, in.chapter_id)
+                                            : ImplBeatTimeline(c.beats, c.duration));
     report.checks.push_back(CheckK25(c));
     report.checks.push_back(CheckK26(c));
     report.checks.push_back(CheckK27(c));
@@ -2131,6 +2279,49 @@ int RunChecksSelfCheck() {
         in.project_dir = tmp;
         expect(probe("K12").outcome == CheckOutcome::Fail, "K12 缺 StateDiff 产物应 fail");
         expect(probe("K13").outcome == CheckOutcome::Fail, "K13 缺快照应 fail");
+    }
+
+    // K09 / K22 / K23 / K24 的**库来源**（v9/S13）：不给显式对象也要能判（`shots` + `prompt_artifacts`）
+    {
+        (void)mem.Exec("INSERT INTO scenes(id,chapter_id,ord,title) VALUES(901,1,1,'库来源场')");
+        (void)mem.Exec("INSERT INTO shots(id,scene_id,ord,start_state_json,end_state_json,"
+                       "character_ids_json,timeline_json) "
+                       "VALUES(901,901,1,'{\"lighting\":\"夜\"}','{\"lighting\":\"夜\"}','[]','{}')");
+        (void)mem.Exec("INSERT INTO shots(id,scene_id,ord,start_state_json,end_state_json,"
+                       "character_ids_json,timeline_json) "
+                       "VALUES(902,901,2,'{\"lighting\":\"昼\"}','{\"lighting\":\"昼\"}','[]','{}')");
+        in.shots = {}; // 不给显式对象 → 强制走库
+        in.beats = {};
+        in.prompt_state_hash.clear();
+
+        expect(probe("K09").outcome == CheckOutcome::Fail,
+               "K09 库来源：相邻镜起止状态不接应 fail");
+        (void)mem.Exec("UPDATE shots SET start_state_json='{\"lighting\":\"夜\"}' WHERE id=902");
+        expect(probe("K09").outcome == CheckOutcome::Pass, "K09 库来源：接上即 pass");
+
+        (void)mem.Exec("UPDATE shots SET timeline_json="
+                       "'{\"duration_s\":3.0,\"beats\":[{\"begin_s\":0,\"end_s\":1.0}]}' "
+                       "WHERE id=901");
+        expect(probe("K24").outcome == CheckOutcome::Fail, "K24 库来源：未覆盖 duration 应 fail");
+        (void)mem.Exec("UPDATE shots SET timeline_json="
+                       "'{\"duration_s\":3.0,\"beats\":[{\"begin_s\":0,\"end_s\":3.0}]}' "
+                       "WHERE id=901");
+        expect(probe("K24").outcome == CheckOutcome::Pass, "K24 库来源：覆盖合规即 pass");
+
+        (void)mem.Exec("UPDATE shots SET character_ids_json='[999999]' WHERE id=901");
+        expect(probe("K22").outcome == CheckOutcome::Missing,
+               "K22 库来源：出场角色无视觉资产应 missing");
+        (void)mem.Exec("UPDATE shots SET character_ids_json='[]' WHERE id=901");
+
+        // K23 的库来源：先按**当前状态**算出哈希存进去 → 应 Pass；再改成错的 → 应 Fail
+        const std::string h = ComputeInputStateHash(mem, 1, "visual", "V10");
+        (void)mem.Exec(fmt::format("INSERT INTO prompt_artifacts(chapter_id,shot_id,chain,stage,"
+                                   "input_state_hash,prompt,created,updated) "
+                                   "VALUES(1,901,'visual','V10','{}','p',1,1)",
+                                   h));
+        expect(probe("K23").outcome == CheckOutcome::Pass, "K23 库来源：哈希一致应 pass");
+        (void)mem.Exec("UPDATE prompt_artifacts SET input_state_hash='deadbeef' WHERE chapter_id=1");
+        expect(probe("K23").outcome == CheckOutcome::Fail, "K23 库来源：哈希不一致应 fail");
     }
 
     // K06/K07/K08/K10/K25/K26/K27/K04/K14/K15/K16/K29 的「干净时 Pass」不逐个反证（上面已覆盖 fail 分支）

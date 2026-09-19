@@ -101,7 +101,35 @@ struct ShotRow {
     std::string prompt_text;
     std::string negative_text;
     std::string reference_json = "{}";
+    // v9（S13）：**可校验结构**（`12` §1.4 原先缺的就是这三个）
+    //   `start_state_json` / `end_state_json` = `02` §2.7 `StateSnapshot`（K09 `invariant.shot_continuity`）
+    //   `timeline_json` = `{"duration_s":N,"beats":[{"begin_s":..,"end_s":..}]}`（`02` §2.9 Beat[]；K24）
+    std::string start_state_json = "{}";
+    std::string end_state_json = "{}";
+    std::string timeline_json = "{}";
     std::string canon_status = "PROPOSED";
+};
+
+// PromptArtifact（契约 `02` §2.10；schema v9 起有承载表）：**分镜提示词的产物账**。
+// 与 `prompt_layers` 的分工：`prompt_layers` 是"分层片段"（base/stage/camera…），
+// 本表是"某一镜最终产出的整条提示词 + 它的状态指纹"，K23（不变式 I9）判的就是 `input_state_hash`。
+struct PromptArtifactRow {
+    RowId id = 0;
+    RowId chapter_id = 0;
+    RowId scene_id = 0;
+    RowId shot_id = 0;
+    std::string target_kind = "shot"; // shot | scene | asset | layer
+    RowId target_id = 0;
+    std::string chain = "visual";     // text | visual（`04` §2.5 哈希输入之一）
+    std::string stage;                // 产出它的阶段名（`03`）
+    std::string input_state_hash;     // 不变式 I9：与当前状态不一致即**不得复用**
+    std::string model_hint;
+    std::string prompt;
+    std::string negative;
+    std::string references_json = "[]";
+    std::string canon_status = "DRAFT";
+    std::int64_t created = 0;
+    std::int64_t updated = 0;
 };
 
 struct AssemblePromptInput {
@@ -166,6 +194,15 @@ public:
     // —— 分镜 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertShot(const ShotRow& row);
     [[nodiscard]] std::expected<ShotRow, DbError> GetShot(RowId id) const;
+    // 按章列出分镜（`scenes.chapter_id = ch`，按 `scenes.ord, shots.ord` 排）—— K09/K22/K24 的库来源
+    [[nodiscard]] std::expected<std::vector<ShotRow>, DbError> ListShotsByChapter(RowId chapterId) const;
+
+    // —— PromptArtifact（`02` §2.10；K23 的库来源）——
+    [[nodiscard]] std::expected<RowId, DbError> UpsertPromptArtifact(const PromptArtifactRow& row);
+    [[nodiscard]] std::expected<PromptArtifactRow, DbError> GetPromptArtifact(RowId id) const;
+    // `shotId > 0` → 只列该镜；否则列全章。按 `updated DESC, id DESC`（最新在前）
+    [[nodiscard]] std::expected<std::vector<PromptArtifactRow>, DbError>
+    ListPromptArtifacts(RowId chapterId, RowId shotId = 0, int limit = 50) const;
 
     // —— 分层 Prompt ——
     // layer: base/stage/scene/action/camera/composition/lighting/style/quality/negative
