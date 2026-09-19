@@ -235,11 +235,13 @@ void DrawWorkspace() {
         }
     }
 
-    // 章列表
+    // 章列表（**自带固定高度的滚动子窗** —— 否则几十章会把下面的「生成本章」「无人值守」顶出可视区，
+    // 与本文件其它列表 `##agent_list` / `##field_defs` 同款做法）
     if (biz::NovelDb::Instance().isOpen()) {
         biz::NovelGraph gg(biz::NovelDb::Instance().raw());
         if (auto chs = gg.ListChapters(50)) {
-            ImGui::TextDisabled("章节（点击选中）");
+            ImGui::TextDisabled("章节（点击选中 · %zu 章）", chs->size());
+            ImGui::BeginChild("##novel_chapters", ImVec2(0, 150), ImGuiChildFlags_Borders);
             for (const auto& c : *chs) {
                 const bool sel = (c.id == g_lastChapterId);
                 if (ImGui::Selectable(
@@ -248,6 +250,7 @@ void DrawWorkspace() {
                     g_lastChapterId = c.id;
                 }
             }
+            ImGui::EndChild();
         }
     }
 
@@ -921,6 +924,11 @@ bool RunMvpSelfCheck() {
 }
 
 void DrawNovelWindow() {
+    // 本页是 dock 页（宿主 `NoScrollbar|NoScrollWithMouse`）：**页级滚动恒为 0**，滚动只发生在
+    // 内部子窗（`##novel_workspace` / 工程列表）。显式钉住是为了防「焦点/导航」把它滚下去
+    // （`DrawDockedPanels` 的 `SetNextWindowFocus()` 会 ScrollToBringRectIntoView）——
+    // 那会让页首的「生成本章」「无人值守（S9）」直接看不见。
+    ImGui::SetScrollY(0.f);
     EnsureScan();
     // 截图验收（S9-ui）：`SHINE_NOVEL_OPEN=<书名>` 开局直接打开该工程。只在前 60 帧尝试（之后交回用户），
     // 开关名必须 ASCII（环境变量在 Windows 上按 ANSI 代码页传入，见 `Plan/坑与手法.md`）。
@@ -949,9 +957,24 @@ void DrawNovelWindow() {
     ImGui::Dummy(ImVec2(0, 6));
     DrawCreateCard();
     ImGui::Dummy(ImVec2(0, 8));
-    DrawWorkspace();
+    // 工作区（含「生成本章」与「无人值守 S9」）必须能拿到滚动 —— 「小说」是 dock 页，
+    // 宿主窗口是 `NoScrollbar|NoScrollWithMouse`（`DrawDockedPanels` 的约定：要滚的段落自带
+    // inner child）。此前这里是**内联**排布 → 内容超出面板高度就被裁、面板又不会滚，等于不可达。
+    // 现在：工作区 = 页面剩下的全部高度（自己滚），把底部 200px 留给工程列表（它本来就自带滚动）。
+    {
+        constexpr float kProjectListH = 200.f;
+        const float avail = ImGui::GetContentRegionAvail().y;
+        float h = avail - kProjectListH;
+        if (h < 240.f) {
+            h = avail > 0.f ? avail : 240.f; // 窗口太矮时工作区吃满，工程列表自然被挤掉
+        }
+        ImGui::BeginChild("##novel_workspace", ImVec2(0, h), ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_None);
+        DrawWorkspace();
+        ImGui::EndChild();
+    }
     ImGui::Dummy(ImVec2(0, 8));
-    DrawProjectList();
+    DrawProjectList(); // 自带 `##novel_list` 子窗（吃剩余空间 + 可滚）
 }
 
 void DrawNovelSidePanel() {
