@@ -178,7 +178,7 @@ Start → Motion → Transformation → End
 | U5 | 所有提交前必须跑 `validate`（`06` §2.3 K19）；`/object_info` 未就绪时**不得静默跳过**，应报「待校验」并阻止提交（修正 `VideoTaskRunner.cpp:115-123` 的现状） |
 | U6 | **出图前必须等资产 `status` 就绪或显式降级**：作为 `referenceImages` 的资产需 `status ∈ {SHEET_READY, WARDROBE_READY, READY}`（`11` §2.6.1 S1）；不满足则按 `11` §2.7 选 C（挂起）或 B（降级并记账），**不得静默用空参考图** |
 | U7 | **降级必须记账且可见**：`SceneToImageBuilder` 的 `degraded` 标志（缺 checkpoint / 无颜色图走 `EmptyLatentImage` 且 `denoise` 强制 1.0 / 缺 ControlNet，`SceneToImageBuilder.cpp:130/163/173`）与 `Sanitize` 的静默纠正（`VideoProject.cpp:33-107`），都必须写入章级报告（对应 `06` K28） |
-| U8 | **一镜多产物要能承载**：`video::Shot.lastPromptId` 是单值（`VideoTypes.h:90`），需改 `job_ids_json`；同一镜的正脸/四视图/服装任务**不得互相覆盖状态**（对应 `06` K29 与 `11` §2.7 W4） |
+| U8 | **一镜多产物已能承载**：`video::Shot.jobs`（`ShotJobRecord[]`）逐次记账，同一镜的正脸/四视图/服装任务**不得互相覆盖状态**（S5 已实现，对应 `06` K29 与 `11` §2.7 W4；队列优先级见 W5） |
 
 **对接分派**：
 
