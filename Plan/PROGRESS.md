@@ -22,7 +22,7 @@
 **现在做哪个**
 
 1. **真机 SD 全流程**：Comfy 在线 `:8188`；SD1.5 checkpoint 下载中 → 完成后跑 `runtime/sd-e2e` 分镜出图（P5.7 / P6.3）
-2. **小说系统 S1–S8**：见 §0.1，规格 `Doc/小说系统/00-总纲与索引.md` §6
+2. **小说系统**：S 序列 16 个**已全完成**（见 §0.1）；后续 = `09` 卷留后续项（09-7/09-8 模型路由与交叉复核、09-11 限流、09-12 全书预算）+ `06` 的 K01–K29 全量校验 + `NovelView` 的「连跑」UI 入口
 3. **小说 Agent 连写**：`novels/mcp-bridge`《灯语回声》2 章（MCP 工具环，trace `agent/mcp-tool-loop.jsonl`）；P10.4 Garnet cache + LLM Key 待测
 4. （可选）G AVIF
 
