@@ -306,6 +306,8 @@ add_executable(ShineTVStudio WIN32
   src/agent/BuiltinTools.cpp
   src/agent/NovelDirector.cpp
   src/agent/AgentKit.cpp
+  src/app/novel/NovelCli.cpp
+  src/app/novel/NovelPipeline.cpp
   src/app/novel/NovelView.cpp
 
   # P1：OpenAI Responses 客户端（RULES-HOOK 特例允许 libhv）
