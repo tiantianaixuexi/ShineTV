@@ -1,6 +1,7 @@
 // ShineTV Studio — Win32 + DX11 + ImGui Docking shell
 #include "app/App.h"
 #include "app/Fonts.h"
+#include "app/novel/NovelCli.h"
 #include "core/Log.h"
 #include "gpu/GpuDevice.h"
 #include "mcp/MCPServer.h"
@@ -116,6 +117,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     if (lpCmdLine != nullptr &&
         (wcsstr(lpCmdLine, L"--mcp-stdio") != nullptr || wcsstr(lpCmdLine, L"/mcp-stdio") != nullptr)) {
         return static_cast<int>(shine::mcp::RunStdioServerMain());
+    }
+
+    // S17：headless 命令行（脚本 / 无人值守）—— 同样不建窗口。
+    //   `--novel-generate <chapter_id>` 生成一章（0 = 第一张未完成的章）
+    //   `--novel-run <manual|semi|auto>` 连跑（`09` §2.1）
+    // 与 UI 走**同一份** `NovelPipeline`（同一份 LLM 回调与前置判定）。
+    if (lpCmdLine != nullptr &&
+        (wcsstr(lpCmdLine, L"--novel-generate") != nullptr ||
+         wcsstr(lpCmdLine, L"--novel-run") != nullptr)) {
+        return shine::app::novel::RunNovelCli(lpCmdLine);
     }
 
     // Alloc console for spdlog stdout sink

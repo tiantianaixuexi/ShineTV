@@ -12,6 +12,7 @@
 
 #include "agent/NovelDirector.h"
 #include "agent/AgentKit.h"
+#include "app/novel/NovelPipeline.h" // S17：生成/连跑的共用入口（与 CLI 同一条路）
 #include "app/ui/Widgets.h"
 #include "core/Async.h"
 #include "core/Log.h"
@@ -192,27 +193,8 @@ void DrawProjectList() {
     ImGui::EndChild();
 }
 
-// 真实 LLM 回调（worker）：按当前 llmProvider 走 Chat/Responses。
-// S16（`09` §2.4 模型分层 / 09-7）：**按阶段选模型** —— planner / writer / critic 三个配置项，
-// 空则回退 `openaiModelDefault`；模型解析统一在 `openai::ResolveModel`，`agent` 层只知道 role。
-[[nodiscard]] shine::agent::LlmCallFn MakeLlmCall(const std::atomic<bool>* cancel) {
-    return [cancel](shine::agent::LlmRole role, std::string_view instructions,
-                    std::string_view user) -> std::expected<std::string, shine::agent::AgentError> {
-        const std::string model = openai::ResolveModel(shine::agent::LlmRoleName(role));
-        auto r = openai::LlmComplete(instructions, user, std::chrono::seconds{180}, cancel, model);
-        if (!r) {
-            return std::unexpected(shine::agent::AgentError{r.error().code, r.error().message});
-        }
-        return *r;
-    };
-}
-
-// S16（`09` §2.4 验收判据）：**`openaiModelCritic ≠ openaiModelWriter` 是硬要求**
-// （`06` §2.7 M5：不同模型才可能有效复核）。这里判的是**解析后的生效模型** ——
-// 两个都空 → 都回退 `openaiModelDefault` → 相同 → 视为未生效。
-[[nodiscard]] bool CrossReviewEffective() {
-    return openai::ResolveModel("critic") != openai::ResolveModel("writer");
-}
+// 真实 LLM 回调、交叉复核判定、生成一章、连跑 —— 全部在 `NovelPipeline`（S17）：
+// UI 与 headless CLI **共用同一条路**（同一份按 `LlmRole` 选模型的回调、同一份前置判定）。
 
 // 真实流程（S15）：把「生成本章」的 worker 段抽成函数 —— 按钮与 `SHINE_NOVEL_GENERATE`
 // 验收开关**共用同一条路**（同一份 worker / 进度回调 / 状态），不另造一条并行实现。
@@ -239,53 +221,43 @@ void StartChapterGeneration(std::int64_t chapterId) {
     const std::string projectDir = util::PathToUtf8(dbPath.parent_path());
     async::RunOnWorker([chapterId, dbPath, projectDir]() {
         ::shine::db::sqlite::Database db;
-        std::string fail;
         if (auto r = db.Open({.path = dbPath}); !r) {
-            fail = r.error().message;
-        } else {
-            auto call = MakeLlmCall(&g_cancelGen);
-            shine::agent::NovelDirector dir(db, call);
-            // 工程根与快照目录**显式下发**（原先靠 `NovelDb` 单例推；`work/` 与 `snapshots/`
-            // 都按它落盘，单例没开就会写错地方 —— S12/S15）
-            auto out = dir.GenerateChapter(
-                {.chapter_id = chapterId,
-                 .user_hint = "续写本章",
-                 .max_revisions = 2,
-                 .snapshot_dir = fmt::format("{}/snapshots", projectDir),
-                 .project_dir = projectDir},
-                [](const shine::agent::GenerateChapterProgress& p) {
-                    if (g_cancelGen.load()) return;
-                    if (!p.text_delta.empty()) {
-                        async::PostToUi([d = p.text_delta]() { g_streamBuf += d; });
-                    }
-                    if (!p.note.empty()) {
-                        async::PostToUi([n = p.note, ph = p.phase]() {
-                            g_genStatus =
-                                fmt::format("{} · {}", shine::agent::PhaseName(ph), n);
-                        });
-                    }
-                });
-            if (!out) {
-                fail = out.error().message;
-            } else {
-                async::PostToUi([body = out->body, rev = out->revisions,
-                                 committed = out->state_committed, note = out->commit_note,
-                                 retries = out->validation_retries]() {
-                    g_streamBuf = body;
-                    g_genStatus =
-                        fmt::format("完成（修订 {} 次，校验重做 {} 次，{} 字）· {}", rev, retries,
-                                    body.size(), note.empty() ? "未回写状态" : note);
-                    g_generating = false;
-                    if (committed) {
-                        Refresh();
-                    }
-                });
+            const std::string fail = r.error().message;
+            async::PostToUi([fail]() {
+                g_genStatus = "失败：" + fail;
+                g_generating = false;
+            });
+            return;
+        }
+        // S17：**与 CLI（`NovelCli`）共用同一条路** —— 生成逻辑在 `NovelPipeline`，
+        // 这里只负责把进度搬到 UI 线程。
+        const ChapterGenOutcome out = GenerateOneChapter(
+            db, chapterId, projectDir, 2, &g_cancelGen,
+            [](const shine::agent::GenerateChapterProgress& p) {
+                if (g_cancelGen.load()) return;
+                if (!p.text_delta.empty()) {
+                    async::PostToUi([d = p.text_delta]() { g_streamBuf += d; });
+                }
+                if (!p.note.empty()) {
+                    async::PostToUi([n = p.note, ph = p.phase]() {
+                        g_genStatus = fmt::format("{} · {}", shine::agent::PhaseName(ph), n);
+                    });
+                }
+            });
+        async::PostToUi([out]() {
+            if (!out.ok) {
+                g_genStatus = (out.error == "已取消") ? "已取消" : ("失败：" + out.error);
+                g_generating = false;
                 return;
             }
-        }
-        async::PostToUi([fail]() {
-            g_genStatus = (fail == "已取消") ? "已取消" : ("失败：" + fail);
+            g_streamBuf = out.body;
+            g_genStatus = fmt::format("完成（修订 {} 次，校验重做 {} 次，{} 字）· {}", out.revisions,
+                                      out.validation_retries, out.body.size(),
+                                      out.commit_note.empty() ? "未回写状态" : out.commit_note);
             g_generating = false;
+            if (out.state_committed) {
+                Refresh();
+            }
         });
     });
 }
@@ -427,12 +399,11 @@ void DrawWorkspace() {
                 const int maxChapters = Settings().novelRunMaxChapters;
                 const int checkpointEvery = Settings().novelCheckpointEvery;
                 const bool autoCreate = Settings().novelAutoCreateChapters;
-                // S16：09-8 的交叉复核结论与 09-12 的预算上限都在主线程读好再进 worker
-                // （`Settings()` 是全局单例，worker 里读会与主线程保存竞争）
-                const bool crossReview = CrossReviewEffective();
+                // S16/S17：09-12 的预算上限在主线程读好再进 worker（`Settings()` 是全局单例，
+                // worker 里读会与主线程保存竞争）；交叉复核等前置由 `FillPreconditions` 统一填。
                 const std::int64_t maxTotalCalls = Settings().novelMaxTotalLlmCalls;
                 async::RunOnWorker([dbPath, projectDir, mode, maxChapters, checkpointEvery,
-                                    autoCreate, crossReview, maxTotalCalls]() {
+                                    autoCreate, maxTotalCalls]() {
                     ::shine::db::sqlite::Database db;
                     if (auto r = db.Open({.path = dbPath}); !r) {
                         const std::string err = r.error().message;
@@ -452,9 +423,8 @@ void DrawWorkspace() {
                     req.auto_create_chapters = autoCreate;
                     // S15（`09` §2.1 前置③）：LLM 是否可用**真判** —— 空 Key 就别启动 auto，
                     // 由 `CheckAutoPrecondition` 给出可读的拒绝原因（原先这里硬编码 true）
-                    req.llm_ready = !openai::ResolveActiveProfile().apiKey.empty();
-                    req.cross_review_ok = crossReview;               // S16（09-8）
-                    req.max_total_llm_calls = maxTotalCalls;         // S16（09-12）
+                    // S17：与 CLI 共用同一份前置判定（LLM 可用 / 交叉复核 / 预算上限）
+                    FillPreconditions(req, maxTotalCalls);
                     req.cancel = []() { return g_cancelGen.load(); };
                     req.on_progress = [](const biz::RunProgress& p) {
                         async::PostToUi([ord = p.chapter_ord, ph = p.phase, n = p.note]() {
