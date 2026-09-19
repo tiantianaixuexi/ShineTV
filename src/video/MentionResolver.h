@@ -17,6 +17,7 @@
 //   ③ 分镜 `referenceImages` 里**还没出现过**的条目（按列表顺序）
 //   去重 key = 规范化绝对路径 + 小写；超过 9 张 → 截断末尾并 `log::Warn`。
 #include "video/CharacterAsset.h"
+#include "video/GenerationLedger.h"
 #include "video/VideoTypes.h"
 
 #include <cstdint>
@@ -39,6 +40,9 @@ struct ResolveResult {
     bool ok = false;                      // 有任何一条硬错误就是 false（此时不要往下走）
     std::string error;                    // 中文错误，**含出错的记号/路径/角色名**
     std::vector<std::string> warnings;    // 非致命提示（截断 / 种子冲突 / `<Picture N>` 越界）
+    // 上面这些提示里**属于降级**的那几条，按 `GenerationLedger.h` 的 `kDegrade*` 类型化（K28）。
+    // 分工：`warnings` 给人看，`degradations` 给账/报告用（由 `H3WorkflowBuilder` 并入 `H3BuildResult`）。
+    std::vector<GenerationDegradation> degradations;
 
     Shot shot;                            // 改写后的分镜：提示词已去记号、`forcedSeed` 已回填
     std::vector<std::string> orderedImages; // `<Picture N>` 的顺序 = 本数组顺序（已归一化/去重/≤9）

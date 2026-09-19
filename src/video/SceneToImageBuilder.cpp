@@ -389,6 +389,7 @@ bool StartSceneImage(const VideoProject& project, std::size_t shotIndex,
     VideoJob job;
     job.label = "分镜图 · " + project.shots[shotIndex].title;
     job.shotIndex = shotIndex;
+    job.priority = VideoJobPriority::SceneImage; // 排在角色资产之后（`11` §2.7 W5）
     const Shot shotCopy = project.shots[shotIndex];
     const VideoProject projectCopy = project;
 
@@ -596,6 +597,9 @@ int RunSceneToImageSelfCheck() {
         // 空图 / 非法 JSON 也不能"通过"
         expect(!VideoTaskRunner::CheckAgainstComfyUI("").ok, "S4 gate: empty api json must not pass");
     }
+
+    // S5：小队列优先级（角色资产先于分镜图）+ 一镜多 job 不互相覆盖 + H3 侧降级类型化
+    fail += RunVideoQueueSelfCheck();
 
     log::Info("SCENE_IMAGE_SELF_CHECK pass={} fail={} {}", pass, fail, fail == 0 ? "PASS" : "FAIL");
     return fail;

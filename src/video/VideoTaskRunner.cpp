@@ -136,14 +136,26 @@ void VideoTaskRunner::Init() { state_ = VideoTaskState{}; }
 void VideoTaskRunner::Shutdown() { state_ = VideoTaskState{}; }
 
 bool VideoTaskRunner::Start(VideoJob job) {
-    if (state_.Busy()) {
-        log::Warn("已有视频任务在跑（{}），忽略新的提交", VideoTaskPhaseLabel(state_.phase));
-        return false;
-    }
     if (!job.collectUploads || !job.build) {
         log::Error("视频任务缺少生产函数（collectUploads / build）");
         return false;
     }
+    // 忙 → **入队**（`11` §2.7 W5 的小队列）。以前是"忽略新的提交"，那会让
+    // 「一次点好几个分镜」只跑第一个、其余静默消失。
+    if (state_.Busy()) {
+        const std::string label = job.label;
+        const VideoJobPriority priority = job.priority;
+        const std::size_t queued = queue_.size() + 1;
+        queue_.push_back(QueuedJob{.job = std::move(job), .seq = nextSeq_++});
+        log::Info("任务入队（{}）：{}（本题第 {} 个；同一时刻只跑一个）", VideoJobPriorityLabel(priority),
+                  label, queued);
+        return true;
+    }
+    StartNow(std::move(job));
+    return true;
+}
+
+void VideoTaskRunner::StartNow(VideoJob job) {
     job_ = std::move(job);
     state_ = VideoTaskState{};
     state_.phase = VideoTaskPhase::Resolving;
@@ -288,7 +300,6 @@ bool VideoTaskRunner::Start(VideoJob job) {
             });
         });
     });
-    return true;
 }
 
 bool VideoTaskRunner::StartShot(const VideoProject& project, std::size_t shotIndex,
@@ -303,6 +314,7 @@ bool VideoTaskRunner::StartShot(const VideoProject& project, std::size_t shotInd
     VideoJob job;
     job.label = shot.title.empty() ? ("分镜 #" + FromInt(shotIndex + 1)) : shot.title;
     job.shotIndex = shotIndex;
+    job.priority = VideoJobPriority::ShotVideo; // 视频排在分镜图之后（`11` §2.7 W5）
     job.onFinish = std::move(onFinish);
 
     // ① 解析：拿到最终参考图顺序与首帧图（**素材必须真实存在** —— 上传要读文件）
@@ -349,7 +361,7 @@ bool VideoTaskRunner::StartShot(const VideoProject& project, std::size_t shotInd
         opt.projectDir = projectDir;
         opt.mediaLibraryDir = mediaLibraryDir;
         opt.uploadedNames = uploadedNames;
-        const H3BuildResult built = BuildH3Workflow(opt);
+        H3BuildResult built = BuildH3Workflow(opt);
         if (!built.ok) {
             error = built.error;
             return {};
@@ -357,9 +369,27 @@ bool VideoTaskRunner::StartShot(const VideoProject& project, std::size_t shotInd
         for (const H3BuildWarning& warning : built.warnings) {
             log::Warn("H3 编译告警：{}", warning.text);
         }
-        // H3 侧的降级目前仍是**文本告警**（`H3BuildWarning`，含"等于纯文本出片"/"参考图截断"等），
-        // 尚未类型化 → 这里不伪造类型化降级账。分镜图路径（`SceneToImageBuilder`）已完整记账。
-        return VideoBuildResult{.apiJson = built.apiJson};
+        // K28：H3 侧降级（纯文本出片 / 参考图截断 / 参数被统一 / 种子被派生 …）同样**类型化**，
+        // 随任务记账并追加落盘（与分镜图路径同一份 `degradations.jsonl`）。
+        if (!built.degradations.empty()) {
+            for (GenerationDegradation& item : built.degradations) {
+                item.shotIndex = shotIndex;
+            }
+            for (const GenerationDegradation& item : built.degradations) {
+                log::Warn("H3 降级：{}", DegradationLine(item));
+            }
+            const std::filesystem::path ledger = VideoOutputDir() / "degradations.jsonl";
+            if (AppendDegradationLedger(VideoOutputDir(), fmt::format("视频 #{}", shotIndex + 1),
+                                        built.degradations) < 0) {
+                log::Warn("降级账写入失败（不影响出图）：{}", util::PathToUtf8(ledger));
+            } else {
+                log::Warn("视频降级已记账 {} 条 → {}", built.degradations.size(), util::PathToUtf8(ledger));
+            }
+        }
+        VideoBuildResult out;
+        out.apiJson = std::move(built.apiJson);
+        out.degradations = std::move(built.degradations);
+        return out;
     };
     return Start(std::move(job));
 }
@@ -541,6 +571,11 @@ void VideoTaskRunner::DownloadOutputs(std::vector<comfy::HistoryMedia> media) {
 }
 
 void VideoTaskRunner::Cancel() {
+    // 「中断」= 停下来，不是"跑下一个" → 待跑队列一并清空
+    if (!queue_.empty()) {
+        log::Info("中断：一并清空待跑队列（{} 个尚未开始）", queue_.size());
+        queue_.clear();
+    }
     if (!state_.Busy()) {
         return;
     }
@@ -583,7 +618,225 @@ void VideoTaskRunner::Tick() {
         if (state_.Busy() && util::MonotonicMillis() - state_.startedMs > kTotalTimeoutMs) {
             Fail("任务总超时（" + FromInt(kTotalTimeoutMs / 60000) + " 分钟）");
         }
+        return;
     }
+
+    // 空闲（Idle / 上一个已终态）→ 从队列取下一个：**优先级小的先，同级 FIFO**（`11` §2.7 W5）。
+    // 上一个任务的结论已经由 `onFinish` 写回工程（`Shot.jobs`），所以这里直接换手不会丢信息。
+    if (queue_.empty()) {
+        return;
+    }
+    std::vector<QueuePickCandidate> candidates;
+    candidates.reserve(queue_.size());
+    for (const QueuedJob& item : queue_) {
+        candidates.push_back({static_cast<int>(item.job.priority), item.seq});
+    }
+    const std::size_t pick = PickNextQueuedJobIndex(candidates);
+    if (pick >= queue_.size()) {
+        return;
+    }
+    VideoJob next = std::move(queue_[pick].job);
+    queue_.erase(queue_.begin() + static_cast<std::ptrdiff_t>(pick));
+    log::Info("队列取出下一个任务（{}）：{}（还剩 {} 个在排队）", VideoJobPriorityLabel(next.priority),
+              next.label, queue_.size());
+    StartNow(std::move(next));
+}
+
+int RunVideoQueueSelfCheck() {
+    int fail = 0;
+    const auto expect = [&](bool cond, std::string_view name) {
+        if (cond) {
+            log::Info("S5 queue PASS {}", name);
+        } else {
+            ++fail;
+            log::Error("S5 queue FAIL {}", name);
+        }
+    };
+
+    // —— ① 队列挑选规则（纯函数）：角色资产先于分镜图，同级 FIFO ——
+    {
+        const QueuePickCandidate queued[] = {
+            {static_cast<int>(VideoJobPriority::SceneImage), 1}, // 先入队的是分镜图
+            {static_cast<int>(VideoJobPriority::Asset), 2},      // 后入队的角色资产必须插到前面
+            {static_cast<int>(VideoJobPriority::SceneImage), 3},
+        };
+        expect(PickNextQueuedJobIndex(queued) == 1,
+               "角色资产（priority 0）先于分镜图，即使它后入队");
+        const QueuePickCandidate samePriority[] = {queued[0], queued[2]};
+        expect(PickNextQueuedJobIndex(samePriority) == 0, "同优先级按入队序 FIFO");
+        expect(PickNextQueuedJobIndex(std::span<const QueuePickCandidate>{}) == static_cast<std::size_t>(-1),
+               "空队列返回 npos");
+        expect(static_cast<int>(VideoJobPriority::Asset) < static_cast<int>(VideoJobPriority::SceneImage) &&
+                   static_cast<int>(VideoJobPriority::SceneImage) < static_cast<int>(VideoJobPriority::ShotVideo),
+               "优先级常量序 Asset < SceneImage < ShotVideo");
+    }
+
+    // —— ② 忙时提交 → 入队（旧行为是静默丢弃，"点好几个分镜只跑第一个"）——
+    {
+        VideoTaskRunner& runner = VideoTaskRunner::Instance();
+        VideoJob decoy;
+        decoy.label = "S5 自检占位（故意不真的跑）";
+        decoy.priority = VideoJobPriority::ShotVideo;
+        decoy.collectUploads = [](std::string& error) -> std::vector<std::string> {
+            error = "S5 自检：占位任务不执行（不上传/不提交）";
+            return {};
+        };
+        decoy.build = [](const std::map<std::string, std::string>&, std::string& error) -> VideoBuildResult {
+            error = "S5 自检：占位任务不执行";
+            return {};
+        };
+        const bool first = runner.Start(decoy);
+        VideoJob queued = decoy;
+        queued.label = "S5 自检排队占位";
+        queued.priority = VideoJobPriority::Asset;
+        const bool second = runner.Start(queued);
+        expect(first && second, "忙时提交返回 true（入队，而不是丢弃）");
+        expect(runner.QueueSize() == 1, "第二个任务确实进了队列");
+        runner.ClearQueue();
+        expect(runner.QueueSize() == 0, "ClearQueue 清空待跑队列");
+        runner.Init(); // 自检不留脏状态（占位任务的回调本就不会被 UI 队列消费）
+    }
+
+    // —— ③ 一镜多 job：后到的不覆盖先到的（`11` 差距 11-16）——
+    {
+        Shot shot;
+        shot.title = "多任务分镜";
+        shot.jobs.push_back({.jobId = "pid-image-1",
+                             .kind = ShotJobKind::SceneImage,
+                             .status = std::string{kJobStatusDone},
+                             .files = {"D:/out/scene_001.png"},
+                             .at = 100});
+        shot.jobs.push_back({.jobId = "pid-video-1",
+                             .kind = ShotJobKind::Video,
+                             .status = std::string{kJobStatusDone},
+                             .files = {"D:/out/shot_001.mp4"},
+                             .at = 200});
+        expect(shot.jobs.size() == 2, "两条任务的账都在（后到的不覆盖先到的）");
+        expect(shot.AllOutputFiles().size() == 2, "产物聚合 = 两个文件");
+        expect(shot.FindJob("pid-image-1") != nullptr, "按 jobId 能找回较早那条");
+        expect(shot.LastJobId() == "pid-video-1", "LastJobId 指向最近一次提交");
+        expect(!shot.HasInFlightJob(), "两条都到终态 → 没有在途任务");
+        const std::string summary = shot.JobSummary();
+        expect(summary.find("分镜图：完成") != std::string::npos &&
+                   summary.find("视频：完成") != std::string::npos,
+               "状态按 job 聚合（分镜图：完成 · 视频：完成）");
+        shot.jobs.push_back({.jobId = "pid-image-2",
+                             .kind = ShotJobKind::SceneImage,
+                             .status = std::string{kJobStatusFailed},
+                             .error = "参考图缺失",
+                             .at = 300});
+        expect(shot.LastErrorText() == "参考图缺失", "失败原因只归它自己");
+        expect(shot.AllOutputFiles().size() == 2, "失败任务不污染产物列表");
+        shot.jobs.push_back({.jobId = "pid-image-3",
+                             .kind = ShotJobKind::SceneImage,
+                             .status = std::string{kJobStatusSubmitted},
+                             .at = 400});
+        expect(shot.HasInFlightJob(), "有任务还在提交中 → HasInFlightJob=true");
+    }
+
+    // —— ④ H3 侧降级类型化（K28）：纯文本出片 / 参考图截断 ——
+    {
+        VideoProject project;
+        project.unetName = "h3_unet.safetensors";
+        project.clipName = "h3_clip.safetensors";
+        project.videoVaeName = "h3_video_vae.safetensors";
+        project.audioVaeName = "h3_audio_vae.safetensors";
+        Shot shot;
+        shot.title = "纯文本出片";
+        shot.prompt = "a cat on a roof";
+        shot.mode = ShotMode::Reference; // 参考图模式，但一张参考图也没有 → t2va
+        project.shots.push_back(shot);
+
+        H3BuildOptions opt;
+        opt.project = project;
+        opt.dryRun = true;
+        const H3BuildResult built = BuildH3Workflow(opt);
+        expect(built.ok, "H3 dryRun 能编出工作流");
+        expect(HasDegradation(built.degradations, kDegradeNoReference),
+               "参考图模式无参考图 → 降级 kind = no_reference");
+        expect(!built.warnings.empty() && !built.warnings.front().degradeKind.empty(),
+               "warnings 与 degradations 同源（告警自带类型，不是事后匹配中文）");
+
+        // 参考图截断（`@image:` 展开出 11 张 > 上限 9）→ ref_truncated（由解析器类型化）
+        ResolveRequest req;
+        Shot many;
+        many.title = "截断";
+        many.prompt.clear();
+        for (int i = 0; i < 11; ++i) {
+            many.prompt += fmt::format("@image:D:/img/ref_{:02}.png ", i);
+        }
+        req.shot = many;
+        req.requireFiles = false; // dryRun 口径：只规范化，不查磁盘
+        const ResolveResult resolved = Resolve(req);
+        expect(resolved.ok && resolved.orderedImages.size() ==
+                                  static_cast<std::size_t>(kMaxReferenceImagesPerShot),
+               "11 张参考图被截断到 9 张");
+        expect(HasDegradation(resolved.degradations, kDegradeRefTruncated),
+               "参考图截断 → 降级 kind = ref_truncated");
+    }
+
+    // —— ⑤ 新字段 `jobs` 必须能存能读（P5.1 验收：重启后完全一致）——
+    {
+        VideoProject project;
+        project.name = "S5 存盘自检";
+        Shot shot;
+        shot.title = "多任务";
+        shot.prompt = "a multi-task shot";
+        shot.jobs.push_back({.jobId = "pid-image",
+                             .kind = ShotJobKind::SceneImage,
+                             .status = std::string{kJobStatusDone},
+                             .files = {"D:/out/scene_001.png"},
+                             .at = 7});
+        shot.jobs.push_back({.jobId = "pid-video",
+                             .kind = ShotJobKind::Video,
+                             .status = std::string{kJobStatusFailed},
+                             .error = "参考图缺失",
+                             .at = 8});
+        project.shots.push_back(shot);
+
+        const std::string json = project.ToJson();
+        VideoProject back;
+        const bool loaded = back.LoadFromJson(json);
+        expect(loaded && back.shots.size() == 1 && back.shots[0].jobs.size() == 2,
+               "jobs 存盘→载入：条数一致");
+        expect(loaded && back.shots[0].jobs[0].jobId == "pid-image" &&
+                   back.shots[0].jobs[0].kind == ShotJobKind::SceneImage &&
+                   back.shots[0].jobs[0].files.size() == 1 &&
+                   back.shots[0].jobs[1].status == kJobStatusFailed &&
+                   back.shots[0].jobs[1].error == "参考图缺失",
+               "jobs 存盘→载入：字段逐个一致（enum / 文件列表 / 中文错误）");
+        expect(loaded && back.ToJson() == json, "jobs 存盘往返逐字节一致");
+        // 旧工程只有 lastPromptId（无 jobs）→ 宽容读取，不崩
+        const std::string legacy =
+            "{\"name\":\"旧工程\",\"shots\":[{\"title\":\"老分镜\",\"prompt\":\"p\",\"lastPromptId\":\"old-pid\","
+            "\"lastOutputFiles\":[\"D:/out/old.mp4\"],\"lastError\":\"\"}]}";
+        VideoProject old;
+        expect(old.LoadFromJson(legacy) && old.shots.size() == 1 && old.shots[0].jobs.empty(),
+               "旧工程（只有 lastPromptId）宽容读取：不崩、jobs 为空");
+    }
+
+    if (fail == 0) {
+        log::Info("S5 队列/多产物/降级类型化自检通过（优先级 + 入队 + 一镜多 job + H3 降级 + 存盘往返）");
+    }
+    return fail;
+}
+
+std::size_t PickNextQueuedJobIndex(std::span<const QueuePickCandidate> candidates) noexcept {
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    std::size_t best = kNone;
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        if (best == kNone) {
+            best = i;
+            continue;
+        }
+        const QueuePickCandidate& cur = candidates[i];
+        const QueuePickCandidate& top = candidates[best];
+        // 优先级小的先；同级按入队序（seq 小的先）
+        if (cur.priority < top.priority || (cur.priority == top.priority && cur.seq < top.seq)) {
+            best = i;
+        }
+    }
+    return best;
 }
 
 } // namespace shine::video

@@ -295,9 +295,12 @@ ResolveResult Resolve(const ResolveRequest& req) {
             result.forcedSeed = asset.lockSeed;
             assets[index].lockedSeed = asset.lockSeed;
         } else if (result.forcedSeed != asset.lockSeed) {
-            result.warnings.push_back("角色「" + CharacterLabel(asset) + "」的锁定种子 " +
-                                      IntToString(static_cast<int>(asset.lockSeed)) + " 与先出现的 " +
-                                      IntToString(static_cast<int>(result.forcedSeed)) + " 不一致，取先出现的");
+            std::string text = "角色「" + CharacterLabel(asset) + "」的锁定种子 " +
+                               IntToString(static_cast<int>(asset.lockSeed)) + " 与先出现的 " +
+                               IntToString(static_cast<int>(result.forcedSeed)) + " 不一致，取先出现的";
+            // 用户设的锁定种子被**统一掉** = 参数被纠正 → 降级（K28）
+            result.degradations.push_back({std::string{kDegradeParamUnified}, text});
+            result.warnings.push_back(std::move(text));
         }
     };
 
@@ -429,8 +432,11 @@ ResolveResult Resolve(const ResolveRequest& req) {
         ordered.resize(static_cast<std::size_t>(kMaxReferenceImagesPerShot));
         log::Warn("分镜「{}」参考图 {} 张 → {} 张（超出 H3 上限，截断末尾）", req.shot.title, before,
                   kMaxReferenceImagesPerShot);
-        result.warnings.push_back("参考图 " + IntToString(static_cast<int>(before)) + " 张 → " +
-                                  IntToString(kMaxReferenceImagesPerShot) + " 张（超出 H3 上限，截断末尾）");
+        std::string text = "参考图 " + IntToString(static_cast<int>(before)) + " 张 → " +
+                           IntToString(kMaxReferenceImagesPerShot) + " 张（超出 H3 上限，截断末尾）";
+        // 参考图被丢掉 = 降级（K28）
+        result.degradations.push_back({std::string{kDegradeRefTruncated}, text});
+        result.warnings.push_back(std::move(text));
     }
 
     // ———— 提示词收尾：`{{Mixed N}}` → `<Picture N>`，再拼角色身份 ————
