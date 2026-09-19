@@ -192,16 +192,26 @@ void DrawProjectList() {
     ImGui::EndChild();
 }
 
-// 真实 LLM 回调（worker）：按当前 llmProvider 走 Chat/Responses
+// 真实 LLM 回调（worker）：按当前 llmProvider 走 Chat/Responses。
+// S16（`09` §2.4 模型分层 / 09-7）：**按阶段选模型** —— planner / writer / critic 三个配置项，
+// 空则回退 `openaiModelDefault`；模型解析统一在 `openai::ResolveModel`，`agent` 层只知道 role。
 [[nodiscard]] shine::agent::LlmCallFn MakeLlmCall(const std::atomic<bool>* cancel) {
-    return [cancel](std::string_view instructions,
+    return [cancel](shine::agent::LlmRole role, std::string_view instructions,
                     std::string_view user) -> std::expected<std::string, shine::agent::AgentError> {
-        auto r = openai::LlmComplete(instructions, user, std::chrono::seconds{180}, cancel);
+        const std::string model = openai::ResolveModel(shine::agent::LlmRoleName(role));
+        auto r = openai::LlmComplete(instructions, user, std::chrono::seconds{180}, cancel, model);
         if (!r) {
             return std::unexpected(shine::agent::AgentError{r.error().code, r.error().message});
         }
         return *r;
     };
+}
+
+// S16（`09` §2.4 验收判据）：**`openaiModelCritic ≠ openaiModelWriter` 是硬要求**
+// （`06` §2.7 M5：不同模型才可能有效复核）。这里判的是**解析后的生效模型** ——
+// 两个都空 → 都回退 `openaiModelDefault` → 相同 → 视为未生效。
+[[nodiscard]] bool CrossReviewEffective() {
+    return openai::ResolveModel("critic") != openai::ResolveModel("writer");
 }
 
 // 真实流程（S15）：把「生成本章」的 worker 段抽成函数 —— 按钮与 `SHINE_NOVEL_GENERATE`
@@ -338,6 +348,16 @@ void DrawWorkspace() {
     if (profile.apiKey.empty()) {
         ImGui::TextDisabled("未配置该 Provider 的 API Key，「生成本章」将失败");
     }
+    // S16（09-8 / `09` §2.4 验收判据）：评审模型必须 ≠ 写作模型 —— 提前说清楚，
+    // 否则用户会看到「auto 被拒」却不知道去哪儿改。
+    if (CrossReviewEffective()) {
+        ImGui::TextDisabled("评审模型 %s ≠ 写作模型 %s（09-8 交叉复核已生效）",
+                            openai::ResolveModel("critic").c_str(),
+                            openai::ResolveModel("writer").c_str());
+    } else {
+        ImGui::TextDisabled(
+            "⚠ 评审模型与写作模型相同（09-8）：请在设置 → LLM 里给 Critic 配不同模型，否则 auto 连跑会被拒");
+    }
     if (ImGui::Button(g_generating ? "生成中…" : "生成本章", ImVec2(140, 0)) && !g_generating) {
         StartChapterGeneration(g_lastChapterId);
     }
@@ -407,8 +427,12 @@ void DrawWorkspace() {
                 const int maxChapters = Settings().novelRunMaxChapters;
                 const int checkpointEvery = Settings().novelCheckpointEvery;
                 const bool autoCreate = Settings().novelAutoCreateChapters;
+                // S16：09-8 的交叉复核结论与 09-12 的预算上限都在主线程读好再进 worker
+                // （`Settings()` 是全局单例，worker 里读会与主线程保存竞争）
+                const bool crossReview = CrossReviewEffective();
+                const std::int64_t maxTotalCalls = Settings().novelMaxTotalLlmCalls;
                 async::RunOnWorker([dbPath, projectDir, mode, maxChapters, checkpointEvery,
-                                    autoCreate]() {
+                                    autoCreate, crossReview, maxTotalCalls]() {
                     ::shine::db::sqlite::Database db;
                     if (auto r = db.Open({.path = dbPath}); !r) {
                         const std::string err = r.error().message;
@@ -429,6 +453,8 @@ void DrawWorkspace() {
                     // S15（`09` §2.1 前置③）：LLM 是否可用**真判** —— 空 Key 就别启动 auto，
                     // 由 `CheckAutoPrecondition` 给出可读的拒绝原因（原先这里硬编码 true）
                     req.llm_ready = !openai::ResolveActiveProfile().apiKey.empty();
+                    req.cross_review_ok = crossReview;               // S16（09-8）
+                    req.max_total_llm_calls = maxTotalCalls;         // S16（09-12）
                     req.cancel = []() { return g_cancelGen.load(); };
                     req.on_progress = [](const biz::RunProgress& p) {
                         async::PostToUi([ord = p.chapter_ord, ph = p.phase, n = p.note]() {
@@ -920,7 +946,8 @@ bool RunMvpSelfCheck() {
 
     // mock：第二章 writer 提示里应包含第一章摘要
     bool sawCh1InCtx = false;
-    shine::agent::LlmCallFn mock = [&](std::string_view instructions, std::string_view user)
+    shine::agent::LlmCallFn mock = [&](shine::agent::LlmRole,
+                                        std::string_view instructions, std::string_view user)
         -> std::expected<std::string, shine::agent::AgentError> {
         const std::string u{user};
         const std::string ins{instructions};

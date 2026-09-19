@@ -104,6 +104,9 @@ struct AppSettings {
     int novelRunMaxChapters = 0;   // 0 = 不限；auto 连跑请显式给 > 0
     int novelCheckpointEvery = 10; // `09` §2.5 检查点周期（章）
     int novelMaxLlmCallsPerChapter = 40;
+    // S16（`09` §2.4 / 09-12）：全书预算上限（LLM 调用数，按「剩余章 × 每章上限」估算）。
+    // 0 = 不限；> 0 时超限 → 拒绝启动 `auto`（前置⑥）。
+    int novelMaxTotalLlmCalls = 0;
     int novelMaxHighTierCallsPerChapter = 8;
     int novelMaxImagesPerChapter = 2;
     int novelChapterWallClockMinutes = 30;

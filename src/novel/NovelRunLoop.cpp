@@ -270,15 +270,23 @@ std::optional<std::string> CheckAutoPrecondition(const AutoPreconditionInput& in
     if (!in.comfy_ok) {
         missing += "④ Comfy 连通性自检未通过（本章需要出图）；";
     }
+    if (!in.cross_review_ok) {
+        missing += "⑤ 评审模型与写作模型相同（06 §2.7 M5：不同模型才可能有效复核）；";
+    }
+    if (!in.book_budget_ok) {
+        missing += fmt::format("⑥ 全书预算超上限（{}）；", in.budget_detail);
+    }
     if (!missing.empty()) {
         return fmt::format("auto 前置条件不满足：{}（07 §2.5 C5：禁止跳门禁）", missing);
     }
     return std::nullopt;
 }
 
-AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_ok) {
+AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_ok,
+                                            bool cross_review_ok) {
     AutoPreconditionInput in;
     in.llm_ok = llm_ok;
+    in.cross_review_ok = cross_review_ok;
     // 最近一章已提交（status='done' 且有正文）且写了 canon_logs → 视为 G1–G5 已验证通过
     const std::int64_t lastChapter = ScalarCount(db, "SELECT id FROM chapters WHERE status='done' "
                                                     "AND body<>'' ORDER BY ord DESC LIMIT 1");
@@ -288,6 +296,36 @@ AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_o
     in.verifiers_complete = VerifiersComplete();
     in.comfy_ok = true;
     return in;
+}
+
+// ———— S16（`09` §2.4 / 09-12）：全书预算估算 ————
+std::string BookBudgetEstimate::Describe() const {
+    if (max_total_calls <= 0) {
+        return fmt::format("预计 {} 章 × {} 次/章 = {} 次 LLM 调用（未设上限）", chapters_remaining,
+                           calls_per_chapter, estimated_calls);
+    }
+    return fmt::format("预计 {} 章 × {} 次/章 = {} 次 LLM 调用，上限 {}{}", chapters_remaining,
+                       calls_per_chapter, estimated_calls, max_total_calls,
+                       Over() ? "（**超上限**）" : "（未超）");
+}
+
+BookBudgetEstimate EstimateBookBudget(db::sqlite::Database& db, int calls_per_chapter,
+                                      std::int64_t max_total_calls, int max_chapters) {
+    BookBudgetEstimate e;
+    e.calls_per_chapter = calls_per_chapter > 0 ? calls_per_chapter : 40;
+    e.max_total_calls = max_total_calls;
+    // 剩余章数 = 已建但未写完的章（`auto` 会把这些写掉）；再叠加 `max_chapters` 的本次上限。
+    // ⚠️ 语义：**没有**未完成章但给了 `max_chapters` → 保守按 `max_chapters` 估
+    // （`auto_create_chapters` 会新建章，不能估成 0 而让预算形同虚设）。
+    const int pending =
+        static_cast<int>(ScalarCount(db, "SELECT COUNT(*) FROM chapters WHERE status<>'done' OR body=''"));
+    if (max_chapters > 0) {
+        e.chapters_remaining = pending > 0 ? std::min(pending, max_chapters) : max_chapters;
+    } else {
+        e.chapters_remaining = std::max(pending, 1);
+    }
+    e.estimated_calls = static_cast<std::int64_t>(e.chapters_remaining) * e.calls_per_chapter;
+    return e;
 }
 
 // ———— 产物（`09` §2.7）————
@@ -542,7 +580,15 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
     if (req.mode == RunMode::Auto) {
         // S15：前置③（LLM 可用）用**调用方给的真实值** —— 原先这里硬编码 `true`，
         // 于是空 Key 也能启动 auto，然后每章都从网络层失败（白跑一整套调用）。
-        const AutoPreconditionInput pre = ProbeAutoPrecondition(*db_, req.llm_ready);
+        AutoPreconditionInput pre =
+            ProbeAutoPrecondition(*db_, req.llm_ready, req.cross_review_ok);
+        // S16（09-12）：全书预算估算 —— 超限则拒绝启动 `auto`（`09` §2.4）
+        const BookBudgetEstimate est =
+            EstimateBookBudget(*db_, req.limits.max_llm_calls_per_chapter,
+                               req.max_total_llm_calls, req.max_chapters);
+        pre.book_budget_ok = !est.Over();
+        pre.budget_detail = est.Describe();
+        log::Info("全书预算估算（09-12）：{}", est.Describe());
         if (auto why = CheckAutoPrecondition(pre)) {
             out.started = false;
             out.refuse_reason = *why;
@@ -1101,6 +1147,45 @@ bool NovelRunLoop::RunSelfCheck() {
             const AutoPreconditionInput probedNoLlm = ProbeAutoPrecondition(mem, false);
             expect(!probedNoLlm.llm_ok && CheckAutoPrecondition(probedNoLlm).has_value(),
                    "S15：ProbeAutoPrecondition 透传 LLM 判定（false → auto 被拒）");
+        }
+        // S16（09-8）：⑤ 评审模型 = 写作模型 → auto 被拒（`09` §2.4 验收判据的硬要求）
+        {
+            AutoPreconditionInput noCross = good;
+            noCross.cross_review_ok = false;
+            const auto why = CheckAutoPrecondition(noCross);
+            expect(why.has_value() && why->find("⑤") != std::string::npos &&
+                       why->find("M5") != std::string::npos,
+                   "S16：评审=写作模型 → auto 被拒且原因含「⑤ / M5」");
+        }
+        // S16（09-12）：⑥ 全书预算超限 → auto 被拒；估算函数本身可断言
+        {
+            AutoPreconditionInput over = good;
+            over.book_budget_ok = false;
+            over.budget_detail = "预计 100 章 × 40 次/章 = 4000 次，上限 100（**超上限**）";
+            const auto why = CheckAutoPrecondition(over);
+            expect(why.has_value() && why->find("⑥") != std::string::npos &&
+                       why->find("超上限") != std::string::npos,
+                   "S16：预算超限 → auto 被拒且原因含「⑥ / 超上限」");
+
+            const BookBudgetEstimate e1 = EstimateBookBudget(mem, 40, 0);
+            expect(e1.estimated_calls ==
+                       static_cast<std::int64_t>(e1.chapters_remaining) * e1.calls_per_chapter &&
+                       !e1.Over() && e1.Describe().find("未设上限") != std::string::npos,
+                   "S16：预算估算 = 剩余章 × 每章上限；未设上限时不超");
+            const BookBudgetEstimate e2 = EstimateBookBudget(mem, 40, 1);
+            expect(e2.Over() && e2.Describe().find("超上限") != std::string::npos,
+                   "S16：上限 1 次 → 必然超限且描述可读");
+            const std::int64_t pendingNow =
+                ScalarCount(mem, "SELECT COUNT(*) FROM chapters WHERE status<>'done' OR body=''");
+            const BookBudgetEstimate e3 = EstimateBookBudget(mem, 40, 0, 3);
+            // 语义：有未完成章 → `min(剩余, 本次上限)`；**没有**未完成章但给了本次上限 →
+            // 保守按上限估（`auto_create_chapters` 会新建章）
+            const int expect3 = pendingNow > 0
+                                    ? static_cast<int>(std::min<std::int64_t>(pendingNow, 3))
+                                    : 3;
+            expect(e3.chapters_remaining == expect3 && e3.calls_per_chapter == 40,
+                   fmt::format("S16：max_chapters 是上限（剩余 {} 章 → 估 {}，实际 {}）", pendingNow,
+                               expect3, e3.chapters_remaining));
         }
         // S10：`06` §2.3 的 K01–K29 校验器已全量落地 → 这一条不再恒 false
         const AutoPreconditionInput probed = ProbeAutoPrecondition(mem, true);

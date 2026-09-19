@@ -170,6 +170,10 @@ struct RunRequest {
     // 由调用方给 —— `novel` 层不做 HTTP 层的事。⚠️ 默认 `true` 只为兼容既有自检与测试；
     // **生产路径（UI / 验收开关）必须传真实值**，否则 `auto` 会带着空 Key 白跑（S15 修）。
     bool llm_ready = true;
+    // S16（09-8）：评审模型 ≠ 写作模型（`06` §2.7 M5）。调用方判"解析后的生效模型"。
+    bool cross_review_ok = true;
+    // S16（09-12）：全书预算上限（LLM 调用数；0 = 不限）。超限 → 拒绝启动 `auto`。
+    std::int64_t max_total_llm_calls = 0;
     int checkpoint_every = 10;         // `09` §2.5（0 = 关）
     bool resume = true;                // `09` §2.6
     bool auto_create_chapters = false; // 无非完成章时自动建下一章（`03` CHAPTER_GOAL 未实现前的替代）
@@ -198,13 +202,39 @@ struct AutoPreconditionInput {
     bool verifiers_complete = false;             // `06` K01–K29 校验器**全部可用**
     bool llm_ok = false;
     bool comfy_ok = true; // 本章需要出图时才要求
+    // S16（`09` §2.4 验收判据 / 09-8）：评审模型 ≠ 写作模型（`06` §2.7 M5）。
+    // 调用方判"解析后的生效模型"，本层只收结论。
+    bool cross_review_ok = true;
+    // S16（`09` §2.4 / 09-12）：全书预算未超上限。调用方给估算结论与明细。
+    bool book_budget_ok = true;
+    std::string budget_detail;
 };
 // 空 = 允许 `auto`；有值 = 拒绝启动的原因（逐条列出未满足项）
 [[nodiscard]] std::optional<std::string> CheckAutoPrecondition(const AutoPreconditionInput& in);
 // 从库里探测（gates / verifiers；LLM 连通性由调用方给）。`verifiers_complete` 依据是
 // `06` §2.3 的 K01–K29 是否全量落地 —— 由 `NovelChecks::VerifiersComplete()` 回答
 // （29/29 目录齐备 → true）。
-[[nodiscard]] AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_ok);
+[[nodiscard]] AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_ok,
+                                                          bool cross_review_ok = true);
+
+// ———— S16（`09` §2.4 / 09-12）：全书预算估算 ————
+// 「预计调用数 × 单价」里的**调用数**这一半：剩余章数 × 每章上限（`09` §2.4 = 40）。
+// ⚠️ 单价未纳入 —— 现在没有 token 计数（`LlmCallRecord` 不记 token），不假装算钱。
+struct BookBudgetEstimate {
+    int chapters_remaining = 0;
+    int calls_per_chapter = 0;
+    std::int64_t estimated_calls = 0;
+    std::int64_t max_total_calls = 0; // 0 = 不限
+    [[nodiscard]] bool Over() const noexcept {
+        return max_total_calls > 0 && estimated_calls > max_total_calls;
+    }
+    [[nodiscard]] std::string Describe() const;
+};
+// `max_chapters` = 本次运行最多跑几章（`RunRequest::max_chapters`）：有未完成章时取
+// `min(剩余, max_chapters)`；**没有**未完成章但给了 `max_chapters` 时保守按它估（会新建章）。
+[[nodiscard]] BookBudgetEstimate EstimateBookBudget(db::sqlite::Database& db, int calls_per_chapter,
+                                                    std::int64_t max_total_calls,
+                                                    int max_chapters = 0);
 
 // ———— 检查点（`09` §2.5）————
 struct CheckpointInput {
