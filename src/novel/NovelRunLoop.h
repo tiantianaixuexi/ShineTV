@@ -217,9 +217,27 @@ struct CheckpointInput {
 [[nodiscard]] std::string StopReportMarkdown(const RunOutcome& out, const RunRequest& req);
 [[nodiscard]] std::string CostReportJson(RowId chapter_id, int ord, const ChapterRunInfo& info,
                                          const ChapterObservation& obs, const RunLimits& limits);
+// `03` §2.7 P5 / `09` §2.7：**阶段 → 产物**（阶段级续跑的输入，S14 起不再是空列）
+struct StageArtifact {
+    std::string path;        // 相对工程根的路径（UTF-8）
+    std::int64_t bytes = 0;  // 0 = 文件不在
+    std::string fnv;         // 内容指纹（FNV-1a 16 位十六进制；文件不在则空）
+};
+struct StageProgress {
+    std::string stage;     // EXTRACT / COMMIT / COST / MANIFEST
+    bool complete = false; // 该阶段的产物**都在**
+    std::vector<StageArtifact> artifacts;
+};
+// 扫工程目录按已知的「阶段 → 产物」约定判定走到哪一步（**纯查询，不写盘**）。
+// ⚠️ 目前只有 EXTRACT（`work/ch<ord>/12_state_diff.json`）与 COMMIT（`snapshots/ch<id>.json`）
+// 有落盘产物；PLAN / WRITE / REVIEW 的阶段产物（`03` §2.7 的 `01_outline.json` 那一套）尚未落地
+// → **真正的「从中间阶段续跑」还缺 `03` 的 T1–T17 阶段机**，本函数只提供它需要的输入。
+[[nodiscard]] std::vector<StageProgress> ScanChapterStages(const std::filesystem::path& project_dir,
+                                                          RowId chapter_id, int ord);
 [[nodiscard]] std::string ManifestJson(RowId chapter_id, int ord, std::string_view state_hash,
                                        const std::vector<std::string>& stages,
-                                       std::string_view status);
+                                       std::string_view status,
+                                       const std::vector<StageProgress>& stage_artifacts = {});
 [[nodiscard]] std::filesystem::path ChapterWorkDir(const std::filesystem::path& project_dir,
                                                   int ord);
 
