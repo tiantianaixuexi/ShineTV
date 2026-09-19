@@ -22,6 +22,10 @@
 
 namespace shine::novelcore {
 
+// `06` §2.3 的 K01–K29 验证报告（`NovelChecks.h`）。这里只前置声明 —— 方向是
+// `NovelChecks` 依赖本文件（要 `StateDiff`），不能反过来包含。
+struct ValidationReport;
+
 // ———— `StateDiff`（`02` §2.5 逐字段对应；字段名即 JSON 键）————
 
 struct NewEntityDelta {
@@ -205,6 +209,9 @@ struct CommitGateReport {
     bool ok = false;
     bool g1_review_pass = false;   // 评审 PASS
     bool g2_checks_pass = false;   // 机器校验无 high
+    // G2 的口径来源：true = 用了 `06` §2.3 的 K01–K29 全量报告（`CommitContext::validation`）；
+    // false = 退回本模块自己的机器校验（`ValidateStateDiff` + G4/G5）—— 记账用，别再猜。
+    bool g2_from_checks = false;
     bool g3_snapshot_ready = false; // 提交前快照已就绪（I11）
     bool g4_diff_valid = false;    // StateDiff 契约通过且非空（或显式声明无变化）
     bool g5_no_high_issue = false; // 无未解决的 high issue
@@ -217,8 +224,10 @@ struct CommitContext {
     // G1：评审结论（`06` §2.4）。由调用方给 —— 本模块不重跑模型
     bool review_pass = false;
     std::string review_verdict; // 原样记账（PASS/FAIL/…）
-    // G2：机器校验结论。⚠️ `06` 的 K01–K29 尚未实现全量 → 本模块以**自己能跑的机器校验**
-    // （ValidateStateDiff + 下面的 G4/G5）作为结论；调用方若有更全的 ValidationReport，传它。
+    // G2：机器校验结论。传 `validation`（`06` §2.3 的 K01–K29 全量报告）时以它为准；
+    // 不传则退回本模块自己能跑的机器校验（ValidateStateDiff + 下面的 G4/G5），并在
+    // `CommitGateReport::g2_from_checks` 记明口径。`machine_checks_pass` 只在退回时生效。
+    const ValidationReport* validation = nullptr;
     bool machine_checks_pass = true;
     std::vector<CommitIssue> upstream_issues; // 上游（`06`）已发现的问题 → 进 G5 判定与记账
     std::string canon_mode = "manual";        // manual | auto（**auto 不在本 S**：`07` §2.5 C5）

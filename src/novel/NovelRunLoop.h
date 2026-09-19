@@ -194,7 +194,8 @@ struct AutoPreconditionInput {
 // 空 = 允许 `auto`；有值 = 拒绝启动的原因（逐条列出未满足项）
 [[nodiscard]] std::optional<std::string> CheckAutoPrecondition(const AutoPreconditionInput& in);
 // 从库里探测（gates / verifiers；LLM 连通性由调用方给）。`verifiers_complete` 依据是
-// `06` §2.3 的 K01–K29 是否全量落地 —— 本仓当前**未全量**，故恒 false。
+// `06` §2.3 的 K01–K29 是否全量落地 —— 由 `NovelChecks::VerifiersComplete()` 回答
+// （29/29 目录齐备 → true）。
 [[nodiscard]] AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_ok);
 
 // ———— 检查点（`09` §2.5）————

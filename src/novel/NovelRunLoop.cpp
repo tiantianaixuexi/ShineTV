@@ -1,6 +1,7 @@
 #include "novel/NovelRunLoop.h"
 
 #include "core/Log.h"
+#include "novel/NovelChecks.h"
 #include "novel/NovelGraph.h"
 #include "util/Encoding.h"
 #include "util/File.h"
@@ -282,8 +283,9 @@ AutoPreconditionInput ProbeAutoPrecondition(db::sqlite::Database& db, bool llm_o
     const std::int64_t lastChapter = ScalarCount(db, "SELECT id FROM chapters WHERE status='done' "
                                                     "AND body<>'' ORDER BY ord DESC LIMIT 1");
     in.gates_verified_on_last_chapter = lastChapter > 0;
-    // ⚠️ `06` §2.3 的 K01–K29 未全量落地（`NovelCommit` 的 G2 目前用它自己能跑的机器校验兜底）
-    in.verifiers_complete = false;
+    // `06` §2.3 的 K01–K29 校验器是否全量可用 —— 由 `NovelChecks` 的目录自己回答
+    // （29 条必须正好是 K01…K29，无缺号无占位；`S10` 之前这里恒 false，`auto` 一律被拒启动）
+    in.verifiers_complete = VerifiersComplete();
     in.comfy_ok = true;
     return in;
 }
@@ -1009,8 +1011,9 @@ bool NovelRunLoop::RunSelfCheck() {
         good.llm_ok = true;
         good.comfy_ok = true;
         expect(!CheckAutoPrecondition(good).has_value(), "auto 前置全满足 → 允许");
+        // S10：`06` §2.3 的 K01–K29 校验器已全量落地 → 这一条不再恒 false
         const AutoPreconditionInput probed = ProbeAutoPrecondition(mem, true);
-        expect(!probed.verifiers_complete, "K01–K29 未全量 → verifiers_complete=false");
+        expect(probed.verifiers_complete, "K01–K29 已全量（S10）→ verifiers_complete=true");
     }
 
     // ④ 报告/清单序列化含停止条件编号与阈值
@@ -1156,15 +1159,28 @@ bool NovelRunLoop::RunSelfCheck() {
                    resumed.completed_chapters.front() == c2.value_or(0),
                "断点续跑：已完成章不重跑（跳到第 2 章）");
 
-        // auto：K01–K29 未全量 → 拒绝启动并给原因（判据 5）
-        RunRequest autoReq;
-        autoReq.project_dir = dir;
-        autoReq.mode = RunMode::Auto;
-        RunOutcome autoOut = loop.Run(autoReq);
-        expect(!autoOut.started && !autoOut.refuse_reason.empty(), "auto 被拒启动");
-        expect(autoOut.refuse_reason.find("K01") != std::string::npos ||
-                   autoOut.refuse_reason.find("auto 前置条件不满足") != std::string::npos,
-               "auto 拒绝原因可读");
+        // auto（S10 后语义变化）：K01–K29 已全量，此时这个库「最近一章已 done」→ 前置齐备，
+        // `auto` **不再被 K01–K29 挡住**（允许启动）。仍要证明「前置不满足就拒绝」——
+        // 用一个没有已完成章的新库跑一次 Run 级拒绝（判据 5 的完整形态）。
+        {
+            const AutoPreconditionInput probed = ProbeAutoPrecondition(mem, true);
+            expect(probed.verifiers_complete && probed.gates_verified_on_last_chapter,
+                   "auto 前置齐备（K01–K29 全量 + 最近一章已 done）");
+            expect(!CheckAutoPrecondition(probed).has_value(), "前置齐备 → 允许 auto");
+
+            db::sqlite::Database fresh;
+            if (auto r = fresh.Open({.memory = true}); r) {
+                (void)NovelDb::ApplyCanonicalSchema(fresh);
+                NovelRunLoop freshLoop(fresh, nullptr);
+                RunRequest autoReq;
+                autoReq.project_dir = dir;
+                autoReq.mode = RunMode::Auto;
+                const RunOutcome autoOut = freshLoop.Run(autoReq);
+                expect(!autoOut.started &&
+                           autoOut.refuse_reason.find("auto 前置条件不满足") != std::string::npos,
+                       "auto 前置不满足（无已完成章）→ 拒绝启动");
+            }
+        }
 
         // 检查点：跑到第 2 章（checkpoint_every=2）→ 产出 checkpoint_ch001–002.md 且字段被升格
         {
