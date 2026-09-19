@@ -1,7 +1,7 @@
 # ShineTV Studio — 进度表（合并后 2026-09-19）
 
 > 唯一进度入口。状态：⬜ 未开始 ｜ 🟡 进行中 ｜ ✅ 通过 ｜ ⛔ 阻塞 ｜ ⏸ 搁置。
-> **当前**：`main` = land + P5.7 + P6.1–P6.4 代码 + P8 关键项 + 小说系统 S8；自检全绿。
+> **当前**：`main` = land + P5.7 + P6.1–P6.4 代码 + P8 关键项 + 小说系统 S9-auto-run；自检 **18 项全 ok**。
 
 ---
 
@@ -17,7 +17,7 @@
 | P8 | 收尾 | 13 | 11 | 🟡 余 10 次开关机压测 + 设置窗滚动验收 |
 | G | 图片库 | 79 | 78 | ✅ 线完成（AVIF ⏸） |
 | 小说 | P1–P10 | — | P1–P9 ✅；P10 余 1 | 🟡 |
-| 小说系统 | S 序列 16 个 | 16 | 15 | 🟡 见 §0.1 |
+| 小说系统 | S 序列 16 个 | 16 | 16 | ✅ 见 §0.1 |
 
 **现在做哪个**
 
@@ -47,7 +47,7 @@
 - [x] **S6** `ToGenShot` 桥（小说分镜 → `VideoProject`）— `s6-togen-shot-bridge`｜新增 `src/video/NovelShotBridge.*`（已登记 CMake）；**纯函数**（同输入同输出，`ToJson` 逐字节一致）；`seed` 由稳定键派生（**永不 -1**）；K20/K21 记账（`issues{checkId,severity}` + 降级账，纠正规则仍唯一来源 `Sanitize()`）；自带首帧的非首镜**不接链式**（否则首帧被盖）；空 prompt 整场失败不产半成品；S6 自检 **20 项全 PASS**、16 项无回归
 - [x] **S7** P1 余下五表补 API + 快照（`entity_versions`/`location_distances`/`scene_visuals`/`writing_style`/`author_rules`；`dependencies` 延后）— `s7-p1-graph-api`｜**15 个新接口**（快照 6：写/读/列表/最新/打包快照/读回载荷；地点距离 3；写作风格 2；作者规则 2；场景视觉 2）；`graph=ok visual=ok`、16 项全 ok；**顺带修 A 级 bug**：`entity_personas."values"` 是 SQLite 关键字却被当裸标识符 → **人设从来写不进也读不出**（`GetCharacterSlice` 的 persona 一直空）；另修 S3 引入的逐项结果文件截断（`wb`→`ab`）
 - [x] **S8** 闭环回写（`StateDiff` + 门禁 G1–G5）— `s8-state-commit`｜新增 `src/novel/NovelCommit.*`（已登记 CMake）；**22 项断言全 PASS**；端到端「生成一章 → 状态确有变化」（`character_status`/`foreshadowings`/`relations`/`entity_ownerships`/`event_participants`/`character_knowledge`/`canon_logs(PROPOSED)`/`chapters(done)` 逐块落库）；**重复提交幂等**（3 张表行数不变）；章级快照 `chNNN.json` + 提交前实体快照（I11）；D4/D7/D8 与 `auto` 模式一律拒绝；`commit=ok`、**17 项全 ok** ⚠️ **本 S 未先建分支**，提交直接落在 `main`（`638f283`，无合并提交 —— 与 S2b 同款偏差，已记录不再改写历史）
-- [ ] **S9-auto-run** 无人值守运行骨架（运行模式 / 停止条件 S1–S12 / **检查点每 10 章**（含 `08` §2.3 自动升格）/ 断点续跑 / 重试退避 / 单章调用上限 / `stop_report.md`）— `s9-auto-run`｜⚠️ **它才是「连跑几百章不停」的主线**：`09` 卷 5 条严重度 `S`（09-1~09-4、09-9）全挂在这里；本 S 还收 09-5/09-6/09-10 与 09-2 的计数部分；**留后续** 09-7/09-8（模型路由与交叉复核）、09-11（限流）、09-12（全书预算）
+- [x] **S9-auto-run** 无人值守运行骨架（运行模式 / 停止条件 S1–S12 / **检查点每 10 章**（含 `08` §2.3 自动升格）/ 断点续跑 / 重试退避 / 单章调用上限 / `stop_report.md`）— `s9-auto-run`｜新增 `src/novel/NovelRunLoop.*`（登记 CMake）；**18 项全 ok**（`runloop=ok`）、`[error]` 1 条（S3 既有失败路径）；三态落 `audit_logs(run_mode)`；S1–S12 由纯函数 `EvaluateStop` 逐条可构造触发（自检各造一次 + 边界「不触发」）；`auto` 前置不满足**拒绝启动并给原因**（K01–K29 未全量）；`auto` Canon 打开（写 CANON，**门禁 G1–G5 不跳**）；检查点产出 `checkpoint_ch<A>_<B>.md` + 四条件 `PROPOSED`→`CANON`（含 `promote_field` 审计）；续跑不重跑已完成章；`cost_report.json`/`_manifest.json`/`stop_report.md` 落盘 ⚠️ **粒度偏差**：`03` 的 T1–T17 细阶段机未落地 → 记账/续跑粒度 = **章**、`_manifest.json` 的「产物文件」列为空；**本步不做** 09-7/09-8（模型路由与交叉复核）、09-11（限流）、09-12（全书预算）、UI 入口（`NovelView`）
 
 > 🔧 **schema 单一来源（2026-09-19，chore，非 S）**：删掉 **9 处自检夹具**与 `AgentKit` 手抄的建表 SQL（合计 **121 条 `CREATE TABLE`**），统一走 `NovelDb::ApplyCanonicalSchema()`（夹具，幂等全量）/ `NovelDb::EnsureAgentSchema()`（`EnsureSchemaAndSeed` 这种**高频**入口只建 agent 表）。此后全仓 `CREATE TABLE` 只剩 **`NovelDb.cpp`（规范 v3–v8，75 条）**+ **`NovelFields.cpp`（字段三表，5 条，S-cleanup 已定）**；`graph=ok context=ok … asset=ok` 16 项全 ok、视频侧 21 项 PASS。
 

@@ -38,6 +38,24 @@ struct GenerateChapterRequest {
     // S8（`07` §2.4）：章级快照落盘目录（UTF-8）。空 → 尝试从 `NovelDb` 单例推工程根；
     // 仍为空 → G3 不过、**状态回写被拒绝**（不变式 I11）。
     std::string snapshot_dir;
+    // S9（`07` §2.5）：manual（默认，写 PROPOSED）| auto（门禁 G1–G5 全满足才写 CANON）
+    std::string canon_mode = "manual";
+    // S9（`09` §2.3）：网络重试与退避（在 `CallLlm` 内生效；参数由 `novelcore::RunLimits` 下发）
+    int network_retries = 4;
+    int backoff_base_ms = 2000;
+    int rate_limit_backoff_ms = 10000;
+    int min_request_interval_ms = 200;
+};
+
+// S9（`09` §2.4）：逐次 LLM 调用记录 —— 单章成本账（`cost_report.json`）的数据来源
+struct LlmCallRecord {
+    std::string stage; // PLAN / WRITE / REVIEW / REVISION / EXTRACT
+    std::string role;  // planner / writer / critic / extractor
+    std::string tier;  // high / mid / low（`09` §2.4 的档位）
+    int attempt = 0;   // 含重试：1 = 首次
+    bool ok = false;
+    bool rate_limited = false;
+    std::int64_t ms = 0;
 };
 
 struct GenerateChapterProgress {
@@ -59,6 +77,16 @@ struct GenerateChapterResult {
     bool state_committed = false;
     bool state_skipped = false; // 幂等命中（同一 diff 已提交过）
     std::string commit_note;
+    // —— S9：成本与停止条件的观测（`09` §2.3 / §2.4）——
+    std::vector<std::string> stages;  // 本报告走过的 Phase（写 `_manifest.json`）
+    std::vector<LlmCallRecord> calls; // 逐次调用（含重试）
+    int llm_calls = 0;                // 含重试的调用次数（单章硬上限 40）
+    int high_tier_calls = 0;          // 「高」档调用次数（writer / critic，上限 8）
+    int images = 0;                   // 本管线不出图 → 恒 0（V0 / 场景图未接入）
+    bool review_passed = false;       // 最终评审结论（G1）
+    bool semantic_only = false;       // 仅语义判断且 FAIL（`06` §2.7 M2）
+    int contract_failures = 0;        // 契约校验失败（含 1 次重试后）
+    int missing_entity_refs = 0;      // `code=contract` 的缺失引用处数（`09` §2.2 S9）
 };
 
 struct AgentError {
@@ -94,10 +122,14 @@ private:
     LlmCallFn call_;
     LlmStreamFn stream_;
     std::filesystem::path promptsDir_;
+    // S9：同 Provider 请求间隔（`09` §2.3 ≥ 200ms）—— 上次调用结束的单调毫秒
+    std::int64_t last_call_ms_ = 0;
 
     [[nodiscard]] std::string LoadPrompt(std::string_view name) const;
+    // S9：带重试/退避（`09` §2.3）并把逐次调用记进 `out`
     [[nodiscard]] std::expected<std::string, AgentError>
-    CallLlm(std::string_view role, std::string_view user) const;
+    CallLlm(std::string_view role, std::string_view user, std::string_view stage,
+            const GenerateChapterRequest& req, std::vector<LlmCallRecord>& out);
 };
 
 // 从模型 JSON 里抠 output_text / 或直接当正文
