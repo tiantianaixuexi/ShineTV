@@ -10,12 +10,12 @@
 | 来源 | 内容 | 状态 |
 |------|------|------|
 | `main` @ `ed6e48f` | 基线 + 文档盘点重写 | 已在分支上 |
-| `f7a0cb8`（原 `refactor/libhv-log-to-shine`） | **G 图库 S5–S14**、JPEG/WebP/EXIF/查看器/磁盘缓存、**小说 P9/P10 远程 MCP**、`scripts/comfy.ps1`/`studio.ps1`、`Plan/归档/` | **已 restore 进工作树** |
+| `f7a0cb8`（原 `refactor/libhv-log-to-shine`） | **G 图库 S5–S14**、JPEG/WebP/EXIF/查看器/磁盘缓存、**小说 P9/P10 远程 MCP**、`scripts/comfy.ps1`/`studio.ps1`、~~`Plan/归档/`~~ | **已 restore 进工作树**（`Plan/归档/` 已于 2026-09-19 删除：`0bdf565`） |
 | 本分支 | **P5.7 SceneToImage** + 本文档 | 保留并接好 CMake/自检 |
 
 > 说明：会话隔离禁止 `git merge`，故用 `git restore --source=f7a0cb8` 落地文件后在 **`feat/g-s6-gallery-grid`** 上提交（等价于手工 land）。
 
-**文档地图**：`PROGRESS.md`（进度）｜`任务/`（未完成施工图）｜`归档/`（已完成线）｜`证据.md`｜`HANDOFF.md`｜`../Doc/*`。
+**文档地图**：`PROGRESS.md`（进度）｜`任务/`（未完成施工图）｜`证据.md`｜`HANDOFF.md`｜`../Doc/*`（小说线权威规格在 `../Doc/小说系统/`）。~~`归档/`~~ 已于 2026-09-19 删除（`0bdf565`），原文见 `git show 0bdf565^:Plan/归档/`。
 
 ---
 
@@ -42,15 +42,15 @@ cmake --build build -j 8
 
 | 大类 | 状态 | 备注 |
 |------|------|------|
-| P3 节点与图 | ✅ 58/58 | 施工图 `归档/任务/P3-*` |
-| P4 媒体与纹理 | ✅ 27/27 | 归档 |
+| P3 节点与图 | ✅ 58/58 | 施工图原 `归档/任务/P3-*`（**已删除** `0bdf565`） |
+| P4 媒体与纹理 | ✅ 27/27 | 已完成（原归档，**已删除**） |
 | P5 视频分镜 | ✅ 36/36 代码 | **P5.7 离线自检 PASS**；真机出图待 SD 模型 |
 | P6 画布 inpaint | ⬜ 0/17 | **下一步** `任务/P6-画布inpaint.md` |
 | P7 MCP 主线 | ✅ 21/21 | 归档；含 HTTP/SSE 扩展（f7a0cb8） |
 | P8 收尾 | ⬜ 0/13 | `任务/P8-收尾.md` |
 | G 图片库 | ✅ 78/79 线完成 | **AVIF S12c 搁置**；源码已在本树 |
 | 小说 Agent | 🟡 P1–P9 ✅；P10 余 cache 实测 | `docs/compose/plans/novel-agent/PROGRESS.md` |
-| 归档 | ✅ | `Plan/归档/` |
+| 归档 | ~~已删除~~ | `Plan/归档/` 于 2026-09-19 删除（`0bdf565`）；原文 `git show 0bdf565^:Plan/归档/` |
 
 ---
 

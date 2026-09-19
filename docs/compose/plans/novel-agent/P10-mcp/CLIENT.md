@@ -1,6 +1,6 @@
 # P10 · MCP 客户端配置（可复制）
 
-> **P1–P9 计划分册已归档**：`Plan/归档/novel-agent/`；总纲/PROGRESS 历史同目录。
+> **P1–P9 计划分册已删除**（2026-09-19，`Plan/归档/` 31 个文件，提交 `0bdf565`）；原文在 git 历史：`git show 0bdf565^:Plan/归档/novel-agent/<file>`。
 > 依赖：应用内已 `RegisterAllModules`（含 `novel_*`）。  
 > 库：先在 UI 打开小说工程，或配置 `mcpNovelDbPath` / `SHINE_NOVEL_DB`。  
 > 写工具：默认关。设置窗勾选「允许 MCP 写工具」或 `SHINE_MCP_ALLOW_WRITE=1`；写结果仍 `PROPOSED` + `audit_logs`。

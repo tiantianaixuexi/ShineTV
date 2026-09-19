@@ -1,7 +1,8 @@
 # 小说 Agent · 进度表（进行中）
 
-> **唯一勾选入口**（小说线）。历史 P1–P9 全文在 `Plan/归档/novel-agent/PROGRESS.md`。
-> 主工程总进度见 `Plan/PROGRESS.md`。施工图：P10 见 `P10-mcp/PLAN.md`；已完成分册在 `Plan/归档/novel-agent/`。
+> **唯一勾选入口**（小说线）。历史 P1–P9 全文**已随 `Plan/归档/` 删除**（2026-09-19，提交 `0bdf565`）→ 取原文：`git show 0bdf565^:Plan/归档/novel-agent/PROGRESS.md`。
+> 主工程总进度见 `Plan/PROGRESS.md`。施工图：P10 见 `P10-mcp/PLAN.md`；已完成分册同样只在 git 历史（`0bdf565^:Plan/归档/novel-agent/`）。
+> 现行小说生产系统规格：`Doc/小说系统/00-总纲与索引.md`（14 卷）。
 
 图例：`[ ]` 未做 · `[~]` 进行中 · `[x]` 完成 · `[!]` 阻塞
 

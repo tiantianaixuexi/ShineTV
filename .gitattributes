@@ -10,6 +10,7 @@
 # 文档与计划：一律 LF
 Doc/**/*.md                text eol=lf
 Plan/**/*.md               text eol=lf
+docs/**/*.md               text eol=lf
 .mimocode/skills/**/*.md   text eol=lf
 AGENTS.md                  text eol=lf
 
