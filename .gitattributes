@@ -1,0 +1,28 @@
+# ── 行尾策略（根治 core.autocrlf=true 的副作用）────────────────────────────
+# 背景：本机 core.autocrlf=true 且此前没有 .gitattributes，导致
+#   · git checkout / merge 会把 Doc/、Plan/ 下的 .md 写成 CRLF（违反「一律 LF」约定）
+#   · 手动转回 LF 后，git status 仍报 15+ 项假阳性 M（index 缓存的 stat.size 是 CRLF 版本）
+# eol= 属性优先级高于 core.autocrlf：设了之后 index 与工作区都稳定为指定行尾。
+
+# 本文件自身：LF
+.gitattributes             text eol=lf
+
+# 文档与计划：一律 LF
+Doc/**/*.md                text eol=lf
+Plan/**/*.md               text eol=lf
+.mimocode/skills/**/*.md   text eol=lf
+AGENTS.md                  text eol=lf
+
+# 工作记忆：保持 CRLF（既有约定，不要改）
+.codebuddy/memory/**/*.md  text eol=crlf
+
+# 文本源文件统一入库为 LF（工作区行尾仍由 core.autocrlf 决定，不强制）
+*.cpp   text
+*.h     text
+*.hpp   text
+*.txt   text
+*.json  text
+*.py    text
+*.ps1   text
+*.toml  text
+*.yml   text
