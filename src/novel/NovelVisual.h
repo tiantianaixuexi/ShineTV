@@ -50,6 +50,20 @@ struct VisualArtifactRow {
     std::string note;
 };
 
+// 场景视觉（`scene_visuals`，S7）：原先只有 `Assemble` 内部的一条 SELECT，**没有写入口**
+// （写只在自检的裸 SQL 里），等于这张表永远空。语义：**一个场景一行**（重复写覆盖）。
+struct SceneVisualRow {
+    RowId id = 0;
+    RowId scene_id = 0;
+    std::string env_desc;
+    std::string time_of_day;
+    std::string weather;
+    std::string mood;
+    std::string canon_status = "DRAFT";
+
+    [[nodiscard]] bool operator==(const SceneVisualRow&) const = default;
+};
+
 struct VisualStateRow {
     RowId id = 0;
     RowId asset_id = 0;
@@ -126,6 +140,12 @@ public:
     // 按资产列出各层产物（派生链查询）；排序 = layer 派生序，再按 id
     [[nodiscard]] std::expected<std::vector<VisualArtifactRow>, DbError>
     ListArtifacts(RowId assetId) const;
+
+    // —— 场景视觉（S7 写入口）——
+    // 一个场景一行：已有该 scene_id 就更新那一行，没有才插入（否则 `Assemble` 的
+    // "ORDER BY id LIMIT 1" 会永远读到第一次写的旧值）。
+    [[nodiscard]] std::expected<RowId, DbError> UpsertSceneVisual(const SceneVisualRow& row);
+    [[nodiscard]] std::expected<SceneVisualRow, DbError> GetSceneVisual(RowId sceneId) const;
 
     // —— 阶段 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertState(const VisualStateRow& row);

@@ -222,6 +222,76 @@ NovelVisual::ListArtifacts(RowId assetId) const {
     return out;
 }
 
+// —— 场景视觉（S7 写入口：原先只有 `Assemble` 内部的一条 SELECT，表永远空）——
+
+std::expected<RowId, DbError> NovelVisual::UpsertSceneVisual(const SceneVisualRow& row) {
+    if (row.scene_id <= 0) {
+        return std::unexpected(VErr("场景视觉必须指定 scene_id"));
+    }
+    // 「一个场景一行」：已有就更新（否则 Assemble 的 ORDER BY id LIMIT 1 永远读第一版）
+    RowId target = row.id;
+    if (target <= 0) {
+        auto q = db_->Prepare("SELECT id FROM scene_visuals WHERE scene_id=?1 ORDER BY id LIMIT 1");
+        if (!q) return std::unexpected(q.error());
+        (void)q->BindInt(1, row.scene_id);
+        if (auto s = q->Step(); s && *s == db::sqlite::StepResult::Row) {
+            target = q->ColumnInt(0);
+        }
+    }
+    if (target > 0) {
+        auto st = db_->Prepare(
+            "UPDATE scene_visuals SET scene_id=?1,env_desc=?2,time_of_day=?3,weather=?4,mood=?5,"
+            "canon_status=?6 WHERE id=?7");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.scene_id);
+        (void)st->BindText(2, row.env_desc);
+        (void)st->BindText(3, row.time_of_day);
+        (void)st->BindText(4, row.weather);
+        (void)st->BindText(5, row.mood);
+        (void)st->BindText(6, row.canon_status.empty() ? "DRAFT" : row.canon_status);
+        (void)st->BindInt(7, target);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return target;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO scene_visuals(scene_id,env_desc,time_of_day,weather,mood,canon_status)"
+        " VALUES(?1,?2,?3,?4,?5,?6)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.scene_id);
+    (void)st->BindText(2, row.env_desc);
+    (void)st->BindText(3, row.time_of_day);
+    (void)st->BindText(4, row.weather);
+    (void)st->BindText(5, row.mood);
+    (void)st->BindText(6, row.canon_status.empty() ? "DRAFT" : row.canon_status);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<SceneVisualRow, DbError> NovelVisual::GetSceneVisual(RowId sceneId) const {
+    if (sceneId <= 0) {
+        return std::unexpected(VErr("查询场景视觉必须指定 scene_id"));
+    }
+    auto st = db_->Prepare(
+        "SELECT id,scene_id,env_desc,time_of_day,weather,mood,canon_status FROM scene_visuals "
+        "WHERE scene_id=?1 ORDER BY id LIMIT 1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, sceneId);
+    if (auto s = st->Step(); !s) {
+        return std::unexpected(s.error());
+    } else if (*s != db::sqlite::StepResult::Row) {
+        return std::unexpected(VErr(fmt::format("场景 #{} 还没有视觉描述", sceneId)));
+    }
+    SceneVisualRow r;
+    r.id = st->ColumnInt(0);
+    r.scene_id = st->ColumnInt(1);
+    r.env_desc = st->ColumnText(2);
+    r.time_of_day = st->ColumnText(3);
+    r.weather = st->ColumnText(4);
+    r.mood = st->ColumnText(5);
+    r.canon_status = st->ColumnText(6);
+    return r;
+}
+
 std::expected<RowId, DbError> NovelVisual::UpsertState(const VisualStateRow& row) {
     if (row.asset_id <= 0) return std::unexpected(VErr("state 缺 asset_id"));
     auto st = db_->Prepare(
@@ -509,21 +579,14 @@ NovelVisual::Assemble(const AssemblePromptInput& in) const {
         }
     }
 
-    // Scene
+    // Scene（S7：读口径收口到 GetSceneVisual，避免第二份 SELECT）
     if (in.scene_id > 0) {
-        auto st = db_->Prepare(
-            "SELECT env_desc,time_of_day,weather,mood FROM scene_visuals WHERE scene_id=?1 "
-            "ORDER BY id LIMIT 1");
-        if (st) {
-            (void)st->BindInt(1, in.scene_id);
-            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
-                std::string env = st->ColumnText(0);
-                const auto tod = st->ColumnText(1);
-                const auto weather = st->ColumnText(2);
-                const auto mood = st->ColumnText(3);
-                if (!tod.empty()) env += (env.empty() ? "" : ", ") + tod;
-                if (!weather.empty()) env += (env.empty() ? "" : ", ") + weather;
-                if (!mood.empty()) env += (env.empty() ? "" : ", ") + mood;
+        if (auto sv = GetSceneVisual(in.scene_id); sv) {
+            std::string env = sv->env_desc;
+            if (!sv->time_of_day.empty()) env += (env.empty() ? "" : ", ") + sv->time_of_day;
+            if (!sv->weather.empty()) env += (env.empty() ? "" : ", ") + sv->weather;
+            if (!sv->mood.empty()) env += (env.empty() ? "" : ", ") + sv->mood;
+            if (!env.empty()) {
                 scene = scene.empty() ? env : scene + ", " + env;
             }
         }
@@ -759,11 +822,34 @@ CREATE TABLE IF NOT EXISTS visual_canon_logs(id INTEGER PRIMARY KEY AUTOINCREMEN
     auto lit = v.UpsertLighting("黄昏", "golden hour lighting");
     auto comp = v.UpsertComposition("三分", "rule of thirds");
     (void)v.UpsertStyle("default", "digital painting, fantasy novel cover");
-    auto scene = 10;
-    (void)mem.Exec(fmt::format(
-        "INSERT INTO scene_visuals(scene_id,env_desc,time_of_day,weather,mood) VALUES({},"
-        "'dark forest','dusk','fog','tense')",
-        scene));
+    const RowId scene = 10;
+    // S7：scene_visuals 有了写入口（原先这里只能借裸 SQL）+ 「一个场景一行」覆盖语义
+    auto sv1 = v.UpsertSceneVisual({.scene_id = scene,
+                                    .env_desc = "dark forest",
+                                    .time_of_day = "dusk",
+                                    .weather = "fog",
+                                    .mood = "tense"});
+    if (!sv1) {
+        log::Error("Visual 自检：UpsertSceneVisual 失败 {}", sv1.error().message);
+        return false;
+    }
+    auto svRead = v.GetSceneVisual(scene);
+    if (!svRead || svRead->env_desc != "dark forest" || svRead->weather != "fog" ||
+        svRead->canon_status != "DRAFT") {
+        log::Error("Visual 自检：GetSceneVisual 写后读失败");
+        return false;
+    }
+    auto sv2 = v.UpsertSceneVisual({
+        .scene_id = scene, .env_desc = "dark forest", .time_of_day = "dusk", .weather = "fog", .mood = "quieter"});
+    auto svRead2 = v.GetSceneVisual(scene);
+    if (!sv2 || *sv2 != *sv1 || !svRead2 || svRead2->mood != "quieter") {
+        log::Error("Visual 自检：scene_visuals 未按「一场景一行」覆盖");
+        return false;
+    }
+    if (v.GetSceneVisual(9999) || v.UpsertSceneVisual({.env_desc = "x"})) {
+        log::Error("Visual 自检：未知场景 / 缺 scene_id 应被拒");
+        return false;
+    }
     auto shot = v.UpsertShot({.scene_id = scene,
                               .ord = 1,
                               .camera_id = cam.value_or(0),
@@ -814,7 +900,7 @@ CREATE TABLE IF NOT EXISTS visual_canon_logs(id INTEGER PRIMARY KEY AUTOINCREMEN
         return false;
     }
     (void)v.SetVisualCanon("asset", *asset, "CANON");
-    log::Info("Visual 自检通过（阶段机 / 九层组装 / Lighting 敏感 / canon）");
+    log::Info("Visual 自检通过（阶段机 / 九层组装 / Lighting 敏感 / canon / scene_visuals 写入口）");
     return true;
 }
 
