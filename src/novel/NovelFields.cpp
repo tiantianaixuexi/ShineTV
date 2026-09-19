@@ -7,6 +7,8 @@
 
 #include <yyjson.h>
 
+#include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +28,7 @@ CREATE TABLE IF NOT EXISTS field_defs(
   description TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL DEFAULT '',
   is_system INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'PROPOSED',
   updated INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_field_defs_key ON field_defs(scope, entity_kind, field_key);
 
@@ -45,6 +48,13 @@ CREATE INDEX IF NOT EXISTS idx_ef_entity ON entity_fields(entity_id);
 CREATE INDEX IF NOT EXISTS idx_ef_key ON entity_fields(field_key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ef_uniq
   ON entity_fields(entity_id, field_key, chapter_scope, layer);
+
+-- v8（S2b）别名表：与 NovelDb.cpp 的 kSchemaV8FieldGate 保持**同一定义**
+--（自检要在内存库里单独建表；两边都是 IF NOT EXISTS，冲突无风险）
+CREATE TABLE IF NOT EXISTS field_aliases(
+  alias TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '');
 )SQL";
 
 [[nodiscard]] std::string Esc(std::string_view s) {
@@ -73,6 +83,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ef_uniq
     r.created_by = st.ColumnText(8);
     r.is_system = st.ColumnInt(9);
     r.updated = st.ColumnInt(10);
+    r.status = st.ColumnText(11); // v8（S2b）
     return r;
 }
 
@@ -92,35 +103,319 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ef_uniq
     return r;
 }
 
+// —— S2b 字段门禁（规格 `08` §2.2 / §2.5）——
+
+// JSON 字符串字面量（含引号）。`08` §2.5：手拼 JSON 不转义是确定性 bug ——
+// value_text / note 含 `"` 或换行会产出非法 JSON，直接喂给 Agent。
+[[nodiscard]] std::string JsonQuote(std::string_view s) {
+    yyjson_mut_doc* d = yyjson_mut_doc_new(nullptr);
+    if (d == nullptr) {
+        return "\"\"";
+    }
+    yyjson_mut_val* v = yyjson_mut_strncpy(d, s.data(), s.size());
+    if (v == nullptr) {
+        yyjson_mut_doc_free(d);
+        log::Warn("Fields：value 含非法 UTF-8，序列化退化为空串（len={}）", s.size());
+        return "\"\"";
+    }
+    yyjson_mut_doc_set_root(d, v); // 必须先挂 root，否则 write 失败（见 `mcp/Schema.cpp` 同款坑）
+    char* out = yyjson_mut_write(d, 0, nullptr);
+    std::string r = out != nullptr ? std::string{out} : std::string{"\"\""};
+    if (out != nullptr) {
+        std::free(out);
+    }
+    yyjson_mut_doc_free(d);
+    return r;
+}
+
+// value_json 原样嵌入，但必须先能解析；非法则退化为 null（不产出非法 JSON）
+[[nodiscard]] std::string JsonRawOrNull(std::string_view s) {
+    if (s.empty()) {
+        return "null";
+    }
+    yyjson_doc* d = yyjson_read(s.data(), s.size(), 0);
+    if (d == nullptr) {
+        return "null";
+    }
+    yyjson_doc_free(d);
+    return std::string{s};
+}
+
+// 取定义（`08` §2.2 ②）：按 field_key 查，`entity_kind` 允许 ''=不限，优先 scope 精确匹配。
+// 返回 id==0 表示「未登记」；只有 SQL 失败才返回 error。
+[[nodiscard]] std::expected<FieldDefRow, DbError> FindDef(db::sqlite::Database& db, RowId entityId,
+                                                          std::string_view key,
+                                                          std::string_view scopeHint) {
+    std::string kind;
+    if (entityId > 0) {
+        if (auto st = db.Prepare("SELECT kind FROM entities WHERE id=?1")) {
+            (void)st->BindInt(1, entityId);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                kind = st->ColumnText(0);
+            }
+        }
+    }
+    auto st = db.Prepare(
+        "SELECT id,scope,entity_kind,field_key,title,value_type,enum_json,description,created_by,"
+        "is_system,updated,status FROM field_defs "
+        "WHERE field_key=?1 AND (entity_kind='' OR entity_kind=?2) "
+        "ORDER BY (scope=?3) DESC, is_system DESC, id LIMIT 1");
+    if (!st) {
+        return std::unexpected(st.error());
+    }
+    (void)st->BindText(1, key);
+    (void)st->BindText(2, kind);
+    (void)st->BindText(3, scopeHint);
+    auto s = st->Step();
+    if (!s) {
+        return std::unexpected(s.error());
+    }
+    if (*s == db::sqlite::StepResult::Row) {
+        return ReadFieldDef(*st);
+    }
+    return FieldDefRow{}; // id==0 → 未登记
+}
+
+// 按 value_type 校值（`08` §2.2 ③）。任一步失败 → 拒绝，错误信息含字段名与期望类型。
+[[nodiscard]] std::expected<void, DbError> ValidateFieldValue(const FieldDefRow& def,
+                                                              const EntityFieldRow& row) {
+    const std::string& vt = def.value_type;
+    if (vt == "text") {
+        if (row.value_text.size() > 4096) {
+            return std::unexpected(DbError{0, fmt::format(
+                "validate：字段 '{}'（text）长度 {} 超过 4096", def.field_key,
+                row.value_text.size())});
+        }
+        for (char c : row.value_text) {
+            const auto u = static_cast<unsigned char>(c);
+            if (u < 0x20 && c != '\n' && c != '\t') {
+                return std::unexpected(DbError{0, fmt::format(
+                    "validate：字段 '{}'（text）含控制字符 0x{:02X}", def.field_key,
+                    static_cast<int>(u))});
+            }
+        }
+        return {};
+    }
+    if (vt == "number") {
+        const std::string& s = row.value_text;
+        double out = 0.0;
+        const auto* b = s.data();
+        const auto* e = s.data() + s.size();
+        const auto [p, ec] = std::from_chars(b, e, out);
+        if (s.empty() || ec != std::errc{} || p != e) {
+            return std::unexpected(DbError{0, fmt::format(
+                "validate：字段 '{}'（number）'{}' 不是合法数字", def.field_key, s)});
+        }
+        return {};
+    }
+    if (vt == "json") {
+        const std::string vj = row.value_json.empty() ? "null" : row.value_json;
+        yyjson_doc* d = yyjson_read(vj.c_str(), vj.size(), 0);
+        if (d == nullptr) {
+            return std::unexpected(DbError{0, fmt::format(
+                "validate：字段 '{}'（json）不是合法 JSON", def.field_key)});
+        }
+        yyjson_val* root = yyjson_doc_get_root(d);
+        const bool shaped = yyjson_is_obj(root) || yyjson_is_arr(root);
+        yyjson_doc_free(d);
+        if (!shaped) {
+            return std::unexpected(DbError{0, fmt::format(
+                "validate：字段 '{}'（json）必须是对象或数组（不允许裸标量）", def.field_key)});
+        }
+        return {};
+    }
+    if (vt == "enum") {
+        yyjson_doc* d = yyjson_read(def.enum_json.c_str(), def.enum_json.size(), 0);
+        if (d == nullptr) {
+            return std::unexpected(DbError{0, fmt::format(
+                "contract：字段 '{}' 的 enum_json 不是合法 JSON", def.field_key)});
+        }
+        bool hit = false;
+        yyjson_val* root = yyjson_doc_get_root(d);
+        if (yyjson_is_arr(root)) {
+            const size_t n = yyjson_arr_size(root);
+            for (size_t i = 0; i < n; ++i) {
+                yyjson_val* v = yyjson_arr_get(root, i);
+                if (v != nullptr && yyjson_is_str(v) && row.value_text == yyjson_get_str(v)) {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        yyjson_doc_free(d);
+        if (!hit) {
+            return std::unexpected(DbError{0, fmt::format(
+                "validate：字段 '{}'（enum）值 '{}' 不在 enum_json 内", def.field_key,
+                row.value_text)});
+        }
+        return {};
+    }
+    return std::unexpected(DbError{0, fmt::format(
+        "contract：字段 '{}' 的 value_type '{}' 未知（应为 {}）", def.field_key, vt,
+        NovelFields::kValueTypeEnum)});
+}
+
 } // namespace
 
+// —— S2b：键归一化 / 枚举校验（`08` §2.2 ①、§2.6）——
+
+std::string NovelFields::NormalizeKey(std::string_view raw) {
+    std::string folded;
+    folded.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (std::isspace(c) != 0 || c == '-') {
+            folded.push_back('_');
+        } else {
+            folded.push_back(static_cast<char>(std::tolower(c)));
+        }
+    }
+    std::string out;
+    out.reserve(folded.size());
+    for (char c : folded) {
+        if (c == '_' && (out.empty() || out.back() == '_')) {
+            continue; // 折叠连续下划线 + 去掉前导下划线
+        }
+        out.push_back(c);
+    }
+    while (!out.empty() && out.back() == '_') {
+        out.pop_back();
+    }
+    return out;
+}
+
+bool NovelFields::IsValidKey(std::string_view key) {
+    if (key.size() < 2 || key.size() > 40) {
+        return false;
+    }
+    if (key[0] < 'a' || key[0] > 'z') {
+        return false;
+    }
+    for (char c : key) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool NovelFields::IsValidLayer(std::string_view layer) {
+    return layer == "global" || layer == "public" || layer == "mask" || layer == "true" ||
+           layer == "private";
+}
+
+// —— S2b：别名表（`08` §2.4）——
+
+std::expected<void, DbError> NovelFields::UpsertFieldAlias(std::string_view alias,
+                                                           std::string_view canonicalKey,
+                                                           std::string_view note) {
+    const std::string a = NormalizeKey(alias);
+    const std::string c = NormalizeKey(canonicalKey);
+    if (!IsValidKey(a) || !IsValidKey(c)) {
+        return std::unexpected(
+            DbError{0, "contract：别名与规范键都必须满足 ^[a-z][a-z0-9_]{1,39}$"});
+    }
+    if (a == c) {
+        return std::unexpected(DbError{0, "contract：别名与规范键相同，无需登记"});
+    }
+    (void)db_->Exec(fmt::format("DELETE FROM field_aliases WHERE alias='{}'", Esc(a)));
+    auto st = db_->Prepare("INSERT INTO field_aliases(alias,canonical_key,note) VALUES(?1,?2,?3)");
+    if (!st) {
+        return std::unexpected(st.error());
+    }
+    (void)st->BindText(1, a);
+    (void)st->BindText(2, c);
+    (void)st->BindText(3, note);
+    if (auto s = st->Step(); !s || *s != db::sqlite::StepResult::Done) {
+        return std::unexpected(DbError{0, "insert field_aliases 失败"});
+    }
+    return {};
+}
+
+std::expected<std::string, DbError> NovelFields::ResolveAlias(std::string_view key) const {
+    std::string out{key};
+    auto st = db_->Prepare("SELECT canonical_key FROM field_aliases WHERE alias=?1");
+    if (!st) {
+        return out; // 表缺失等 → 视为无别名，不阻断写入
+    }
+    (void)st->BindText(1, key);
+    if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+        const std::string c = st->ColumnText(0);
+        if (!c.empty()) {
+            out = c;
+        }
+    }
+    return out;
+}
+
+std::expected<std::vector<std::pair<std::string, std::string>>, DbError>
+NovelFields::ListFieldAliases() const {
+    auto st = db_->Prepare("SELECT alias,canonical_key FROM field_aliases ORDER BY alias");
+    if (!st) {
+        return std::unexpected(st.error());
+    }
+    std::vector<std::pair<std::string, std::string>> out;
+    while (auto s = st->Step()) {
+        if (*s != db::sqlite::StepResult::Row) break;
+        out.emplace_back(st->ColumnText(0), st->ColumnText(1));
+    }
+    return out;
+}
+
 std::expected<RowId, DbError> NovelFields::UpsertFieldDef(const FieldDefRow& row) {
-    if (row.field_key.empty()) {
-        return std::unexpected(DbError{0, "field_key 不能为空"});
+    const std::string key = NormalizeKey(row.field_key);
+    if (!IsValidKey(key)) {
+        return std::unexpected(DbError{0, fmt::format(
+            "contract：field_key '{}' 归一后为 '{}'，不满足 ^[a-z][a-z0-9_]{{1,39}}$",
+            row.field_key, key)});
+    }
+    const std::string vt = row.value_type.empty() ? "text" : row.value_type;
+    if (vt != "text" && vt != "number" && vt != "json" && vt != "enum") {
+        return std::unexpected(DbError{0, fmt::format(
+            "contract：value_type '{}' 不在枚举内（{}）", vt, kValueTypeEnum)});
+    }
+    const std::string scope = row.scope.empty() ? "entity" : row.scope;
+    // `08` §2.3：AI/Agent 的提案一律 PROPOSED；is_system=1 的种子写 CANON；人工可显式传。
+    int isSystem = row.is_system;
+    std::string status = row.status.empty() ? (isSystem != 0 ? "CANON" : "PROPOSED") : row.status;
+    // 系统种子不可被后写降级（AI 重复 Upsert 同键不许把它从 CANON 打成 PROPOSED）
+    if (auto ex = db_->Prepare("SELECT is_system FROM field_defs WHERE scope=?1 AND "
+                               "entity_kind=?2 AND field_key=?3")) {
+        (void)ex->BindText(1, scope);
+        (void)ex->BindText(2, row.entity_kind);
+        (void)ex->BindText(3, key);
+        if (auto s = ex->Step(); s && *s == db::sqlite::StepResult::Row && ex->ColumnInt(0) != 0) {
+            isSystem = 1;
+            status = "CANON";
+        }
+    }
+    if (status != "PROPOSED" && status != "CANON") {
+        return std::unexpected(DbError{0, fmt::format(
+            "contract：status '{}' 只能是 PROPOSED / CANON", status)});
     }
     const auto now = util::NowMillis() / 1000;
-    const std::string scope = row.scope.empty() ? "entity" : row.scope;
     // 先删同键再插，保证唯一
     (void)db_->Exec(fmt::format(
         "DELETE FROM field_defs WHERE scope='{}' AND entity_kind='{}' AND field_key='{}'",
-        Esc(scope), Esc(row.entity_kind), Esc(row.field_key)));
+        Esc(scope), Esc(row.entity_kind), Esc(key)));
     auto st = db_->Prepare(
         "INSERT INTO field_defs(scope,entity_kind,field_key,title,value_type,enum_json,"
-        "description,created_by,is_system,updated) "
-        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)");
+        "description,created_by,is_system,updated,status) "
+        "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)");
     if (!st) {
         return std::unexpected(st.error());
     }
     (void)st->BindText(1, scope);
     (void)st->BindText(2, row.entity_kind);
-    (void)st->BindText(3, row.field_key);
+    (void)st->BindText(3, key);
     (void)st->BindText(4, row.title);
-    (void)st->BindText(5, row.value_type.empty() ? "text" : row.value_type);
+    (void)st->BindText(5, vt);
     (void)st->BindText(6, row.enum_json.empty() ? "[]" : row.enum_json);
     (void)st->BindText(7, row.description);
     (void)st->BindText(8, row.created_by);
-    (void)st->BindInt(9, row.is_system);
+    (void)st->BindInt(9, isSystem);
     (void)st->BindInt(10, static_cast<std::int64_t>(now));
+    (void)st->BindText(11, status);
     if (auto s = st->Step(); !s || *s != db::sqlite::StepResult::Done) {
         return std::unexpected(DbError{0, "insert field_defs 失败"});
     }
@@ -130,7 +425,7 @@ std::expected<RowId, DbError> NovelFields::UpsertFieldDef(const FieldDefRow& row
 std::expected<FieldDefRow, DbError> NovelFields::GetFieldDef(RowId id) const {
     auto st = db_->Prepare(
         "SELECT id,scope,entity_kind,field_key,title,value_type,enum_json,description,"
-        "created_by,is_system,updated FROM field_defs WHERE id=?1");
+        "created_by,is_system,updated,status FROM field_defs WHERE id=?1");
     if (!st) {
         return std::unexpected(st.error());
     }
@@ -145,7 +440,7 @@ std::expected<std::vector<FieldDefRow>, DbError>
 NovelFields::ListFieldDefs(std::string_view scope, std::string_view entityKind) const {
     std::string sql =
         "SELECT id,scope,entity_kind,field_key,title,value_type,enum_json,description,"
-        "created_by,is_system,updated FROM field_defs WHERE 1=1";
+        "created_by,is_system,updated,status FROM field_defs WHERE 1=1";
     if (!scope.empty()) {
         sql += fmt::format(" AND scope='{}'", Esc(scope));
     }
@@ -180,16 +475,56 @@ std::expected<void, DbError> NovelFields::DeleteFieldDef(RowId id, bool force) {
 }
 
 std::expected<RowId, DbError> NovelFields::UpsertEntityField(const EntityFieldRow& row) {
-    if (row.field_key.empty()) {
-        return std::unexpected(DbError{0, "field_key 不能为空"});
+    // ① 归一化：trim → lower → 空白/连字符 → 下划线；再查别名表（`08` §2.2 ① / §2.4）
+    std::string key = NormalizeKey(row.field_key);
+    if (auto alias = ResolveAlias(key); alias) {
+        key = *alias;
+    }
+    if (!IsValidKey(key)) {
+        return std::unexpected(DbError{0, fmt::format(
+            "contract：field_key '{}' 归一后为 '{}'，不满足 ^[a-z][a-z0-9_]{{1,39}}$",
+            row.field_key, key)});
+    }
+    // ①b layer 枚举化（`08` §2.6）
+    const std::string layer = row.layer.empty() ? "global" : row.layer;
+    if (!IsValidLayer(layer)) {
+        return std::unexpected(DbError{0, fmt::format("contract：layer '{}' 不在枚举内（{}）", layer,
+                                                      kLayerEnum)});
+    }
+    // ② 查定义（`08` §2.2 ②）：未登记 → 拒绝，并把提案落 PROPOSED（§2.3）
+    const std::string scopeHint = row.entity_id > 0 ? "entity" : "world";
+    auto found = FindDef(*db_, row.entity_id, key, scopeHint);
+    if (!found) {
+        return std::unexpected(found.error());
+    }
+    if (found->id == 0) {
+        FieldDefRow proposal; // is_system=0 → status=PROPOSED
+        proposal.scope = scopeHint;
+        proposal.field_key = key;
+        proposal.title = key;
+        proposal.value_type = "text";
+        proposal.description = "字段门禁自动登记的未登记键提案（待人工 / `09` §2.5 检查点复核）";
+        proposal.created_by = row.created_by;
+        (void)UpsertFieldDef(proposal); // 失败不掩盖主错误
+        return std::unexpected(DbError{0, fmt::format(
+            "field_unregistered：'{}' 未在 field_defs 登记；已落 PROPOSED 提案，"
+            "复核（或再写一次）后即可写入（`08` §2.2）", key)});
+    }
+    const FieldDefRow def = *found;
+    std::string note = row.note;
+    if (def.status == "PROPOSED" && note.find("unapproved_field") == std::string::npos) {
+        note = note.empty() ? "unapproved_field" : note + ";unapproved_field";
+    }
+    // ③ 校值（`08` §2.2 ③）：拒绝即失败，不改默认、不静默纠正
+    if (auto v = ValidateFieldValue(def, row); !v) {
+        return std::unexpected(v.error());
     }
     const auto now = util::NowMillis() / 1000;
-    const std::string layer = row.layer.empty() ? "global" : row.layer;
     const std::string vj = row.value_json.empty() ? "null" : row.value_json;
     (void)db_->Exec(fmt::format(
         "DELETE FROM entity_fields WHERE entity_id={} AND field_key='{}' AND chapter_scope={} "
         "AND layer='{}'",
-        row.entity_id, Esc(row.field_key), row.chapter_scope, Esc(layer)));
+        row.entity_id, Esc(key), row.chapter_scope, Esc(layer)));
     auto st = db_->Prepare(
         "INSERT INTO entity_fields(entity_id,field_key,value_text,value_json,chapter_scope,"
         "chapter_to,layer,note,created_by,updated) "
@@ -198,13 +533,13 @@ std::expected<RowId, DbError> NovelFields::UpsertEntityField(const EntityFieldRo
         return std::unexpected(st.error());
     }
     (void)st->BindInt(1, row.entity_id);
-    (void)st->BindText(2, row.field_key);
+    (void)st->BindText(2, key);
     (void)st->BindText(3, row.value_text);
     (void)st->BindText(4, vj);
     (void)st->BindInt(5, row.chapter_scope);
     (void)st->BindInt(6, row.chapter_to);
     (void)st->BindText(7, layer);
-    (void)st->BindText(8, row.note);
+    (void)st->BindText(8, note);
     (void)st->BindText(9, row.created_by);
     (void)st->BindInt(10, static_cast<std::int64_t>(now));
     if (auto s = st->Step(); !s || *s != db::sqlite::StepResult::Done) {
@@ -285,11 +620,16 @@ std::expected<std::string, DbError> NovelFields::EntityFieldsJson(RowId entityId
     std::string arr = "[";
     bool first = true;
     for (const auto& f : *list) {
-        if (!first) arr += ",";
+        if (!first) {
+            arr += ",";
+        }
         first = false;
+        // `08` §2.5：逐个转义 —— 输出必须是**合法 JSON**。原来手拼且不转义，
+        // value_text / note 含 `"` 或换行即产出非法串，再直接喂给 Agent（静默吞数据）。
         arr += fmt::format(
-            R"({{"key":"{}","value":"{}","value_json":{},"layer":"{}","chapter_scope":{},"note":"{}"}})",
-            f.field_key, f.value_text, f.value_json, f.layer, f.chapter_scope, f.note);
+            R"({{"key":{},"value":{},"value_json":{},"layer":{},"chapter_scope":{},"note":{}}})",
+            JsonQuote(f.field_key), JsonQuote(f.value_text), JsonRawOrNull(f.value_json),
+            JsonQuote(f.layer), f.chapter_scope, JsonQuote(f.note));
     }
     arr += "]";
     return arr;
@@ -470,7 +810,194 @@ CREATE TABLE IF NOT EXISTS entities(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TE
         return false;
     }
 
-    log::Info("NovelFields 自检通过（字段定义/身份层/分章宇宙/自定义扩展）");
+    // —— S2b 字段门禁（`08` §2.2 三步 / §2.4 别名 / §2.6 layer 枚举 / §2.5 JSON 转义）——
+    {
+        // ① 归一化：'  Public MASK  ' → public_mask（trim / lower / 空白→下划线 / 折叠）
+        EntityFieldRow mixed;
+        mixed.entity_id = pid;
+        mixed.field_key = "  Public MASK  ";
+        mixed.value_text = "归一化写入";
+        mixed.layer = "mask";
+        if (!fields.UpsertEntityField(mixed)) {
+            log::Error("Fields 自检：归一化写入失败");
+            return false;
+        }
+        auto norm = fields.GetEntityFieldByKey(pid, "public_mask", 0, "mask");
+        if (!norm || norm->value_text != "归一化写入") {
+            log::Error("Fields 自检：' Public MASK ' 未归一为 public_mask");
+            return false;
+        }
+        // ① 别名：blood_seal → bloodline_seal（读与写都过别名表）
+        if (auto a = fields.UpsertFieldAlias("blood_seal", "bloodline_seal", "自检别名"); !a) {
+            log::Error("Fields 自检：写别名失败 {}", a.error().message);
+            return false;
+        }
+        EntityFieldRow aliased;
+        aliased.entity_id = pid;
+        aliased.field_key = "blood_seal";
+        aliased.value_text = "第五层";
+        aliased.layer = "true";
+        if (!fields.UpsertEntityField(aliased)) {
+            log::Error("Fields 自检：别名写入失败");
+            return false;
+        }
+        auto viaAlias = fields.GetEntityFieldByKey(pid, "bloodline_seal", 0, "true");
+        if (!viaAlias || viaAlias->value_text != "第五层") {
+            log::Error("Fields 自检：别名未归一为 bloodline_seal");
+            return false;
+        }
+        // bloodline_seal 是 is_system=0 → status=PROPOSED：可写，但必须带 unapproved_field
+        if (viaAlias->note.find("unapproved_field") == std::string::npos) {
+            log::Error("Fields 自检：PROPOSED 字段 note 应含 unapproved_field，got '{}'",
+                       viaAlias->note);
+            return false;
+        }
+        // ② 未登记 → 拒绝 + 提案落 PROPOSED
+        EntityFieldRow unreg;
+        unreg.entity_id = pid;
+        unreg.field_key = "never_registered_key";
+        unreg.value_text = "x";
+        unreg.layer = "global";
+        unreg.created_by = "check";
+        auto rej = fields.UpsertEntityField(unreg);
+        if (rej) {
+            log::Error("Fields 自检：未登记键竟然写入成功");
+            return false;
+        }
+        if (rej.error().message.find("field_unregistered") == std::string::npos) {
+            log::Error("Fields 自检：未登记键错误应含 field_unregistered，got {}",
+                       rej.error().message);
+            return false;
+        }
+        auto defs2 = fields.ListFieldDefs("entity");
+        if (!defs2) {
+            return false;
+        }
+        bool sawProposal = false;
+        for (const auto& d : *defs2) {
+            if (d.field_key == "never_registered_key" && d.status == "PROPOSED" &&
+                d.is_system == 0) {
+                sawProposal = true;
+            }
+            if (d.is_system == 1 && d.status != "CANON") {
+                log::Error("Fields 自检：系统种子 '{}' 的 status 应为 CANON，got '{}'", d.field_key,
+                           d.status);
+                return false;
+            }
+        }
+        if (!sawProposal) {
+            log::Error("Fields 自检：未登记键的提案未落 PROPOSED");
+            return false;
+        }
+        // ③ 校值：text 超长 / layer 非枚举
+        EntityFieldRow tooLong;
+        tooLong.entity_id = pid;
+        tooLong.field_key = "public_mask";
+        tooLong.value_text = std::string(4097, 'a');
+        tooLong.layer = "mask";
+        if (fields.UpsertEntityField(tooLong)) {
+            log::Error("Fields 自检：text 超长（4097）未被拒");
+            return false;
+        }
+        EntityFieldRow badLayer;
+        badLayer.entity_id = pid;
+        badLayer.field_key = "public_mask";
+        badLayer.value_text = "ok";
+        badLayer.layer = "custom";
+        if (fields.UpsertEntityField(badLayer)) {
+            log::Error("Fields 自检：layer 非枚举值 'custom' 未被拒");
+            return false;
+        }
+        // ③ 校值：number
+        FieldDefRow numDef;
+        numDef.scope = "entity";
+        numDef.entity_kind = "person";
+        numDef.field_key = "power_rank";
+        numDef.value_type = "number";
+        numDef.created_by = "check";
+        numDef.status = "CANON";
+        if (!fields.UpsertFieldDef(numDef)) {
+            log::Error("Fields 自检：登记 number 字段失败");
+            return false;
+        }
+        EntityFieldRow num;
+        num.entity_id = pid;
+        num.field_key = "power_rank";
+        num.value_text = "第七层";
+        num.layer = "global";
+        if (fields.UpsertEntityField(num)) {
+            log::Error("Fields 自检：number 非数字未被拒");
+            return false;
+        }
+        num.value_text = "7.5";
+        if (!fields.UpsertEntityField(num)) {
+            log::Error("Fields 自检：number 合法值 '7.5' 被拒");
+            return false;
+        }
+        // ③ 校值：json（种子 power_profile）裸标量被拒、数组通过
+        EntityFieldRow rawJson;
+        rawJson.entity_id = pid;
+        rawJson.field_key = "power_profile";
+        rawJson.value_json = "123";
+        rawJson.layer = "global";
+        if (fields.UpsertEntityField(rawJson)) {
+            log::Error("Fields 自检：json 裸标量未被拒");
+            return false;
+        }
+        rawJson.value_json = "[{\"k\":1}]";
+        if (!fields.UpsertEntityField(rawJson)) {
+            log::Error("Fields 自检：json 数组被拒");
+            return false;
+        }
+        // ③ 校值：enum
+        FieldDefRow enumDef;
+        enumDef.scope = "entity";
+        enumDef.entity_kind = "person";
+        enumDef.field_key = "mood_tag";
+        enumDef.value_type = "enum";
+        enumDef.enum_json = "[\"calm\",\"angry\"]";
+        enumDef.created_by = "check";
+        enumDef.status = "CANON";
+        if (!fields.UpsertFieldDef(enumDef)) {
+            log::Error("Fields 自检：登记 enum 字段失败");
+            return false;
+        }
+        EntityFieldRow mood;
+        mood.entity_id = pid;
+        mood.field_key = "mood_tag";
+        mood.value_text = "weird";
+        mood.layer = "global";
+        if (fields.UpsertEntityField(mood)) {
+            log::Error("Fields 自检：enum 未命中未被拒");
+            return false;
+        }
+        mood.value_text = "calm";
+        if (!fields.UpsertEntityField(mood)) {
+            log::Error("Fields 自检：enum 命中值 'calm' 被拒");
+            return false;
+        }
+        // ④ `08` §2.5：含引号与换行的 value_text 必须产出**合法 JSON**
+        EntityFieldRow tricky;
+        tricky.entity_id = pid;
+        tricky.field_key = "public_mask";
+        tricky.value_text = "他说\"你好\"\n第二行";
+        tricky.layer = "mask";
+        if (!fields.UpsertEntityField(tricky)) {
+            log::Error("Fields 自检：含引号/换行的 text 写入失败");
+            return false;
+        }
+        const auto trickyJson = fields.EntityFieldsJson(pid, 0);
+        yyjson_doc* jd =
+            trickyJson ? yyjson_read(trickyJson->c_str(), trickyJson->size(), 0) : nullptr;
+        if (jd == nullptr) {
+            log::Error("Fields 自检：EntityFieldsJson 不是合法 JSON（`08` §2.5 未修）");
+            return false;
+        }
+        yyjson_doc_free(jd);
+    }
+
+    log::Info("NovelFields 自检通过（字段定义/身份层/分章宇宙/自定义扩展 + 门禁：归一化/别名/"
+              "未登记拒绝/按类型校值/layer 枚举/JSON 转义）");
     if (const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT"); path && *path) {
         if (FILE* f = std::fopen(path, "ab")) {
             const char* line = "fields:ok\n";

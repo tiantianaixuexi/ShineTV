@@ -4,6 +4,7 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "novel/NovelDb.h"
@@ -11,22 +12,24 @@
 
 namespace shine::novelcore {
 
-// 字段定义（可被 FieldAgent / AgentMetaAgent 扩展）
+// 字段定义（可被 FieldAgent / AgentMetaAgent 扩展）——「契约」，必须登记、有类型、可枚举
 struct FieldDefRow {
     RowId id = 0;
     std::string scope;      // entity|world|chapter|agent|custom
     std::string entity_kind; // 仅 scope=entity 时约束，空=不限
-    std::string field_key;  // 稳定键，如 multiverse_layer / true_identity
+    std::string field_key;  // 稳定键，如 multiverse_layer / true_identity（归一后 ^[a-z][a-z0-9_]{1,39}$）
     std::string title;      // 展示名
     std::string value_type; // text|number|json|enum
     std::string enum_json;  // value_type=enum 时的可选值 ["a","b"]
     std::string description;
     std::string created_by; // agent id
     int is_system = 0;      // 1=系统最小集，Agent 可读不可删
+    // v8（S2b）：PROPOSED|CANON。空 = 由 UpsertFieldDef 决定（系统种子→CANON，AI 提案→PROPOSED）。
+    std::string status;
     std::int64_t updated = 0;
 };
 
-// 挂在实体上的字段值（支持分章 / 分身份层）
+// 挂在实体上的字段值（支持分章 / 分身份层）——「值」，AI 可自由填写，但必须在已登记键上
 struct EntityFieldRow {
     RowId id = 0;
     RowId entity_id = 0;
@@ -35,7 +38,7 @@ struct EntityFieldRow {
     std::string value_json = "null";
     RowId chapter_scope = 0; // 0=全局；>0=该章起可见
     RowId chapter_to = 0;    // 0=至今
-    std::string layer;        // global|public|mask|true|private|custom…
+    std::string layer;       // 枚举：global|public|mask|true|private（`08` §2.6，写入门禁校验）
     std::string note;
     std::string created_by;
     std::int64_t updated = 0;
@@ -51,6 +54,24 @@ public:
     [[nodiscard]] std::expected<std::vector<FieldDefRow>, DbError>
     ListFieldDefs(std::string_view scope = {}, std::string_view entityKind = {}) const;
     [[nodiscard]] std::expected<void, DbError> DeleteFieldDef(RowId id, bool force = false);
+
+    // —— S2b 字段门禁（规格 `Doc/小说系统/08` §2.2 / §2.4 / §2.6）——
+    // 键归一化：trim → lower → 空白/连字符转下划线 → 折叠连续下划线 → 去首尾下划线
+    [[nodiscard]] static std::string NormalizeKey(std::string_view raw);
+    // ^[a-z][a-z0-9_]{1,39}$（长度 2..40，首字符小写字母）
+    [[nodiscard]] static bool IsValidKey(std::string_view key);
+    // global|public|mask|true|private
+    [[nodiscard]] static bool IsValidLayer(std::string_view layer);
+    static constexpr std::string_view kLayerEnum = "global|public|mask|true|private";
+    static constexpr std::string_view kValueTypeEnum = "text|number|json|enum";
+
+    // 别名：读取与写入都先过别名表（`08` §2.4）。命中 → 用规范键。
+    [[nodiscard]] std::expected<void, DbError> UpsertFieldAlias(std::string_view alias,
+                                                                std::string_view canonicalKey,
+                                                                std::string_view note = {});
+    [[nodiscard]] std::expected<std::string, DbError> ResolveAlias(std::string_view key) const;
+    [[nodiscard]] std::expected<std::vector<std::pair<std::string, std::string>>, DbError>
+    ListFieldAliases() const;
 
     // —— 实体字段值 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertEntityField(const EntityFieldRow& row);

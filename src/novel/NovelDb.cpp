@@ -14,7 +14,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 7;
+constexpr int kTargetSchemaVersion = 8;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -183,6 +183,17 @@ CREATE TABLE IF NOT EXISTS generated_images(
   updated INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_gimg_status ON generated_images(status);
 CREATE INDEX IF NOT EXISTS idx_gimg_source ON generated_images(source_kind, source_id);
+)SQL";
+
+// v8（S2b）：动态字段门禁 —— `field_defs.status`（PROPOSED/CANON）+ `field_aliases` 别名表。
+// 规格：Doc/小说系统/08 §2.2（三步写入校验）/ §2.3（Canon 门禁）/ §2.4（归一与别名）。
+// 注意：`field_defs.status` 的加列**不在这里** —— SQLite 不支持 ADD COLUMN IF NOT EXISTS，
+// 旧库走 Migrate 里的 ALTER；新建路径由 NovelFields 的 kSchemaV5Fields 直接带 status。
+constexpr std::string_view kSchemaV8FieldGate = R"SQL(
+CREATE TABLE IF NOT EXISTS field_aliases(
+  alias TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '');
 )SQL";
 
 // v7（S1）：视觉资产的生产状态机 + 形象层产物表（V0 ASSET_PIPELINE 的承载）。
@@ -789,6 +800,14 @@ std::expected<void, DbError> NovelDb::Migrate() {
     // v7：visual_assets 补生产状态列。列已存在则 ALTER 报错，忽略即可
     //（与上面 v1→v3 的 tryAlter 同款；SQLite 没有 ADD COLUMN IF NOT EXISTS）。
     (void)db_.Exec("ALTER TABLE visual_assets ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'");
+    // —— v8（S2b）：字段门禁 ——
+    if (auto r = ExecAll(kSchemaV8FieldGate); !r) {
+        return r;
+    }
+    // field_defs 补 status 列 + 回填：旧库一律先 PROPOSED，`is_system=1` 的种子回填为 CANON。
+    // field_defs 可能尚未创建（由 NovelFields 懒建）→ ALTER 失败即忽略，新建路径自带该列。
+    (void)db_.Exec("ALTER TABLE field_defs ADD COLUMN status TEXT NOT NULL DEFAULT 'PROPOSED'");
+    (void)db_.Exec("UPDATE field_defs SET status='CANON' WHERE is_system=1");
     {
         // field_defs / entity_fields（NovelFields）
         if (auto r = db_.Exec(R"SQL(
@@ -949,7 +968,56 @@ bool NovelDb::RunSchemaSelfCheck() {
             return false;
         }
     }
-    log::Info("NovelDb schema 自检通过（v{} 全表 + CRUD + visual_artifacts）", kTargetSchemaVersion);
+    // —— v8 覆盖：field_defs.status 列 + field_aliases 表（S2b 字段门禁的承载）——
+    if (auto r = mem.Exec("CREATE TABLE IF NOT EXISTS field_defs("
+                          "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                          "scope TEXT NOT NULL DEFAULT 'entity',"
+                          "entity_kind TEXT NOT NULL DEFAULT '',"
+                          "field_key TEXT NOT NULL,"
+                          "title TEXT NOT NULL DEFAULT '',"
+                          "value_type TEXT NOT NULL DEFAULT 'text',"
+                          "enum_json TEXT NOT NULL DEFAULT '[]',"
+                          "description TEXT NOT NULL DEFAULT '',"
+                          "created_by TEXT NOT NULL DEFAULT '',"
+                          "is_system INTEGER NOT NULL DEFAULT 0,"
+                          "updated INTEGER NOT NULL DEFAULT 0)");
+        !r) {
+        log::Error("NovelDb 自检：v8 field_defs 建表失败 {}", r.error().message);
+        return false;
+    }
+    // 旧库路径：ALTER 补列 + 回填（这里按 Migrate 的同款顺序走一遍，证明可平滑迁移）
+    (void)mem.Exec("ALTER TABLE field_defs ADD COLUMN status TEXT NOT NULL DEFAULT 'PROPOSED'");
+    if (auto r = mem.Exec(kSchemaV8FieldGate); !r) {
+        log::Error("NovelDb 自检：v8 field_aliases 建表失败 {}", r.error().message);
+        return false;
+    }
+    {
+        if (auto r = mem.Exec("INSERT INTO field_defs(scope,entity_kind,field_key,value_type,"
+                              "is_system) VALUES('entity','person','public_mask','text',1)");
+            !r) {
+            log::Error("NovelDb 自检：v8 写 field_defs 失败 {}", r.error().message);
+            return false;
+        }
+        (void)mem.Exec("UPDATE field_defs SET status='CANON' WHERE is_system=1");
+        auto fd = mem.Prepare("SELECT status,is_system FROM field_defs WHERE field_key='public_mask'");
+        if (!fd || !fd->Step() || fd->ColumnText(0) != "CANON" || fd->ColumnInt(1) != 1) {
+            log::Error("NovelDb 自检：select field_defs.status 失败");
+            return false;
+        }
+        auto al = mem.Prepare("INSERT INTO field_aliases(alias,canonical_key) VALUES('a_b','a_c')");
+        if (!al || !al->Step()) {
+            log::Error("NovelDb 自检：v8 写 field_aliases 失败");
+            return false;
+        }
+        auto alg = mem.Prepare("SELECT canonical_key FROM field_aliases WHERE alias='a_b'");
+        if (!alg || !alg->Step() || alg->ColumnText(0) != "a_c") {
+            log::Error("NovelDb 自检：select field_aliases 失败");
+            return false;
+        }
+    }
+    log::Info("NovelDb schema 自检通过（v{} 全表 + CRUD + visual_artifacts + field_defs.status + "
+              "field_aliases）",
+              kTargetSchemaVersion);
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {

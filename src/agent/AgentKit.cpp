@@ -572,8 +572,13 @@ CREATE TABLE IF NOT EXISTS field_defs(
   description TEXT NOT NULL DEFAULT '',
   created_by TEXT NOT NULL DEFAULT '',
   is_system INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'PROPOSED',
   updated INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_field_defs_key ON field_defs(scope, entity_kind, field_key);
+CREATE TABLE IF NOT EXISTS field_aliases(
+  alias TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS entity_fields(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   entity_id INTEGER NOT NULL DEFAULT 0,
@@ -593,6 +598,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ef_uniq
 )SQL"); !r) {
         return r;
     }
+    // v8（S2b）：旧库补 `field_defs.status` —— CREATE TABLE IF NOT EXISTS 不会改已存在的表，
+    // 缺了它 UpsertFieldDef 的 INSERT 会整条失败、种子静默丢失（自检就踩到过）。
+    // 列已存在则 ALTER 报错，忽略；`is_system=1` 的种子回填为 CANON。
+    (void)db_->Exec("ALTER TABLE field_defs ADD COLUMN status TEXT NOT NULL DEFAULT 'PROPOSED'");
+    (void)db_->Exec("UPDATE field_defs SET status='CANON' WHERE is_system=1");
     NovelFields fields(*db_);
     NovelFields::SeedBuiltinFieldDefs(fields);
 
