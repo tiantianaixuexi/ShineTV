@@ -127,6 +127,40 @@ public:
     [[nodiscard]] std::expected<RowId, DbError> UpsertTheme(const ThemeRow& row);
     [[nodiscard]] std::expected<std::vector<ThemeRow>, DbError> ListThemes() const;
 
+    // —— P1 余下五表（S7）：原先"表在、API 不在"（`01` §2.8.2）——
+    // `scene_visuals` 的写入口在 `NovelVisual`（视觉侧的表）；`dependencies` 延后到实现依赖传播时。
+
+    // 快照（entity_versions）：`07` §2.2 的"写前快照"。写 + 读都齐 —— 回滚/写回由 S8 的提交事务做。
+    [[nodiscard]] std::expected<RowId, DbError> SaveEntityVersion(const EntityVersionRow& row);
+    [[nodiscard]] std::expected<EntityVersionRow, DbError> GetEntityVersion(RowId id) const;
+    // 新 → 旧（按 ver 降序）；该实体没有快照时返回空数组
+    [[nodiscard]] std::expected<std::vector<EntityVersionRow>, DbError>
+    ListEntityVersions(RowId entityId, int limit = 20) const;
+    [[nodiscard]] std::expected<EntityVersionRow, DbError> GetLatestEntityVersion(RowId entityId) const;
+    // 「写前快照」便捷入口：把该实体当前的 entity + persona + status 打包存一份（ver 自动 +1）
+    [[nodiscard]] std::expected<RowId, DbError> SnapshotEntity(RowId entityId,
+                                                               std::string_view note = {});
+    // 把快照读回结构化载荷（**只读**）
+    [[nodiscard]] std::expected<EntitySnapshot, DbError> LoadEntitySnapshot(RowId versionId) const;
+
+    // 地点距离（location_distances）：`06` K18 的数据来源
+    [[nodiscard]] std::expected<RowId, DbError>
+    UpsertLocationDistance(const LocationDistanceRow& row);
+    // fromId <= 0 → 全表；> 0 → 与该地点相关的行（**无向**，两头都算）
+    [[nodiscard]] std::expected<std::vector<LocationDistanceRow>, DbError>
+    ListLocationDistances(RowId fromId = 0, int limit = 200) const;
+    // 两地行程天数（**无向**：A→B 查不到就试 B→A）；**无记录返回 -1**（不是错误）
+    [[nodiscard]] std::expected<double, DbError> LocationDistanceDays(RowId fromId, RowId toId) const;
+
+    // 全书写作风格（writing_style，id=1 单行；`ContextBuilder` 已按 id=1 读）
+    [[nodiscard]] std::expected<void, DbError> UpsertWritingStyle(const WritingStyleRow& row);
+    [[nodiscard]] std::expected<WritingStyleRow, DbError> GetWritingStyle() const;
+
+    // 作者规则（author_rules，severity = error|warn|info）
+    [[nodiscard]] std::expected<RowId, DbError> UpsertAuthorRule(const AuthorRuleRow& row);
+    [[nodiscard]] std::expected<std::vector<AuthorRuleRow>, DbError>
+    ListAuthorRules(std::string_view severity = {}) const;
+
     // —— 持有 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertOwnership(const OwnershipRow& row);
     [[nodiscard]] std::expected<std::vector<OwnershipRow>, DbError>

@@ -303,6 +303,61 @@ struct ThemeRow {
     RowId linked_plot_id = 0; // 关联剧情线
 };
 
+// —— P1 余下五表（S7）：表在、API 不在（`01` §2.8.2 的 P1 定级）——
+// 其中 `scene_visuals` 属视觉侧，结构体在 `NovelVisual.h`。
+
+// entity_versions：实体在某一时点的**完整状态快照**（`07` §2.2 的"写前快照"落这里）。
+// 与 `audit_logs` 分工不同：审计只记"做了什么"，快照要能**读回来还原**（S7 判据：能写能读）。
+struct EntityVersionRow {
+    RowId id = 0;
+    RowId entity_id = 0;
+    int ver = 0; // 0 = 自动递增到下一版（默认）；> 0 = 指定版本（一般不用手填）
+    std::string snapshot_json = "{}";
+    std::string note;
+    std::int64_t created = 0;
+};
+
+// 快照载荷（`util::reflect` 序列化 → 字段名即 JSON 键、读取宽容）。回滚/写回由 S8 的提交事务做。
+struct EntitySnapshot {
+    EntityRow entity;
+    PersonaRow persona;
+    CharacterStatusRow status;
+};
+
+// location_distances：两地行程估算（`06` K18 `travel.time_sane` 的数据来源）
+struct LocationDistanceRow {
+    RowId id = 0;
+    RowId from_id = 0;
+    RowId to_id = 0;
+    double distance_km = 0.0;
+    std::string travel_note;
+    double days_estimate = 0.0;
+};
+
+// writing_style：**全书单行**（主键固定 `id=1`，`ContextBuilder` 已按 id=1 读）
+struct WritingStyleRow {
+    RowId id = 1;
+    std::string pov_mode = "third_limited";
+    std::string sentence_len = "medium";
+    std::string density;
+    double dialogue_ratio = 0.3;
+    double action_ratio = 0.3;
+    double thought_ratio = 0.2;
+    double env_ratio = 0.2;
+    int humor = 0;   // 0–100
+    int serious = 50; // 0–100
+    std::string pacing;
+    std::string note;
+};
+
+// author_rules：作者硬规则（`severity` = error|warn|info；`ContextBuilder` 只读 error 级）
+struct AuthorRuleRow {
+    RowId id = 0;
+    std::string rule;
+    std::string severity = "warn";
+    std::string note;
+};
+
 // 供 ContextBuilder 的切片
 struct CharacterSlice {
     EntityRow entity;

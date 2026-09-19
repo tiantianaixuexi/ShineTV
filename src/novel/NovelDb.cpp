@@ -851,7 +851,8 @@ bool NovelDb::RunSchemaSelfCheck() {
         log::Error("NovelDb 自检：建 schema 失败 {}", r.error().message);
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {
-            FILE* f = std::fopen(path, "wb");
+            FILE* f = std::fopen(path, "ab"); // 逐项结果文件是**追加**的：其余写入点都是 "ab"，
+                                              // 这里 "wb" 会把前面自检已写的行截掉（S7 发现）
             if (f) {
                 const std::string msg = "schema:fail " + r.error().message + "\n";
                 std::fwrite(msg.data(), 1, msg.size(), f);
@@ -976,7 +977,8 @@ bool NovelDb::RunSchemaSelfCheck() {
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {
-            FILE* f = std::fopen(path, "wb");
+            FILE* f = std::fopen(path, "ab"); // 逐项结果文件是**追加**的：其余写入点都是 "ab"，
+                                              // 这里 "wb" 会把前面自检已写的行截掉（S7 发现）
             if (f) {
                 const char* line = "schema:ok\n";
                 std::fwrite(line, 1, std::strlen(line), f);

@@ -1,6 +1,7 @@
 ﻿#include "novel/NovelGraph.h"
 
 #include "core/Log.h"
+#include "util/Reflect.h" // 快照载荷（EntitySnapshot）走反射序列化
 #include "util/Time.h"
 
 #include <fmt/format.h>
@@ -45,6 +46,10 @@ CREATE TABLE IF NOT EXISTS character_arcs(id INTEGER PRIMARY KEY AUTOINCREMENT,e
 CREATE TABLE IF NOT EXISTS dialogue_styles(entity_id INTEGER PRIMARY KEY,sentence_len TEXT NOT NULL DEFAULT '',vocabulary TEXT NOT NULL DEFAULT '',catchphrase TEXT NOT NULL DEFAULT '',taboo_words TEXT NOT NULL DEFAULT '',habit TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS world_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS themes(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,statement TEXT NOT NULL DEFAULT '',linked_plot_id INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS entity_versions(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER NOT NULL,ver INTEGER NOT NULL DEFAULT 1,snapshot_json TEXT NOT NULL DEFAULT '{}',note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS location_distances(id INTEGER PRIMARY KEY AUTOINCREMENT,from_id INTEGER NOT NULL,to_id INTEGER NOT NULL,distance_km REAL NOT NULL DEFAULT 0,travel_note TEXT NOT NULL DEFAULT '',days_estimate REAL NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS writing_style(id INTEGER PRIMARY KEY CHECK(id=1),pov_mode TEXT NOT NULL DEFAULT 'third_limited',sentence_len TEXT NOT NULL DEFAULT 'medium',density TEXT NOT NULL DEFAULT '',dialogue_ratio REAL NOT NULL DEFAULT 0.3,action_ratio REAL NOT NULL DEFAULT 0.3,thought_ratio REAL NOT NULL DEFAULT 0.2,env_ratio REAL NOT NULL DEFAULT 0.2,humor INTEGER NOT NULL DEFAULT 0,serious INTEGER NOT NULL DEFAULT 50,pacing TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS author_rules(id INTEGER PRIMARY KEY AUTOINCREMENT,rule TEXT NOT NULL,severity TEXT NOT NULL DEFAULT 'warn',note TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,target_kind TEXT,target_id INTEGER,detail TEXT,created INTEGER);
 CREATE TABLE IF NOT EXISTS canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
 )SQL";
@@ -215,15 +220,14 @@ NovelGraph::GetRelations(RowId entityId, bool includeIncoming) const {
 
 std::expected<void, DbError> NovelGraph::UpsertPersona(const PersonaRow& row) {
     if (row.entity_id <= 0) return std::unexpected(Err("persona 缺 entity_id"));
+    // ⚠️ `values` 是 SQLite 关键字 → 列名**必须加双引号**，否则 prepare 阶段就报
+    // `near "values": syntax error`（2026-09-19 由 S7 的快照自检撞出来：原先人设写不进也读不出）。
+    // 这里用 `INSERT OR REPLACE`（`entity_id` 是主键 → 一人一行覆盖），避免在 `excluded."values"`
+    // 这种位置上再踩一次关键字。
     auto st = db_->Prepare(
-        "INSERT INTO entity_personas(entity_id,age,appearance,personality,background,values,"
-        "desire,goal,fear,weakness,strength,ability_note,knowledge_note,memory_note)"
-        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"
-        " ON CONFLICT(entity_id) DO UPDATE SET age=excluded.age,appearance=excluded.appearance,"
-        "personality=excluded.personality,background=excluded.background,values=excluded.values,"
-        "desire=excluded.desire,goal=excluded.goal,fear=excluded.fear,weakness=excluded.weakness,"
-        "strength=excluded.strength,ability_note=excluded.ability_note,"
-        "knowledge_note=excluded.knowledge_note,memory_note=excluded.memory_note");
+        "INSERT OR REPLACE INTO entity_personas(entity_id,age,appearance,personality,background,"
+        "\"values\",desire,goal,fear,weakness,strength,ability_note,knowledge_note,memory_note)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, row.entity_id);
     (void)st->BindText(2, row.age);
@@ -245,7 +249,7 @@ std::expected<void, DbError> NovelGraph::UpsertPersona(const PersonaRow& row) {
 
 std::expected<PersonaRow, DbError> NovelGraph::GetPersona(RowId entityId) const {
     auto st = db_->Prepare(
-        "SELECT entity_id,age,appearance,personality,background,values,desire,goal,fear,"
+        "SELECT entity_id,age,appearance,personality,background,\"values\",desire,goal,fear,"
         "weakness,strength,ability_note,knowledge_note,memory_note"
         " FROM entity_personas WHERE entity_id=?1");
     if (!st) return std::unexpected(st.error());
@@ -1541,6 +1545,337 @@ std::expected<std::vector<ThemeRow>, DbError> NovelGraph::ListThemes() const {
     return out;
 }
 
+// ———— P1 余下五表（S7）：`entity_versions` / `location_distances` / `writing_style` / `author_rules` ————
+
+std::expected<RowId, DbError> NovelGraph::SaveEntityVersion(const EntityVersionRow& row) {
+    if (row.entity_id <= 0) {
+        return std::unexpected(Err("快照必须指定 entity_id"));
+    }
+    if (row.snapshot_json.empty() || row.snapshot_json == "{}") {
+        return std::unexpected(Err("快照内容为空：先 SnapshotEntity，或自己填 snapshot_json"));
+    }
+    int ver = row.ver;
+    if (ver <= 0) {
+        auto q = db_->Prepare("SELECT COALESCE(MAX(ver),0)+1 FROM entity_versions WHERE entity_id=?1");
+        if (!q) return std::unexpected(q.error());
+        (void)q->BindInt(1, row.entity_id);
+        if (auto s = q->Step(); s && *s == db::sqlite::StepResult::Row) {
+            ver = static_cast<int>(q->ColumnInt(0));
+        }
+        if (ver <= 0) ver = 1;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO entity_versions(entity_id,ver,snapshot_json,note,created) VALUES(?1,?2,?3,?4,?5)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.entity_id);
+    (void)st->BindInt(2, ver);
+    (void)st->BindText(3, row.snapshot_json);
+    (void)st->BindText(4, row.note);
+    (void)st->BindInt(5, NowSec());
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    const RowId id = db_->LastInsertRowId();
+    (void)LogAudit("agent", "snapshot_entity", "entity", row.entity_id,
+                   fmt::format("ver={} version_id={}", ver, id));
+    return id;
+}
+
+std::expected<EntityVersionRow, DbError> NovelGraph::GetEntityVersion(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,entity_id,ver,snapshot_json,note,created FROM entity_versions WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    if (auto s = st->Step(); !s) {
+        return std::unexpected(s.error());
+    } else if (*s != db::sqlite::StepResult::Row) {
+        return std::unexpected(Err(fmt::format("快照 #{} 不存在", id)));
+    }
+    EntityVersionRow r;
+    r.id = st->ColumnInt(0);
+    r.entity_id = st->ColumnInt(1);
+    r.ver = static_cast<int>(st->ColumnInt(2));
+    r.snapshot_json = st->ColumnText(3);
+    r.note = st->ColumnText(4);
+    r.created = st->ColumnInt(5);
+    return r;
+}
+
+std::expected<std::vector<EntityVersionRow>, DbError>
+NovelGraph::ListEntityVersions(RowId entityId, int limit) const {
+    if (entityId <= 0) {
+        return std::unexpected(Err("列出快照必须指定 entity_id"));
+    }
+    if (limit <= 0) limit = 20;
+    auto st = db_->Prepare(fmt::format(
+        "SELECT id,entity_id,ver,snapshot_json,note,created FROM entity_versions "
+        "WHERE entity_id=?1 ORDER BY ver DESC, id DESC LIMIT {}", limit));
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    std::vector<EntityVersionRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        EntityVersionRow r;
+        r.id = st->ColumnInt(0);
+        r.entity_id = st->ColumnInt(1);
+        r.ver = static_cast<int>(st->ColumnInt(2));
+        r.snapshot_json = st->ColumnText(3);
+        r.note = st->ColumnText(4);
+        r.created = st->ColumnInt(5);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<EntityVersionRow, DbError> NovelGraph::GetLatestEntityVersion(RowId entityId) const {
+    auto rows = ListEntityVersions(entityId, 1);
+    if (!rows) return std::unexpected(rows.error());
+    if (rows->empty()) {
+        return std::unexpected(Err(fmt::format("实体 #{} 还没有快照", entityId)));
+    }
+    return rows->front();
+}
+
+std::expected<RowId, DbError> NovelGraph::SnapshotEntity(RowId entityId, std::string_view note) {
+    auto entity = GetEntity(entityId);
+    if (!entity) return std::unexpected(entity.error());
+
+    EntitySnapshot snap;
+    snap.entity = *entity;
+    // persona / status 允许缺失（新实体可能还没有）—— 缺就留默认值，不让快照失败
+    if (auto persona = GetPersona(entityId); persona) {
+        snap.persona = *persona;
+    }
+    if (auto status = GetLatestCharacterStatus(entityId, 0); status) {
+        snap.status = *status;
+    }
+
+    EntityVersionRow row;
+    row.entity_id = entityId;
+    row.snapshot_json = util::reflect::ToJsonString(snap);
+    row.note = std::string{note};
+    return SaveEntityVersion(row); // 返回的就是快照行 id
+}
+
+std::expected<EntitySnapshot, DbError> NovelGraph::LoadEntitySnapshot(RowId versionId) const {
+    auto row = GetEntityVersion(versionId);
+    if (!row) return std::unexpected(row.error());
+    EntitySnapshot snap;
+    const std::size_t hit = util::reflect::FromJsonString(row->snapshot_json, snap);
+    if (hit == 0) {
+        return std::unexpected(Err(fmt::format("快照 #{} 的 JSON 解析不出任何字段", versionId)));
+    }
+    return snap;
+}
+
+std::expected<RowId, DbError> NovelGraph::UpsertLocationDistance(const LocationDistanceRow& row) {
+    if (row.from_id <= 0 || row.to_id <= 0) {
+        return std::unexpected(Err("地点距离必须给出 from_id 与 to_id"));
+    }
+    if (row.from_id == row.to_id) {
+        return std::unexpected(Err("地点距离的两头不能是同一个地点"));
+    }
+    RowId target = row.id;
+    if (target <= 0) {
+        // 「一对地点一行」：同一对（无向）已有就更新，避免 K18 查到两行不确定
+        auto q = db_->Prepare(
+            "SELECT id FROM location_distances WHERE (from_id=?1 AND to_id=?2) OR (from_id=?2 AND to_id=?1) "
+            "ORDER BY id LIMIT 1");
+        if (!q) return std::unexpected(q.error());
+        (void)q->BindInt(1, row.from_id);
+        (void)q->BindInt(2, row.to_id);
+        if (auto s = q->Step(); s && *s == db::sqlite::StepResult::Row) {
+            target = q->ColumnInt(0);
+        }
+    }
+    if (target > 0) {
+        auto st = db_->Prepare(
+            "UPDATE location_distances SET from_id=?1,to_id=?2,distance_km=?3,travel_note=?4,"
+            "days_estimate=?5 WHERE id=?6");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.from_id);
+        (void)st->BindInt(2, row.to_id);
+        (void)st->BindDouble(3, row.distance_km);
+        (void)st->BindText(4, row.travel_note);
+        (void)st->BindDouble(5, row.days_estimate);
+        (void)st->BindInt(6, target);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return target;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO location_distances(from_id,to_id,distance_km,travel_note,days_estimate)"
+        " VALUES(?1,?2,?3,?4,?5)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.from_id);
+    (void)st->BindInt(2, row.to_id);
+    (void)st->BindDouble(3, row.distance_km);
+    (void)st->BindText(4, row.travel_note);
+    (void)st->BindDouble(5, row.days_estimate);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<LocationDistanceRow>, DbError>
+NovelGraph::ListLocationDistances(RowId fromId, int limit) const {
+    if (limit <= 0) limit = 200;
+    const bool all = fromId <= 0;
+    auto st = db_->Prepare(fmt::format(
+        "SELECT id,from_id,to_id,distance_km,travel_note,days_estimate FROM location_distances {} "
+        "ORDER BY id LIMIT {}",
+        all ? std::string{}
+            : std::string{"WHERE from_id=?1 OR to_id=?1"}, // 无向：两头都算
+        limit));
+    if (!st) return std::unexpected(st.error());
+    if (!all) {
+        (void)st->BindInt(1, fromId);
+    }
+    std::vector<LocationDistanceRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        LocationDistanceRow r;
+        r.id = st->ColumnInt(0);
+        r.from_id = st->ColumnInt(1);
+        r.to_id = st->ColumnInt(2);
+        r.distance_km = st->ColumnDouble(3);
+        r.travel_note = st->ColumnText(4);
+        r.days_estimate = st->ColumnDouble(5);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<double, DbError> NovelGraph::LocationDistanceDays(RowId fromId, RowId toId) const {
+    if (fromId <= 0 || toId <= 0) {
+        return std::unexpected(Err("查询行程天数必须给出两个地点 id"));
+    }
+    auto st = db_->Prepare(
+        "SELECT days_estimate FROM location_distances WHERE (from_id=?1 AND to_id=?2) "
+        "OR (from_id=?2 AND to_id=?1) ORDER BY CASE WHEN from_id=?1 THEN 0 ELSE 1 END, id LIMIT 1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, fromId);
+    (void)st->BindInt(2, toId);
+    if (auto s = st->Step(); !s) {
+        return std::unexpected(s.error());
+    } else if (*s == db::sqlite::StepResult::Row) {
+        return st->ColumnDouble(0);
+    }
+    return -1.0; // 无记录 = 未知（不是错误：`06` K18 见到未知就跳过该条）
+}
+
+std::expected<void, DbError> NovelGraph::UpsertWritingStyle(const WritingStyleRow& row) {
+    if (row.pov_mode.empty()) {
+        return std::unexpected(Err("写作风格必须给 pov_mode"));
+    }
+    const auto inUnit = [](double v) noexcept { return v >= 0.0 && v <= 1.0; };
+    if (!inUnit(row.dialogue_ratio) || !inUnit(row.action_ratio) || !inUnit(row.thought_ratio) ||
+        !inUnit(row.env_ratio)) {
+        return std::unexpected(Err("写作风格的四个 ratio 必须在 0–1 之间"));
+    }
+    if (row.humor < 0 || row.humor > 100 || row.serious < 0 || row.serious > 100) {
+        return std::unexpected(Err("写作风格的 humor/serious 必须在 0–100 之间"));
+    }
+    // 全书单行：主键固定 id=1（DDL 有 CHECK(id=1)）
+    auto st = db_->Prepare(
+        "INSERT OR REPLACE INTO writing_style(id,pov_mode,sentence_len,density,dialogue_ratio,"
+        "action_ratio,thought_ratio,env_ratio,humor,serious,pacing,note)"
+        " VALUES(1,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, row.pov_mode);
+    (void)st->BindText(2, row.sentence_len);
+    (void)st->BindText(3, row.density);
+    (void)st->BindDouble(4, row.dialogue_ratio);
+    (void)st->BindDouble(5, row.action_ratio);
+    (void)st->BindDouble(6, row.thought_ratio);
+    (void)st->BindDouble(7, row.env_ratio);
+    (void)st->BindInt(8, row.humor);
+    (void)st->BindInt(9, row.serious);
+    (void)st->BindText(10, row.pacing);
+    (void)st->BindText(11, row.note);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return {};
+}
+
+std::expected<WritingStyleRow, DbError> NovelGraph::GetWritingStyle() const {
+    auto st = db_->Prepare(
+        "SELECT id,pov_mode,sentence_len,density,dialogue_ratio,action_ratio,thought_ratio,env_ratio,"
+        "humor,serious,pacing,note FROM writing_style WHERE id=1");
+    if (!st) return std::unexpected(st.error());
+    if (auto s = st->Step(); !s) {
+        return std::unexpected(s.error());
+    } else if (*s != db::sqlite::StepResult::Row) {
+        return std::unexpected(Err("尚未设置全书写作风格（writing_style 无 id=1 行）"));
+    }
+    WritingStyleRow r;
+    r.id = st->ColumnInt(0);
+    r.pov_mode = st->ColumnText(1);
+    r.sentence_len = st->ColumnText(2);
+    r.density = st->ColumnText(3);
+    r.dialogue_ratio = st->ColumnDouble(4);
+    r.action_ratio = st->ColumnDouble(5);
+    r.thought_ratio = st->ColumnDouble(6);
+    r.env_ratio = st->ColumnDouble(7);
+    r.humor = static_cast<int>(st->ColumnInt(8));
+    r.serious = static_cast<int>(st->ColumnInt(9));
+    r.pacing = st->ColumnText(10);
+    r.note = st->ColumnText(11);
+    return r;
+}
+
+std::expected<RowId, DbError> NovelGraph::UpsertAuthorRule(const AuthorRuleRow& row) {
+    if (row.rule.empty()) {
+        return std::unexpected(Err("作者规则不能为空"));
+    }
+    const std::string_view sev = row.severity.empty() ? std::string_view{"warn"} : row.severity;
+    if (sev != "error" && sev != "warn" && sev != "info") {
+        return std::unexpected(Err("作者规则的 severity 只能是 error / warn / info"));
+    }
+    if (row.id > 0) {
+        auto st = db_->Prepare("UPDATE author_rules SET rule=?1,severity=?2,note=?3 WHERE id=?4");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindText(1, row.rule);
+        (void)st->BindText(2, sev);
+        (void)st->BindText(3, row.note);
+        (void)st->BindInt(4, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare("INSERT INTO author_rules(rule,severity,note) VALUES(?1,?2,?3)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, row.rule);
+    (void)st->BindText(2, sev);
+    (void)st->BindText(3, row.note);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<AuthorRuleRow>, DbError>
+NovelGraph::ListAuthorRules(std::string_view severity) const {
+    const bool all = severity.empty();
+    auto st = db_->Prepare(all
+                               ? std::string{"SELECT id,rule,severity,note FROM author_rules ORDER BY id"}
+                               : std::string{"SELECT id,rule,severity,note FROM author_rules WHERE "
+                                             "severity=?1 ORDER BY id"});
+    if (!st) return std::unexpected(st.error());
+    if (!all) {
+        (void)st->BindText(1, severity);
+    }
+    std::vector<AuthorRuleRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        AuthorRuleRow r;
+        r.id = st->ColumnInt(0);
+        r.rule = st->ColumnText(1);
+        r.severity = st->ColumnText(2);
+        r.note = st->ColumnText(3);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 bool NovelGraph::RunGraphSelfCheck() {
     // 依赖全量 schema（NovelDb 自检）
     if (!NovelDb::RunSchemaSelfCheck()) {
@@ -1800,7 +2135,152 @@ bool NovelGraph::RunGraphSelfCheck() {
             return false;
         }
     }
-    log::Info("NovelGraph 自检通过（实体/关系/因果/伏笔/章节/切片 + P0 八表 + 初始化链四表）");
+
+    // —— P1 余下五表（S7）：`entity_versions` / `location_distances` / `writing_style` / `author_rules` ——
+    {
+        // ① 快照：能写能读（`07` §2.2 的"写前快照"）
+        // `values` 是 SQLite 关键字 —— 必须用带引号的列名，否则 prepare 就语法错（见 UpsertPersona 注释）
+        auto personaWrite = g.UpsertPersona({.entity_id = *pid,
+                                            .appearance = "黑发少年",
+                                            .values = "责任高于一切",
+                                            .goal = "活下来"});
+        if (!personaWrite) {
+            log::Error("NovelGraph 自检：persona 写入失败：{}", personaWrite.error().message);
+            return false;
+        }
+        auto personaRead = g.GetPersona(*pid);
+        if (!personaRead || personaRead->appearance != "黑发少年" || personaRead->goal != "活下来" ||
+            personaRead->values != "责任高于一切") {
+            log::Error("NovelGraph 自检：persona 写后读失败（含关键字列 values）");
+            return false;
+        }
+        auto v1 = g.SnapshotEntity(*pid, "写前快照");
+        auto v2 = g.SnapshotEntity(*pid, "第二次");
+        auto versions = g.ListEntityVersions(*pid);
+        if (!v1 || !v2 || *v1 == *v2 || !versions || versions->size() != 2 ||
+            (*versions)[0].ver != 2 || (*versions)[1].ver != 1 || (*versions)[0].id != *v2) {
+            log::Error("NovelGraph 自检：entity_versions 写入 / ver 递增 / 新→旧排序失败");
+            return false;
+        }
+        auto loaded = g.LoadEntitySnapshot(*v1);
+        if (!loaded || loaded->entity.id != *pid || loaded->entity.name != "林默" ||
+            loaded->persona.appearance != "黑发少年" || loaded->persona.goal != "活下来") {
+            log::Error("NovelGraph 自检：快照读回（entity + persona）失败");
+            return false;
+        }
+        auto latest = g.GetLatestEntityVersion(*pid);
+        if (!latest || latest->ver != 2 || latest->note != "第二次" || latest->id != *v2) {
+            log::Error("NovelGraph 自检：GetLatestEntityVersion 失败");
+            return false;
+        }
+        if (g.GetLatestEntityVersion(kGhost) || g.GetEntityVersion(999999)) {
+            log::Error("NovelGraph 自检：不存在的快照应报错");
+            return false;
+        }
+        if (g.SaveEntityVersion({.entity_id = *pid, .snapshot_json = "{}"}) ||
+            g.SaveEntityVersion({.snapshot_json = "{\"a\":1}"})) {
+            log::Error("NovelGraph 自检：空快照 / 缺 entity_id 应被拒");
+            return false;
+        }
+
+        // ② 地点距离：一对地点一行（无向）、能查天数、无记录返回 -1（`06` K18 的数据来源）
+        if (!g.UpsertLocationDistance({.from_id = *pid,
+                                       .to_id = *lid,
+                                       .distance_km = 12.5,
+                                       .travel_note = "沿河谷",
+                                       .days_estimate = 0.5})) {
+            log::Error("NovelGraph 自检：UpsertLocationDistance 失败");
+            return false;
+        }
+        if (!g.UpsertLocationDistance({.from_id = *lid, // 反向再写一次 → 应更新同一行
+                                       .to_id = *pid,
+                                       .distance_km = 12.5,
+                                       .travel_note = "沿河谷（回程）",
+                                       .days_estimate = 0.5})) {
+            log::Error("NovelGraph 自检：地点距离反向覆盖失败");
+            return false;
+        }
+        auto dists = g.ListLocationDistances(*lid);
+        if (!dists || dists->size() != 1 || dists->front().travel_note != "沿河谷（回程）") {
+            log::Error("NovelGraph 自检：同一对地点应只有一行（无向覆盖语义）");
+            return false;
+        }
+        auto days = g.LocationDistanceDays(*pid, *lid);
+        auto daysReverse = g.LocationDistanceDays(*lid, *pid);
+        auto daysUnknown = g.LocationDistanceDays(*pid, kGhost);
+        if (!days || *days != 0.5 || !daysReverse || *daysReverse != 0.5 || !daysUnknown ||
+            *daysUnknown != -1.0) {
+            log::Error("NovelGraph 自检：行程天数（无向查询 / 无记录 -1）失败");
+            return false;
+        }
+        if (g.UpsertLocationDistance({.from_id = *pid, .to_id = *pid})) {
+            log::Error("NovelGraph 自检：同一地点的距离应被拒");
+            return false;
+        }
+
+        // ③ 写作风格：全书单行（id=1）+ 覆盖语义 + 非法值被拒
+        if (!g.UpsertWritingStyle({.pov_mode = "first",
+                                   .sentence_len = "short",
+                                   .density = "medium",
+                                   .dialogue_ratio = 0.4,
+                                   .action_ratio = 0.3,
+                                   .thought_ratio = 0.2,
+                                   .env_ratio = 0.1,
+                                   .humor = 20,
+                                   .serious = 70,
+                                   .pacing = "fast",
+                                   .note = "冷硬"})) {
+            log::Error("NovelGraph 自检：UpsertWritingStyle 失败");
+            return false;
+        }
+        auto ws = g.GetWritingStyle();
+        if (!ws || ws->pov_mode != "first" || ws->dialogue_ratio != 0.4 || ws->humor != 20 ||
+            ws->pacing != "fast") {
+            log::Error("NovelGraph 自检：GetWritingStyle 字段不符");
+            return false;
+        }
+        if (!g.UpsertWritingStyle({.pov_mode = "third_limited"})) {
+            log::Error("NovelGraph 自检：写作风格覆盖失败");
+            return false;
+        }
+        auto ws2 = g.GetWritingStyle();
+        if (!ws2 || ws2->pov_mode != "third_limited" || !ws2->pacing.empty()) {
+            log::Error("NovelGraph 自检：写作风格未按 id=1 单行覆盖");
+            return false;
+        }
+        if (g.UpsertWritingStyle({.pov_mode = ""}) ||
+            g.UpsertWritingStyle({.pov_mode = "first", .dialogue_ratio = 1.5})) {
+            log::Error("NovelGraph 自检：写作风格非法值应被拒");
+            return false;
+        }
+
+        // ④ 作者规则：severity 过滤 / 同 id 更新 / 非法值被拒
+        auto ruleErr = g.UpsertAuthorRule({.rule = "不许出现现代词汇", .severity = "error"});
+        auto ruleWarn = g.UpsertAuthorRule({.rule = "少用感叹号", .severity = "warn"});
+        auto errRules = g.ListAuthorRules("error");
+        auto allRules = g.ListAuthorRules();
+        if (!ruleErr || !ruleWarn || !errRules || errRules->size() != 1 ||
+            errRules->front().rule != "不许出现现代词汇" || !allRules || allRules->size() != 2) {
+            log::Error("NovelGraph 自检：author_rules 写入/按 severity 过滤失败");
+            return false;
+        }
+        if (!g.UpsertAuthorRule({.id = *ruleWarn, .rule = "绝不写脏话", .severity = "warn"})) {
+            log::Error("NovelGraph 自检：author_rules 同 id 更新失败");
+            return false;
+        }
+        auto warnRules = g.ListAuthorRules("warn");
+        if (!warnRules || warnRules->size() != 1 || warnRules->front().rule != "绝不写脏话") {
+            log::Error("NovelGraph 自检：author_rules 更新后语义不符");
+            return false;
+        }
+        if (g.UpsertAuthorRule({.rule = "x", .severity = "fatal"}) ||
+            g.UpsertAuthorRule({.rule = ""})) {
+            log::Error("NovelGraph 自检：author_rules 非法 severity / 空规则应被拒");
+            return false;
+        }
+    }
+    log::Info("NovelGraph 自检通过（实体/关系/因果/伏笔/章节/切片 + P0 八表 + 初始化链四表 + "
+              "P1 四表：快照/地点距离/写作风格/作者规则）");
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {
