@@ -925,9 +925,9 @@ bool RunMvpSelfCheck() {
 
 void DrawNovelWindow() {
     // 本页是 dock 页（宿主 `NoScrollbar|NoScrollWithMouse`）：**页级滚动恒为 0**，滚动只发生在
-    // 内部子窗（`##novel_workspace` / 工程列表）。显式钉住是为了防「焦点/导航」把它滚下去
-    // （`DrawDockedPanels` 的 `SetNextWindowFocus()` 会 ScrollToBringRectIntoView）——
-    // 那会让页首的「生成本章」「无人值守（S9）」直接看不见。
+    // 内部子窗（`##novel_workspace` / 工程列表）。统一钉住的是 `DrawDockedPanels::beginDock`，
+    // 这里再钉一次是防御 —— 本页内容最多（工作区 + 多 Agent + 工程列表），最经不起被
+    // `SetNextWindowFocus()` 的 `ScrollToBringRectIntoView` 滚下去。
     ImGui::SetScrollY(0.f);
     EnsureScan();
     // 截图验收（S9-ui）：`SHINE_NOVEL_OPEN=<书名>` 开局直接打开该工程。只在前 60 帧尝试（之后交回用户），
