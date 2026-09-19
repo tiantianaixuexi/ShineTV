@@ -295,8 +295,56 @@ std::filesystem::path ChapterWorkDir(const std::filesystem::path& project_dir, i
     return project_dir / "work" / fmt::format("ch{:03}", ord);
 }
 
+std::vector<StageProgress> ScanChapterStages(const std::filesystem::path& project_dir,
+                                            RowId chapter_id, int ord) {
+    std::vector<StageProgress> out;
+    if (project_dir.empty()) {
+        return out;
+    }
+    // 缺文件 → `bytes = -1`（与「空文件」区分开）
+    const auto probe = [&project_dir](std::filesystem::path rel) {
+        StageArtifact a;
+        a.path = util::PathToUtf8(rel);
+        const std::filesystem::path abs = project_dir / rel;
+        std::error_code ec;
+        if (!std::filesystem::exists(abs, ec)) {
+            a.bytes = -1;
+            return a;
+        }
+        if (const auto bytes = util::ReadFileBytes(abs); bytes) {
+            a.bytes = static_cast<std::int64_t>(bytes->size());
+            a.fnv = Fnv1aHex(*bytes);
+        }
+        return a;
+    };
+    const auto addStage = [&out](std::string stage, std::vector<StageArtifact> arts) {
+        StageProgress st;
+        st.stage = std::move(stage);
+        st.complete = !arts.empty();
+        for (const StageArtifact& a : arts) {
+            if (a.bytes < 0) {
+                st.complete = false;
+            }
+        }
+        st.artifacts = std::move(arts);
+        out.push_back(std::move(st));
+    };
+    // EXTRACT：`07` §2.1 / 不变式 I10 的 StateDiff 产物（S12 起由提交路径落盘）
+    addStage("EXTRACT", {probe(std::filesystem::path{"work"} / fmt::format("ch{:03}", ord) /
+                               "12_state_diff.json")});
+    // COMMIT：`07` §2.4 的章级快照（不变式 I11；文件名按 chapter_id）
+    addStage("COMMIT",
+             {probe(std::filesystem::path{"snapshots"} / fmt::format("ch{:03}.json", chapter_id))});
+    // COST：`09` §2.7 的单章成本账。⚠️ `_manifest.json` 自身**不进清单** —— 它正在被写，
+    // 列进来只会记到上一版（自指，没有意义）。
+    addStage("COST",
+             {probe(std::filesystem::path{"work"} / fmt::format("ch{:03}", ord) / "cost_report.json")});
+    return out;
+}
+
 std::string ManifestJson(RowId chapter_id, int ord, std::string_view state_hash,
-                        const std::vector<std::string>& stages, std::string_view status) {
+                        const std::vector<std::string>& stages, std::string_view status,
+                        const std::vector<StageProgress>& stage_artifacts) {
     yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
     if (doc == nullptr) return "{}";
     yyjson_mut_val* root = yyjson_mut_obj(doc);
@@ -310,9 +358,26 @@ std::string ManifestJson(RowId chapter_id, int ord, std::string_view state_hash,
         yyjson_mut_arr_add_strcpy(doc, arr, s.c_str());
     }
     yyjson_mut_obj_add_val(doc, root, "stages", arr);
-    // `03` §2.7 的「阶段 → 产物文件」列当前为空：细阶段机（T1–T17）尚未落地
-    yyjson_mut_obj_add_str(doc, root, "artifacts_note",
-                           "stage artifact files not implemented (T1-T17 stage machine pending)");
+    // `03` §2.7 P5：**阶段 → 产物文件**（含内容指纹）—— 阶段级续跑的输入。
+    // 目前只有 EXTRACT / COMMIT / COST 三段有落盘产物；PLAN/WRITE/REVIEW 的那套（`01_outline.json` …）
+    // 属 `03` 阶段产物，尚未落地 → 真·阶段级续跑还缺 T1–T17 阶段机，这里给的是它需要的账。
+    yyjson_mut_val* sa = yyjson_mut_arr(doc);
+    for (const StageProgress& st : stage_artifacts) {
+        yyjson_mut_val* item = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc, item, "stage", st.stage.c_str());
+        yyjson_mut_obj_add_bool(doc, item, "complete", st.complete);
+        yyjson_mut_val* list = yyjson_mut_arr(doc);
+        for (const StageArtifact& a : st.artifacts) {
+            yyjson_mut_val* fa = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_strcpy(doc, fa, "path", a.path.c_str());
+            yyjson_mut_obj_add_int(doc, fa, "bytes", a.bytes);
+            yyjson_mut_obj_add_strcpy(doc, fa, "fnv", a.fnv.c_str());
+            (void)yyjson_mut_arr_add_val(list, fa);
+        }
+        (void)yyjson_mut_obj_add_val(doc, item, "artifacts", list);
+        (void)yyjson_mut_arr_add_val(sa, item);
+    }
+    (void)yyjson_mut_obj_add_val(doc, root, "stage_artifacts", sa);
     yyjson_mut_obj_add_int(doc, root, "updated", util::NowMillis());
     std::size_t len = 0;
     char* text = yyjson_mut_val_write(root, 0, &len);
@@ -643,9 +708,11 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
         const std::string costJson =
             CostReportJson(chapter.id, chapter.ord, info ? *info : ChapterRunInfo{}, obs, req.limits);
         const bool costOk = !projectDir.empty() && WriteTextFile(workDir / "cost_report.json", costJson);
-        const std::string manifestJson = ManifestJson(chapter.id, chapter.ord, fingerprint,
-                                                      info ? info->stages : std::vector<std::string>{},
-                                                      status);
+        // S14（`03` §2.7 P5）：把「阶段 → 产物 + 指纹」写进 `_manifest.json`（阶段级续跑的输入）
+        const std::string manifestJson =
+            ManifestJson(chapter.id, chapter.ord, fingerprint,
+                         info ? info->stages : std::vector<std::string>{}, status,
+                         ScanChapterStages(projectDir, chapter.id, chapter.ord));
         const bool manifestOk =
             !projectDir.empty() && WriteTextFile(workDir / "_manifest.json", manifestJson);
         if (!costOk || !manifestOk) {
@@ -1141,6 +1208,45 @@ bool NovelRunLoop::RunSelfCheck() {
             } else {
                 expect(false, "S1 用例：内存库打开失败");
             }
+        }
+        // S14（`03` §2.7 P5）：**阶段 → 产物 + 指纹**（阶段级续跑的输入，不再是空列）
+        {
+            const auto pdir = dir / "s14";
+            std::filesystem::create_directories(pdir / "work" / "ch001", ec);
+            std::filesystem::create_directories(pdir / "snapshots", ec);
+            (void)util::WriteFileBytes(pdir / "work" / "ch001" / "12_state_diff.json",
+                                       "{\"chapter_id\":1}");
+            const auto stageOf = [](const std::vector<StageProgress>& v, std::string_view name) {
+                for (const StageProgress& s : v) {
+                    if (s.stage == name) {
+                        return s;
+                    }
+                }
+                return StageProgress{};
+            };
+            const auto s0 = ScanChapterStages(pdir, 1, 1);
+            expect(s0.size() == 3 && stageOf(s0, "EXTRACT").complete &&
+                       !stageOf(s0, "COMMIT").complete,
+                   "S14：有 StateDiff → EXTRACT complete；无快照 → COMMIT incomplete");
+            expect(!stageOf(s0, "EXTRACT").artifacts.empty() &&
+                       stageOf(s0, "EXTRACT").artifacts[0].bytes > 0 &&
+                       stageOf(s0, "EXTRACT").artifacts[0].fnv.size() == 16,
+                   "S14：产物记了字节数与内容指纹（FNV-1a 16 位）");
+            (void)util::WriteFileBytes(pdir / "snapshots" / "ch001.json", "{}");
+            const auto s1 = ScanChapterStages(pdir, 1, 1);
+            expect(stageOf(s1, "COMMIT").complete, "S14：补上快照后 COMMIT 变 complete");
+
+            const std::string mj =
+                ManifestJson(1, 1, "fnv:abc", {"PLAN", "EXTRACT"}, "generated", s1);
+            bool okJson = false;
+            if (yyjson_doc* doc = yyjson_read(mj.data(), mj.size(), 0); doc != nullptr) {
+                yyjson_val* root = yyjson_doc_get_root(doc);
+                yyjson_val* sa = yyjson_obj_get(root, "stage_artifacts");
+                okJson = yyjson_is_arr(sa) && yyjson_arr_size(sa) == 3 &&
+                         yyjson_is_str(yyjson_obj_get(yyjson_arr_get(sa, 0), "stage"));
+                yyjson_doc_free(doc);
+            }
+            expect(okJson, "S14：_manifest.json 的 stage_artifacts 结构可解析（3 段）");
         }
         loop.SetChapterRunner([&calls](RowId chapter_id, const RunLimits&, RunMode,
                                        const std::function<void(
