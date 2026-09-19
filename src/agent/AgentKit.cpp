@@ -561,48 +561,15 @@ CREATE TABLE IF NOT EXISTS agent_defs(
   is_builtin INTEGER NOT NULL DEFAULT 1,
   version INTEGER NOT NULL DEFAULT 1,
   updated INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS field_defs(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope TEXT NOT NULL DEFAULT 'entity',
-  entity_kind TEXT NOT NULL DEFAULT '',
-  field_key TEXT NOT NULL,
-  title TEXT NOT NULL DEFAULT '',
-  value_type TEXT NOT NULL DEFAULT 'text',
-  enum_json TEXT NOT NULL DEFAULT '[]',
-  description TEXT NOT NULL DEFAULT '',
-  created_by TEXT NOT NULL DEFAULT '',
-  is_system INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'PROPOSED',
-  updated INTEGER NOT NULL DEFAULT 0);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_field_defs_key ON field_defs(scope, entity_kind, field_key);
-CREATE TABLE IF NOT EXISTS field_aliases(
-  alias TEXT PRIMARY KEY,
-  canonical_key TEXT NOT NULL DEFAULT '',
-  note TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS entity_fields(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entity_id INTEGER NOT NULL DEFAULT 0,
-  field_key TEXT NOT NULL,
-  value_text TEXT NOT NULL DEFAULT '',
-  value_json TEXT NOT NULL DEFAULT 'null',
-  chapter_scope INTEGER NOT NULL DEFAULT 0,
-  chapter_to INTEGER NOT NULL DEFAULT 0,
-  layer TEXT NOT NULL DEFAULT 'global',
-  note TEXT NOT NULL DEFAULT '',
-  created_by TEXT NOT NULL DEFAULT '',
-  updated INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS idx_ef_entity ON entity_fields(entity_id);
-CREATE INDEX IF NOT EXISTS idx_ef_key ON entity_fields(field_key);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ef_uniq
-  ON entity_fields(entity_id, field_key, chapter_scope, layer);
 )SQL"); !r) {
         return r;
     }
-    // v8（S2b）：旧库补 `field_defs.status` —— CREATE TABLE IF NOT EXISTS 不会改已存在的表，
-    // 缺了它 UpsertFieldDef 的 INSERT 会整条失败、种子静默丢失（自检就踩到过）。
-    // 列已存在则 ALTER 报错，忽略；`is_system=1` 的种子回填为 CANON。
-    (void)db_->Exec("ALTER TABLE field_defs ADD COLUMN status TEXT NOT NULL DEFAULT 'PROPOSED'");
-    (void)db_->Exec("UPDATE field_defs SET status='CANON' WHERE is_system=1");
+    // 字段表（field_defs / entity_fields / field_aliases）的 DDL **不在上面** —— 规格 `08` §2.3。
+    // 它只保留在 `NovelFields::EnsureSchema` 一处；这里与 `NovelDb::Migrate` 都只是调用方。
+    // （原先四处各写一份，本处漏了 `status` 列 → `UpsertFieldDef` 整条失败 → 种子静默丢失。）
+    if (auto r = NovelFields::EnsureSchema(*db_); !r) {
+        return r;
+    }
     NovelFields fields(*db_);
     NovelFields::SeedBuiltinFieldDefs(fields);
 

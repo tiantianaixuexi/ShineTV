@@ -49,8 +49,8 @@ CREATE INDEX IF NOT EXISTS idx_ef_key ON entity_fields(field_key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ef_uniq
   ON entity_fields(entity_id, field_key, chapter_scope, layer);
 
--- v8（S2b）别名表：与 NovelDb.cpp 的 kSchemaV8FieldGate 保持**同一定义**
---（自检要在内存库里单独建表；两边都是 IF NOT EXISTS，冲突无风险）
+-- v8（S2b）别名表。**本常量是本组表 DDL 的唯一来源**（`08` §2.3）——
+-- NovelDb::Migrate / AgentKit::EnsureSchemaAndSeed / 各处自检一律调 NovelFields::EnsureSchema。
 CREATE TABLE IF NOT EXISTS field_aliases(
   alias TEXT PRIMARY KEY,
   canonical_key TEXT NOT NULL DEFAULT '',
@@ -362,6 +362,18 @@ NovelFields::ListFieldAliases() const {
     return out;
 }
 
+// —— 字段表 DDL 的**唯一定义来源**（`08` §2.3）——
+std::expected<void, DbError> NovelFields::EnsureSchema(db::sqlite::Database& db) {
+    if (auto r = db.Exec(kSchemaV5Fields); !r) {
+        return r;
+    }
+    // 旧库：`CREATE TABLE IF NOT EXISTS` 不会改已存在的表 → 补 `status` 列并回填。
+    // 列已存在则 ALTER 报错，忽略（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
+    (void)db.Exec("ALTER TABLE field_defs ADD COLUMN status TEXT NOT NULL DEFAULT 'PROPOSED'");
+    (void)db.Exec("UPDATE field_defs SET status='CANON' WHERE is_system=1");
+    return {};
+}
+
 std::expected<RowId, DbError> NovelFields::UpsertFieldDef(const FieldDefRow& row) {
     const std::string key = NormalizeKey(row.field_key);
     if (!IsValidKey(key)) {
@@ -378,15 +390,28 @@ std::expected<RowId, DbError> NovelFields::UpsertFieldDef(const FieldDefRow& row
     // `08` §2.3：AI/Agent 的提案一律 PROPOSED；is_system=1 的种子写 CANON；人工可显式传。
     int isSystem = row.is_system;
     std::string status = row.status.empty() ? (isSystem != 0 ? "CANON" : "PROPOSED") : row.status;
-    // 系统种子不可被后写降级（AI 重复 Upsert 同键不许把它从 CANON 打成 PROPOSED）
+    // 既有键检查：① 系统种子不可被后写降级（AI 重复 Upsert 同键不许把它从 CANON 打成 PROPOSED）；
+    // ② `08` §2.3 的硬上限只约束「新增键」，更新既有键不受限。
+    bool exists = false;
     if (auto ex = db_->Prepare("SELECT is_system FROM field_defs WHERE scope=?1 AND "
                                "entity_kind=?2 AND field_key=?3")) {
         (void)ex->BindText(1, scope);
         (void)ex->BindText(2, row.entity_kind);
         (void)ex->BindText(3, key);
-        if (auto s = ex->Step(); s && *s == db::sqlite::StepResult::Row && ex->ColumnInt(0) != 0) {
-            isSystem = 1;
-            status = "CANON";
+        if (auto s = ex->Step(); s && *s == db::sqlite::StepResult::Row) {
+            exists = true;
+            if (ex->ColumnInt(0) != 0) {
+                isSystem = 1;
+                status = "CANON";
+            }
+        }
+    }
+    if (!exists) {
+        auto cnt = db_->Prepare("SELECT COUNT(*) FROM field_defs");
+        if (cnt && cnt->Step() && cnt->ColumnInt(0) >= kMaxFieldDefs) {
+            return std::unexpected(DbError{0, fmt::format(
+                "contract：field_defs 已达单工程上限 {}，新增 '{}' 被拒（`08` §2.3，进人工复核清单）",
+                kMaxFieldDefs, key)});
         }
     }
     if (status != "PROPOSED" && status != "CANON") {
@@ -671,7 +696,11 @@ void NovelFields::SeedBuiltinFieldDefs(NovelFields& fields) {
         row.description = std::string{s.desc};
         row.created_by = "system";
         row.is_system = 1;
-        (void)fields.UpsertFieldDef(row);
+        // 种子失败必须可见：原先是 (void) 吞掉 —— 「field_defs 缺列 → 全部种子静默丢失 →
+        // 之后写入一律 field_unregistered」是最难查的一类故障（S2b 已踩）。
+        if (auto r = fields.UpsertFieldDef(row); !r) {
+            log::Warn("Fields 种子写入失败 key={}：{}", s.key, r.error().message);
+        }
     }
 }
 
@@ -687,8 +716,9 @@ CREATE TABLE IF NOT EXISTS entities(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TE
 )SQL"); !r) {
         return false;
     }
-    if (auto r = mem.Exec(std::string{kSchemaV5Fields}); !r) {
-        log::Error("Fields 自检：建表失败 {}", r.error().message);
+    // 字段表 DDL 走唯一来源（同时验证 EnsureSchema 本身可用）
+    if (auto r = NovelFields::EnsureSchema(mem); !r) {
+        log::Error("Fields 自检：EnsureSchema 失败 {}", r.error().message);
         return false;
     }
 
@@ -996,8 +1026,59 @@ CREATE TABLE IF NOT EXISTS entities(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TE
         yyjson_doc_free(jd);
     }
 
+    // —— `08` §2.3 硬上限（放最后：会把 field_defs 塞满到 500）——
+    {
+        int added = 0;
+        for (int i = 0; i < 700; ++i) {
+            FieldDefRow fill;
+            fill.scope = "custom";
+            fill.field_key = fmt::format("fill_{}", i);
+            fill.value_type = "text";
+            fill.created_by = "check";
+            if (!fields.UpsertFieldDef(fill)) {
+                break; // 到上限
+            }
+            ++added;
+        }
+        if (added <= 0) {
+            log::Error("Fields 自检：500 上限测试没能插入任何键（上限事先已满？）");
+            return false;
+        }
+        FieldDefRow over;
+        over.scope = "custom";
+        over.field_key = "over_limit_key";
+        over.value_type = "text";
+        over.created_by = "check";
+        auto overRes = fields.UpsertFieldDef(over);
+        if (overRes) {
+            log::Error("Fields 自检：超过 {} 条后新增仍成功（硬上限未生效）", kMaxFieldDefs);
+            return false;
+        }
+        if (overRes.error().message.find("上限") == std::string::npos) {
+            log::Error("Fields 自检：超限错误应含「上限」，got {}", overRes.error().message);
+            return false;
+        }
+        // 满额时「更新既有键」不受上限约束
+        FieldDefRow upd;
+        upd.scope = "entity";
+        upd.entity_kind = "person";
+        upd.field_key = "public_mask";
+        upd.value_type = "text";
+        upd.is_system = 1;
+        if (!fields.UpsertFieldDef(upd)) {
+            log::Error("Fields 自检：满额时更新既有键被误拒（上限应只挡新增）");
+            return false;
+        }
+        auto cnt = mem.Prepare("SELECT COUNT(*) FROM field_defs");
+        if (!cnt || !cnt->Step() || cnt->ColumnInt(0) != kMaxFieldDefs) {
+            log::Error("Fields 自检：字段定义最终条数应为 {}", kMaxFieldDefs);
+            return false;
+        }
+    }
+
     log::Info("NovelFields 自检通过（字段定义/身份层/分章宇宙/自定义扩展 + 门禁：归一化/别名/"
-              "未登记拒绝/按类型校值/layer 枚举/JSON 转义）");
+              "未登记拒绝/按类型校值/layer 枚举/JSON 转义 + {} 条硬上限）",
+              kMaxFieldDefs);
     if (const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT"); path && *path) {
         if (FILE* f = std::fopen(path, "ab")) {
             const char* line = "fields:ok\n";

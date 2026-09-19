@@ -28,11 +28,12 @@
 
 ---
 
-## 0.1 小说系统实施（S-doc / S0-pre / S0–S2 / S2b / S3-pre / S3–S8）🟡
+## 0.1 小说系统实施（15 个 S：S-doc-fix / S-doc / S0-pre / S0–S2 / S2b / S3-pre / S3–S8 / S-cleanup）🟡
 
-> **规格**：`Doc/小说系统/00-总纲与索引.md` **§6**。**一个 S 一个分支**，八步：起分支 → 实现 → `cmake --build` → **自验** → 更新本表 + `证据.md` → 提交（只 add 本 S 文件）→ 合并 `main` → 下一个。
+> **规格**：`Doc/小说系统/00-总纲与索引.md` **§6**。**一个 S 一个分支**，八步：起分支 → 实现 → `cmake --build` → **自验** → 更新本表 + `证据.md` → 提交（只 add 本 S 文件）→ 合并 `main` → 下一个。⚠️ **建分支必须先于第一处编辑**（`00` §6.4 R7）。
 
-- [x] **S-doc-fix** 规格矛盾修正（`dialogue_styles` 提级 P2→P1 并提前；`character_arcs`/`world_meta`/`themes` 提前；新增 `S2b`/`S3-pre`；计数统一为 P0 8 / P1 10 / P2 23 / P3 3）— `docs-spec-conflicts`｜`P0+P1+P2+P3 = 44` 不变式核对通过；13 个 S→分支名两处一致
+- [x] **S-cleanup** 收口 S2b 残余（种子失败改 **Warn**（原 `(void)` 静默）；字段表 DDL **收敛为 `NovelFields::EnsureSchema` 唯一来源**（原 4 份，`Migrate` 那份缺 `status` 列且 ALTER 跑在建表之前）；落实 `08` §2.3 的 **500 条硬上限**）— `chore-post-s2b-hardening`｜规范 DDL 只剩 **1** 份；第 501 键被拒而更新既有键不受限；**15 项全 ok**、`[error]` 0 条
+- [x] **S-doc-fix** 规格矛盾修正（`dialogue_styles` 提级 P2→P1 并提前；`character_arcs`/`world_meta`/`themes` 提前；新增 `S2b`/`S3-pre`；计数统一为 P0 8 / P1 10 / P2 23 / P3 3）— `docs-spec-conflicts`｜`P0+P1+P2+P3 = 44` 不变式核对通过；15 个 S→分支名两处一致
 - [x] **S-doc** 文档集入库（14 卷 + `Doc/AGENTS.md`）— `docs-novel-system`｜`git ls-files` = 14、全 LF
 - [x] **S0-pre** 孤儿回收 `ReapStaleImageJobs` — `s0pre-orphan-reap`｜`imagegen:ok`
 - [x] **S0** MCP `input_schema` 修复（G22）+ 自检写保护 — `s0-mcp-schema`｜警告 94→0、`novelmcp=ok`
