@@ -45,7 +45,10 @@
       ✅ 判据通过：`git ls-files Doc/小说系统` = **14**；14 卷 CR = **0**（纯 LF）；`Doc/AGENTS.md` 文档地图已加行；入库 **4598** 行
 - [x] **S0-pre** 孤儿回收 `ReapStaleImageJobs` 入库（`NovelImageStore.h/.cpp` + `NovelView.cpp`）— 分支 `s0pre-orphan-reap`
       ✅ 判据通过：`SHINE_NOVEL_GRAPH_CHECK=1` → `imagegen:ok`；日志 `P9 队列自检通过（… / 孤儿回收）` + `出图孤儿回收：1 条 RUNNING/QUEUED 改判 FAILED`；自检内断言 stale(updated=0)→FAILED、future→保留。证据见 `证据.md`「S0-pre」段
-- [ ] **S0** MCP 工具 `input_schema` 序列化修复 + `RunNovelMcpSelfCheck` 复位写开关 — 分支 `s0-mcp-schema`
+- [x] **S0** MCP 工具 `input_schema` 序列化修复 + 自检写保护 — 分支 `s0-mcp-schema`
+      ✅ 判据通过：`mcp schema 序列化失败` 警告 **0**（原 94 条）；自检新增 `inputSchema.properties` 断言通过；`SHINE_MCP_ALLOW_WRITE=1` 时仍 `novelmcp=ok`。
+      **根因①**：`Schema.cpp:ToJsonString` 漏 `set_root` + `AddStrn` 把**局部 `std::string` 的 `c_str()`** 当 key 传进 `yyjson_mut_obj_add_strncpy`（yyjson 该 API 对 key **只引用不拷贝**，`yyjson.c: key->uni.str = _key`）→ 键名悬空 → `code=7 invalid utf-8` → 全部工具 schema 退化成 `{"type":"object"}`。
+      **根因②**：`McpWriteAllowed()` 是 `g_mcpAllowWrite || Settings().mcpAllowWrite || EnvWriteOn()` 三源 OR，自检仅 `SetMcpAllowWrite(false)` 关不掉后两个 → 新增 `SetMcpWriteForceDeny` + RAII guard。证据见 `证据.md`「S0」段
 - [ ] **S1** `visual_assets.status` + `visual_artifacts`（schema v7）— 分支 `s1-visual-status-artifacts`
 - [ ] **S2** P0 八表补 API — 分支 `s2-p0-graph-api`
 - [ ] **S3** `V0 ASSET_PIPELINE` 编排 + 依赖等待 C+B — 分支 `s3-asset-pipeline`

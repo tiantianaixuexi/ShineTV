@@ -19,6 +19,12 @@ void SetMcpDbOverride(db::sqlite::Database* db) noexcept;
 void SetMcpAllowWrite(bool allow) noexcept;
 [[nodiscard]] bool McpWriteAllowed() noexcept;
 
+// 自检专用：**无条件**拒绝写工具（优先级高于上面三个来源），测完必须复位。
+// 存在理由：McpWriteAllowed() 是 `g_mcpAllowWrite || Settings().mcpAllowWrite || EnvWriteOn()`，
+// 自检只 SetMcpAllowWrite(false) 关不掉后两个 —— 用户一旦在设置里勾了「允许 MCP 写工具」
+// 或设了 SHINE_MCP_ALLOW_WRITE=1，自检的「写工具应默认拒绝」断言就会假失败。
+void SetMcpWriteForceDeny(bool deny) noexcept;
+
 // Agent 白名单 ∩ MCP 注册表 → JSON
 // {"agent_id":"…","allowed":[…],"mcp_tools":[…],"missing":[…]}
 [[nodiscard]] std::string ResolveAgentMcpToolsJson(std::string_view agentId,
