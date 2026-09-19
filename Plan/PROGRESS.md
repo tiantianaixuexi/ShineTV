@@ -66,7 +66,7 @@
 - [x] **S12** 「回到产出阶段重做」的真回路 + 落实不变式 I10 的产物落盘 — `s12-validate-retry`｜`NovelDirector` 在 EXTRACT↔提交门禁之间成环：**G2 机器校验挡下 → 重跑 extractor**（把 `checks_describe` 作为「请只修这些问题」喂回 user 消息），上限 `max_validate_retry=2`（`RunLimits::validation_retries` 下发）；**只有机器校验挡下才重做**（G1/G3/G4 类重跑无用）；重做后通过**不计**失败（否则误报 S1）；`CommitChapterState` 把本章 `StateDiff` 落成 `work/ch<ord>/12_state_diff.json`；端到端自检：第 1 版引用不存在实体 → 重做 1 次 → 第 2 版提交成功；**19 项全 ok**
 - [x] **S11** 把 K01–K29 接进生产线（G2 真门禁 + S1 的数据来源）— `s11-k-checks-gate`｜`CommitChapterState` 在**章级快照之后**自己跑 `RunChapterChecks`（`g2_source="inline"`；调用方给报告则 `"caller"`），失败项以 `{check_id+name, severity, detail}` 并入 issue 账供 G5 与拒绝原因；`CommitResult::checks_describe`/`failed_check_ids` → `NovelDirector` → `ChapterObservation` → **S1 实测触发**（`命中停止条件 S1（chapter=1 check_id=K02 连续失败 2 次）`）；`CommitContext::project_dir` 补上；**顺带修** `plot_beats`/`mystery_beats` 的 `ord` 写死 0（K08 判不严格递增的成因）；**19 项自检全 ok**
 
-**已知布局问题（既有，非本次引入）**：`小说` dock 面板偏矮，「生成本章」与「S9 连跑」段在默认 1600×900 窗口下会被裁掉（该 dock 窗口是 `NoScrollbar|NoScrollWithMouse`）→ 需手动拖大面板，或后续给该页加内部滚动。
+**已知布局问题（既有，非本次引入）→ 已修（2026-09-19，见下）**：原先"`小说` dock 面板偏矮、`生成本章` 与 `S9 连跑` 被裁掉"。**实测定性有误**：真正原因是该 dock 页被 `SetNextWindowFocus()` 的 `ScrollToBringRectIntoView` **滚下去了**（页首的「工作区」整段滚出视口），不是高度不够。修法：`DrawNovelWindow` 开头 `ImGui::SetScrollY(0)` 钉住页首 + 工作区套**自带滚动的子窗**（`##novel_workspace`，高度 = 页面剩余 − 200px 给工程列表）+ 章节列表改**定高滚动子窗**（`##novel_chapters`，150px），于是「生成本章」重新落在可视区。
 
 ---
 
