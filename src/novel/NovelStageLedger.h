@@ -53,6 +53,27 @@ ReadStageArtifact(const std::filesystem::path& project_dir, int ord, std::string
                                       std::string_view stage, std::string_view payload,
                                       std::string_view input_state_hash);
 
+// ———— S20（`02` §2.10 / 差距 `03-11`）：正文链的阶段产物**同时记账到库** ————
+// 原先 `prompt_artifacts` 只有建表与读写 API、**没有写入方** ⇒ K23（`prompt.state_hash_match` /
+// 不变式 I9）恒 `n/a`，P1 的"复用判定"也只在 `work/`（盘被删就没了）。
+// 本函数 = ① 落盘（P1 的哈希写进产物文件）+ ② 落库（`prompt_artifacts`：chapter/chain=text/
+// stage/input_state_hash；同章同阶段**只留一行**，重复写是覆盖）。
+// ⚠️ `prompt` 列存 payload 的**前 400 字节**（库只做"哈希账"，完整产物在 `work/`）；
+// payload 总字节数记在 `model_hint`（`bytes=NNNN`）。
+[[nodiscard]] bool RecordStageArtifact(db::sqlite::Database& db, RowId chapter_id, int ord,
+                                       const std::filesystem::path& project_dir,
+                                       std::string_view stage, std::string_view payload,
+                                       std::string_view input_state_hash);
+
+// 库里的阶段账（K23 的受检对象）：该章最后写入的那条 `chain=text` 产物（没有 → `nullopt`）
+struct StageHashRecord {
+    std::string stage;
+    std::string input_state_hash;
+    RowId artifact_id = 0;
+};
+[[nodiscard]] std::optional<StageHashRecord> LoadStageHashRecord(db::sqlite::Database& db,
+                                                                 RowId chapter_id);
+
 // —— P1/P2/P5：断点判定 ——
 // `stages` 是**实际执行顺序**的阶段代号（`03` §2.2 的代码列，只需含"会落盘"的那些）。
 // 逐阶段用 `ComputeInputStateHash(db, chapter_id, "text", stage)` 与盘上哈希比对：

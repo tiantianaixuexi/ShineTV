@@ -2,7 +2,8 @@
 
 #include "core/Log.h"
 #include "novel/NovelChecks.h" // ComputeInputStateHash（`04` §2.5 的哈希，唯一来源）
-#include "novel/NovelRunLoop.h" // ChapterWorkDir（`work/ch<NNN>/`）
+#include "novel/NovelRunLoop.h"  // ChapterWorkDir（`work/ch<NNN>/`）
+#include "novel/NovelVisual.h"   // S20：`prompt_artifacts`（K23 的受检对象）
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Json.h"
@@ -144,6 +145,60 @@ bool WriteStageArtifact(const std::filesystem::path& project_dir, int ord, std::
         return false;
     }
     return true;
+}
+
+bool RecordStageArtifact(db::sqlite::Database& db, RowId chapter_id, int ord,
+                         const std::filesystem::path& project_dir, std::string_view stage,
+                         std::string_view payload, std::string_view input_state_hash) {
+    const bool onDisk = WriteStageArtifact(project_dir, ord, stage, payload, input_state_hash);
+    if (chapter_id <= 0 || stage.empty()) {
+        return onDisk;
+    }
+    NovelVisual visual(db);
+    // 同章同阶段只留一行：先找已有的（`prompt_artifacts` 没有唯一键，`Upsert` 靠 id 判更新）
+    RowId existing = 0;
+    if (auto list = visual.ListPromptArtifacts(chapter_id); list) {
+        for (const PromptArtifactRow& row : *list) {
+            if (row.stage == stage && row.chain == "text") {
+                existing = row.id;
+                break;
+            }
+        }
+    }
+    PromptArtifactRow row;
+    row.id = existing;
+    row.chapter_id = chapter_id;
+    row.target_kind = "stage"; // 正文链的粒度是"阶段"（表注释原列 shot|scene|asset|layer）
+    row.chain = "text";
+    row.stage = std::string{stage};
+    row.input_state_hash = std::string{input_state_hash};
+    // 库只做"哈希账"：`prompt` 存前 400 字节，总长度记在 `model_hint`
+    row.prompt = std::string{payload.substr(0, 400)};
+    row.model_hint = fmt::format("bytes={}", payload.size());
+    auto r = visual.UpsertPromptArtifact(row);
+    if (!r) {
+        log::Warn("阶段产物记账失败（{} / 章 #{}）：{} —— 不影响本章生成", stage, chapter_id,
+                  r.error().message);
+        return onDisk;
+    }
+    return onDisk;
+}
+
+std::optional<StageHashRecord> LoadStageHashRecord(db::sqlite::Database& db, RowId chapter_id) {
+    if (chapter_id <= 0) {
+        return std::nullopt;
+    }
+    NovelVisual visual(db);
+    auto list = visual.ListPromptArtifacts(chapter_id); // updated DESC, id DESC → 新的在前
+    if (!list) {
+        return std::nullopt;
+    }
+    for (const PromptArtifactRow& row : *list) {
+        if (row.chain == "text" && !row.stage.empty() && !row.input_state_hash.empty()) {
+            return StageHashRecord{row.stage, row.input_state_hash, row.id};
+        }
+    }
+    return std::nullopt;
 }
 
 std::size_t FindResumeIndex(db::sqlite::Database& db, RowId chapter_id, int ord,
