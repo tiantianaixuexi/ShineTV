@@ -5,6 +5,7 @@
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "novel/NovelGraph.h"
+#include "novel/NovelInit.h" // S21：初始化链门禁与骨架
 #include "util/Encoding.h"
 
 #include <atomic>
@@ -107,8 +108,9 @@ int RunNovelCli(const wchar_t* cmdline) {
 
     const bool wantGen = Has(args, "--novel-generate");
     const bool wantRun = Has(args, "--novel-run");
-    if (!wantGen && !wantRun) {
-        log::Error("novel-cli：未知子命令（`--novel-generate <chapter_id>` 或 "
+    const bool wantInit = Has(args, "--novel-init");
+    if (!wantGen && !wantRun && !wantInit) {
+        log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-generate <chapter_id>` / "
                    "`--novel-run <manual|semi|auto>`）");
         return 2;
     }
@@ -131,6 +133,32 @@ int RunNovelCli(const wchar_t* cmdline) {
     log::Info("novel-cli：库 {} · 工程 {}", dbArg, util::PathToUtf8(projectDir));
 
     std::atomic<bool> cancel{false};
+
+    if (wantInit) {
+        // S21（`10`）：初始化链 —— 骨架（路径 B/D，不调 LLM）+ 「可开写」门禁报告（`10` §2.3）。
+        // 退出码：**0 = 门禁通过（可以开写）**；1 = 门禁未过（逐条列出缺什么）；2 = 参数/环境错。
+        if (!Has(args, "--gate-only")) {
+            const std::string book = Opt(args, "--book", "未命名小说");
+            const int target = std::atoi(Opt(args, "--target-chapters", "100").c_str());
+            const novelcore::InitSkeletonResult sk =
+                novelcore::RunInitSkeleton(db, projectDir, book, target);
+            if (!sk.ok) {
+                log::Error("novel-cli：初始化骨架失败 {}", sk.error);
+                AppendCheckOut(false, "初始化骨架失败：" + sk.error);
+                return 2;
+            }
+            for (const std::string& c : sk.created) {
+                log::Info("novel-cli：已建 {}", c);
+            }
+        }
+        const novelcore::InitReport gate = novelcore::CheckInitGate(db);
+        log::Info("novel-cli：{}", gate.Describe());
+        for (const novelcore::InitFailure& f : gate.failures) {
+            log::Warn("  {} {} —— 修法：{}", f.n_id, f.detail, f.fix_hint);
+        }
+        AppendCheckOut(gate.passed, gate.Describe());
+        return gate.passed ? 0 : 1;
+    }
 
     if (wantGen) {
         std::int64_t cid = std::atoll(Opt(args, "--novel-generate", "").c_str());
