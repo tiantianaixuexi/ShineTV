@@ -55,6 +55,16 @@
 
 **基线坑**：`main` 上仍有**他人**的 `src/novel/NovelMcpTools.cpp`；`runtime/` 未跟踪（**不要提交**）。**每个 S 只 `git add` 自己那几个文件，绝不 `git add -A`。**
 
+### 0.2 后续补丁（S 序列外）
+
+> 16 个 S 已全完成，下面是「S 序列外」的收口项；同样一分支一提交。
+
+- [x] **S9-ui** `NovelView` 无人值守 UI 入口（S9 只有代码 API + 自检，无法真跑）— `s9-runloop-ui`｜「小说」页新增「无人值守（S9）」段（运行模式 `manual`/`semi`/`auto` + 连跑章数上限 + 检查点周期 + 自动建下一章 + 「连跑」/「停止连跑」+ 状态与停止报告路径）；worker 调 `NovelRunLoop::Run`、进度与结果 `PostToUi` 回 UI；顺带加截图开关 `SHINE_NOVEL_OPEN=<书名>` 与 `SHINE_SIDE_VIEW/WINDOW=novel`；截图验收通过、**18 项自检无回归**
+
+**待办（未做）**：`06` 的 **K01–K29 全量校验** —— `auto` 的唯一阻塞项（`ProbeAutoPrecondition` 的 `verifiers_complete` 恒 false）。
+
+**已知布局问题（既有，非本次引入）**：`小说` dock 面板偏矮，「生成本章」与「S9 连跑」段在默认 1600×900 窗口下会被裁掉（该 dock 窗口是 `NoScrollbar|NoScrollWithMouse`）→ 需手动拖大面板，或后续给该页加内部滚动。
+
 ---
 
 ## 1. P5 视频分镜 ✅

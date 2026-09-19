@@ -21,6 +21,7 @@
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
 #include "novel/NovelProjects.h"
+#include "novel/NovelRunLoop.h" // S9：无人值守连跑（UI 入口）
 #include "openai/OpenAIClient.h"
 #include "openai/OpenAIConfig.h"
 #include "openai/OpenAIProvider.h"
@@ -48,6 +49,10 @@ std::string g_genStatus;
 std::atomic<bool> g_generating{false};
 std::atomic<bool> g_cancelGen{false};
 std::int64_t g_lastChapterId = 0;
+// —— S9 无人值守连跑（`09` §2.1–§2.5；worker 跑，状态回 UI）——
+std::atomic<bool> g_runLoopRunning{false};
+std::string g_runLoopStatus;
+std::string g_runLoopReport; // 最近一次 stop_report.md 的绝对路径
 // PROPOSED 待确认
 std::int64_t g_pendingCanonId = 0;
 std::string g_pendingCanonKind;
@@ -308,6 +313,112 @@ void DrawWorkspace() {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("%s", g_genStatus.c_str());
+
+    // —— S9（`09` §2.1–§2.5）：无人值守连跑 ——
+    ImGui::SeparatorText("无人值守（S9）");
+    {
+        static int modeIdx = -1;
+        if (modeIdx < 0) {
+            modeIdx = static_cast<int>(biz::RunModeFromString(Settings().novelRunMode));
+        }
+        const char* kModeNames[] = {"manual", "semi", "auto"};
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::Combo("运行模式", &modeIdx, kModeNames, IM_ARRAYSIZE(kModeNames))) {
+            Settings().novelRunMode = kModeNames[modeIdx];
+            SaveSettings();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("manual=每章停 · semi=到检查点停 · auto=连跑到目标（前置不满足会被拒启动）");
+
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputInt("连跑章数上限", &Settings().novelRunMaxChapters)) {
+            if (Settings().novelRunMaxChapters < 0) {
+                Settings().novelRunMaxChapters = 0;
+            }
+            SaveSettings();
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110);
+        if (ImGui::InputInt("检查点周期（章）", &Settings().novelCheckpointEvery)) {
+            if (Settings().novelCheckpointEvery < 1) {
+                Settings().novelCheckpointEvery = 1;
+            }
+            SaveSettings();
+        }
+        ImGui::SameLine();
+        if (ImGui::Checkbox("自动建下一章", &Settings().novelAutoCreateChapters)) {
+            SaveSettings();
+        }
+
+        if (!g_runLoopRunning) {
+            if (ImGui::Button("连跑", ImVec2(140, 0)) && !g_generating &&
+                biz::NovelDb::Instance().isOpen()) {
+                g_runLoopRunning = true;
+                g_cancelGen = false;
+                g_runLoopStatus = "连跑：准备中…";
+                const auto dbPath = biz::NovelDb::Instance().path();
+                const auto projectDir = dbPath.parent_path();
+                const std::string mode = Settings().novelRunMode;
+                const int maxChapters = Settings().novelRunMaxChapters;
+                const int checkpointEvery = Settings().novelCheckpointEvery;
+                const bool autoCreate = Settings().novelAutoCreateChapters;
+                async::RunOnWorker([dbPath, projectDir, mode, maxChapters, checkpointEvery,
+                                    autoCreate]() {
+                    ::shine::db::sqlite::Database db;
+                    if (auto r = db.Open({.path = dbPath}); !r) {
+                        const std::string err = r.error().message;
+                        async::PostToUi([err]() {
+                            g_runLoopStatus = "连跑失败：" + err;
+                            g_runLoopRunning = false;
+                        });
+                        return;
+                    }
+                    auto call = MakeLlmCall(&g_cancelGen);
+                    biz::NovelRunLoop loop(db, call);
+                    biz::RunRequest req;
+                    req.project_dir = projectDir;
+                    req.mode = biz::RunModeFromString(mode);
+                    req.max_chapters = maxChapters;
+                    req.checkpoint_every = checkpointEvery;
+                    req.auto_create_chapters = autoCreate;
+                    req.cancel = []() { return g_cancelGen.load(); };
+                    req.on_progress = [](const biz::RunProgress& p) {
+                        async::PostToUi([ord = p.chapter_ord, ph = p.phase, n = p.note]() {
+                            g_runLoopStatus = fmt::format("第 {} 章 · {}{}", ord, ph,
+                                                          n.empty() ? "" : (" · " + n));
+                        });
+                    };
+                    auto out = loop.Run(req);
+                    async::PostToUi([out]() {
+                        if (!out.refuse_reason.empty()) {
+                            g_runLoopStatus = "被拒启动：" + out.refuse_reason;
+                        } else {
+                            g_runLoopStatus = fmt::format("连跑结束：完成 {} · 续跑跳过 {}",
+                                                          out.chapters_done,
+                                                          out.chapters_resumed_skipped);
+                            if (out.stop) {
+                                g_runLoopStatus +=
+                                    fmt::format(" · {} {}", biz::StopCodeName(out.stop->code),
+                                                out.stop->detail);
+                            }
+                        }
+                        g_runLoopReport = out.stop_report_path;
+                        g_runLoopRunning = false;
+                    });
+                });
+            }
+        } else {
+            if (ImGui::Button("停止连跑", ImVec2(140, 0))) {
+                g_cancelGen = true;
+                g_runLoopStatus = "停止中…";
+            }
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", g_runLoopStatus.c_str());
+        if (!g_runLoopReport.empty()) {
+            ImGui::TextDisabled("停止报告：%s", g_runLoopReport.c_str());
+        }
+    }
 
     // P6.2：PROPOSED 待确认
     if (biz::NovelDb::Instance().isOpen()) {
@@ -809,6 +920,24 @@ bool RunMvpSelfCheck() {
 
 void DrawNovelWindow() {
     EnsureScan();
+    // 截图验收（S9-ui）：`SHINE_NOVEL_OPEN=<书名>` 开局直接打开该工程。只在前 60 帧尝试（之后交回用户），
+    // 开关名必须 ASCII（环境变量在 Windows 上按 ANSI 代码页传入，见 `Plan/坑与手法.md`）。
+    {
+        static int autoOpenFrames = 60;
+        static const std::string want = []() -> std::string {
+            const char* raw = std::getenv("SHINE_NOVEL_OPEN");
+            if (raw == nullptr || *raw == '\0') {
+                return {};
+            }
+            return util::AcpToUtf8(raw);
+        }();
+        if (autoOpenFrames > 0) {
+            --autoOpenFrames;
+            if (!want.empty() && g_openProject.empty()) {
+                (void)OpenProjectDb(want);
+            }
+        }
+    }
     ImGui::TextDisabled("目录：%s", util::PathToUtf8(RootDir()).c_str());
     ImGui::SameLine();
     if (ImGui::SmallButton("刷新")) {

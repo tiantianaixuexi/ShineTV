@@ -167,13 +167,14 @@ bool Init() {
         else if (want == "shots") target = SideView::Shots;
         else if (want == "gallery") target = SideView::Gallery;
         else if (want == "paint") target = SideView::Paint;
+        else if (want == "novel") target = SideView::Novel;
         else matched = false;
         if (matched) {
             State().sideView = target;
             State().sideOpen = true;
             log::Info("自检模式：侧栏停在「{}」（SHINE_SIDE_VIEW={}）", SideViewTitle(target), raw);
         } else {
-            log::Warn("SHINE_SIDE_VIEW={} 不认识（可用：assets/nodes/workflows/comfy/shots/gallery/paint）", raw);
+            log::Warn("SHINE_SIDE_VIEW={} 不认识（可用：assets/nodes/workflows/comfy/shots/gallery/paint/novel）", raw);
         }
     }
     // 自检辅助（截图验收用）：`SHINE_WINDOW=nodes|templates|shots|gallery` 直接把对应的独立浮窗/中央页打开
@@ -193,8 +194,13 @@ bool Init() {
                                                       : FocusWindow::Gallery;
             log::Info("自检模式：中央区切到「{}」（SHINE_WINDOW={}）",
                       want == "shots" ? "分镜" : (want == "paint" ? "画布" : "图库"), raw);
+        } else if (want == "novel") {
+            // 「小说」是 dock 页（`DrawDockedPanels`），抢焦点还需 `SHINE_SIDE_VIEW=novel`
+            State().focusFrames = 10;
+            State().focusWindow = FocusWindow::Novel;
+            log::Info("自检模式：中央区切到「小说」（SHINE_WINDOW=novel）");
         } else {
-            log::Warn("SHINE_WINDOW={} 不认识（可用：nodes/templates/shots/gallery/paint）", raw);
+            log::Warn("SHINE_WINDOW={} 不认识（可用：nodes/templates/shots/gallery/paint/novel）", raw);
         }
     }
     if (gpu::Ready()) {
