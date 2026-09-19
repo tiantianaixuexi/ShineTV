@@ -21,6 +21,7 @@
 //      种子的 `-1`（随机）在这里用**确定性派生值**（P5.5 提交前可再换成真随机，见 `Shot::EffectiveSeed()`）。
 //   2. **绝不产出半成品**：所有分镜先全部 `Resolve()` 成功，才动 JSON；任何失败直接返回中文 `error` 且 `apiJson` 为空。
 //   3. **不碰用户工程**：只读 `project`（按值传入的副本），回填由 P5.5 负责。
+#include "video/GenerationLedger.h" // 降级账（K28）
 #include "video/NodeIdPool.h"
 #include "video/VideoProject.h"
 
@@ -57,6 +58,9 @@ struct H3BuildOptions {
 struct H3BuildWarning {
     std::size_t shotIndex = 0;  // 0-based；`npos`（`static_cast<size_t>(-1)`）= 工程级告警
     std::string text;           // 中文，可直接显示
+    // 这条告警若是**降级**（K28）：填 `GenerationLedger.h` 的 `kDegrade*` 常量；空串 = 纯提示。
+    // 为什么在源头标类型：靠事后匹配中文文本分类必然脆，类型跟着文本一起产生才不会走样。
+    std::string degradeKind;
 };
 
 struct H3BuildResult {
@@ -64,6 +68,8 @@ struct H3BuildResult {
     std::string error;          // 中文；ok=false 时有效（此时 apiJson 一定为空）
     std::string apiJson;        // ok=true 时有效（pretty，稳定顺序）
     std::vector<H3BuildWarning> warnings;
+    // 类型化降级账（K28）= 上面 `degradeKind` 非空的那几条 + 引用解析带回来的降级（截断/种子统一）
+    std::vector<GenerationDegradation> degradations;
     std::size_t nodeCount = 0;
 
     // 每个**被编译进去**的分镜对应的节点（P5.5 用它定位输出）

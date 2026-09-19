@@ -32,6 +32,13 @@ inline constexpr std::string_view kDegradeNoReference = "no_reference";      // 
 inline constexpr std::string_view kDegradeNoControlNet = "no_controlnet";    // 配了 ControlNet 但没有控制图
 inline constexpr std::string_view kDegradeSizeAligned = "size_aligned";      // 宽高被对齐纠正（Sanitize 纠正）
 inline constexpr std::string_view kDegradeAssetNotReady = "asset_not_ready"; // 上游资产未就绪（`11` §2.7）
+// —— H3（视频）侧 ——
+inline constexpr std::string_view kDegradeRefTruncated = "ref_truncated";          // 参考图超上限被截断末尾
+inline constexpr std::string_view kDegradeFirstFrameIgnored = "first_frame_ignored"; // 链式优先，首帧图被忽略
+inline constexpr std::string_view kDegradeChainIgnored = "chain_ignored";          // 首段勾了链式 → 被忽略
+inline constexpr std::string_view kDegradeParamUnified = "param_unified";          // 模型级参数与首段不一致被统一
+inline constexpr std::string_view kDegradeSeedDerived = "seed_derived";            // 种子 -1（随机）→ 确定性派生值
+inline constexpr std::string_view kDegradeNameCollision = "name_collision";        // 同名不同路径 → 上传会互相覆盖
 
 // `shotIndex` 用 npos 表示「工程级」（不对应具体分镜）
 inline constexpr std::size_t kDegradeNoShot = static_cast<std::size_t>(-1);

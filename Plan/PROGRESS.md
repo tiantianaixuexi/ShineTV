@@ -1,7 +1,7 @@
 # ShineTV Studio — 进度表（合并后 2026-09-19）
 
 > 唯一进度入口。状态：⬜ 未开始 ｜ 🟡 进行中 ｜ ✅ 通过 ｜ ⛔ 阻塞 ｜ ⏸ 搁置。
-> **当前**：`main` = land + P5.7 + P6.1–P6.4 代码 + P8 关键项 + 小说系统 S4；自检全绿。
+> **当前**：`main` = land + P5.7 + P6.1–P6.4 代码 + P8 关键项 + 小说系统 S5；自检全绿。
 
 ---
 
@@ -17,7 +17,7 @@
 | P8 | 收尾 | 13 | 11 | 🟡 余 10 次开关机压测 + 设置窗滚动验收 |
 | G | 图片库 | 79 | 78 | ✅ 线完成（AVIF ⏸） |
 | 小说 | P1–P10 | — | P1–P9 ✅；P10 余 1 | 🟡 |
-| 小说系统 | S 序列 16 个 | 16 | 11 | 🟡 见 §0.1 |
+| 小说系统 | S 序列 16 个 | 16 | 12 | 🟡 见 §0.1 |
 
 **现在做哪个**
 
@@ -43,7 +43,7 @@
 - [x] **S3-pre** 初始化链 API 前置（`character_arcs`/`dialogue_styles`/`world_meta`/`themes`）— `s3pre-init-api`｜**8 个接口**（`UpsertArc`/`ListArcs`、`UpsertDialogueStyle`/`GetDialogueStyle`、`SetWorldMeta`/`GetWorldMeta`、`UpsertTheme`/`ListThemes`）；`graph=ok`、**15 项全 ok**、`[error]` 0 条
 - [x] **S3** `V0 ASSET_PIPELINE` 编排骨架（正脸→四视图→基础身体→服装）+ 依赖等待 C+B — `s3-asset-pipeline`｜`asset=ok`、**16 项全 ok**、ExitCode=0；四层父子链 + 幂等复用（不重复出图）；缺依赖按 C 挂起（未超期不降级、不产生任务）；超期按 B 降级 `degraded=1` + `audit_logs` + 降级清单；严格模式拒绝降级；失败路径资产置 `FAILED`
 - [x] **S4** 生成侧严谨性（`object_info` 不跳过 + 降级记账）— `s4-gen-strictness`｜`SHINE_SCENE_IMAGE_CHECK` **pass=21 fail=0**；未就绪 → `blocked=true ok=false`（拒绝提交，不再假通过）；降级类型化 `no_reference`/`no_controlnet`/`size_aligned` + `DegradationsToJson` + `<输出目录>/degradations.jsonl` 追加落盘 + `VideoTaskState.degradations`；小说侧 16 项自检无回归
-- [ ] **S5** `job_ids_json` + 小队列 + 角色资产优先 — `s5-shot-multi-job`
+- [x] **S5** `job_ids_json` + 小队列 + 角色资产优先 — `s5-shot-multi-job`｜`Shot.jobs` 多 job 账（**后到不覆盖先到**）+ 存盘往返逐字节一致 + 旧工程宽容读取；队列**忙时入队**（不再静默丢弃）、优先级 `Asset(0) < SceneImage(10) < ShotVideo(20)`、中断顺带清队列；H3 侧降级类型化（`no_reference`/`ref_truncated`/`param_unified`/`chain_ignored`/`first_frame_ignored`/`name_collision`）；S5 自检 **25 项全 PASS**、16 项无回归；UI 截图验收通过
 - [ ] **S6** `ToGenShot` 桥（小说分镜 → `VideoProject`）— `s6-togen-shot-bridge`
 - [ ] **S7** P1 余下五表补 API + 快照（`entity_versions`/`location_distances`/`scene_visuals`/`writing_style`/`author_rules`；`dependencies` 延后）— `s7-p1-graph-api`
 - [ ] **S8** 闭环回写（`StateDiff` + 门禁 G1–G5）— `s8-state-commit`

@@ -88,6 +88,16 @@ void AddNode(Draft& d, std::string& outId, std::string_view classType,
     return static_cast<std::int64_t>(hash & 0x7fffffffffffffffULL);
 }
 
+// 记一条编译告警。`degradeKind` 非空 = 这是**降级**（K28）：同一条同时进两个视图 ——
+// `warnings`（人读，日志/UI）与 `degradations`（类型化，进降级账 → 章级报告）。
+void AddWarning(H3BuildResult& out, std::size_t shotIndex, std::string text,
+                std::string_view degradeKind = {}) {
+    out.warnings.push_back({shotIndex, text, std::string{degradeKind}});
+    if (!degradeKind.empty()) {
+        out.degradations.push_back({std::string{degradeKind}, std::move(text), shotIndex});
+    }
+}
+
 } // namespace
 
 H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
@@ -160,6 +170,11 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
         for (const std::string& warning : resolved.warnings) {
             out.warnings.push_back({i, "第 " + util::FromInt(i + 1) + " 段「" + label + "」：" + warning});
         }
+        // 解析器带回来的**类型化降级**（参考图被截断、锁定种子被统一…）转进本结果的降级账
+        for (const GenerationDegradation& item : resolved.degradations) {
+            out.degradations.push_back(
+                {item.kind, "第 " + util::FromInt(i + 1) + " 段「" + label + "」：" + item.detail, i});
+        }
         PreparedShot item;
         item.index = i;
         item.shot = std::move(resolved.shot);
@@ -213,10 +228,13 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
     const double shiftVideo = prepared.front().shot.shift;
     for (const PreparedShot& item : prepared) {
         if (std::fabs(item.shot.shift - shiftVideo) > 1e-9) {
-            out.warnings.push_back({item.index, "本段 shift = " + util::FromDouble(item.shot.shift) +
-                                                    "，但 MiniMaxH3SigmaShift 是模型级、整片只能有一个值：已取第 " +
-                                                    util::FromInt(prepared.front().index + 1) + " 段的 " +
-                                                    util::FromDouble(shiftVideo)});
+            // 用户设的 shift 被模型级约束统一掉 = 降级（不是纯提示）：成片与他的设定不一致
+            AddWarning(out, item.index,
+                       "本段 shift = " + util::FromDouble(item.shot.shift) +
+                           "，但 MiniMaxH3SigmaShift 是模型级、整片只能有一个值：已取第 " +
+                           util::FromInt(prepared.front().index + 1) + " 段的 " +
+                           util::FromDouble(shiftVideo),
+                       kDegradeParamUnified);
         }
     }
     std::string shiftId;
@@ -256,8 +274,11 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
         if (seen == absByFile.end()) {
             absByFile.emplace(fileName, absoluteUtf8);
         } else if (seen->second != absoluteUtf8) {
-            out.warnings.push_back({kProjectLevel, "两个不同路径的文件同名（" + seen->second + " 与 " + absoluteUtf8 +
-                                                       "）：ComfyUI 按**文件名**取图，上传后会互相覆盖，请重命名"});
+            // 同名不同路径 → 上传后会互相覆盖（结果可能错），属降级
+            AddWarning(out, kProjectLevel,
+                       "两个不同路径的文件同名（" + seen->second + " 与 " + absoluteUtf8 +
+                           "）：ComfyUI 按**文件名**取图，上传后会互相覆盖，请重命名",
+                       kDegradeNameCollision);
         }
         // ② 再按文件名去重
         const auto found = loadImageByFile.find(fileName);
@@ -289,7 +310,9 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
         std::string chainedFrameId;
         if (shot.chainFromPrevious) {
             if (previousDecodeId.empty() || previousFrameCount <= 0) {
-                out.warnings.push_back({item.index, "第 " + util::FromInt(no) + " 段勾了「链式」，但它是第一段（或上一段不可用）：已忽略"});
+                AddWarning(out, item.index,
+                           "第 " + util::FromInt(no) + " 段勾了「链式」，但它是第一段（或上一段不可用）：已忽略",
+                           kDegradeChainIgnored);
             } else {
                 AddNode(draft, chainedFrameId, "ImageFromBatch",
                         {{"image", JLink(doc, previousDecodeId, 0)},
@@ -298,8 +321,9 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
             }
         }
         if (!chainedFrameId.empty() && !shot.firstFramePath.empty()) {
-            out.warnings.push_back({item.index,
-                                    "第 " + util::FromInt(no) + " 段同时设了「链式」与「首帧图」：链式优先，已忽略首帧图"});
+            AddWarning(out, item.index,
+                       "第 " + util::FromInt(no) + " 段同时设了「链式」与「首帧图」：链式优先，已忽略首帧图",
+                       kDegradeFirstFrameIgnored);
         }
 
         std::vector<std::pair<std::string, yyjson_mut_val*>> inputs;
@@ -330,8 +354,11 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
                 ++ordinal;
             }
             if (ordinal == 0) {
-                out.warnings.push_back({item.index, "第 " + util::FromInt(no) +
-                                                       " 段是参考图模式，但没有任何参考图也没接链式：等于纯文本出片（t2va）"});
+                // 这正是 K28 点名的降级：**无参考图 → 纯文生图**
+                AddWarning(out, item.index,
+                           "第 " + util::FromInt(no) +
+                               " 段是参考图模式，但没有任何参考图也没接链式：等于纯文本出片（t2va）",
+                           kDegradeNoReference);
             }
             AddNode(draft, conditioningId, "MiniMaxH3ReferenceToVideo", inputs);
         } else {
@@ -342,8 +369,10 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
             if (!firstFrameId.empty()) {
                 inputs.emplace_back("first_frame", JLink(doc, firstFrameId, 0));
             } else {
-                out.warnings.push_back({item.index, "第 " + util::FromInt(no) +
-                                                       " 段是首末帧模式，但没有首帧图也没接链式：等于纯文本出片（t2va）"});
+                AddWarning(out, item.index,
+                           "第 " + util::FromInt(no) +
+                               " 段是首末帧模式，但没有首帧图也没接链式：等于纯文本出片（t2va）",
+                           kDegradeNoReference);
             }
             AddNode(draft, conditioningId, "MiniMaxH3ImageToVideo", inputs);
         }
@@ -361,6 +390,8 @@ H3BuildResult BuildH3Workflow(const H3BuildOptions& options) {
         std::int64_t seed = shot.EffectiveSeed();
         if (seed < 0) {
             seed = DeterministicSeed(item.index, shot.prompt, width, height, length);
+            // **刻意不记为降级**：这是编译器文档化的确定性行为（本文件头 §1），不是"缺依赖"或"用户要的东西没给"。
+            // 若记成降级，默认 seed=-1 会让每条分镜都往 K28 账里塞一条噪音，反而淹没真的降级。
             out.warnings.push_back({item.index, "第 " + util::FromInt(no) + " 段种子为 -1（随机）：本次编译用确定性派生值 " +
                                                     util::FromInt(seed) + "（P5.5 提交前可替换为真随机）"});
         }

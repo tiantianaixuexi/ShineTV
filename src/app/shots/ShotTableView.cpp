@@ -103,58 +103,110 @@ struct StatusInfo {
     std::string tip;
 };
 
+// 状态列（S5：**按 job 聚合**，一镜多任务不互相覆盖 —— `11` 差距 11-16）
+//   ① 队列里命中本分镜的**任一** jobId（按 promptId 隔离，别的分镜/别的任务不影响本行）；
+//      同一分镜可能同时有多个 job 在队列里 → 运行中优先，其次排队中；
+//   ② 队列里没有 → 按 `Shot.jobs` 的账聚合：有失败说失败、全完成说完成、还有在途说已提交。
 [[nodiscard]] StatusInfo StatusOf(const Shot& shot) {
     StatusInfo out;
-    // ① 先看队列里这条 promptId（按 promptId 隔离，别的任务不影响本行）
+    const comfy::QueueModel::Row* live = nullptr;
+    const ShotJobRecord* liveJob = nullptr;
     for (const comfy::QueueModel::Row& row : g_queueRows) {
-        if (shot.lastPromptId.empty() || row.promptId != shot.lastPromptId) {
+        if (row.promptId.empty()) {
             continue;
         }
-        switch (row.state) {
-        case comfy::TaskState::Running:
-            out.text = row.progressMax > 0 ? "生成中 " + ProgressPercent(row.progress) : "生成中";
+        const ShotJobRecord* job = shot.FindJob(row.promptId);
+        if (job == nullptr) {
+            continue;
+        }
+        if (row.state == comfy::TaskState::Running) {
+            live = &row;
+            liveJob = job;
+            break; // 运行中最优先
+        }
+        if (row.state == comfy::TaskState::Pending && live == nullptr) {
+            live = &row;
+            liveJob = job;
+        }
+    }
+    if (live != nullptr && liveJob != nullptr) {
+        const std::string prefix = std::string{ShotJobKindLabel(liveJob->kind)} + " ";
+        if (live->state == comfy::TaskState::Running) {
+            out.text = prefix + (live->progressMax > 0 ? "生成中 " + ProgressPercent(live->progress) : "生成中");
             out.tone = Tone::Busy;
-            out.tip = row.nodeType.empty() ? row.nodeId : (row.nodeType + "  #" + row.nodeId);
+            out.tip = live->nodeType.empty() ? live->nodeId : (live->nodeType + "  #" + live->nodeId);
             return out;
-        case comfy::TaskState::Pending:
-            out.text = "排队中";
+        }
+        if (live->state == comfy::TaskState::Pending) {
+            out.text = prefix + "排队中";
             out.tone = Tone::Busy;
-            return out;
-        case comfy::TaskState::Failed:
-            out.text = "失败";
-            out.tone = Tone::Bad;
-            out.tip = row.hint.empty() ? row.error : (row.error + "\n建议：" + row.hint);
-            return out;
-        case comfy::TaskState::Cancelled:
-            out.text = "已取消";
-            out.tone = Tone::Neutral;
-            return out;
-        case comfy::TaskState::Done:
-            out.text = "完成";
-            out.tone = Tone::Ok;
             return out;
         }
     }
-    // ② 队列里没有 → 看工程里回填的结果（P5.5 写入）
-    if (!shot.lastError.empty()) {
-        out.text = "失败";
-        out.tone = Tone::Bad;
-        out.tip = shot.lastError;
+
+    // ② 队列里没有 → 按账聚合（一镜多任务：状态是"聚合"出来的，不是最后一个覆盖全部）
+    if (!shot.jobs.empty()) {
+        std::size_t done = 0;
+        std::size_t failed = 0;
+        for (const ShotJobRecord& item : shot.jobs) {
+            if (item.status == kJobStatusDone) {
+                ++done;
+            } else if (item.status == kJobStatusFailed) {
+                ++failed;
+            }
+        }
+        const std::string summary = shot.JobSummary();
+        if (failed > 0) {
+            out.text = "失败 " + util::FromInt(failed) + "/" + util::FromInt(shot.jobs.size());
+            out.tone = Tone::Bad;
+            out.tip = shot.LastErrorText() + "\n任务：" + summary;
+            return out;
+        }
+        if (done == shot.jobs.size()) {
+            out.text = "完成";
+            out.tone = Tone::Ok;
+            out.tip = "任务：" + summary;
+            return out;
+        }
+        if (shot.HasInFlightJob()) {
+            out.text = "已提交";
+            out.tone = Tone::Busy;
+            out.tip = "任务：" + summary;
+            return out;
+        }
+        out.text = "已中断";
+        out.tone = Tone::Neutral;
+        out.tip = "任务：" + summary;
         return out;
     }
-    if (!shot.lastOutputFiles.empty()) {
-        out.text = "完成";
-        out.tone = Tone::Ok;
-        return out;
-    }
-    if (!shot.lastPromptId.empty()) {
-        out.text = "已提交";
-        out.tone = Tone::Busy;
-        return out;
-    }
+
     out.text = shot.IsSubmittable() ? "待生成" : "未就绪";
     out.tone = Tone::Neutral;
     return out;
+}
+
+// 回填一次任务的账（S5）：**追加**一条，绝不碰已有的其它 job；同 jobId 重复回调则原地更新。
+void RecordJobResult(Shot& shot, const VideoTaskState& state, ShotJobKind kind) {
+    ShotJobRecord record;
+    record.jobId = state.promptId.empty() ? ("local-" + util::FromInt(shot.jobs.size() + 1)) : state.promptId;
+    record.kind = kind;
+    if (state.phase == VideoTaskPhase::Done) {
+        record.status = std::string{kJobStatusDone};
+        record.files = state.savedFiles;
+    } else if (state.phase == VideoTaskPhase::Failed) {
+        record.status = std::string{kJobStatusFailed};
+        record.error = state.error;
+    } else {
+        record.status = std::string{kJobStatusCancelled};
+        record.error = state.error;
+    }
+    for (ShotJobRecord& item : shot.jobs) {
+        if (item.jobId == record.jobId) {
+            item = std::move(record);
+            return;
+        }
+    }
+    shot.jobs.push_back(std::move(record));
 }
 
 [[nodiscard]] ImVec4 ToneColor(Tone tone) {
@@ -253,9 +305,7 @@ void ApplyCommand(const Command& cmd) {
     case Command::Kind::DuplicateShot: {
         if (cmd.index < ed.project.shots.size()) {
             Shot copy = ed.project.shots[cmd.index];
-            copy.lastPromptId.clear(); // 副本是"还没生成过"的新分镜
-            copy.lastOutputFiles.clear();
-            copy.lastError.clear();
+            copy.jobs.clear(); // 副本是"还没生成过"的新分镜（运行期账一并清掉）
             copy.title += "（副本）";
             ed.project.shots.insert(ed.project.shots.begin() + static_cast<std::ptrdiff_t>(cmd.index) + 1,
                                     std::move(copy));
@@ -277,8 +327,7 @@ void ApplyCommand(const Command& cmd) {
     }
     case Command::Kind::ClearError: {
         if (cmd.index < ed.project.shots.size()) {
-            ed.project.shots[cmd.index].lastError.clear();
-            ed.project.shots[cmd.index].lastPromptId.clear();
+            ed.project.shots[cmd.index].jobs.clear();
             ed.dirty = true;
             ed.message = "已清除分镜 #" + util::FromInt(cmd.index + 1) + " 的错误与提交记录";
         }
@@ -357,12 +406,17 @@ void MaybeInjectDemoShots() {
         s.height = 480;
         s.seed = i;
         if (i % 5 == 4) {
-            s.lastError = "自检占位错误：分镜 #" + util::FromInt(i + 1);
+            s.jobs.push_back({.jobId = "self-test-img-" + util::FromInt(i + 1),
+                              .kind = ShotJobKind::SceneImage,
+                              .status = std::string{kJobStatusFailed},
+                              .error = "自检占位错误：分镜 #" + util::FromInt(i + 1)});
         }
         if (!demoOutput.empty() && i % 4 != 1) { // 一屏里同时看到"有产物 / 产物缺失 / 无产物"三种
             const bool missing = (i % 4 == 2);   // 故意指向一个不存在的文件 → 验证 P5.6 S3 的"文件不存在"
-            s.lastOutputFiles = {missing ? demoOutput + ".__missing__" : demoOutput};
-            s.lastPromptId = "self-test-" + util::FromInt(i + 1);
+            s.jobs.push_back({.jobId = "self-test-vid-" + util::FromInt(i + 1),
+                              .kind = ShotJobKind::Video,
+                              .status = std::string{kJobStatusDone},
+                              .files = {missing ? demoOutput + ".__missing__" : demoOutput}});
         }
     }
     ed.selected = 0;
@@ -698,8 +752,9 @@ void DrawTable() {
             if (!status.tip.empty() && ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("%s", status.tip.c_str());
             }
-            if (!shot.lastOutputFiles.empty()) {
-                const std::string& newest = shot.lastOutputFiles.back();
+            const std::vector<std::string> outputs = shot.AllOutputFiles();
+            if (!outputs.empty()) {
+                const std::string& newest = outputs.back();
                 std::error_code ec;
                 const bool exists = std::filesystem::exists(util::PathFromUtf8(newest), ec);
                 ImGui::SameLine();
@@ -709,7 +764,7 @@ void DrawTable() {
                     }
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip("用系统播放器打开（共 %zu 个产物，播最新一个）：\n%s",
-                                          shot.lastOutputFiles.size(), newest.c_str());
+                                          outputs.size(), newest.c_str());
                     }
                 } else {
                     // P5.6 S3：产物被移动/删除 → 按钮置灰 + 明确提示（点了也只会得到"文件不存在"）
@@ -753,10 +808,11 @@ void DrawTable() {
             }
 
             ImGui::TableSetColumnIndex(9);
-            if (!shot.lastError.empty()) {
+            const std::string lastError = shot.LastErrorText(); // S5：从多 job 账里取"最近一条失败"
+            if (!lastError.empty()) {
                 ImGui::TextColored(ToneColor(Tone::Bad), "!");
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("错误详情：\n%s", shot.lastError.c_str());
+                    ImGui::SetTooltip("错误详情：\n%s", lastError.c_str());
                 }
             } else if (g_preview.valid && g_preview.shotIndex == i && !g_preview.result.ok) {
                 ImGui::TextColored(ToneColor(Tone::Bad), "解析");
@@ -996,7 +1052,8 @@ void DrawRunSection() {
     const VideoTaskState& task = runner.State();
 
     app::ui::SectionText("生成");
-    ImGui::BeginDisabled(task.Busy() || !shot.IsSubmittable());
+    // S5：**忙时也能提交**（进队列，按优先级排队跑）—— 以前这里禁掉按钮，等于"一次只能点一个分镜"
+    ImGui::BeginDisabled(!shot.IsSubmittable());
     if (ImGui::Button("生成这一段")) {
         const std::size_t index = ed.selected;
         const bool started = runner.StartShot(ed.project, index, ProjectDir(), MediaLibraryDir(),
@@ -1006,36 +1063,35 @@ void DrawRunSection() {
                                                      return;
                                                  }
                                                  Shot& target = current.project.shots[index];
-                                                 target.lastPromptId = state.promptId;
-                                                 if (state.phase == VideoTaskPhase::Done) {
-                                                     target.lastOutputFiles = state.savedFiles;
-                                                     target.lastError.clear();
+                                                 // S5：**追加**一条任务账（同一分镜的其它任务不被覆盖）
+                                                 RecordJobResult(target, state, ShotJobKind::Video);
+                                                 if (state.phase == VideoTaskPhase::Done && !state.savedFiles.empty()) {
                                                      // P5.6 S3：完成后自动选中"最近输出"
                                                      // （刷历史 → 优先按刚落盘的文件名选中 → 「输出」页/右栏预览跟着跳过去）
-                                                     if (!state.savedFiles.empty()) {
-                                                         const std::filesystem::path newest =
-                                                             util::PathFromUtf8(state.savedFiles.back());
-                                                         media::MediaLibrary::Instance().RefreshAndSelectLatest(
-                                                             util::FileNameToUtf8(newest));
-                                                     }
-                                                 } else {
-                                                     target.lastError = state.error;
+                                                     const std::filesystem::path newest =
+                                                         util::PathFromUtf8(state.savedFiles.back());
+                                                     media::MediaLibrary::Instance().RefreshAndSelectLatest(
+                                                         util::FileNameToUtf8(newest));
                                                  }
                                                  current.dirty = true;
                                                  current.message = "任务「" + state.label + "」" +
                                                                    VideoTaskPhaseLabel(state.phase) + "：" + state.detail;
                                              });
         if (!started) {
-            ed.message = "无法开始：已有任务在跑，或该分镜不可提交";
+            ed.message = "无法开始：该分镜不可提交（缺提示词 / 规格非正 / 参考图超上限）";
         }
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::BeginDisabled(!task.Busy());
+    ImGui::BeginDisabled(!task.Busy() && runner.QueueSize() == 0);
     if (ImGui::Button("中断")) {
-        runner.Cancel();
+        runner.Cancel(); // 顺带清空待跑队列（中断 = 停下来，不是跑下一个）
     }
     ImGui::EndDisabled();
+    if (runner.QueueSize() > 0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("队列 %zu 个待跑（角色资产优先）", runner.QueueSize());
+    }
     if (!shot.IsSubmittable()) {
         ImGui::SameLine();
         ImGui::TextDisabled("（先填提示词并把规格设正）");
@@ -1043,7 +1099,7 @@ void DrawRunSection() {
 
     // —— P5.7：出分镜图（SD1.5 SceneToImage；缺 checkpoint 时给中文降级提示）——
     ImGui::Spacing();
-    ImGui::BeginDisabled(task.Busy() || shot.prompt.empty());
+    ImGui::BeginDisabled(shot.prompt.empty());
     if (ImGui::Button("出分镜图")) {
         const std::size_t index = ed.selected;
         const bool started = video::StartSceneImage(
@@ -1053,18 +1109,13 @@ void DrawRunSection() {
                     return;
                 }
                 Shot& target = current.project.shots[index];
-                target.lastPromptId = state.promptId;
-                if (state.phase == VideoTaskPhase::Done) {
-                    target.lastOutputFiles = state.savedFiles;
-                    target.lastError.clear();
+                // S5：**追加**一条任务账（分镜图与视频各成一条，互不覆盖）
+                RecordJobResult(target, state, ShotJobKind::SceneImage);
+                if (state.phase == VideoTaskPhase::Done && !state.savedFiles.empty()) {
                     // 出图结果回填「首帧图」，便于 fl2va / 再出图引用
-                    if (!state.savedFiles.empty()) {
-                        const std::filesystem::path newest = util::PathFromUtf8(state.savedFiles.back());
-                        target.firstFramePath = state.savedFiles.back();
-                        media::MediaLibrary::Instance().RefreshAndSelectLatest(util::FileNameToUtf8(newest));
-                    }
-                } else {
-                    target.lastError = state.error;
+                    const std::filesystem::path newest = util::PathFromUtf8(state.savedFiles.back());
+                    target.firstFramePath = state.savedFiles.back();
+                    media::MediaLibrary::Instance().RefreshAndSelectLatest(util::FileNameToUtf8(newest));
                 }
                 current.dirty = true;
                 current.message = "分镜图「" + state.label + "」" + VideoTaskPhaseLabel(state.phase) + "：" + state.detail;
@@ -1109,52 +1160,60 @@ void DrawRunSection() {
     }
 }
 
-// P5.6 S1/S3：最近一次运行的产物清单 —— 每个产物「播放」（系统播放器）/「定位」，
-// 文件被移动或删除时**当场标红说明**（不崩、不弹系统错误框）。摆在「生成」区下面，不用滚到底部。
+// P5.6 S1/S3 → S5：**每个任务**一行（一镜多任务各自成账，不互相覆盖），产物可「播放」/「定位」，
+// 文件被移动或删除时当场标红（不崩、不弹系统错误框）。摆在「生成」区下面，不用滚到底部。
 void DrawLastRunSection() {
     EditorState& ed = Editor();
     if (ed.selected >= ed.project.shots.size()) {
         return;
     }
     Shot& shot = ed.project.shots[ed.selected];
-    if (shot.lastError.empty() && shot.lastPromptId.empty() && shot.lastOutputFiles.empty()) {
+    if (shot.jobs.empty()) {
         return;
     }
-    app::ui::SectionText("最近一次运行（产物可播放）");
-    app::ui::KvRow("promptId", shot.lastPromptId.empty() ? "—" : shot.lastPromptId);
-    app::ui::KvRow("输出", util::FromInt(shot.lastOutputFiles.size()) + " 个文件");
-    if (shot.lastOutputFiles.empty()) {
-        ImGui::TextDisabled("（还没有产物）");
-    }
-    for (std::size_t k = 0; k < shot.lastOutputFiles.size(); ++k) {
-        ImGui::PushID(static_cast<int>(k));
-        const std::string& file = shot.lastOutputFiles[k];
-        const std::filesystem::path path = util::PathFromUtf8(file);
-        std::error_code ec;
-        const bool exists = std::filesystem::exists(path, ec); // S3：文件被移动/删除时明确提示
-        const std::string name = util::FileNameToUtf8(path);
-        if (ImGui::SmallButton("播放")) {
-            PlayFile(file);
+    const std::vector<std::string> outputs = shot.AllOutputFiles();
+    app::ui::SectionText("运行记录（一镜多任务 · 产物可播放）");
+    app::ui::KvRow("任务", util::FromInt(shot.jobs.size()) + " 个：" + shot.JobSummary());
+    app::ui::KvRow("产物", util::FromInt(outputs.size()) + " 个文件");
+
+    // 最近的排在最前
+    for (std::size_t r = 0; r < shot.jobs.size(); ++r) {
+        const std::size_t i = shot.jobs.size() - 1 - r;
+        const ShotJobRecord& job = shot.jobs[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("%s · %s · %s", ShotJobKindLabel(job.kind),
+                    job.jobId.empty() ? "（无 promptId）" : job.jobId.c_str(), JobStatusLabel(job.status));
+        if (!job.error.empty()) {
+            ImGui::TextColored(ToneColor(Tone::Bad), "    %s", job.error.c_str());
         }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("定位")) {
-            if (const std::string error = util::ShellReveal(path); !error.empty()) {
-                ed.message = error;
+        for (std::size_t k = 0; k < job.files.size(); ++k) {
+            const std::string& file = job.files[k];
+            const std::filesystem::path path = util::PathFromUtf8(file);
+            std::error_code ec;
+            const bool exists = std::filesystem::exists(path, ec); // S3：文件被移动/删除时明确提示
+            const std::string name = util::FileNameToUtf8(path);
+            ImGui::PushID(static_cast<int>(k));
+            if (ImGui::SmallButton("播放")) {
+                PlayFile(file);
             }
-        }
-        ImGui::SameLine();
-        if (exists) {
-            ImGui::TextUnformatted(name.c_str());
-        } else {
-            ImGui::TextColored(ToneColor(Tone::Bad), "%s（文件不存在，可能已被移动或删除）", name.c_str());
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("%s", file.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("定位")) {
+                if (const std::string error = util::ShellReveal(path); !error.empty()) {
+                    ed.message = error;
+                }
+            }
+            ImGui::SameLine();
+            if (exists) {
+                ImGui::TextUnformatted(name.c_str());
+            } else {
+                ImGui::TextColored(ToneColor(Tone::Bad), "%s（文件不存在，可能已被移动或删除）", name.c_str());
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", file.c_str());
+            }
+            ImGui::PopID();
         }
         ImGui::PopID();
-    }
-    if (!shot.lastError.empty()) {
-        ImGui::TextColored(ToneColor(Tone::Bad), "%s", shot.lastError.c_str());
     }
 }
 

@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -74,11 +75,33 @@ struct VideoBuildResult {
     std::vector<GenerationDegradation> degradations;
 };
 
+// 队列优先级（`11` §2.7 W5）：**数字小的先跑**。角色资产（V0）必须先于依赖它的分镜图，
+// 否则分镜图拿不到参考图、只能降级。同级之间按入队顺序 FIFO。
+enum class VideoJobPriority : int {
+    Asset = 0,      // 角色资产（正脸/四视图/基础身体/服装）
+    SceneImage = 10, // 分镜图（依赖角色资产）
+    ShotVideo = 20, // 分镜视频（H3）
+};
+
+[[nodiscard]] constexpr const char* VideoJobPriorityLabel(VideoJobPriority priority) noexcept {
+    switch (priority) {
+    case VideoJobPriority::Asset:
+        return "角色资产";
+    case VideoJobPriority::SceneImage:
+        return "分镜图";
+    case VideoJobPriority::ShotVideo:
+        return "分镜视频";
+    }
+    return "任务";
+}
+
 // 一次要跑的任务：两个阶段各给一个"生产函数"（都跑在 **worker** 上）。
 // H3 分镜走 `StartShot()` 的封装；其它产物（分镜图等）可以自己拼一个 job 复用整条链路。
 struct VideoJob {
     std::string label;
     std::size_t shotIndex = static_cast<std::size_t>(-1);
+    // 队列优先级；忙时提交会入队，空闲时按它挑选下一个（角色资产先于分镜图）
+    VideoJobPriority priority = VideoJobPriority::SceneImage;
     // ① 解析阶段：产出**要上传的本地文件绝对路径**（UTF-8）；失败写 error 并返回空
     std::function<std::vector<std::string>(std::string& error)> collectUploads;
     // ② 编译阶段：拿到"原始文件名 → 上传后的文件名"映射，产出 API JSON + 降级账；失败写 error
@@ -95,8 +118,14 @@ public:
     void Shutdown();
     void Tick(); // **UI 线程**，每帧
 
-    // 通用入口。`Resolving` 起手；同一时刻只允许一个任务（`Busy()` 时返回 false）
+    // 通用入口。空闲 → `Resolving` 起手；**忙 → 入队**（返回 true，`QueueSize()` 可见）。
+    // 同一时刻仍只跑一个任务（ComfyUI 单卡），队列只负责"排队 + 按优先级挑选"（`11` §2.7 W5）。
     [[nodiscard]] bool Start(VideoJob job);
+
+    // 待跑队列长度（不含正在跑的那个）
+    [[nodiscard]] std::size_t QueueSize() const noexcept { return queue_.size(); }
+    // 清空待跑队列（「中断」会顺带调用 —— 中断的语义是"停下来"，不是"跑下一个"）
+    void ClearQueue() noexcept { queue_.clear(); }
 
     // 便捷封装：编译并提交某个分镜的 H3 工作流（`projectDir` = 角色资产根）
     [[nodiscard]] bool StartShot(const VideoProject& project, std::size_t shotIndex,
@@ -119,7 +148,14 @@ public:
 private:
     VideoTaskRunner() = default;
 
+    // 队列条目（`seq` = 入队序，同级 FIFO 用）
+    struct QueuedJob {
+        VideoJob job;
+        std::int64_t seq = 0;
+    };
+
     void Fail(std::string error);
+    void StartNow(VideoJob job); // 真正起手（`Start` 与 `Tick` 都走它）
     void FinishBackfill();
     void AdvanceToRunning(std::string promptId);
     void PollQueue();
@@ -130,10 +166,26 @@ private:
 
     VideoTaskState state_;
     VideoJob job_;                       // 当前任务（含两个生产函数）
+    std::vector<QueuedJob> queue_;       // 待跑队列（不含当前任务）
+    std::int64_t nextSeq_ = 0;
     std::vector<comfy::HistoryMedia> pendingMedia_;
     std::filesystem::path outputDir_;
     std::int64_t historyRequestedMs_ = 0;
     std::size_t downloadDone_ = 0;
 };
+
+// 队列挑选的输入（只取挑选需要的两个字段 → 纯函数，离线可断言）
+struct QueuePickCandidate {
+    int priority = 0;   // `VideoJobPriority` 的整数值
+    std::int64_t seq = 0; // 入队序（同级 FIFO）
+};
+
+// 队列挑选规则（`11` §2.7 W5）：优先级小的先；同级按入队序。**纯函数**。
+// 返回下标；空输入返回 `npos`（`static_cast<size_t>(-1)`）。
+[[nodiscard]] std::size_t PickNextQueuedJobIndex(std::span<const QueuePickCandidate> candidates) noexcept;
+
+// 离线自检（`SHINE_SCENE_IMAGE_CHECK` 会连带跑）：队列优先级 + 一镜多 job 不互相覆盖 +
+// H3 侧降级类型化。返回 fail 条数（0 = 全过）。
+[[nodiscard]] int RunVideoQueueSelfCheck();
 
 } // namespace shine::video
