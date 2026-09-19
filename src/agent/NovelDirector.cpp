@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <random>
 #include <system_error>
 #include <thread>
@@ -360,36 +361,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     result.body = body;
     result.title = ch->title;
 
-    // EXTRACT（`07` §2.2 的 ②）：LLM 只负责"从正文里看出变化"，**基线由代码读**
-    Report(progressCb, Phase::Extract, 90, "Extractor");
-    const std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
-    auto er = CallLlm("extractor", exUser, "EXTRACT", req, result.calls);
-    std::string summary = body.substr(0, std::min<std::size_t>(body.size(), 80));
-    novelcore::StateDiff diff;
-    bool hasDiff = false;
-    if (er) {
-        const auto ej = ExtractOutputText(*er);
-        yyjson_doc* doc = yyjson_read(ej.data(), ej.size(), 0);
-        if (doc) {
-            yyjson_val* root = yyjson_doc_get_root(doc);
-            const auto s = util::json::GetStrCopy(root, "summary");
-            if (!s.empty()) summary = s;
-            yyjson_doc_free(doc);
-        }
-        // S8：把 extractor 的**完整** StateDiff 解出来（契约 `02` §2.5）—— 原先这里只取 summary，
-        // 于是章节生成完**从不回写世界状态**（`07` 差距 07-1，本章不改变世界，长篇必崩）。
-        if (novelcore::StateDiffFromJson(ej, diff)) {
-            if (diff.chapter_id <= 0) {
-                diff.chapter_id = req.chapter_id;
-            }
-            hasDiff = true;
-        } else if (!util::Trim(ej).empty()) {
-            log::Warn("Extractor 输出不是合法的 StateDiff JSON（本章不回写状态）：{}",
-                      util::Trim(ej).substr(0, 200));
-        }
-    }
-
-    // SAVE
+    // SAVE（正文落盘 —— 正文不随「状态校验重做」而变，故在重做循环之前写一次）
     Report(progressCb, Phase::Save, 95, "写入章节");
     novelcore::ChapterRow row = *ch;
     row.body = body;
@@ -398,17 +370,59 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     if (auto id = g.UpsertChapter(row); !id) {
         return std::unexpected(AgentError{"save", id.error().message});
     }
-    (void)mem.Write({.kind = "chapter_summary",
-                     .chapter_id = req.chapter_id,
-                     .content = summary,
-                     .summary = summary});
-    (void)g.LogAudit("agent", "generate_chapter", "chapter", req.chapter_id,
-                     fmt::format("revisions={}", revisions));
 
-    // S8（闭环回写）：门禁 G1–G5 + 14 块事务。G1 = 本章评审结论；G2 = 提交模块自己能跑的机器校验
-    // （`06` 的 K01–K29 尚未全量实现，见 `NovelCommit.h` 的说明）。**门禁拒绝 ≠ 生成失败**：
-    // 正文已落盘，状态回写留给修订后重提（`07` §2.3 的失败处理）。
-    if (hasDiff) {
+    // ———— EXTRACT → 提交门禁（`06` §2.6：机器校验失败**回到产出该对象的阶段重做**）————
+    // `07` §2.2 的 ②「模型提取」+ ③「差分校验」在这里成环：extractor 产出 StateDiff → 提交门禁
+    // （G2 = `06` §2.3 K01–K29）→ 被机器校验挡下则**重跑 extractor**（把失败清单喂回去让它针对性修），
+    // 上限 `03` §2.6 的 `max_validate_retry`（默认 2）。基线仍由代码读（`07` §2.2 ①），不交给模型。
+    std::string summary = body.substr(0, std::min<std::size_t>(body.size(), 80));
+    novelcore::CommitResult commit;
+    bool hasDiff = false;
+    const int maxValidateRetries = req.max_validate_retries > 0 ? req.max_validate_retries : 2;
+    // 同章同 check_id 的累计失败次数 → `09` §2.2 S1 的输入（重复条目 = 次数）
+    std::map<std::string, int> checkFailCounts;
+
+    for (int attempt = 0; attempt <= maxValidateRetries; ++attempt) {
+        Report(progressCb, Phase::Extract, 90,
+               attempt == 0 ? std::string{"Extractor"}
+                            : fmt::format("Extractor 重做（第 {} 次 · `06` §2.6 回产出阶段）", attempt));
+        std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
+        if (attempt > 0) {
+            exUser += fmt::format(
+                "\n\n【上一版 StateDiff 未通过机器校验（`06` §2.3），请**只修这些问题**后重新输出"
+                "完整 StateDiff】\n{}\n",
+                commit.checks_describe);
+        }
+        auto er = CallLlm("extractor", exUser, "EXTRACT", req, result.calls);
+        novelcore::StateDiff diff;
+        hasDiff = false;
+        if (er) {
+            const auto ej = ExtractOutputText(*er);
+            yyjson_doc* doc = yyjson_read(ej.data(), ej.size(), 0);
+            if (doc) {
+                yyjson_val* root = yyjson_doc_get_root(doc);
+                const auto s = util::json::GetStrCopy(root, "summary");
+                if (!s.empty()) summary = s;
+                yyjson_doc_free(doc);
+            }
+            // S8：把 extractor 的**完整** StateDiff 解出来（契约 `02` §2.5）—— 原先这里只取 summary，
+            // 于是章节生成完**从不回写世界状态**（`07` 差距 07-1，本章不改变世界，长篇必崩）。
+            if (novelcore::StateDiffFromJson(ej, diff)) {
+                if (diff.chapter_id <= 0) {
+                    diff.chapter_id = req.chapter_id;
+                }
+                hasDiff = true;
+            } else if (!util::Trim(ej).empty()) {
+                log::Warn("Extractor 输出不是合法的 StateDiff JSON（本章不回写状态）：{}",
+                          util::Trim(ej).substr(0, 200));
+            }
+        }
+        if (!hasDiff) {
+            break; // 没有 diff → 不提交（重做也没用）
+        }
+
+        // S8（闭环回写）：门禁 G1–G5 + 14 块事务。**门禁拒绝 ≠ 生成失败**：正文已落盘
+        // （`07` §2.3 的失败处理）；其中 G2 的机器校验失败则回到本阶段重做。
         novelcore::CommitContext cctx;
         cctx.chapter_id = req.chapter_id;
         cctx.review_pass = reviewPassed;
@@ -417,17 +431,49 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         cctx.canon_mode = req.canon_mode.empty() ? "manual" : req.canon_mode;
         cctx.chapter_summary = summary;
         cctx.snapshot_dir = req.snapshot_dir;
-        if (novelcore::NovelDb::Instance().isOpen()) {
-            // 工程根 = novel.db 的父目录（与 `NovelImageStore::ProjectDirOfDb` 同口径）
-            const auto projectRoot = novelcore::NovelDb::Instance().path().parent_path();
+        // S12：工程根优先用调用方给的（`NovelRunLoop` 知道它）；否则退回 novel.db 的父目录
+        std::filesystem::path projectRoot;
+        if (!req.project_dir.empty()) {
+            projectRoot = util::PathFromUtf8(req.project_dir);
+        } else if (novelcore::NovelDb::Instance().isOpen()) {
+            projectRoot = novelcore::NovelDb::Instance().path().parent_path();
+        }
+        if (!projectRoot.empty()) {
             if (cctx.snapshot_dir.empty()) {
                 cctx.snapshot_dir = util::PathToUtf8(projectRoot / "snapshots");
             }
             // S11：K 校验要用它找 `work/`（K12）与降级账（K28）
             cctx.project_dir = util::PathToUtf8(projectRoot);
         }
-        const novelcore::CommitResult commit = novelcore::CommitChapterState(*db_, diff, cctx);
-        // S9（`09` §2.2 S4/S9）：契约类问题的观测量 —— 缺失引用处数 + G4（契约非空/合法）失败
+        commit = novelcore::CommitChapterState(*db_, diff, cctx);
+        if (commit.ok) {
+            break;
+        }
+        // 只有**机器校验**（G2 的 K01–K29）挡下才值得重做提取：G1（评审）/G3（快照）/G4（契约）
+        // 类原因重跑 extractor 不会变好（`07` §2.3 的失败处理），别浪费调用。
+        if (commit.failed_check_ids.empty()) {
+            break;
+        }
+        for (const std::string& id : commit.failed_check_ids) {
+            ++checkFailCounts[id];
+        }
+        if (attempt >= maxValidateRetries) {
+            break;
+        }
+        ++result.validation_retries;
+    }
+
+    (void)mem.Write({.kind = "chapter_summary",
+                     .chapter_id = req.chapter_id,
+                     .content = summary,
+                     .summary = summary});
+    (void)g.LogAudit("agent", "generate_chapter", "chapter", req.chapter_id,
+                     fmt::format("revisions={} validate_retries={}", revisions,
+                                 result.validation_retries));
+
+    if (hasDiff) {
+        // S9（`09` §2.2 S4/S9）：契约类问题的观测量 —— 缺失引用处数 + G4（契约非空/合法）失败。
+        // 只认**最后一次尝试**的结论（重做的中间轮不重复计数）。
         for (const auto& iss : commit.gates.issues) {
             if (iss.code == "contract") {
                 ++result.missing_entity_refs;
@@ -435,12 +481,6 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                 // S11：K02 `entity.exists` 的失败同样是「引用不存在实体」，计入 S9 的观测量
                 ++result.missing_entity_refs;
             }
-        }
-        // S11：把 K01–K29 的不通过项交给运行循环（`09` §2.2 S1 的唯一数据来源）
-        result.failed_check_ids = commit.failed_check_ids;
-        if (!result.failed_check_ids.empty()) {
-            log::Warn("章节 {} 的 K01–K29 校验未通过（{} 项）：{}", req.chapter_id,
-                      result.failed_check_ids.size(), commit.checks_describe);
         }
         if (!commit.ok && !commit.gates.g4_diff_valid) {
             ++result.contract_failures;
@@ -452,9 +492,25 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         if (!commit.ok) {
             log::Warn("章节 {} 的状态回写未提交：{}", req.chapter_id, commit.error);
         } else if (!commit.skipped) {
-            log::Info("章节 {} 状态已回写：{}", req.chapter_id, commit.applied.size() > 0
-                                                          ? commit.applied.front()
-                                                          : std::string{"（无变化块）"});
+            log::Info("章节 {} 状态已回写：{}", req.chapter_id,
+                      commit.applied.size() > 0 ? commit.applied.front()
+                                                : std::string{"（无变化块）"});
+        }
+        // S11/S12：把「最终仍未通过」的机器校验项交给运行循环（`09` §2.2 S1 的唯一数据来源）。
+        // 重做后通过的**不算失败**（否则会误报停止条件）。
+        if (commit.ok) {
+            result.failed_check_ids.clear();
+        } else {
+            result.failed_check_ids.clear();
+            for (const auto& [id, n] : checkFailCounts) {
+                for (int i = 0; i < n; ++i) {
+                    result.failed_check_ids.push_back(id);
+                }
+            }
+            if (!result.failed_check_ids.empty()) {
+                log::Warn("章节 {} 的 K01–K29 校验未通过（重做 {} 次）：{}", req.chapter_id,
+                          result.validation_retries, commit.checks_describe);
+            }
         }
     } else {
         result.commit_note = "extractor 没有给出 StateDiff，未回写状态";
@@ -493,7 +549,9 @@ bool NovelDirector::RunSelfCheck() {
 
     // Mock LLM：按 role 返回不同 JSON
     int planCalls = 0;
-    LlmCallFn mock = [&](std::string_view instructions, std::string_view)
+    int extractCalls = 0;   // S12：第 1 版故意不合规，用来验证「回 EXTRACT 重做」
+    bool retryHintSeen = false; // S12：重做时把失败清单喂回给 extractor 了吗
+    LlmCallFn mock = [&](std::string_view instructions, std::string_view user)
         -> std::expected<std::string, AgentError> {
         const std::string ins{instructions};
         if (ins.find("规划器") != std::string::npos || ins.find("planner") != std::string::npos) {
@@ -511,20 +569,34 @@ bool NovelDirector::RunSelfCheck() {
         if (ins.find("抽取") != std::string::npos || ins.find("extractor") != std::string::npos) {
             // S8：extractor 的产物是**完整 StateDiff**（`02` §2.5），不再是只有 summary 的壳。
             // 这里造最小一份：一条角色状态 + 一条伏笔 → 提交后库里应能查到（端到端判据）。
+            ++extractCalls;
+            if (extractCalls >= 2) {
+                // 重做轮的 user 消息里必须带上上一轮的失败清单（否则"重做"等于盲猜）
+                retryHintSeen = std::string{user}.find("未通过机器校验") != std::string::npos;
+            }
             novelcore::StateDiff d;
             d.chapter_id = *ch;
             d.input_state_hash = "sha1:director-selfcheck";
-            d.characters.push_back({.entity_id = *pov,
-                                    .body_state = "旧伤",
-                                    .mind_state = "警觉",
-                                    .goal = "活着走出雪原",
-                                    .reason = "自检：雪原负伤前行"});
-            d.foreshadows.push_back({.op = "new",
-                                     .title = "黑戒指",
-                                     .content = "雪原上捡到的黑戒指",
-                                     .status = "PLANTED",
-                                     .setup_ch = *ch,
-                                     .importance = 70});
+            if (extractCalls == 1) {
+                // S12：第 1 版引用不存在的实体（K02 + D1）→ 提交门禁拒绝 → 必须回到本阶段重做；
+                // 顺带断言重做时把失败清单喂了回来（`ins` 里应含 K01–K29 的报告）
+                d.characters.push_back({.entity_id = 999999,
+                                        .body_state = "不该存在",
+                                        .mind_state = "不该存在",
+                                        .reason = "S12 自检：故意引用不存在的实体"});
+            } else {
+                d.characters.push_back({.entity_id = *pov,
+                                        .body_state = "旧伤",
+                                        .mind_state = "警觉",
+                                        .goal = "活着走出雪原",
+                                        .reason = "自检：雪原负伤前行"});
+                d.foreshadows.push_back({.op = "new",
+                                         .title = "黑戒指",
+                                         .content = "雪原上捡到的黑戒指",
+                                         .status = "PLANTED",
+                                         .setup_ch = *ch,
+                                         .importance = 70});
+            }
             const std::string inner = novelcore::StateDiffToJson(d);
             yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
             yyjson_mut_val* root = yyjson_mut_obj(doc);
@@ -572,12 +644,21 @@ bool NovelDirector::RunSelfCheck() {
     auto openFores = g.ListOpenForeshadows();
     const bool committed = out->state_committed && statusAfter && statusAfter->body_state == "旧伤" &&
                            openFores && !openFores->empty();
-    if (!hasBody || !hasRev || !hasPhases || !savedOk || !memOk || !committed) {
-        log::Error("Director 自检失败：body={} rev={} phases={} saved={} mem={} committed={}（{}）",
-                   hasBody, hasRev, hasPhases, savedOk, memOk, committed, out->commit_note);
+    // S12：第 1 版 StateDiff 故意不合规 → 必须**回到 EXTRACT 重做**且重做时带上失败清单，
+    // 第 2 版才提交成功；重做后通过 ⇒ 不得把失败算到 `failed_check_ids`（否则 S1 会误停）
+    const bool retried = out->validation_retries >= 1 && retryHintSeen && extractCalls >= 2;
+    const bool noStaleFailures = out->failed_check_ids.empty();
+    if (!hasBody || !hasRev || !hasPhases || !savedOk || !memOk || !committed || !retried ||
+        !noStaleFailures) {
+        log::Error("Director 自检失败：body={} rev={} phases={} saved={} mem={} committed={} "
+                   "retried={} hint={} extractCalls={} staleFail={}（{}）",
+                   hasBody, hasRev, hasPhases, savedOk, memOk, committed, retried, retryHintSeen,
+                   extractCalls, !noStaleFailures, out->commit_note);
         return false;
     }
-    log::Info("Director 自检通过（Plan→Write→Review→Revise→Extract→**Commit 回写**→Save）");
+    log::Info("Director 自检通过（Plan→Write→Review→Revise→Extract→**Commit 回写**→Save；"
+              "S12 机器校验失败→回 EXTRACT 重做 {} 次）",
+              out->validation_retries);
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {

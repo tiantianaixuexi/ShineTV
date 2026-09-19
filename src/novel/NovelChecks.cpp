@@ -872,7 +872,8 @@ struct Ref {
 [[nodiscard]] CheckResult CheckK12(const ReadCtx& c) {
     if (c.diff != nullptr) {
         return Mk("K12", CheckOutcome::Pass,
-                  "内存里已有 StateDiff（等价产物；`03` 阶段产物的落盘尚未落地）");
+                  "本章有 StateDiff（内存对象即受检对象；提交路径会把它落成 "
+                  "`work/ch<NNN>/12_state_diff.json`，S12）");
     }
     if (c.projectDir == nullptr || c.projectDir->empty()) {
         return Mk("K12", CheckOutcome::Missing, "未给工程根 → 无法查 work/ch<NNN>/12_state_diff.json");

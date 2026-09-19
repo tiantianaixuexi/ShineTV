@@ -123,8 +123,10 @@ void DrawCreateCard() {
     if (ImGui::Button("创建", ImVec2(72, 0))) {
         const auto msg = CreateProject(buf);
         if (msg.empty()) {
-            g_status = fmt::format("已创建《{}》", buf);
-            OpenProjectDb(buf);
+            // 创建成功 → 立刻打开；打开结果（含失败原因）由 OpenProjectDb 写 g_status
+            if (!OpenProjectDb(buf)) {
+                g_status = fmt::format("《{}》已创建，但打开失败（{}）", buf, g_status);
+            }
             buf[0] = 0;
         } else {
             g_status = msg;
@@ -180,7 +182,7 @@ void DrawProjectList() {
         ImGui::EndGroup();
 
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && p.hasDb) {
-            OpenProjectDb(p.name);
+            (void)OpenProjectDb(p.name); // 失败原因已写进 g_status（状态行可见），此处无需分支
         }
 
         ImGui::SetCursorPos(ImVec2(start.x, start.y + rowH + 4.f));

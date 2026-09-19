@@ -38,8 +38,13 @@ struct GenerateChapterRequest {
     // S8（`07` §2.4）：章级快照落盘目录（UTF-8）。空 → 尝试从 `NovelDb` 单例推工程根；
     // 仍为空 → G3 不过、**状态回写被拒绝**（不变式 I11）。
     std::string snapshot_dir;
+    // S12：工程根（UTF-8）。`work/ch<NNN>/12_state_diff.json` 与降级账都按它落盘；
+    // 空 → 退回 `NovelDb` 单例的父目录（调用方知道工程根时应显式传，别靠单例猜）。
+    std::string project_dir;
     // S9（`07` §2.5）：manual（默认，写 PROPOSED）| auto（门禁 G1–G5 全满足才写 CANON）
     std::string canon_mode = "manual";
+    // S12（`03` §2.6）：机器校验失败**回到 EXTRACT 重做**的次数上限（`max_validate_retry`）
+    int max_validate_retries = 2;
     // S9（`09` §2.3）：网络重试与退避（在 `CallLlm` 内生效；参数由 `novelcore::RunLimits` 下发）
     int network_retries = 4;
     int backoff_base_ms = 2000;
@@ -87,8 +92,10 @@ struct GenerateChapterResult {
     bool semantic_only = false;       // 仅语义判断且 FAIL（`06` §2.7 M2）
     int contract_failures = 0;        // 契约校验失败（含 1 次重试后）
     int missing_entity_refs = 0;      // `code=contract` 的缺失引用处数（`09` §2.2 S9）
-    // S11：G2 的 K01–K29 报告里不通过的 check_id（**重复条目 = 失败次数**，供 `09` §2.2 S1 计数）
+    // S11：G2 的 K01–K29 报告里**最终仍未通过**的 check_id（重复条目 = 失败次数，供 `09` §2.2 S1 计数）
     std::vector<std::string> failed_check_ids;
+    // S12：因机器校验未过而重做 EXTRACT 的次数（`03` §2.6 的 `max_validate_retry`）
+    int validation_retries = 0;
 };
 
 struct AgentError {

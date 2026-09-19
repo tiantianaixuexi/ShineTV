@@ -523,9 +523,13 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
             agent::GenerateChapterRequest chReq;
             chReq.chapter_id = chapter_id;
             chReq.max_revisions = limits.repair_rounds;
+            // S12（`03` §2.6）：机器校验失败 → 回 EXTRACT 重做的上限
+            chReq.max_validate_retries = limits.validation_retries;
             chReq.canon_mode = (mode == RunMode::Auto) ? "auto" : "manual";
             if (!projectDir.empty()) {
                 chReq.snapshot_dir = util::PathToUtf8(projectDir / "snapshots");
+                // S12：工程根显式下发（`work/ch<NNN>/12_state_diff.json` 按它落盘）
+                chReq.project_dir = util::PathToUtf8(projectDir);
             }
             auto res = dir.GenerateChapter(chReq, onProgress);
             ChapterRunInfo info;
