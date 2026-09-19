@@ -22,10 +22,40 @@
 
 **现在做哪个**
 
-分支 eat/p8-stability 已推送。\n1. 真机：放 SD checkpoint 后验 P6.3 inpaint / P5.7 出图  
-2. P8 剩余：静态链接已有（-static*）；可再做 10 次开关机压测与设置窗滚动验收  
-3. 小说 P10.4 Garnet cache + LLM Key  
-4. （可选）G AVIF
+1. **真机 SD 全流程（进行中）**：Comfy 在线 `:8188`；SD1.5 checkpoint 下载中 → 完成后重启 Comfy，跑 `runtime/sd-e2e` 分镜出图（P5.7 / P6.3）
+2. **小说 Agent 异步连写（进行中）**：
+   - 离线 seed：`novels/rain-signal` 8 章 / 48 分镜
+   - **MCP 工具环（当前主路径）**：`novels/mcp-bridge`《灯语回声》2 章；`novel_upsert_chapter` 已进 `NovelMcpTools.cpp`；trace=`agent/mcp-tool-loop.jsonl`
+   - LLM：无 Key 时代笔；可继续 MCP append 或配 API 真 tool-call
+3. P8 剩余：10 次开关机压测与设置窗滚动验收
+4. 小说 P10.4 Garnet cache + LLM Key（有 Key 后可应用内真调用）
+5. （可选）G AVIF
+
+**SD e2e 路径**：`runtime/sd-e2e/{novels/rain-signal,projects,scripts,output}`；Comfy 异步 `scripts/run-comfy-chapter.ps1 -ProjectJson <ch*.json>`
+
+---
+
+## 0.1 小说系统实施（S-doc / S0-pre / S0–S8）🟡
+
+> **规格**：`Doc/小说系统/00-总纲与索引.md` **§6**（现状 / 顺序表 / 八步 Git 流程 / 红线）。
+> **一个 S 一个分支**，八步：起分支 → 实现 → `cmake --build` → **自验** → **更新本表 + `证据.md`** → 提交（只 add 本 S 文件）→ 合并 `main` → 下一个。
+> 每完成一个 S，把该行 `[ ]` 改成 `[x]`，并把证据位置写在行尾。
+
+- [x] **S-doc** 文档集入库（`Doc/小说系统/` 14 卷 + `Doc/AGENTS.md` 地图行）— 分支 `docs-novel-system`
+      ✅ 判据通过：`git ls-files Doc/小说系统` = **14**；14 卷 CR = **0**（纯 LF）；`Doc/AGENTS.md` 文档地图已加行；入库 **4598** 行
+- [ ] **S0-pre** 孤儿回收 `ReapStaleImageJobs` 入库（**已实现 + 已验证**，见 `证据.md`）— 分支 `s0pre-orphan-reap`
+- [ ] **S0** MCP 工具 `input_schema` 序列化修复 + `RunNovelMcpSelfCheck` 复位写开关 — 分支 `s0-mcp-schema`
+- [ ] **S1** `visual_assets.status` + `visual_artifacts`（schema v7）— 分支 `s1-visual-status-artifacts`
+- [ ] **S2** P0 八表补 API — 分支 `s2-p0-graph-api`
+- [ ] **S3** `V0 ASSET_PIPELINE` 编排 + 依赖等待 C+B — 分支 `s3-asset-pipeline`
+- [ ] **S4** 生成侧严谨性（`object_info` 不跳过 + 降级记账）— 分支 `s4-gen-strictness`
+- [ ] **S5** `job_ids_json` + 小队列 + 角色资产优先 — 分支 `s5-shot-multi-job`
+- [ ] **S6** `ToGenShot` 桥（小说分镜 → `VideoProject`）— 分支 `s6-togen-shot-bridge`
+- [ ] **S7** P1 九表补 API + 快照 — 分支 `s7-p1-graph-api`
+- [ ] **S8** 闭环回写（`StateDiff` + 门禁 G1–G5 + 快照）— 分支 `s8-state-commit`
+
+**基线坑（起分支前必须知道）**：`main` 上有 **40 项未提交改动**，其中含 **他人**在改的 `src/novel/NovelMcpTools.cpp` 与 **31 个 `Plan/归档/` 删除**；`runtime/` 未跟踪。
+→ **每个 S 只 `git add` 自己那几个文件，绝不 `git add -A`。**
 
 ---
 
