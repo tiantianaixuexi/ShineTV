@@ -39,10 +39,14 @@ struct ChapterGenOutcome {
 };
 
 // 生成一章。`max_revisions <= 0` → 用契约默认（2）。
+// `resume`（S19，`03` §2.7 P1/P5）：true = **续跑语义** —— 盘上阶段产物哈希一致就跳过
+// 该阶段（含 `chapters.body` 已落库时不再请求 Writer）。默认 **false**：
+// UI 的「生成本章」与 MCP 工具都是"我要这一章（重）写"，不是"把没写完的补完"。
 [[nodiscard]] ChapterGenOutcome GenerateOneChapter(
     ::shine::db::sqlite::Database& db, std::int64_t chapter_id,
     const std::filesystem::path& project_dir, int max_revisions, const std::atomic<bool>* cancel,
-    const std::function<void(const agent::GenerateChapterProgress&)>& on_progress);
+    const std::function<void(const agent::GenerateChapterProgress&)>& on_progress,
+    bool resume = false);
 
 // 把「调用方能判的前置」一次填好（LLM 可用 / 交叉复核 / 全书预算上限）—— UI 与 CLI
 // 都不该漏填（漏一个就等于该前置失效）。

@@ -45,6 +45,10 @@ struct GenerateChapterRequest {
     std::string canon_mode = "manual";
     // S12（`03` §2.6）：机器校验失败**回到 EXTRACT 重做**的次数上限（`max_validate_retry`）
     int max_validate_retries = 2;
+    // S19（`03` §2.7 P1/P2/P5）：断点续跑 —— true 时先读 `work/ch<NNN>/` 的阶段产物，
+    // **哈希一致就跳过该阶段**（省掉一次 LLM）。默认 false（保持"每次都全跑"的既有行为，
+    // 自检与 UI 的默认路径不受影响）。
+    bool resume = false;
     // S9（`09` §2.3）：网络重试与退避（在 `CallLlm` 内生效；参数由 `novelcore::RunLimits` 下发）
     int network_retries = 4;
     int backoff_base_ms = 2000;

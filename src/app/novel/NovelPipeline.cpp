@@ -49,9 +49,10 @@ ChapterGenOutcome
 GenerateOneChapter(::shine::db::sqlite::Database& db, std::int64_t chapter_id,
                    const std::filesystem::path& project_dir, int max_revisions,
                    const std::atomic<bool>* cancel,
-                   const std::function<void(const agent::GenerateChapterProgress&)>& on_progress) {
-    ChapterGenOutcome out;
-    if (chapter_id <= 0) {
+                   const std::function<void(const agent::GenerateChapterProgress&)>& on_progress,
+                   bool resume) {
+                   ChapterGenOutcome out;
+                   if (chapter_id <= 0) {
         out.error = "需要 chapter_id（> 0）";
         return out;
     }
@@ -72,6 +73,8 @@ GenerateOneChapter(::shine::db::sqlite::Database& db, std::int64_t chapter_id,
     req.chapter_id = chapter_id;
     req.user_hint = "续写本章";
     req.max_revisions = max_revisions > 0 ? max_revisions : 2;
+    // S19（`03` §2.7 P1/P5）：续跑语义由调用方决定（UI 按钮 = false；连跑 = true）
+    req.resume = resume;
     if (!project_dir.empty()) {
         // 工程根与快照目录**显式下发**（`work/` 与 `snapshots/` 都按它落盘）
         req.project_dir = util::PathToUtf8(project_dir);
