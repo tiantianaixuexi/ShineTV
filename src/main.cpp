@@ -124,14 +124,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
         return static_cast<int>(shine::mcp::RunStdioServerMain());
     }
 
-    // S17：headless 命令行（脚本 / 无人值守）—— 同样不建窗口。
+    // S17/S21：headless 命令行（脚本 / 无人值守）—— **同样不建窗口**。
+    //   `--novel-init` 初始化链（`10`：门禁 + 骨架）
     //   `--novel-generate <chapter_id>` 生成一章（0 = 第一张未完成的章）
     //   `--novel-run <manual|semi|auto>` 连跑（`09` §2.1）
     // 与 UI 走**同一份** `NovelPipeline`（同一份 LLM 回调与前置判定）。
-    if (lpCmdLine != nullptr &&
-        (wcsstr(lpCmdLine, L"--novel-generate") != nullptr ||
-         wcsstr(lpCmdLine, L"--novel-run") != nullptr)) {
-        return shine::app::novel::RunNovelCli(lpCmdLine);
+    // ⚠️ **子命令必须登记在这张表里**：漏一个的后果不是"报错"，而是**照常进 GUI 建窗口**
+    // —— 表现为"命令卡住不退出"（S21 就漏了 `--novel-init`，实测踩到）。
+    for (const wchar_t* sub : {L"--novel-init", L"--novel-generate", L"--novel-run"}) {
+        if (lpCmdLine != nullptr && wcsstr(lpCmdLine, sub) != nullptr) {
+            return shine::app::novel::RunNovelCli(lpCmdLine);
+        }
     }
 
     // Alloc console for spdlog stdout sink
