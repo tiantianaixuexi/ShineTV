@@ -5,6 +5,7 @@
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Strings.h"
+#include "video/NovelShotBridge.h" // S6 自检
 #include "video/VideoTaskRunner.h"
 
 #include <fmt/format.h>
@@ -600,6 +601,8 @@ int RunSceneToImageSelfCheck() {
 
     // S5：小队列优先级（角色资产先于分镜图）+ 一镜多 job 不互相覆盖 + H3 侧降级类型化
     fail += RunVideoQueueSelfCheck();
+    // S6：叙事分镜 → 生成分镜的桥（确定性 / K20·K21 记账 / mode / 链式 / seed）
+    fail += RunNovelShotBridgeSelfCheck();
 
     log::Info("SCENE_IMAGE_SELF_CHECK pass={} fail={} {}", pass, fail, fail == 0 ? "PASS" : "FAIL");
     return fail;

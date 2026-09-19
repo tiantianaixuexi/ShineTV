@@ -261,6 +261,7 @@ add_executable(ShineTVStudio WIN32
   src/video/ApiGraphValidator.cpp
   src/video/VideoTaskRunner.cpp
   src/video/SceneToImageBuilder.cpp
+  src/video/NovelShotBridge.cpp
   src/paint/PaintCanvas.cpp
   src/paint/PngCodec.cpp
   src/paint/PaintService.cpp
