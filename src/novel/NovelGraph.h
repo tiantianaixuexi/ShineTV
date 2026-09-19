@@ -58,6 +58,54 @@ public:
     [[nodiscard]] std::expected<std::vector<SecretRow>, DbError>
     GetSecretsFor(RowId entityId, RowId chapterId = 0) const;
 
+    // —— P0 八表（S2）：原先只有表、没有 API，是闭环的阻断点 ——
+    // 规格 `Doc/小说系统/01` §2.4.2 / §2.4.5 / §2.5 / §2.3.4；判据见 `00` §6.2 的 S2 行。
+
+    // 知情（character_knowledge）：不变式 I2 与 `06` K05 的数据来源
+    [[nodiscard]] std::expected<RowId, DbError> UpsertKnowledge(const CharacterKnowledgeRow& row);
+    // chapterId > 0 → 只返回「该章时点已知」的行（chapter_known=0 或 <= chapterId）；0 = 不限章
+    [[nodiscard]] std::expected<std::vector<CharacterKnowledgeRow>, DbError>
+    ListKnowledge(RowId entityId, RowId chapterId = 0) const;
+    // 「截至第 N 章是否知道 (fact_kind, fact_id)」—— `01` §2.3.2 的规范查询
+    [[nodiscard]] std::expected<bool, DbError> CharacterKnows(RowId entityId,
+                                                              std::string_view factKind, RowId factId,
+                                                              RowId chapterId = 0) const;
+
+    // 事件参与（event_participants）：`06` K04 dead_not_acting 的数据来源
+    [[nodiscard]] std::expected<RowId, DbError>
+    UpsertEventParticipant(const EventParticipantRow& row);
+    [[nodiscard]] std::expected<std::vector<EventParticipantRow>, DbError>
+    ListEventParticipants(RowId eventId) const;
+    // 实体 → 其参与过的事件（role 传空 = 全部）
+    [[nodiscard]] std::expected<std::vector<EventParticipantRow>, DbError>
+    ListEntityParticipations(RowId entityId, std::string_view role = {}, int limit = 200) const;
+
+    // 场次在场 / 场次伏笔（scene_cast / scene_foreshadows）
+    [[nodiscard]] std::expected<RowId, DbError> UpsertSceneCast(const SceneCastRow& row);
+    [[nodiscard]] std::expected<std::vector<SceneCastRow>, DbError>
+    ListSceneCast(RowId sceneId) const;
+    [[nodiscard]] std::expected<RowId, DbError> UpsertSceneForeshadow(const SceneForeshadowRow& row);
+    [[nodiscard]] std::expected<std::vector<SceneForeshadowRow>, DbError>
+    ListSceneForeshadows(RowId sceneId) const;
+
+    // 剧情线（plots / plot_beats）
+    [[nodiscard]] std::expected<RowId, DbError> UpsertPlot(const PlotRow& row);
+    [[nodiscard]] std::expected<PlotRow, DbError> GetPlot(RowId id) const;
+    [[nodiscard]] std::expected<std::vector<PlotRow>, DbError>
+    ListPlots(std::string_view kind = {}, int limit = 100) const;
+    [[nodiscard]] std::expected<RowId, DbError> UpsertPlotBeat(const PlotBeatRow& row);
+    [[nodiscard]] std::expected<std::vector<PlotBeatRow>, DbError> ListPlotBeats(RowId plotId) const;
+
+    // 谜团（mysteries / mystery_beats）：未解谜团是 `00` §2.5「开放线索」的组成
+    [[nodiscard]] std::expected<RowId, DbError> UpsertMystery(const MysteryRow& row);
+    [[nodiscard]] std::expected<MysteryRow, DbError> GetMystery(RowId id) const;
+    [[nodiscard]] std::expected<std::vector<MysteryRow>, DbError> ListOpenMysteries() const;
+    [[nodiscard]] std::expected<std::vector<MysteryRow>, DbError>
+    ListMysteries(RowId entityId = 0, int limit = 100) const;
+    [[nodiscard]] std::expected<RowId, DbError> UpsertMysteryBeat(const MysteryBeatRow& row);
+    [[nodiscard]] std::expected<std::vector<MysteryBeatRow>, DbError>
+    ListMysteryBeats(RowId mysteryId) const;
+
     // —— 持有 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertOwnership(const OwnershipRow& row);
     [[nodiscard]] std::expected<std::vector<OwnershipRow>, DbError>

@@ -196,6 +196,81 @@ struct OwnershipRow {
     std::string note;
 };
 
+// —— P0 八表（S2）：原先只有表、没有 API，是闭环的阻断点 ——
+// 规格：`Doc/小说系统/01` §2.4.2（事件参与）/ §2.4.5（知情）/ §2.5（叙事结构、剧情线）/ §2.3.4（谜团）。
+// `CharacterKnowledgeRow` 见上方（本组沿用），其余 7 个结构体在此定义。
+
+// event_participants：谁参与了哪个事件（01 §2.4.2）
+struct EventParticipantRow {
+    RowId id = 0;
+    RowId event_id = 0;
+    RowId entity_id = 0;
+    std::string role; // actor | victim | witness | beneficiary | faction_actor
+};
+
+// scene_cast：这一场「谁在场」（Context 组装与视觉映射的输入，01 §2.5）
+struct SceneCastRow {
+    RowId id = 0;
+    RowId scene_id = 0;
+    RowId entity_id = 0;
+    std::string role; // pov | cast | present | offscreen
+};
+
+// scene_foreshadows：这一场对某条伏笔做了什么（01 §2.5）
+struct SceneForeshadowRow {
+    RowId id = 0;
+    RowId scene_id = 0;
+    RowId foreshadowing_id = 0;
+    std::string action; // plant | develop | payoff
+};
+
+// plots：剧情线（01 §2.5）
+struct PlotRow {
+    RowId id = 0;
+    std::string kind = "main";     // main | sub | romance | revenge …
+    std::string title;
+    std::string status = "active"; // active | resolved | dropped
+    RowId intro_ch = 0;
+    RowId target_ch = 0;
+    std::string note;
+};
+
+// plot_beats：剧情线节拍（`ord` 参与叙事序时间轴，01 §2.5）
+struct PlotBeatRow {
+    RowId id = 0;
+    RowId plot_id = 0;
+    RowId chapter_id = 0;
+    int ord = 0;
+    // setup | rising | turning_point | climax | falling | resolution | revelation
+    std::string beat_type = "setup";
+    std::string title;
+    std::string summary;
+    std::string cast_json = "[]";
+};
+
+// mysteries：读者侧的谜团节奏（与 foreshadowings 的「作者侧账本」分工不同，01 §2.3.4）
+struct MysteryRow {
+    RowId id = 0;
+    RowId entity_id = 0;
+    std::string question;
+    std::string answer;
+    std::string status = "open"; // open | hinted | revealed | resolved
+    RowId ask_ch = 0;
+    RowId answer_ch = 0;
+    int importance = 50;
+};
+
+// mystery_beats：谜团推进节拍（01 §2.3.4）
+struct MysteryBeatRow {
+    RowId id = 0;
+    RowId mystery_id = 0;
+    std::string beat_type = "hint"; // question | hint | reveal | answer | red_herring
+    RowId chapter_id = 0;
+    std::string content;
+    RowId target_entity_id = 0;
+    int ord = 0;
+};
+
 // 供 ContextBuilder 的切片
 struct CharacterSlice {
     EntityRow entity;
