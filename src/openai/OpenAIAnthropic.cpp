@@ -196,10 +196,11 @@ AnthropicComplete(std::string_view baseUrl, std::string_view apiKey, const Anthr
 
 std::expected<std::string, ApiError>
 AnthropicLlmComplete(std::string_view instructions, std::string_view userText,
-                     std::chrono::seconds timeout, const std::atomic<bool>* cancel) {
+                     std::chrono::seconds timeout, const std::atomic<bool>* cancel,
+                     std::string_view model) {
     const LlmProfile p = ResolveActiveProfile();
     AnthropicRequest req;
-    req.model = p.model;
+    req.model = model.empty() ? p.model : std::string{model};
     req.system = std::string{instructions};
     req.disableThinking = p.minimaxDisableThinking;
     req.messages.push_back(

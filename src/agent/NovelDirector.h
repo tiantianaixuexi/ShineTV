@@ -103,13 +103,19 @@ struct AgentError {
     std::string message;
 };
 
-// LLM 调用抽象（可 mock）。instructions+user → 完整响应 JSON（含 output_text）
+// S16（`09` §2.4 模型分层）：调用角色 —— 决定**用哪个模型**（planner/writer/critic 三档）
+// 与**记账档位**（`cost_report.json` 的 high/mid/low）。调用方（UI）按它解析模型名；
+// `novel`/`agent` 层不知道也不需要知道模型名。
+enum class LlmRole { Planner, Writer, Critic, Extractor };
+[[nodiscard]] std::string_view LlmRoleName(LlmRole role) noexcept; // "planner"|"writer"|"critic"|"extractor"
+
+// LLM 调用抽象（可 mock）。role+instructions+user → 完整响应 JSON（含 output_text）
 using LlmCallFn = std::function<std::expected<std::string, AgentError>(
-    std::string_view instructions, std::string_view user)>;
+    LlmRole role, std::string_view instructions, std::string_view user)>;
 
 // 可流式 Writer：on_delta 收增量；返回完整正文
 using LlmStreamFn = std::function<std::expected<std::string, AgentError>(
-    std::string_view instructions, std::string_view user,
+    LlmRole role, std::string_view instructions, std::string_view user,
     const std::function<void(std::string_view)>& on_delta)>;
 
 class NovelDirector {

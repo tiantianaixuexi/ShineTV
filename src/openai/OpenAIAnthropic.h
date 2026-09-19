@@ -61,10 +61,11 @@ AnthropicComplete(std::string_view baseUrl, std::string_view apiKey,
 [[nodiscard]] std::string AnthropicBaseUrlFor(const LlmProfile& p);
 
 // 用当前 Provider 走 Anthropic 协议补一轮
+// `model` 空 = profile 默认模型；非空 = 按阶段指定的模型（S16，`09` §2.4）
 [[nodiscard]] std::expected<std::string, ApiError>
 AnthropicLlmComplete(std::string_view instructions, std::string_view userText,
                      std::chrono::seconds timeout = kDefaultTimeout,
-                     const std::atomic<bool>* cancel = nullptr);
+                     const std::atomic<bool>* cancel = nullptr, std::string_view model = {});
 
 [[nodiscard]] bool RunAnthropicSelfCheck();
 

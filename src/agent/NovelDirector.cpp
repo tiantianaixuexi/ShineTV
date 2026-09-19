@@ -27,6 +27,17 @@
 #include <thread>
 
 namespace shine::agent {
+
+std::string_view LlmRoleName(LlmRole role) noexcept {
+    switch (role) {
+    case LlmRole::Planner: return "planner";
+    case LlmRole::Writer: return "writer";
+    case LlmRole::Critic: return "critic";
+    case LlmRole::Extractor: return "extractor";
+    }
+    return "planner";
+}
+
 namespace {
 
 [[nodiscard]] std::string EscapeJson(std::string_view s) {
@@ -59,8 +70,17 @@ void Report(const std::function<void(const GenerateChapterProgress&)>& cb, Phase
     cb(pr);
 }
 
-// —— S9（`09` §2.4 模型分层 / §2.3 重试退避）——
-// 档位只用于**记账**（`cost_report.json` 与单章「高档调用 ≤ 8」）：按阶段路由是 09-7，本步不做。
+// —— S9/S16（`09` §2.4 模型分层 / §2.3 重试退避）——
+// S16（09-7）：role 现在**真的**参与路由 —— 它随 `LlmCallFn` 传给调用方，由调用方按
+// `openai::ResolveModel(role)` 选模型（planner/writer/critic 三个配置项，空则回退 default）。
+[[nodiscard]] LlmRole LlmRoleOf(std::string_view role) noexcept {
+    if (role == "writer") return LlmRole::Writer;
+    if (role == "critic") return LlmRole::Critic;
+    if (role == "extractor" || role == "extract") return LlmRole::Extractor;
+    return LlmRole::Planner;
+}
+
+// 档位（`09` §2.4）：planner=中、writer/critic=高、extractor=低。用于记账与「高档 ≤ 8」。
 [[nodiscard]] std::string_view TierOfRole(std::string_view role) noexcept {
     if (role == "writer" || role == "critic") return "high";
     if (role == "planner") return "mid";
@@ -184,7 +204,8 @@ NovelDirector::CallLlm(std::string_view role, std::string_view user, std::string
     }
     const std::string instructions = LoadPrompt(role);
     const std::string tier{TierOfRole(role)};
-    // `09` §2.3：同 Provider 请求间隔 ≥ 200ms（防限流）
+    const LlmRole llmRole = LlmRoleOf(role);
+    // `09` §2.3：同 Provider 请求间隔 ≥ 200ms（防限流）；LLM 并发 = 1（串行，见 `09` §2.3）
     if (req.min_request_interval_ms > 0 && last_call_ms_ > 0) {
         const std::int64_t wait = req.min_request_interval_ms - util::ElapsedMillis(last_call_ms_);
         if (wait > 0) {
@@ -195,7 +216,7 @@ NovelDirector::CallLlm(std::string_view role, std::string_view user, std::string
     AgentError last{"unknown", "未知错误"};
     for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
         const std::int64_t t0 = util::MonotonicMillis();
-        auto r = call_(instructions, user);
+        auto r = call_(llmRole, instructions, user);
         last_call_ms_ = util::MonotonicMillis();
         LlmCallRecord rec;
         rec.stage = std::string{stage};
@@ -304,7 +325,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
             progressCb(pr);
         };
         const std::int64_t t0 = util::MonotonicMillis();
-        auto wr = stream_(LoadPrompt("writer"), writeUser, onDelta);
+        auto wr = stream_(LlmRole::Writer, LoadPrompt("writer"), writeUser, onDelta);
         last_call_ms_ = util::MonotonicMillis();
         {
             LlmCallRecord rec;
@@ -551,9 +572,13 @@ bool NovelDirector::RunSelfCheck() {
     int planCalls = 0;
     int extractCalls = 0;   // S12：第 1 版故意不合规，用来验证「回 EXTRACT 重做」
     bool retryHintSeen = false; // S12：重做时把失败清单喂回给 extractor 了吗
-    LlmCallFn mock = [&](std::string_view instructions, std::string_view user)
+    int roleMask = 0;           // S16：哪些 LlmRole 真的到过回调（09-7 的证据）
+    LlmCallFn mock = [&](LlmRole role, std::string_view instructions, std::string_view user)
         -> std::expected<std::string, AgentError> {
         const std::string ins{instructions};
+        // S16（09-7）：role 是**真传**过来的（不是从 prompt 文本猜的）—— 逐个记下来，
+        // 结尾断言四个 role 都到过（否则「按阶段路由」只是空话）
+        roleMask |= 1 << static_cast<int>(role);
         if (ins.find("规划器") != std::string::npos || ins.find("planner") != std::string::npos) {
             ++planCalls;
             return std::string{R"({"output_text":"{\"chapter_title\":\"雪原\",\"goal\":\"逃脱\",\"scenes\":[{\"ord\":1,\"location\":\"黑森林\",\"cast\":[\"林默\"],\"goal\":\"活下来\",\"conflict\":\"追兵\",\"result\":\"受伤\",\"emotion\":\"恐惧\"}],\"foreshadowing\":[\"plant|黑戒指\"],\"ending_hook\":\"林中异响\"}"})"};
@@ -648,17 +673,23 @@ bool NovelDirector::RunSelfCheck() {
     // 第 2 版才提交成功；重做后通过 ⇒ 不得把失败算到 `failed_check_ids`（否则 S1 会误停）
     const bool retried = out->validation_retries >= 1 && retryHintSeen && extractCalls >= 2;
     const bool noStaleFailures = out->failed_check_ids.empty();
+    // S16（09-7）：四个 role 都必须**真的到过回调**（Planner=1, Writer=2, Critic=4, Extractor=8）
+    const int kAllRoles = (1 << static_cast<int>(LlmRole::Planner)) |
+                          (1 << static_cast<int>(LlmRole::Writer)) |
+                          (1 << static_cast<int>(LlmRole::Critic)) |
+                          (1 << static_cast<int>(LlmRole::Extractor));
+    const bool rolesOk = roleMask == kAllRoles;
     if (!hasBody || !hasRev || !hasPhases || !savedOk || !memOk || !committed || !retried ||
-        !noStaleFailures) {
+        !noStaleFailures || !rolesOk) {
         log::Error("Director 自检失败：body={} rev={} phases={} saved={} mem={} committed={} "
-                   "retried={} hint={} extractCalls={} staleFail={}（{}）",
+                   "retried={} hint={} extractCalls={} staleFail={} roles=0b{:04b}（期望 0b{:04b}）（{}）",
                    hasBody, hasRev, hasPhases, savedOk, memOk, committed, retried, retryHintSeen,
-                   extractCalls, !noStaleFailures, out->commit_note);
+                   extractCalls, !noStaleFailures, roleMask, kAllRoles, out->commit_note);
         return false;
     }
     log::Info("Director 自检通过（Plan→Write→Review→Revise→Extract→**Commit 回写**→Save；"
-              "S12 机器校验失败→回 EXTRACT 重做 {} 次）",
-              out->validation_retries);
+              "S12 机器校验失败→回 EXTRACT 重做 {} 次；S16 四个 LlmRole 均到回调 0b{:04b}）",
+              out->validation_retries, roleMask);
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {

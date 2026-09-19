@@ -66,6 +66,7 @@
 填好 Key 后，`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0`（或直接点「生成本章」）即可真生成一章。
 
 **仍未做的（都不阻塞跑流程，见 §0.3 的说明）**：`03` 的 T1–T17 细阶段机（真阶段级续跑）、V9 分镜链本体（影视化链）、`10` 初始化链编排、`09` 的 09-7/09-8/09-11/09-12、K19–K21 由生成侧回填、真机 SD 出图、P8 的开关机压测。
+- [x] **S16** `09` 卷四项收口（**09-7 模型分层 / 09-8 交叉复核 / 09-11 限流 / 09-12 全书预算**）— `s16-model-routing`｜`agent::LlmCallFn`/`LlmStreamFn` 加 **`LlmRole`**（Planner/Writer/Critic/Extractor）→ 调用方按 `openai::ResolveModel(LlmRoleName(role))` 选模型 → `openai::LlmComplete(..., model)` 可指定模型（Chat/Responses/Anthropic 三路都通）；**09-8 硬要求**：判**生效模型** `critic ≠ writer`，相同则 UI ⚠ 提示 + **`auto` 前置⑤拒绝**（manual/semi 只提示）；**09-12**：`EstimateBookBudget`（剩余章 × 每章上限 40）+ 新配置 `novelMaxTotalLlmCalls`（0=不限）→ **前置⑥拒绝**，拒绝原因带估算明细（⚠️ 单价未纳入：无 token 计数，不假装算钱）；**09-11** 并发=1/间隔 200ms/429 退避（S9 已有，S16 补断言）；自检新增「四个 LlmRole 均到回调 0b1111」「⑤/⑥ 拒绝且原因可读」「预算估算 min(剩余,上限)」；**19 项全 ok**
 - [x] **S15** 真实流程前置收口（LLM 真判 + 一键跑法）— `s15-real-flow`｜🔴 修真 bug：`Run` 里 `ProbeAutoPrecondition(*db_, true)` **硬编码** → 空 Key 也能启动 auto（新增 `RunRequest::llm_ready` 由调用方给真实值）；抽 `StartChapterGeneration`（按钮与验收开关**共用同一条路**）+ 空 Key 可读提示不进 worker；「连跑」同样前置检查；新增 **`SHINE_NOVEL_GENERATE=<id>`** 验收开关（⚠️ **时间驱动**而非帧驱动 —— 实测 12 秒跑不到 30 帧）；**真实工程实跑**：`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0` → 自动选章 #1 → `章节 #1 未开始生成：OpenAI 的 API Key 为空`，UI 显示「未配置 OpenAI 的 API Key：设置 → LLM 里填好后重试」；**19 项全 ok**
 - [x] **S14** `_manifest.json` 的「阶段 → 产物」（`03` §2.7 P5 的输入，原先空列）— `s14-manifest-stages`｜新增 `ScanChapterStages()`（产物路径 + 字节数 + FNV 内容指纹 + 是否齐备），`ManifestJson` 增写 `stage_artifacts`（EXTRACT/COMMIT/COST 三段，`_manifest.json` 自身不入清单避免自指）；自检断言「有 StateDiff→EXTRACT complete / 无快照→COMMIT incomplete / 补上变 complete / 16 位指纹 / JSON 可解析」；**19 项全 ok** ⚠️ 真·从中间阶段续跑仍缺 `03` 的 T1–T17 阶段机（本步只给账，续跑粒度仍是章）
 - [x] **S13** K09/K22/K23/K24 的数据来源落地（**schema v9**）— `s13-shot-state-artifacts`｜`shots` 补 `start_state_json`/`end_state_json`/`timeline_json`（`12` §1.4 的缺口）；新增 `prompt_artifacts` 表（`02` §2.10 原先无承载）；`NovelVisual` 加 `ListShotsByChapter` + `UpsertPromptArtifact`/`GetPromptArtifact`/`ListPromptArtifacts`；`NovelChecks` 这四条从 `contract-input` 升为 `library`（显式传值优先，不传查库）；**真实旧库迁移 8→9**：`shots` 19→22 列默认 `{}`、`prompt_artifacts` 建出、旧数据零变化（18/8/48/6/7）；**19 项全 ok**
@@ -81,18 +82,18 @@
 | 项 | 缺什么 | 怎么触发 |
 |---|---|---|
 | **真实生成一章** | **LLM API Key**（`settings.json` 里 `openaiApiKey` / `mimoApiKey` / `minimaxApiKey` 全空） | 设置 → LLM 填 Key，然后 `SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0`，或直接点「生成本章」 |
-| 连跑（`auto`） | 同上（`09` §2.1 前置③，S15 起真判） | 同上 + 运行模式选 `auto`（`auto` 还要求"最近一章 G1–G5 已验证"） |
+| 连跑（`auto`） | 同上（前置③，S15 起真判）+ **Critic 模型要 ≠ Writer**（前置⑤，S16 起真判；`openaiModelCritic` 为空则与 Writer 同模型 → 拒绝）| 设置 → LLM：填 Key **并**给 Critic 指定一个不同模型；`manual`/`semi` 无此要求 |
 | 真机 SD 出图 | SD/SDXL checkpoint + Comfy 在线 `:8188` | `runtime/sd-e2e` 分镜出图（P5.7 / P6.3） |
 | P8 余 2 项 | 人工开关机 **10 次**压测、设置窗滚动验收 | 手动 |
 | G 线 AVIF | 已搁置（⏸） | — |
 
 **B. 代码增强 —— 不影响「正文链」跑通，可后补**
 
+- ✅ **已完成 S16**：`09` 的 09-7（模型分层）/ 09-8（交叉复核）/ 09-11（限流）/ 09-12（全书预算）
 - `03` 的 **T1–T17 细阶段机** → 真·阶段级续跑（现在续跑粒度 = **章**；`_manifest.json` 的阶段→产物账已就绪，是它的输入）
 - `10` 的**初始化链编排 I1–I16**（API 已齐；新工程"从零到能写"的一键初始化）
 - **V9 分镜链本体**（影视化：小说 → 分镜 → 出图；`shots` 三列与 `prompt_artifacts` 已就绪）
 - **K19–K21 由生成侧回填**（结论本来产生在 `video` 侧，`novel` 不复刻规则）
-- `09` 的 **09-7/09-8**（按阶段模型路由 / 交叉复核）、**09-11**（并发限流）、**09-12**（全书预算估算）
 - 「生成一章」的 **MCP 工具 / CLI 子命令**（现在只有 UI 按钮 + `SHINE_NOVEL_GENERATE` 开关）
 
 **C. 已定不做（设计如此，非遗漏）**

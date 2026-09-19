@@ -211,17 +211,19 @@ ChatStream(std::string_view baseUrl, std::string_view apiKey, const ChatRequest&
 
 std::expected<std::string, ApiError>
 LlmComplete(std::string_view instructions, std::string_view userText, std::chrono::seconds timeout,
-            const std::atomic<bool>* cancel) {
+            const std::atomic<bool>* cancel, std::string_view model) {
     const LlmProfile p = ResolveActiveProfile();
+    // S16（`09` §2.4 模型分层）：空 = profile 默认模型；非空 = 按阶段指定的模型
+    const std::string mdl = model.empty() ? p.model : std::string{model};
     // Anthropic Messages（MiMo / MiniMax 兼容端；OpenAI 官方无此协议时走错误提示）
     if (p.protocol == Protocol::Anthropic ||
         Settings().llmProtocol == "anthropic") {
-        return AnthropicLlmComplete(instructions, userText, timeout, cancel);
+        return AnthropicLlmComplete(instructions, userText, timeout, cancel, mdl);
     }
     if (p.protocol == Protocol::Responses && p.provider == Provider::OpenAi) {
-        Client c(p.baseUrl, p.apiKey, p.model);
+        Client c(p.baseUrl, p.apiKey, mdl);
         CreateRequest req;
-        req.model = p.model;
+        req.model = mdl;
         req.instructions = std::string{instructions};
         yyjson_doc* idoc = yyjson_read(userText.data(), userText.size(), 0);
         if (!idoc) {
@@ -252,7 +254,7 @@ LlmComplete(std::string_view instructions, std::string_view userText, std::chron
     }
 
     ChatRequest creq;
-    creq.model = p.model;
+    creq.model = mdl;
     creq.system = std::string{instructions};
     creq.messages.push_back({.role = "user", .content = std::string{userText}});
     creq.disableThinking = p.minimaxDisableThinking && p.provider == Provider::MiniMax;

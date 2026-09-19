@@ -75,10 +75,12 @@ ChatComplete(std::string_view baseUrl, std::string_view apiKey, const ChatReques
              const std::atomic<bool>* cancel = nullptr);
 
 // 按当前 Settings 的 llmProvider 走通（解析 profile → ChatComplete 或 Responses）
+// S16（`09` §2.4 模型分层）：`model` 空 = 用 profile 的默认模型；非空 = 按**阶段**指定的模型
+// （`ResolveModel("planner"|"writer"|"critic")`）。
 [[nodiscard]] std::expected<std::string, ApiError>
 LlmComplete(std::string_view instructions, std::string_view userText,
             std::chrono::seconds timeout = kDefaultTimeout,
-            const std::atomic<bool>* cancel = nullptr);
+            const std::atomic<bool>* cancel = nullptr, std::string_view model = {});
 
 // Chat 流式：on_delta 文本增量
 using ChatDeltaFn = std::function<void(std::string_view)>;
