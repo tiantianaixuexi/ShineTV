@@ -18,9 +18,19 @@ void DrawDockedPanels(ImVec2 dockSize) {
     constexpr ImGuiWindowFlags kDockFlags =
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
+    // ⚠️ dock 页除了「不滚」，还必须把**页级滚动显式钉在 0**：
+    // `SetNextWindowFocus()` / `SetWindowFocus()` 会让 ImGui 调 `ScrollToBringRectIntoView`，
+    // 把整页滚下去 —— 而宿主窗口是 `NoScrollbar|NoScrollWithMouse`，**用户滚不回来**，
+    // 页首内容就此永久不可达（S12 的「小说」页就是这么栽的：看不到「工作区 / 生成本章」）。
+    // `SetScrollY(0)` 是幂等且恒合法的（0 永远在范围内），每帧调一次没有代价。
+    const auto beginDock = [](const char* name) {
+        ImGui::Begin(name, nullptr, kDockFlags);
+        ImGui::SetScrollY(0.f);
+    };
+
     // 侧栏内容随活动栏切换
     ImGui::SetNextWindowSizeConstraints(ImVec2(160, 0), ImVec2(520, FLT_MAX));
-    ImGui::Begin("侧栏", nullptr, kDockFlags);
+    beginDock("侧栏");
     if (State().sideOpen) {
         DrawSideBar();
     } else {
@@ -28,7 +38,7 @@ void DrawDockedPanels(ImVec2 dockSize) {
     }
     ImGui::End();
 
-    ImGui::Begin("图", nullptr, kDockFlags);
+    beginDock("图");
     DrawGraphPanel();
     ImGui::End();
 
@@ -42,12 +52,12 @@ void DrawDockedPanels(ImVec2 dockSize) {
     };
 
     focusTarget(FocusWindow::Shots);
-    ImGui::Begin("分镜", nullptr, kDockFlags); // P5.3：默认与「图」同区（见 DockLayout.cpp）
+    beginDock("分镜"); // P5.3：默认与「图」同区（见 DockLayout.cpp）
     shots::DrawShotTable();
     ImGui::End();
 
     focusTarget(FocusWindow::Gallery);
-    ImGui::Begin("图库", nullptr, kDockFlags); // G-S5：与「图」「分镜」同区（见 DockLayout.cpp）
+    beginDock("图库"); // G-S5：与「图」「分镜」同区（见 DockLayout.cpp）
     gallery::DrawGalleryWindow();
     ImGui::End();
 
@@ -56,24 +66,24 @@ void DrawDockedPanels(ImVec2 dockSize) {
         --State().focusFrames;
         ImGui::SetNextWindowFocus();
     }
-    ImGui::Begin("小说", nullptr, kDockFlags);
+    beginDock("小说");
     novel::DrawNovelWindow();
     ImGui::End();
 
     focusTarget(FocusWindow::Paint);
-    ImGui::Begin("画布", nullptr, kDockFlags); // P6.2
+    beginDock("画布"); // P6.2
     paint::DrawPaintCanvasWindow();
     ImGui::End();
 
-    ImGui::Begin("属性", nullptr, kDockFlags);
+    beginDock("属性");
     DrawInspectorPanel();
     ImGui::End();
 
-    ImGui::Begin("预览", nullptr, kDockFlags);
+    beginDock("预览");
     DrawPreviewPanel();
     ImGui::End();
 
-    ImGui::Begin("底栏", nullptr, kDockFlags); // 窗口标题 ≠ 内部 Tab「队列」，避免出现两层「队列」
+    beginDock("底栏"); // 窗口标题 ≠ 内部 Tab「队列」，避免出现两层「队列」
     DrawBottomPanel();
     ImGui::End();
 
