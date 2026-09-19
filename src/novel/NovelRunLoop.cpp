@@ -262,10 +262,10 @@ std::optional<std::string> CheckAutoPrecondition(const AutoPreconditionInput& in
         missing += "① 最近一章的 G1–G5 未验证通过（07 §2.3）；";
     }
     if (!in.verifiers_complete) {
-        missing += "② 06 §2.3 的 K01–K29 校验器未全部可用（本仓尚未全量落地）；";
+        missing += "② 06 §2.3 的 K01–K29 校验器未全部可用（VerifiersComplete 为假）；";
     }
     if (!in.llm_ok) {
-        missing += "③ LLM 连通性自检未通过；";
+        missing += "③ LLM 不可用（未配置 API Key 或连通性自检未通过）；";
     }
     if (!in.comfy_ok) {
         missing += "④ Comfy 连通性自检未通过（本章需要出图）；";
@@ -540,7 +540,9 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
 
     // ② auto 前置：不满足 → 拒绝启动并给原因（`07` §2.5 C5）
     if (req.mode == RunMode::Auto) {
-        const AutoPreconditionInput pre = ProbeAutoPrecondition(*db_, true);
+        // S15：前置③（LLM 可用）用**调用方给的真实值** —— 原先这里硬编码 `true`，
+        // 于是空 Key 也能启动 auto，然后每章都从网络层失败（白跑一整套调用）。
+        const AutoPreconditionInput pre = ProbeAutoPrecondition(*db_, req.llm_ready);
         if (auto why = CheckAutoPrecondition(pre)) {
             out.started = false;
             out.refuse_reason = *why;
@@ -1087,6 +1089,19 @@ bool NovelRunLoop::RunSelfCheck() {
         good.llm_ok = true;
         good.comfy_ok = true;
         expect(!CheckAutoPrecondition(good).has_value(), "auto 前置全满足 → 允许");
+        // S15：前置③（LLM 可用）必须**真判** —— 空 Key 时 auto 要被拒，且原因可读
+        {
+            AutoPreconditionInput noLlm = good;
+            noLlm.llm_ok = false;
+            const auto why = CheckAutoPrecondition(noLlm);
+            expect(why.has_value() && why->find("③") != std::string::npos &&
+                       why->find("API Key") != std::string::npos,
+                   "S15：LLM 不可用 → auto 被拒且原因含「③ / API Key」");
+            // 探针要把调用方的判定**透传**（`Run` 里用的是 `req.llm_ready`，不再是硬编码 true）
+            const AutoPreconditionInput probedNoLlm = ProbeAutoPrecondition(mem, false);
+            expect(!probedNoLlm.llm_ok && CheckAutoPrecondition(probedNoLlm).has_value(),
+                   "S15：ProbeAutoPrecondition 透传 LLM 判定（false → auto 被拒）");
+        }
         // S10：`06` §2.3 的 K01–K29 校验器已全量落地 → 这一条不再恒 false
         const AutoPreconditionInput probed = ProbeAutoPrecondition(mem, true);
         expect(probed.verifiers_complete, "K01–K29 已全量（S10）→ verifiers_complete=true");

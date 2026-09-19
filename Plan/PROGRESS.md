@@ -62,13 +62,44 @@
 - [x] **S9-ui** `NovelView` 无人值守 UI 入口（S9 只有代码 API + 自检，无法真跑）— `s9-runloop-ui`｜「小说」页新增「无人值守（S9）」段（运行模式 `manual`/`semi`/`auto` + 连跑章数上限 + 检查点周期 + 自动建下一章 + 「连跑」/「停止连跑」+ 状态与停止报告路径）；worker 调 `NovelRunLoop::Run`、进度与结果 `PostToUi` 回 UI；顺带加截图开关 `SHINE_NOVEL_OPEN=<书名>` 与 `SHINE_SIDE_VIEW/WINDOW=novel`；截图验收通过、**18 项自检无回归**
 - [x] **S10** `06` §2.3 的 **K01–K29 全量机器校验**（`auto` 的唯一阻塞项）— `s10-k-checks`｜新增 `src/novel/NovelChecks.*`（已登记 CMake）；**29/29 实现点**（目录 `CheckCatalog()`，`CheckSpec::availability` 分 `library`/`artifact`/`contract-input` 三类），四态结果 `pass`/`fail`/`missing`/`n/a`（`n/a` = 无受检对象，空真放行但**分开记账**；`low` 按 `07` §2.3 放行）；`ValidationReport::RanIds()` = `06` §2.7 M1 的 `checks_run`；与 `07` G2 对接（`CommitContext::validation` + `CommitGateReport::g2_from_checks`）；`ProbeAutoPrecondition` 的 `verifiers_complete` 改由 `VerifiersComplete()` 判定（**不再恒 false**）；`sha1` 实现在本模块（`04` §2.5，FIPS 向量自检）；自检项 18 → **19**（`checks`）、**19 项全 ok**、ExitCode=0
 
-**待办（未做）**：① K09 的 `shots` 起止状态列（`12` §1.4 缺口）与 `Beat[]`/`PromptArtifact` 的承载表 —— 这三组目前是 `contract-input`，传空即 `n/a`；② 按阶段继续跑（`03` §2.7 的阶段级续跑：`_manifest.json` 的「阶段 → 产物」列仍空）。
+**🔴 跑真实流程的唯一缺口 = LLM API Key（外部资源）**：`settings.json` 里 `openaiApiKey` 等**全部为空**。代码路径已通（见 S15 的实跑日志）：
+填好 Key 后，`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0`（或直接点「生成本章」）即可真生成一章。
+
+**仍未做的（都不阻塞跑流程，见 §0.3 的说明）**：`03` 的 T1–T17 细阶段机（真阶段级续跑）、V9 分镜链本体（影视化链）、`10` 初始化链编排、`09` 的 09-7/09-8/09-11/09-12、K19–K21 由生成侧回填、真机 SD 出图、P8 的开关机压测。
+- [x] **S15** 真实流程前置收口（LLM 真判 + 一键跑法）— `s15-real-flow`｜🔴 修真 bug：`Run` 里 `ProbeAutoPrecondition(*db_, true)` **硬编码** → 空 Key 也能启动 auto（新增 `RunRequest::llm_ready` 由调用方给真实值）；抽 `StartChapterGeneration`（按钮与验收开关**共用同一条路**）+ 空 Key 可读提示不进 worker；「连跑」同样前置检查；新增 **`SHINE_NOVEL_GENERATE=<id>`** 验收开关（⚠️ **时间驱动**而非帧驱动 —— 实测 12 秒跑不到 30 帧）；**真实工程实跑**：`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0` → 自动选章 #1 → `章节 #1 未开始生成：OpenAI 的 API Key 为空`，UI 显示「未配置 OpenAI 的 API Key：设置 → LLM 里填好后重试」；**19 项全 ok**
 - [x] **S14** `_manifest.json` 的「阶段 → 产物」（`03` §2.7 P5 的输入，原先空列）— `s14-manifest-stages`｜新增 `ScanChapterStages()`（产物路径 + 字节数 + FNV 内容指纹 + 是否齐备），`ManifestJson` 增写 `stage_artifacts`（EXTRACT/COMMIT/COST 三段，`_manifest.json` 自身不入清单避免自指）；自检断言「有 StateDiff→EXTRACT complete / 无快照→COMMIT incomplete / 补上变 complete / 16 位指纹 / JSON 可解析」；**19 项全 ok** ⚠️ 真·从中间阶段续跑仍缺 `03` 的 T1–T17 阶段机（本步只给账，续跑粒度仍是章）
 - [x] **S13** K09/K22/K23/K24 的数据来源落地（**schema v9**）— `s13-shot-state-artifacts`｜`shots` 补 `start_state_json`/`end_state_json`/`timeline_json`（`12` §1.4 的缺口）；新增 `prompt_artifacts` 表（`02` §2.10 原先无承载）；`NovelVisual` 加 `ListShotsByChapter` + `UpsertPromptArtifact`/`GetPromptArtifact`/`ListPromptArtifacts`；`NovelChecks` 这四条从 `contract-input` 升为 `library`（显式传值优先，不传查库）；**真实旧库迁移 8→9**：`shots` 19→22 列默认 `{}`、`prompt_artifacts` 建出、旧数据零变化（18/8/48/6/7）；**19 项全 ok**
 - [x] **S12** 「回到产出阶段重做」的真回路 + 落实不变式 I10 的产物落盘 — `s12-validate-retry`｜`NovelDirector` 在 EXTRACT↔提交门禁之间成环：**G2 机器校验挡下 → 重跑 extractor**（把 `checks_describe` 作为「请只修这些问题」喂回 user 消息），上限 `max_validate_retry=2`（`RunLimits::validation_retries` 下发）；**只有机器校验挡下才重做**（G1/G3/G4 类重跑无用）；重做后通过**不计**失败（否则误报 S1）；`CommitChapterState` 把本章 `StateDiff` 落成 `work/ch<ord>/12_state_diff.json`；端到端自检：第 1 版引用不存在实体 → 重做 1 次 → 第 2 版提交成功；**19 项全 ok**
 - [x] **S11** 把 K01–K29 接进生产线（G2 真门禁 + S1 的数据来源）— `s11-k-checks-gate`｜`CommitChapterState` 在**章级快照之后**自己跑 `RunChapterChecks`（`g2_source="inline"`；调用方给报告则 `"caller"`），失败项以 `{check_id+name, severity, detail}` 并入 issue 账供 G5 与拒绝原因；`CommitResult::checks_describe`/`failed_check_ids` → `NovelDirector` → `ChapterObservation` → **S1 实测触发**（`命中停止条件 S1（chapter=1 check_id=K02 连续失败 2 次）`）；`CommitContext::project_dir` 补上；**顺带修** `plot_beats`/`mystery_beats` 的 `ord` 写死 0（K08 判不严格递增的成因）；**19 项自检全 ok**
 
 **已知布局问题（既有，非本次引入）→ 已修（2026-09-19，见下）**：原先"`小说` dock 面板偏矮、`生成本章` 与 `S9 连跑` 被裁掉"。**实测定性有误**：真正原因是该 dock 页被 `SetNextWindowFocus()` 的 `ScrollToBringRectIntoView` **滚下去了**（页首的「工作区」整段滚出视口），不是高度不够。修法：`DrawNovelWindow` 开头 `ImGui::SetScrollY(0)` 钉住页首 + 工作区套**自带滚动的子窗**（`##novel_workspace`，高度 = 页面剩余 − 200px 给工程列表）+ 章节列表改**定高滚动子窗**（`##novel_chapters`，150px），于是「生成本章」重新落在可视区。
+
+### 0.3 剩下什么（当前全部剩余项，按「影不影响跑真实流程」分三类）
+
+**A. 只差外部资源 —— 代码已就绪，拿到就能跑**
+
+| 项 | 缺什么 | 怎么触发 |
+|---|---|---|
+| **真实生成一章** | **LLM API Key**（`settings.json` 里 `openaiApiKey` / `mimoApiKey` / `minimaxApiKey` 全空） | 设置 → LLM 填 Key，然后 `SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0`，或直接点「生成本章」 |
+| 连跑（`auto`） | 同上（`09` §2.1 前置③，S15 起真判） | 同上 + 运行模式选 `auto`（`auto` 还要求"最近一章 G1–G5 已验证"） |
+| 真机 SD 出图 | SD/SDXL checkpoint + Comfy 在线 `:8188` | `runtime/sd-e2e` 分镜出图（P5.7 / P6.3） |
+| P8 余 2 项 | 人工开关机 **10 次**压测、设置窗滚动验收 | 手动 |
+| G 线 AVIF | 已搁置（⏸） | — |
+
+**B. 代码增强 —— 不影响「正文链」跑通，可后补**
+
+- `03` 的 **T1–T17 细阶段机** → 真·阶段级续跑（现在续跑粒度 = **章**；`_manifest.json` 的阶段→产物账已就绪，是它的输入）
+- `10` 的**初始化链编排 I1–I16**（API 已齐；新工程"从零到能写"的一键初始化）
+- **V9 分镜链本体**（影视化：小说 → 分镜 → 出图；`shots` 三列与 `prompt_artifacts` 已就绪）
+- **K19–K21 由生成侧回填**（结论本来产生在 `video` 侧，`novel` 不复刻规则）
+- `09` 的 **09-7/09-8**（按阶段模型路由 / 交叉复核）、**09-11**（并发限流）、**09-12**（全书预算估算）
+- 「生成一章」的 **MCP 工具 / CLI 子命令**（现在只有 UI 按钮 + `SHINE_NOVEL_GENERATE` 开关）
+
+**C. 已定不做（设计如此，非遗漏）**
+
+- `NarrativeShot` 的细粒度位置/朝向/姿态**不拆列**（写在 `StateSnapshot` JSON 内，K09 按顶层字段组比对）
+- `dependencies` 表（延后到实现依赖传播时）
+- `shots` 的 `Sequence` 层级（当前只有 Scene→Shot）
 
 ---
 
