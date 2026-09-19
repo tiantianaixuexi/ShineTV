@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS secrets(id INTEGER PRIMARY KEY AUTOINCREMENT,content 
 CREATE TABLE IF NOT EXISTS secret_knowledge(id INTEGER PRIMARY KEY AUTOINCREMENT,secret_id INTEGER,entity_id INTEGER,knows INTEGER,chapter_known INTEGER);
 CREATE TABLE IF NOT EXISTS entity_ownerships(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,item_id INTEGER,from_chapter INTEGER,to_chapter INTEGER,how TEXT,note TEXT);
 CREATE TABLE IF NOT EXISTS character_knowledge(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,fact_kind TEXT,fact_id INTEGER,fact_text TEXT,knows INTEGER,chapter_known INTEGER);
+CREATE TABLE IF NOT EXISTS event_participants(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id INTEGER,entity_id INTEGER,role TEXT);
+CREATE TABLE IF NOT EXISTS scene_cast(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,entity_id INTEGER,role TEXT);
+CREATE TABLE IF NOT EXISTS scene_foreshadows(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,foreshadowing_id INTEGER,action TEXT);
+CREATE TABLE IF NOT EXISTS plots(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,title TEXT,status TEXT,intro_ch INTEGER,target_ch INTEGER,note TEXT);
+CREATE TABLE IF NOT EXISTS plot_beats(id INTEGER PRIMARY KEY AUTOINCREMENT,plot_id INTEGER,chapter_id INTEGER,ord INTEGER,beat_type TEXT,title TEXT,summary TEXT,cast_json TEXT);
+CREATE TABLE IF NOT EXISTS mysteries(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,question TEXT,answer TEXT,status TEXT,ask_ch INTEGER,answer_ch INTEGER,importance INTEGER);
+CREATE TABLE IF NOT EXISTS mystery_beats(id INTEGER PRIMARY KEY AUTOINCREMENT,mystery_id INTEGER,beat_type TEXT,chapter_id INTEGER,content TEXT,target_entity_id INTEGER,ord INTEGER);
 CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,target_kind TEXT,target_id INTEGER,detail TEXT,created INTEGER);
 CREATE TABLE IF NOT EXISTS canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
 )SQL";
@@ -818,6 +825,557 @@ std::expected<void, DbError> NovelGraph::SetCanon(std::string_view targetKind, R
     return LogAudit("user", "promote_canon", targetKind, targetId, status);
 }
 
+// —— P0 八表（S2）：原先只有表、没有 API，是闭环的阻断点 ——
+
+// 知情（character_knowledge）
+std::expected<RowId, DbError> NovelGraph::UpsertKnowledge(const CharacterKnowledgeRow& row) {
+    if (row.entity_id <= 0) return std::unexpected(Err("知情记录必须指定 entity_id"));
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE character_knowledge SET entity_id=?1,fact_kind=?2,fact_id=?3,fact_text=?4,"
+            "knows=?5,chapter_known=?6 WHERE id=?7");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.entity_id);
+        (void)st->BindText(2, row.fact_kind);
+        (void)st->BindInt(3, row.fact_id);
+        (void)st->BindText(4, row.fact_text);
+        (void)st->BindInt(5, row.knows);
+        (void)st->BindInt(6, row.chapter_known);
+        (void)st->BindInt(7, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO character_knowledge(entity_id,fact_kind,fact_id,fact_text,knows,chapter_known)"
+        " VALUES(?1,?2,?3,?4,?5,?6)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.entity_id);
+    (void)st->BindText(2, row.fact_kind);
+    (void)st->BindInt(3, row.fact_id);
+    (void)st->BindText(4, row.fact_text);
+    (void)st->BindInt(5, row.knows);
+    (void)st->BindInt(6, row.chapter_known);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<CharacterKnowledgeRow>, DbError>
+NovelGraph::ListKnowledge(RowId entityId, RowId chapterId) const {
+    std::string sql =
+        "SELECT id,entity_id,fact_kind,fact_id,fact_text,knows,chapter_known"
+        " FROM character_knowledge WHERE entity_id=?1";
+    if (chapterId > 0) sql += " AND (chapter_known=0 OR chapter_known<=?2)";
+    sql += " ORDER BY chapter_known, id";
+    auto st = db_->Prepare(sql);
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    if (chapterId > 0) (void)st->BindInt(2, chapterId);
+    std::vector<CharacterKnowledgeRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        CharacterKnowledgeRow r;
+        r.id = st->ColumnInt(0);
+        r.entity_id = st->ColumnInt(1);
+        r.fact_kind = st->ColumnText(2);
+        r.fact_id = st->ColumnInt(3);
+        r.fact_text = st->ColumnText(4);
+        r.knows = static_cast<int>(st->ColumnInt(5));
+        r.chapter_known = st->ColumnInt(6);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<bool, DbError> NovelGraph::CharacterKnows(RowId entityId, std::string_view factKind,
+                                                        RowId factId, RowId chapterId) const {
+    // 01 §2.3.2：knows=1 且 (chapter_known=0 或 chapter_known<=N)
+    std::string sql =
+        "SELECT COUNT(*) FROM character_knowledge"
+        " WHERE entity_id=?1 AND fact_kind=?2 AND fact_id=?3 AND knows=1";
+    if (chapterId > 0) sql += " AND (chapter_known=0 OR chapter_known<=?4)";
+    auto st = db_->Prepare(sql);
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    (void)st->BindText(2, factKind);
+    (void)st->BindInt(3, factId);
+    if (chapterId > 0) (void)st->BindInt(4, chapterId);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s != db::sqlite::StepResult::Row) return false;
+    return st->ColumnInt(0) > 0;
+}
+
+// 事件参与（event_participants）
+std::expected<RowId, DbError> NovelGraph::UpsertEventParticipant(const EventParticipantRow& row) {
+    if (row.event_id <= 0 || row.entity_id <= 0) {
+        return std::unexpected(Err("事件参与必须指定 event_id 与 entity_id"));
+    }
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE event_participants SET event_id=?1,entity_id=?2,role=?3 WHERE id=?4");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.event_id);
+        (void)st->BindInt(2, row.entity_id);
+        (void)st->BindText(3, row.role);
+        (void)st->BindInt(4, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st =
+        db_->Prepare("INSERT INTO event_participants(event_id,entity_id,role) VALUES(?1,?2,?3)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.event_id);
+    (void)st->BindInt(2, row.entity_id);
+    (void)st->BindText(3, row.role);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<EventParticipantRow>, DbError>
+NovelGraph::ListEventParticipants(RowId eventId) const {
+    auto st = db_->Prepare(
+        "SELECT id,event_id,entity_id,role FROM event_participants WHERE event_id=?1 ORDER BY id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, eventId);
+    std::vector<EventParticipantRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        EventParticipantRow r;
+        r.id = st->ColumnInt(0);
+        r.event_id = st->ColumnInt(1);
+        r.entity_id = st->ColumnInt(2);
+        r.role = st->ColumnText(3);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<std::vector<EventParticipantRow>, DbError>
+NovelGraph::ListEntityParticipations(RowId entityId, std::string_view role, int limit) const {
+    std::string sql =
+        "SELECT id,event_id,entity_id,role FROM event_participants WHERE entity_id=?1";
+    if (!role.empty()) sql += " AND role=?2";
+    sql += " ORDER BY event_id, id LIMIT " + std::to_string(limit > 0 ? limit : 200);
+    auto st = db_->Prepare(sql);
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    if (!role.empty()) (void)st->BindText(2, role);
+    std::vector<EventParticipantRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        EventParticipantRow r;
+        r.id = st->ColumnInt(0);
+        r.event_id = st->ColumnInt(1);
+        r.entity_id = st->ColumnInt(2);
+        r.role = st->ColumnText(3);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// 场次在场 / 场次伏笔
+std::expected<RowId, DbError> NovelGraph::UpsertSceneCast(const SceneCastRow& row) {
+    if (row.scene_id <= 0 || row.entity_id <= 0) {
+        return std::unexpected(Err("场次在场必须指定 scene_id 与 entity_id"));
+    }
+    if (row.id > 0) {
+        auto st = db_->Prepare("UPDATE scene_cast SET scene_id=?1,entity_id=?2,role=?3 WHERE id=?4");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.scene_id);
+        (void)st->BindInt(2, row.entity_id);
+        (void)st->BindText(3, row.role);
+        (void)st->BindInt(4, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare("INSERT INTO scene_cast(scene_id,entity_id,role) VALUES(?1,?2,?3)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.scene_id);
+    (void)st->BindInt(2, row.entity_id);
+    (void)st->BindText(3, row.role);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<SceneCastRow>, DbError> NovelGraph::ListSceneCast(RowId sceneId) const {
+    auto st = db_->Prepare(
+        "SELECT id,scene_id,entity_id,role FROM scene_cast WHERE scene_id=?1 ORDER BY id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, sceneId);
+    std::vector<SceneCastRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        SceneCastRow r;
+        r.id = st->ColumnInt(0);
+        r.scene_id = st->ColumnInt(1);
+        r.entity_id = st->ColumnInt(2);
+        r.role = st->ColumnText(3);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<RowId, DbError> NovelGraph::UpsertSceneForeshadow(const SceneForeshadowRow& row) {
+    if (row.scene_id <= 0 || row.foreshadowing_id <= 0) {
+        return std::unexpected(Err("场次伏笔必须指定 scene_id 与 foreshadowing_id"));
+    }
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE scene_foreshadows SET scene_id=?1,foreshadowing_id=?2,action=?3 WHERE id=?4");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.scene_id);
+        (void)st->BindInt(2, row.foreshadowing_id);
+        (void)st->BindText(3, row.action);
+        (void)st->BindInt(4, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO scene_foreshadows(scene_id,foreshadowing_id,action) VALUES(?1,?2,?3)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.scene_id);
+    (void)st->BindInt(2, row.foreshadowing_id);
+    (void)st->BindText(3, row.action);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<SceneForeshadowRow>, DbError>
+NovelGraph::ListSceneForeshadows(RowId sceneId) const {
+    auto st = db_->Prepare(
+        "SELECT id,scene_id,foreshadowing_id,action FROM scene_foreshadows"
+        " WHERE scene_id=?1 ORDER BY id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, sceneId);
+    std::vector<SceneForeshadowRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        SceneForeshadowRow r;
+        r.id = st->ColumnInt(0);
+        r.scene_id = st->ColumnInt(1);
+        r.foreshadowing_id = st->ColumnInt(2);
+        r.action = st->ColumnText(3);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// 剧情线（plots / plot_beats）
+std::expected<RowId, DbError> NovelGraph::UpsertPlot(const PlotRow& row) {
+    if (row.title.empty()) return std::unexpected(Err("剧情线 title 不能为空"));
+    const std::string_view kind = row.kind.empty() ? std::string_view{"main"} : row.kind;
+    const std::string_view status = row.status.empty() ? std::string_view{"active"} : row.status;
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE plots SET kind=?1,title=?2,status=?3,intro_ch=?4,target_ch=?5,note=?6"
+            " WHERE id=?7");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindText(1, kind);
+        (void)st->BindText(2, row.title);
+        (void)st->BindText(3, status);
+        (void)st->BindInt(4, row.intro_ch);
+        (void)st->BindInt(5, row.target_ch);
+        (void)st->BindText(6, row.note);
+        (void)st->BindInt(7, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO plots(kind,title,status,intro_ch,target_ch,note) VALUES(?1,?2,?3,?4,?5,?6)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindText(1, kind);
+    (void)st->BindText(2, row.title);
+    (void)st->BindText(3, status);
+    (void)st->BindInt(4, row.intro_ch);
+    (void)st->BindInt(5, row.target_ch);
+    (void)st->BindText(6, row.note);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<PlotRow, DbError> NovelGraph::GetPlot(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,kind,title,status,intro_ch,target_ch,note FROM plots WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(Err("剧情线不存在"));
+    PlotRow r;
+    r.id = st->ColumnInt(0);
+    r.kind = st->ColumnText(1);
+    r.title = st->ColumnText(2);
+    r.status = st->ColumnText(3);
+    r.intro_ch = st->ColumnInt(4);
+    r.target_ch = st->ColumnInt(5);
+    r.note = st->ColumnText(6);
+    return r;
+}
+
+std::expected<std::vector<PlotRow>, DbError> NovelGraph::ListPlots(std::string_view kind,
+                                                                   int limit) const {
+    std::string sql = "SELECT id,kind,title,status,intro_ch,target_ch,note FROM plots";
+    if (!kind.empty()) sql += " WHERE kind=?1";
+    sql += " ORDER BY intro_ch, id LIMIT " + std::to_string(limit > 0 ? limit : 100);
+    auto st = db_->Prepare(sql);
+    if (!st) return std::unexpected(st.error());
+    if (!kind.empty()) (void)st->BindText(1, kind);
+    std::vector<PlotRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        PlotRow r;
+        r.id = st->ColumnInt(0);
+        r.kind = st->ColumnText(1);
+        r.title = st->ColumnText(2);
+        r.status = st->ColumnText(3);
+        r.intro_ch = st->ColumnInt(4);
+        r.target_ch = st->ColumnInt(5);
+        r.note = st->ColumnText(6);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<RowId, DbError> NovelGraph::UpsertPlotBeat(const PlotBeatRow& row) {
+    if (row.plot_id <= 0) return std::unexpected(Err("剧情节拍必须指定 plot_id"));
+    const std::string_view type =
+        row.beat_type.empty() ? std::string_view{"setup"} : row.beat_type;
+    const std::string_view cast = row.cast_json.empty() ? std::string_view{"[]"} : row.cast_json;
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE plot_beats SET plot_id=?1,chapter_id=?2,ord=?3,beat_type=?4,title=?5,"
+            "summary=?6,cast_json=?7 WHERE id=?8");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.plot_id);
+        (void)st->BindInt(2, row.chapter_id);
+        (void)st->BindInt(3, row.ord);
+        (void)st->BindText(4, type);
+        (void)st->BindText(5, row.title);
+        (void)st->BindText(6, row.summary);
+        (void)st->BindText(7, cast);
+        (void)st->BindInt(8, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO plot_beats(plot_id,chapter_id,ord,beat_type,title,summary,cast_json)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.plot_id);
+    (void)st->BindInt(2, row.chapter_id);
+    (void)st->BindInt(3, row.ord);
+    (void)st->BindText(4, type);
+    (void)st->BindText(5, row.title);
+    (void)st->BindText(6, row.summary);
+    (void)st->BindText(7, cast);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<PlotBeatRow>, DbError> NovelGraph::ListPlotBeats(RowId plotId) const {
+    auto st = db_->Prepare(
+        "SELECT id,plot_id,chapter_id,ord,beat_type,title,summary,cast_json FROM plot_beats"
+        " WHERE plot_id=?1 ORDER BY ord, id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, plotId);
+    std::vector<PlotBeatRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        PlotBeatRow r;
+        r.id = st->ColumnInt(0);
+        r.plot_id = st->ColumnInt(1);
+        r.chapter_id = st->ColumnInt(2);
+        r.ord = static_cast<int>(st->ColumnInt(3));
+        r.beat_type = st->ColumnText(4);
+        r.title = st->ColumnText(5);
+        r.summary = st->ColumnText(6);
+        r.cast_json = st->ColumnText(7);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// 谜团（mysteries / mystery_beats）
+std::expected<RowId, DbError> NovelGraph::UpsertMystery(const MysteryRow& row) {
+    if (row.question.empty()) return std::unexpected(Err("谜团 question 不能为空"));
+    const std::string_view status = row.status.empty() ? std::string_view{"open"} : row.status;
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE mysteries SET entity_id=?1,question=?2,answer=?3,status=?4,ask_ch=?5,"
+            "answer_ch=?6,importance=?7 WHERE id=?8");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.entity_id);
+        (void)st->BindText(2, row.question);
+        (void)st->BindText(3, row.answer);
+        (void)st->BindText(4, status);
+        (void)st->BindInt(5, row.ask_ch);
+        (void)st->BindInt(6, row.answer_ch);
+        (void)st->BindInt(7, row.importance);
+        (void)st->BindInt(8, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO mysteries(entity_id,question,answer,status,ask_ch,answer_ch,importance)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.entity_id);
+    (void)st->BindText(2, row.question);
+    (void)st->BindText(3, row.answer);
+    (void)st->BindText(4, status);
+    (void)st->BindInt(5, row.ask_ch);
+    (void)st->BindInt(6, row.answer_ch);
+    (void)st->BindInt(7, row.importance);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<MysteryRow, DbError> NovelGraph::GetMystery(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,entity_id,question,answer,status,ask_ch,answer_ch,importance"
+        " FROM mysteries WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(Err("谜团不存在"));
+    MysteryRow r;
+    r.id = st->ColumnInt(0);
+    r.entity_id = st->ColumnInt(1);
+    r.question = st->ColumnText(2);
+    r.answer = st->ColumnText(3);
+    r.status = st->ColumnText(4);
+    r.ask_ch = st->ColumnInt(5);
+    r.answer_ch = st->ColumnInt(6);
+    r.importance = static_cast<int>(st->ColumnInt(7));
+    return r;
+}
+
+std::expected<std::vector<MysteryRow>, DbError> NovelGraph::ListOpenMysteries() const {
+    // 「未解」= open | hinted —— 与 ListOpenForeshadows 一起构成 00 §2.5 的「开放线索」
+    auto st = db_->Prepare(
+        "SELECT id,entity_id,question,answer,status,ask_ch,answer_ch,importance FROM mysteries"
+        " WHERE status IN ('open','hinted') ORDER BY importance DESC, id");
+    if (!st) return std::unexpected(st.error());
+    std::vector<MysteryRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        MysteryRow r;
+        r.id = st->ColumnInt(0);
+        r.entity_id = st->ColumnInt(1);
+        r.question = st->ColumnText(2);
+        r.answer = st->ColumnText(3);
+        r.status = st->ColumnText(4);
+        r.ask_ch = st->ColumnInt(5);
+        r.answer_ch = st->ColumnInt(6);
+        r.importance = static_cast<int>(st->ColumnInt(7));
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<std::vector<MysteryRow>, DbError> NovelGraph::ListMysteries(RowId entityId,
+                                                                          int limit) const {
+    std::string sql =
+        "SELECT id,entity_id,question,answer,status,ask_ch,answer_ch,importance FROM mysteries";
+    if (entityId > 0) sql += " WHERE entity_id=?1";
+    sql += " ORDER BY importance DESC, id LIMIT " + std::to_string(limit > 0 ? limit : 100);
+    auto st = db_->Prepare(sql);
+    if (!st) return std::unexpected(st.error());
+    if (entityId > 0) (void)st->BindInt(1, entityId);
+    std::vector<MysteryRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        MysteryRow r;
+        r.id = st->ColumnInt(0);
+        r.entity_id = st->ColumnInt(1);
+        r.question = st->ColumnText(2);
+        r.answer = st->ColumnText(3);
+        r.status = st->ColumnText(4);
+        r.ask_ch = st->ColumnInt(5);
+        r.answer_ch = st->ColumnInt(6);
+        r.importance = static_cast<int>(st->ColumnInt(7));
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::expected<RowId, DbError> NovelGraph::UpsertMysteryBeat(const MysteryBeatRow& row) {
+    if (row.mystery_id <= 0) return std::unexpected(Err("谜团节拍必须指定 mystery_id"));
+    const std::string_view type =
+        row.beat_type.empty() ? std::string_view{"hint"} : row.beat_type;
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE mystery_beats SET mystery_id=?1,beat_type=?2,chapter_id=?3,content=?4,"
+            "target_entity_id=?5,ord=?6 WHERE id=?7");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.mystery_id);
+        (void)st->BindText(2, type);
+        (void)st->BindInt(3, row.chapter_id);
+        (void)st->BindText(4, row.content);
+        (void)st->BindInt(5, row.target_entity_id);
+        (void)st->BindInt(6, row.ord);
+        (void)st->BindInt(7, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO mystery_beats(mystery_id,beat_type,chapter_id,content,target_entity_id,ord)"
+        " VALUES(?1,?2,?3,?4,?5,?6)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.mystery_id);
+    (void)st->BindText(2, type);
+    (void)st->BindInt(3, row.chapter_id);
+    (void)st->BindText(4, row.content);
+    (void)st->BindInt(5, row.target_entity_id);
+    (void)st->BindInt(6, row.ord);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<std::vector<MysteryBeatRow>, DbError>
+NovelGraph::ListMysteryBeats(RowId mysteryId) const {
+    auto st = db_->Prepare(
+        "SELECT id,mystery_id,beat_type,chapter_id,content,target_entity_id,ord FROM mystery_beats"
+        " WHERE mystery_id=?1 ORDER BY ord, id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, mysteryId);
+    std::vector<MysteryBeatRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        MysteryBeatRow r;
+        r.id = st->ColumnInt(0);
+        r.mystery_id = st->ColumnInt(1);
+        r.beat_type = st->ColumnText(2);
+        r.chapter_id = st->ColumnInt(3);
+        r.content = st->ColumnText(4);
+        r.target_entity_id = st->ColumnInt(5);
+        r.ord = static_cast<int>(st->ColumnInt(6));
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
 bool NovelGraph::RunGraphSelfCheck() {
     // 依赖全量 schema（NovelDb 自检）
     if (!NovelDb::RunSchemaSelfCheck()) {
@@ -868,7 +1426,123 @@ bool NovelGraph::RunGraphSelfCheck() {
         log::Error("NovelGraph 自检：CharacterSlice 失败");
         return false;
     }
-    log::Info("NovelGraph 自检通过（实体/关系/因果/伏笔/章节/切片）");
+    // —— P0 八表（S2）：每表 Upsert* + List* ——
+    auto scene = g.UpsertScene({.chapter_id = *ch, .ord = 1, .title = "雪原"});
+    if (!scene) {
+        log::Error("NovelGraph 自检：UpsertScene 失败");
+        return false;
+    }
+    // 知情：一条「第 3 章才知」、一条「不知道」→ 规范查询按章过滤
+    {
+        auto k1 = g.UpsertKnowledge({.entity_id = *pid,
+                                     .fact_kind = "secret",
+                                     .fact_id = 7,
+                                     .fact_text = "戒指的来历",
+                                     .knows = 1,
+                                     .chapter_known = 3});
+        auto k2 = g.UpsertKnowledge({.entity_id = *pid,
+                                     .fact_kind = "secret",
+                                     .fact_id = 8,
+                                     .fact_text = "王的真名",
+                                     .knows = 0,
+                                     .chapter_known = 0});
+        auto kl = g.ListKnowledge(*pid);
+        auto klEarly = g.ListKnowledge(*pid, 2);
+        if (!k1 || !k2 || !kl || kl->size() != 2 || !klEarly || klEarly->size() != 1 ||
+            (*klEarly)[0].fact_id != 8) {
+            log::Error("NovelGraph 自检：character_knowledge CRUD/按章过滤失败");
+            return false;
+        }
+        auto kBefore = g.CharacterKnows(*pid, "secret", 7, 2); // 第 2 章：还不知
+        auto kAt = g.CharacterKnows(*pid, "secret", 7, 3);     // 第 3 章：已知
+        auto kNo = g.CharacterKnows(*pid, "secret", 9, 9);     // 无记录
+        if (!kBefore || *kBefore || !kAt || !*kAt || !kNo || *kNo) {
+            log::Error("NovelGraph 自检：CharacterKnows 规范查询失败 before={} at={} none={}",
+                       kBefore ? *kBefore : false, kAt ? *kAt : false, kNo ? *kNo : false);
+            return false;
+        }
+    }
+    // 事件参与（含 K04 用的实体→事件方向）
+    {
+        auto ep = g.UpsertEventParticipant({.event_id = *e1, .entity_id = *pid, .role = "actor"});
+        auto epl = g.ListEventParticipants(*e1);
+        auto byEnt = g.ListEntityParticipations(*pid);
+        auto byRole = g.ListEntityParticipations(*pid, "victim");
+        if (!ep || !epl || epl->size() != 1 || (*epl)[0].role != "actor" || !byEnt ||
+            byEnt->size() != 1 || !byRole || !byRole->empty()) {
+            log::Error("NovelGraph 自检：event_participants CRUD/双向查询失败");
+            return false;
+        }
+    }
+    // 场次在场 / 场次伏笔
+    {
+        auto sc = g.UpsertSceneCast({.scene_id = *scene, .entity_id = *pid, .role = "pov"});
+        auto scl = g.ListSceneCast(*scene);
+        if (!sc || !scl || scl->size() != 1 || (*scl)[0].role != "pov") {
+            log::Error("NovelGraph 自检：scene_cast CRUD 失败");
+            return false;
+        }
+        auto sf = g.UpsertSceneForeshadow(
+            {.scene_id = *scene, .foreshadowing_id = *fs, .action = "plant"});
+        auto sfl = g.ListSceneForeshadows(*scene);
+        if (!sf || !sfl || sfl->size() != 1 || (*sfl)[0].action != "plant") {
+            log::Error("NovelGraph 自检：scene_foreshadows CRUD 失败");
+            return false;
+        }
+    }
+    // 剧情线 + 节拍
+    {
+        auto plot = g.UpsertPlot({.kind = "main", .title = "追查戒指", .target_ch = 12});
+        if (!plot) {
+            log::Error("NovelGraph 自检：UpsertPlot 失败");
+            return false;
+        }
+        (void)g.UpsertPlotBeat(
+            {.plot_id = *plot, .chapter_id = *ch, .ord = 0, .beat_type = "setup", .title = "埋线"});
+        (void)g.UpsertPlotBeat({.plot_id = *plot,
+                                .chapter_id = *ch,
+                                .ord = 1,
+                                .beat_type = "rising",
+                                .title = "升级"});
+        auto got = g.GetPlot(*plot);
+        auto pbl = g.ListPlotBeats(*plot);
+        auto byKind = g.ListPlots("main");
+        auto byOther = g.ListPlots("sub");
+        if (!got || got->title != "追查戒指" || !pbl || pbl->size() != 2 || (*pbl)[0].ord != 0 ||
+            (*pbl)[1].ord != 1 || !byKind || byKind->size() != 1 || !byOther || !byOther->empty()) {
+            log::Error("NovelGraph 自检：plots/plot_beats CRUD 或按 kind 过滤失败");
+            return false;
+        }
+    }
+    // 谜团 + 节拍
+    {
+        auto my = g.UpsertMystery({.question = "戒指是谁的？", .importance = 80});
+        if (!my) {
+            log::Error("NovelGraph 自检：UpsertMystery 失败");
+            return false;
+        }
+        (void)g.UpsertMysteryBeat({.mystery_id = *my,
+                                   .beat_type = "hint",
+                                   .chapter_id = *ch,
+                                   .content = "旧铜环"});
+        auto gm = g.GetMystery(*my);
+        auto mbl = g.ListMysteryBeats(*my);
+        auto all = g.ListMysteries();
+        auto openM = g.ListOpenMysteries();
+        if (!gm || gm->status != "open" || !mbl || mbl->size() != 1 || !all || all->size() != 1 ||
+            !openM || openM->size() != 1) {
+            log::Error("NovelGraph 自检：mysteries/mystery_beats CRUD 失败");
+            return false;
+        }
+        // 推进到 resolved 后应从「开放线索」里消失
+        (void)g.UpsertMystery({.id = *my, .question = "戒指是谁的？", .status = "resolved"});
+        auto openM2 = g.ListOpenMysteries();
+        if (!openM2 || !openM2->empty()) {
+            log::Error("NovelGraph 自检：ListOpenMysteries 过滤失败");
+            return false;
+        }
+    }
+    log::Info("NovelGraph 自检通过（实体/关系/因果/伏笔/章节/切片 + P0 八表）");
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {
