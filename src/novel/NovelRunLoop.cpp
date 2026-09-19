@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "novel/NovelChecks.h"
 #include "novel/NovelGraph.h"
+#include "novel/NovelStageLedger.h" // S19：阶段产物文件名（`03` §2.7，单一来源）
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Time.h"
@@ -377,6 +378,23 @@ std::vector<StageProgress> ScanChapterStages(const std::filesystem::path& projec
     // 列进来只会记到上一版（自指，没有意义）。
     addStage("COST",
              {probe(std::filesystem::path{"work"} / fmt::format("ch{:03}", ord) / "cost_report.json")});
+    // S19（`03` §2.7 P5）：正文链的阶段产物也进阶段账（崩溃恢复要靠它找断点）。
+    // ⚠️ 只列**当前实现真的会落盘**的阶段：
+    //   · T2–T9 按 `03` §2.2 明确允许"合并执行"（与 T10 一起由 planner 一次产出）→ 没有各自的
+    //     文件，**不列**（免得账里出现一堆永远 incomplete 的项；"逐步展开"是 `03-9` 的 B 级差距）；
+    //   · `STATE_EXTRACT` 已在上面作为 `EXTRACT` 记过（同一个 `12_state_diff.json`）→ 不重复；
+    //   · `CHAPTER_REPAIR` 是**条件产物**（只有修订过才有）→ 不列，避免把"没修订"误报成缺产物。
+    for (const std::string_view stage :
+         {std::string_view{"CONTEXT_ASSEMBLY"}, std::string_view{"SCENE_EVENT_ORDER"},
+          std::string_view{"CHAPTER_REVIEW"}, std::string_view{"STATE_VALIDATE"}}) {
+        const std::string_view file = StageFileName(stage);
+        if (file.empty()) {
+            continue;
+        }
+        addStage(std::string{stage},
+                 {probe(std::filesystem::path{"work"} / fmt::format("ch{:03}", ord) /
+                        std::string{file})});
+    }
     return out;
 }
 
@@ -639,6 +657,9 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
             // S12（`03` §2.6）：机器校验失败 → 回 EXTRACT 重做的上限
             chReq.max_validate_retries = limits.validation_retries;
             chReq.canon_mode = (mode == RunMode::Auto) ? "auto" : "manual";
+            // S19（`03` §2.7 P1/P5）：连跑是**续跑语义** —— 盘上产物哈希一致就跳过该阶段
+            // （含 `chapters.body` 已落库时的 Writer 复用）；无产物时与全跑等价。
+            chReq.resume = true;
             if (!projectDir.empty()) {
                 chReq.snapshot_dir = util::PathToUtf8(projectDir / "snapshots");
                 // S12：工程根显式下发（`work/ch<NNN>/12_state_diff.json` 按它落盘）
@@ -1325,9 +1346,20 @@ bool NovelRunLoop::RunSelfCheck() {
                 return StageProgress{};
             };
             const auto s0 = ScanChapterStages(pdir, 1, 1);
-            expect(s0.size() == 3 && stageOf(s0, "EXTRACT").complete &&
+            // S19：阶段账从 3 段（EXTRACT/COMMIT/COST）扩到 7 段 —— 多了 `03` §2.7 的
+            // 正文链阶段（CONTEXT_ASSEMBLY / SCENE_EVENT_ORDER / CHAPTER_REVIEW / STATE_VALIDATE）
+            expect(s0.size() == 7 && stageOf(s0, "EXTRACT").complete &&
                        !stageOf(s0, "COMMIT").complete,
-                   "S14：有 StateDiff → EXTRACT complete；无快照 → COMMIT incomplete");
+                   "S14/S19：7 段阶段账；有 StateDiff → EXTRACT complete；无快照 → COMMIT incomplete");
+            expect(!stageOf(s0, "SCENE_EVENT_ORDER").complete &&
+                       !stageOf(s0, "SCENE_EVENT_ORDER").artifacts.empty() &&
+                       stageOf(s0, "SCENE_EVENT_ORDER").artifacts[0].bytes < 0,
+                   "S19：缺 09_chapter_plan.json → 该阶段 incomplete（bytes=-1 = 缺文件）");
+            // S19：真落盘一个阶段产物 → 该阶段立刻变 complete（落盘与扫描是同一条约定）
+            (void)novelcore::WriteStageArtifact(pdir, 1, "SCENE_EVENT_ORDER",
+                                                R"({"chapter_title":"雪原"})", "hash-1");
+            expect(stageOf(ScanChapterStages(pdir, 1, 1), "SCENE_EVENT_ORDER").complete,
+                   "S19：落盘 09_chapter_plan.json 后该阶段 complete");
             expect(!stageOf(s0, "EXTRACT").artifacts.empty() &&
                        stageOf(s0, "EXTRACT").artifacts[0].bytes > 0 &&
                        stageOf(s0, "EXTRACT").artifacts[0].fnv.size() == 16,
@@ -1342,11 +1374,11 @@ bool NovelRunLoop::RunSelfCheck() {
             if (yyjson_doc* doc = yyjson_read(mj.data(), mj.size(), 0); doc != nullptr) {
                 yyjson_val* root = yyjson_doc_get_root(doc);
                 yyjson_val* sa = yyjson_obj_get(root, "stage_artifacts");
-                okJson = yyjson_is_arr(sa) && yyjson_arr_size(sa) == 3 &&
+                okJson = yyjson_is_arr(sa) && yyjson_arr_size(sa) == 7 &&
                          yyjson_is_str(yyjson_obj_get(yyjson_arr_get(sa, 0), "stage"));
                 yyjson_doc_free(doc);
             }
-            expect(okJson, "S14：_manifest.json 的 stage_artifacts 结构可解析（3 段）");
+            expect(okJson, "S14/S19：_manifest.json 的 stage_artifacts 结构可解析（7 段）");
         }
         loop.SetChapterRunner([&calls](RowId chapter_id, const RunLimits&, RunMode,
                                        const std::function<void(

@@ -144,14 +144,16 @@ int RunNovelCli(const wchar_t* cmdline) {
             return 2;
         }
         const int maxRev = std::atoi(Opt(args, "--max-revisions", "2").c_str());
-        log::Info("novel-cli：开始生成章 #{}（max_revisions={}）", cid, maxRev);
+        const bool resume = Has(args, "--resume"); // S19：续跑（默认 = 重写）
+        log::Info("novel-cli：开始生成章 #{}（max_revisions={} resume={}）", cid, maxRev, resume);
         const ChapterGenOutcome out = GenerateOneChapter(
             db, cid, projectDir, maxRev, &cancel,
             [](const agent::GenerateChapterProgress& p) {
                 if (!p.note.empty()) {
                     log::Info("  [{}] {}", agent::PhaseName(p.phase), p.note);
                 }
-            });
+            },
+            resume);
         log::Info("novel-cli：{}", out.Describe());
         AppendCheckOut(out.ok, out.Describe());
         return out.ok ? 0 : 1;

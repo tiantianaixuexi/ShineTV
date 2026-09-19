@@ -2,9 +2,11 @@
 
 #include "core/Log.h"
 #include "core/Settings.h"
-#include "novel/NovelCommit.h" // S8：StateDiff + 提交门禁 + 14 块事务
+#include "novel/NovelChecks.h"    // S19：ComputeInputStateHash（`04` §2.5 哈希，唯一来源）
+#include "novel/NovelCommit.h"    // S8：StateDiff + 提交门禁 + 14 块事务
 #include "novel/NovelGraph.h"
 #include "novel/NovelMemory.h"
+#include "novel/NovelStageLedger.h" // S19：阶段产物落盘与续跑（`03` §2.7 P1/P2/P5）
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Json.h"
@@ -292,30 +294,64 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         return std::unexpected(AgentError{"context", ctx.error().message});
     }
 
-    // PLAN
-    Report(progressCb, Phase::Plan, 30, "Planner");
-    const std::string planUser = fmt::format("{}\n\n【任务】\n{}", ctx->text, req.user_hint);
-    auto planResp = CallLlm("planner", planUser, "PLAN", req, result.calls);
-    if (!planResp) {
-        return std::unexpected(planResp.error());
+    // S19（`03` §2.7）：阶段产物目录与"当前状态哈希"（`04` §2.5，chain=text）—— 落盘与续跑共用
+    const std::filesystem::path workDir =
+        req.project_dir.empty() ? std::filesystem::path{} : util::PathFromUtf8(req.project_dir);
+    const int ord = ch->ord;
+    const auto stateHash = [this, &req](std::string_view stage) {
+        return novelcore::ComputeInputStateHash(*db_, req.chapter_id, "text", stage);
+    };
+    // T5 CONTEXT_ASSEMBLY（`03` §2.2）→ `04_context_pack.json`
+    (void)novelcore::WriteStageArtifact(workDir, ord, "CONTEXT_ASSEMBLY", ctx->text,
+                                        stateHash("CONTEXT_ASSEMBLY"));
+
+    // PLAN（T2–T10 合并执行 —— `03` §2.2 明确允许"T2–T9 是规划细化，可合并"；合并不改契约）
+    // S19（P1/P2）：`resume` 且盘上 `09_chapter_plan.json` 的哈希与当前一致 → **复用**，
+    // 不再请求 planner（"崩在 WRITE 之后，重跑不再花 plan 那份钱"）。
+    if (req.resume && !workDir.empty()) {
+        if (const auto art = novelcore::ReadStageArtifact(workDir, ord, "SCENE_EVENT_ORDER");
+            art && !art->payload.empty() && art->input_state_hash == stateHash("SCENE_EVENT_ORDER")) {
+            result.plan_json = art->payload;
+            Report(progressCb, Phase::Plan, 30, "Planner（复用盘上产物）");
+            log::Info("阶段续跑（P1）：复用 09_chapter_plan.json（{} 字节），Planner 未再请求 LLM",
+                      art->payload.size());
+        }
     }
-    result.plan_json = ExtractOutputText(*planResp);
     if (result.plan_json.empty()) {
-        // 解析失败重试 1 次（`09` §2.3「契约重试 = 1」）—— 计一次契约失败（`09` §2.2 S4 的输入）
-        ++result.contract_failures;
-        planResp = CallLlm("planner", planUser, "PLAN", req, result.calls);
-        if (!planResp) return std::unexpected(planResp.error());
+        Report(progressCb, Phase::Plan, 30, "Planner");
+        const std::string planUser = fmt::format("{}\n\n【任务】\n{}", ctx->text, req.user_hint);
+        auto planResp = CallLlm("planner", planUser, "PLAN", req, result.calls);
+        if (!planResp) {
+            return std::unexpected(planResp.error());
+        }
         result.plan_json = ExtractOutputText(*planResp);
-    }
-    if (result.plan_json.empty()) {
-        return std::unexpected(AgentError{"plan", "Planner 未返回 JSON"});
+        if (result.plan_json.empty()) {
+            // 解析失败重试 1 次（`09` §2.3「契约重试 = 1」）—— 计一次契约失败（`09` §2.2 S4 的输入）
+            ++result.contract_failures;
+            planResp = CallLlm("planner", planUser, "PLAN", req, result.calls);
+            if (!planResp) return std::unexpected(planResp.error());
+            result.plan_json = ExtractOutputText(*planResp);
+        }
+        if (result.plan_json.empty()) {
+            return std::unexpected(AgentError{"plan", "Planner 未返回 JSON"});
+        }
+        (void)novelcore::WriteStageArtifact(workDir, ord, "SCENE_EVENT_ORDER", result.plan_json,
+                                            stateHash("SCENE_EVENT_ORDER"));
     }
 
-    // WRITE（可 stream）
+    // WRITE（可 stream）。T11 的产物就是 `chapters.body`（`03` §2.7 的 work 表里**没有**草稿文件）
+    // S19（P4/P5）：`resume` 且正文已落库（非 done）→ **复用**，跳过 Writer
+    std::string body;
+    // P4 的语义就是"正文一旦写进 `chapters.body` 就算该阶段落盘"——与章状态无关
+    // （已 done 的章本该被 `ChapterAlreadyDone` 挡在上游，不该走到这里）。
+    if (req.resume && !ch->body.empty()) {
+        body = ch->body;
+        Report(progressCb, Phase::Write, 50, "Writer（复用已落库正文）");
+        log::Info("阶段续跑（P5）：复用 chapters.body（{} 字），Writer 未再请求 LLM", body.size());
+    } else {
     Report(progressCb, Phase::Write, 50, "Writer");
     const std::string writeUser =
         fmt::format("{}\n\n【章节计划 JSON】\n{}\n\n【写出正文】", ctx->text, result.plan_json);
-    std::string body;
     if (stream_) {
         auto onDelta = [&](std::string_view d) {
             GenerateChapterProgress pr;
@@ -348,6 +384,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     if (body.empty()) {
         return std::unexpected(AgentError{"write", "Writer 未返回正文"});
     }
+    } // S19：`else`（未复用已落库正文）的收束
 
     // REVIEW + REVISION
     int revisions = 0;
@@ -363,6 +400,9 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         if (!cr) break; // Critic 失败不阻断保存
         criticJson = ExtractOutputText(*cr);
         result.critic_json = criticJson;
+        // T12 CHAPTER_REVIEW（`03` §2.2）→ `10_review.json`（`03` §2.7）
+        (void)novelcore::WriteStageArtifact(workDir, ord, "CHAPTER_REVIEW", criticJson,
+                                            stateHash("CHAPTER_REVIEW"));
         const bool passed =
             criticJson.find("\"passed\":true") != std::string::npos ||
             criticJson.find("\"passed\": true") != std::string::npos;
@@ -377,6 +417,12 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         if (!rr) break;
         const auto newBody = ExtractOutputText(*rr);
         if (!newBody.empty()) body = newBody;
+        // T13 CHAPTER_REPAIR（`03` §2.2）→ `11_repair_receipt.json`（`03` §2.7）
+        (void)novelcore::WriteStageArtifact(
+            workDir, ord, "CHAPTER_REPAIR",
+            fmt::format(R"({{"round":{},"revised":{}}})", revisions,
+                        newBody.empty() ? "false" : "true"),
+            stateHash("CHAPTER_REPAIR"));
     }
     result.revisions = revisions;
     result.body = body;
@@ -402,6 +448,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     const int maxValidateRetries = req.max_validate_retries > 0 ? req.max_validate_retries : 2;
     // 同章同 check_id 的累计失败次数 → `09` §2.2 S1 的输入（重复条目 = 次数）
     std::map<std::string, int> checkFailCounts;
+    std::string lastChecksDescribe; // S19：T15 的产物要记"最后一次尝试"的机器校验摘要
 
     for (int attempt = 0; attempt <= maxValidateRetries; ++attempt) {
         Report(progressCb, Phase::Extract, 90,
@@ -508,6 +555,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         }
         result.state_committed = commit.ok && !commit.skipped;
         result.state_skipped = commit.skipped;
+        lastChecksDescribe = commit.checks_describe;
         result.commit_note = commit.ok ? (commit.skipped ? "已提交过（幂等跳过）" : "状态已回写")
                                        : commit.error;
         if (!commit.ok) {
@@ -546,6 +594,23 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     }
     result.stages = stages;
     result.review_passed = reviewPassed;
+    // S19：T15 STATE_VALIDATE 的产物 → `13_validation.json`（`03` §2.7）——
+    // 记门禁结论 + 机器校验摘要（`06` §2.3），供崩溃恢复与事后复核看"当时为什么放行/拒绝"
+    {
+        std::string ids = "[";
+        for (std::size_t i = 0; i < result.failed_check_ids.size(); ++i) {
+            ids += (i == 0 ? "" : ",") + std::string{"\""} + EscapeJson(result.failed_check_ids[i]) +
+                   "\"";
+        }
+        ids += "]";
+        (void)novelcore::WriteStageArtifact(
+            workDir, ord, "STATE_VALIDATE",
+            fmt::format(R"({{"committed":{},"skipped":{},"validate_retries":{},"failed_check_ids":{},"checks_describe":"{}"}})",
+                        result.state_committed ? "true" : "false",
+                        result.state_skipped ? "true" : "false", result.validation_retries, ids,
+                        EscapeJson(lastChecksDescribe)),
+            stateHash("STATE_VALIDATE"));
+    }
     result.semantic_only = !reviewPassed && result.contract_failures == 0 &&
                            result.missing_entity_refs == 0;
     Report(progressCb, Phase::Done, 100, "完成");
@@ -573,6 +638,7 @@ bool NovelDirector::RunSelfCheck() {
     int extractCalls = 0;   // S12：第 1 版故意不合规，用来验证「回 EXTRACT 重做」
     bool retryHintSeen = false; // S12：重做时把失败清单喂回给 extractor 了吗
     int roleMask = 0;           // S16：哪些 LlmRole 真的到过回调（09-7 的证据）
+    int writerCalls = 0;        // S19：Writer 被请求了几次（验 P4 的正文复用）
     LlmCallFn mock = [&](LlmRole role, std::string_view instructions, std::string_view user)
         -> std::expected<std::string, AgentError> {
         const std::string ins{instructions};
@@ -635,6 +701,7 @@ bool NovelDirector::RunSelfCheck() {
             return resp;
         }
         // writer
+        ++writerCalls;
         return std::string{R"({"output_text":"雪原上只剩下风声。林默按住伤口，继续向前。"})"};
     };
 
@@ -642,13 +709,18 @@ bool NovelDirector::RunSelfCheck() {
     std::vector<Phase> phases;
     const std::filesystem::path snapRoot =
         std::filesystem::temp_directory_path() / "shine_director_commit_check";
+    // S19：阶段产物的工程根（`03` §2.7 的 `work/ch<NNN>/` 落在这里）
+    const std::filesystem::path stageRoot =
+        std::filesystem::temp_directory_path() / "shine_director_stage_check";
     std::error_code ec;
     std::filesystem::remove_all(snapRoot, ec);
+    std::filesystem::remove_all(stageRoot, ec);
     auto out = dir.GenerateChapter(
         {.chapter_id = *ch,
          .user_hint = "写第一章",
          .max_revisions = 3,
-         .snapshot_dir = util::PathToUtf8(snapRoot)},
+         .snapshot_dir = util::PathToUtf8(snapRoot),
+         .project_dir = util::PathToUtf8(stageRoot)},
         [&](const GenerateChapterProgress& p) { phases.push_back(p.phase); });
     if (!out) {
         log::Error("Director 自检：Generate 失败 {}", out.error().message);
@@ -673,6 +745,53 @@ bool NovelDirector::RunSelfCheck() {
     // 第 2 版才提交成功；重做后通过 ⇒ 不得把失败算到 `failed_check_ids`（否则 S1 会误停）
     const bool retried = out->validation_retries >= 1 && retryHintSeen && extractCalls >= 2;
     const bool noStaleFailures = out->failed_check_ids.empty();
+    // ———— S19（`03` §2.7）：阶段产物落盘 + 断点续跑（P1/P2/P4/P5）————
+    bool stagesOnDisk = true;
+    for (const std::string_view stage : {std::string_view{"CONTEXT_ASSEMBLY"},
+                                         std::string_view{"SCENE_EVENT_ORDER"},
+                                         std::string_view{"CHAPTER_REVIEW"},
+                                         std::string_view{"STATE_VALIDATE"}}) {
+        std::error_code e2;
+        if (!std::filesystem::exists(
+                novelcore::ChapterWorkDir(stageRoot, 1) /
+                    std::string{novelcore::StageFileName(stage)},
+                e2)) {
+            stagesOnDisk = false;
+        }
+    }
+    // P1：把**当前**哈希写进盘上（模拟"状态没变的重跑"）→ 该阶段应判为可跳过
+    const std::string_view oneStage[] = {"CONTEXT_ASSEMBLY"};
+    const std::string currentHash =
+        novelcore::ComputeInputStateHash(mem, *ch, "text", "CONTEXT_ASSEMBLY");
+    (void)novelcore::WriteStageArtifact(stageRoot, 1, "CONTEXT_ASSEMBLY", "{}", currentHash);
+    const bool skipWhenHashMatches =
+        novelcore::FindResumeIndex(mem, *ch, 1, stageRoot, oneStage) == std::size(oneStage);
+    // P2：哈希不一致（状态变了）→ 该阶段及其下游必须重跑
+    (void)novelcore::WriteStageArtifact(stageRoot, 1, "CONTEXT_ASSEMBLY", "{}", "deadbeef");
+    const bool redoWhenHashDiffers =
+        novelcore::FindResumeIndex(mem, *ch, 1, stageRoot, oneStage) == 0;
+    // P5：产物缺失 → 从该阶段重跑
+    std::filesystem::remove(novelcore::ChapterWorkDir(stageRoot, 1) /
+                                std::string{novelcore::StageFileName("CONTEXT_ASSEMBLY")},
+                            ec);
+    const bool redoWhenMissing =
+        novelcore::FindResumeIndex(mem, *ch, 1, stageRoot, oneStage) == 0;
+    // 端到端：resume 重跑一次 —— `chapters.body` 已落库 ⇒ **Writer 不该再被请求**（P4）；
+    // 而正文提交后世界状态已变 ⇒ 哈希不一致 ⇒ **Planner 必须重跑**（P2）。
+    const int writerBefore = writerCalls;
+    const int planBefore = planCalls;
+    // ⚠️ `retryHintSeen` 会被第二次调用**重写**（mock 的检测是赋值语义）→ 日志要打快照
+    const bool hintSeenAfterFirst = retryHintSeen;
+    const auto out2 = dir.GenerateChapter({.chapter_id = *ch,
+                                           .user_hint = "写第一章",
+                                           .max_revisions = 3,
+                                           .snapshot_dir = util::PathToUtf8(snapRoot),
+                                           .project_dir = util::PathToUtf8(stageRoot),
+                                           .resume = true},
+                                          nullptr);
+    const bool bodyReused = out2.has_value() && writerCalls == writerBefore;
+    const bool planRedone = out2.has_value() && planCalls > planBefore;
+
     // S16（09-7）：四个 role 都必须**真的到过回调**（Planner=1, Writer=2, Critic=4, Extractor=8）
     const int kAllRoles = (1 << static_cast<int>(LlmRole::Planner)) |
                           (1 << static_cast<int>(LlmRole::Writer)) |
@@ -680,15 +799,22 @@ bool NovelDirector::RunSelfCheck() {
                           (1 << static_cast<int>(LlmRole::Extractor));
     const bool rolesOk = roleMask == kAllRoles;
     if (!hasBody || !hasRev || !hasPhases || !savedOk || !memOk || !committed || !retried ||
-        !noStaleFailures || !rolesOk) {
+        !noStaleFailures || !rolesOk || !stagesOnDisk || !skipWhenHashMatches ||
+        !redoWhenHashDiffers || !redoWhenMissing || !bodyReused || !planRedone) {
         log::Error("Director 自检失败：body={} rev={} phases={} saved={} mem={} committed={} "
-                   "retried={} hint={} extractCalls={} staleFail={} roles=0b{:04b}（期望 0b{:04b}）（{}）",
-                   hasBody, hasRev, hasPhases, savedOk, memOk, committed, retried, retryHintSeen,
-                   extractCalls, !noStaleFailures, roleMask, kAllRoles, out->commit_note);
+                   "retried={} hint={} extractCalls={} staleFail={} roles=0b{:04b}（期望 0b{:04b}）"
+                   " stagesOnDisk={} skipMatch={} redoDiffers={} redoMissing={} bodyReused={} "
+                   "planRedone={}（{}）",
+                   hasBody, hasRev, hasPhases, savedOk, memOk, committed, retried,
+                   hintSeenAfterFirst, extractCalls, !noStaleFailures, roleMask, kAllRoles,
+                   stagesOnDisk,
+                   skipWhenHashMatches, redoWhenHashDiffers, redoWhenMissing, bodyReused, planRedone,
+                   out->commit_note);
         return false;
     }
     log::Info("Director 自检通过（Plan→Write→Review→Revise→Extract→**Commit 回写**→Save；"
-              "S12 机器校验失败→回 EXTRACT 重做 {} 次；S16 四个 LlmRole 均到回调 0b{:04b}）",
+              "S12 机器校验失败→回 EXTRACT 重做 {} 次；S16 四个 LlmRole 均到回调 0b{:04b}；"
+              "S19 阶段产物落盘 + P1/P2/P5 断点判定 + P4 正文复用）",
               out->validation_retries, roleMask);
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
