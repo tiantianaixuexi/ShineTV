@@ -2202,6 +2202,22 @@ int RunChecksSelfCheck() {
         expect(probe("K23").outcome == CheckOutcome::Fail, "K23 哈希不一致应 fail");
         in.prompt_state_hash.clear();
         expect(probe("K23").outcome == CheckOutcome::NotApplicable, "K23 无产物哈希时空真");
+        // S20（差距 03-11）：`prompt_artifacts` 有行 → K23 **不再 n/a**，而是真判（库来源）
+        {
+            const std::string nowHash = ComputeInputStateHash(mem, 1, "text", "CONTEXT_ASSEMBLY");
+            (void)mem.Exec(fmt::format(
+                "INSERT INTO prompt_artifacts(chapter_id,chain,stage,input_state_hash,prompt,"
+                "created,updated) VALUES(1,'text','CONTEXT_ASSEMBLY','{}','x',1,1)",
+                nowHash));
+            const CheckResult k23 = probe("K23");
+            expect(k23.outcome == CheckOutcome::Pass,
+                   fmt::format("S20：库里有产物且哈希一致 → K23 pass（不再 n/a）：{}", k23.detail));
+            // 把库里的哈希改成不一致 → 必须 fail（不变式 I9：不得复用、必须重新生成）
+            (void)mem.Exec("UPDATE prompt_artifacts SET input_state_hash='deadbeef' WHERE chapter_id=1");
+            expect(probe("K23").outcome == CheckOutcome::Fail,
+                   "S20：库里的哈希与当前状态不一致 → K23 fail（I9）");
+            (void)mem.Exec("DELETE FROM prompt_artifacts WHERE chapter_id=1");
+        }
 
         in.gen = GenerationCheckInput{};
         expect(probe("K19").outcome == CheckOutcome::NotApplicable, "K19 无图时空真");
