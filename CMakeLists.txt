@@ -307,6 +307,7 @@ add_executable(ShineTVStudio WIN32
   src/agent/ToolRegistry.cpp
   src/agent/BuiltinTools.cpp
   src/agent/NovelDirector.cpp
+  src/agent/NovelStoryboard.cpp
   src/agent/AgentKit.cpp
   src/app/novel/NovelCli.cpp
   src/app/novel/NovelPipeline.cpp
