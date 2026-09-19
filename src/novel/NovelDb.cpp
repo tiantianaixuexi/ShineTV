@@ -14,7 +14,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 6;
+constexpr int kTargetSchemaVersion = 7;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS visual_assets(
   permanent_tags_json TEXT NOT NULL DEFAULT '[]',
   sheet_rel_path TEXT NOT NULL DEFAULT '',
   canon_status TEXT NOT NULL DEFAULT 'DRAFT',
+  status TEXT NOT NULL DEFAULT 'PENDING',
   note TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_vasset_entity ON visual_assets(entity_id);
 
@@ -182,6 +183,31 @@ CREATE TABLE IF NOT EXISTS generated_images(
   updated INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_gimg_status ON generated_images(status);
 CREATE INDEX IF NOT EXISTS idx_gimg_source ON generated_images(source_kind, source_id);
+)SQL";
+
+// v7（S1）：视觉资产的生产状态机 + 形象层产物表（V0 ASSET_PIPELINE 的承载）。
+// 规格：Doc/小说系统/11 §2.6.1（status 8 值）/ §2.6.3（表）；契约 02 §2.14。
+// 注意：visual_assets.status 的加列不在这里 —— SQLite 的 ALTER TABLE ADD COLUMN 不支持
+// IF NOT EXISTS，旧库要单独走 Migrate 里的 ALTER（列已存在则失败并忽略）。
+constexpr std::string_view kSchemaV7VisualArtifacts = R"SQL(
+CREATE TABLE IF NOT EXISTS visual_artifacts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL DEFAULT 0,
+  layer TEXT NOT NULL DEFAULT '',
+  chapter_scope INTEGER NOT NULL DEFAULT 0,
+  chapter_to INTEGER NOT NULL DEFAULT 0,
+  rel_path TEXT NOT NULL DEFAULT '',
+  parent_artifact_id INTEGER NOT NULL DEFAULT 0,
+  prompt_artifact_id INTEGER NOT NULL DEFAULT 0,
+  job_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  degraded INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  created INTEGER NOT NULL DEFAULT 0,
+  updated INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_vartifact_asset ON visual_artifacts(asset_id);
+CREATE INDEX IF NOT EXISTS idx_vartifact_layer ON visual_artifacts(asset_id, layer);
+CREATE INDEX IF NOT EXISTS idx_vartifact_status ON visual_artifacts(status);
 )SQL";
 
 // v3 全量 schema（IF NOT EXISTS；升级只补缺表/缺列）
@@ -757,6 +783,12 @@ std::expected<void, DbError> NovelDb::Migrate() {
     if (auto r = ExecAll(kSchemaV6ImageGen); !r) {
         return r;
     }
+    if (auto r = ExecAll(kSchemaV7VisualArtifacts); !r) {
+        return r;
+    }
+    // v7：visual_assets 补生产状态列。列已存在则 ALTER 报错，忽略即可
+    //（与上面 v1→v3 的 tryAlter 同款；SQLite 没有 ADD COLUMN IF NOT EXISTS）。
+    (void)db_.Exec("ALTER TABLE visual_assets ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'");
     {
         // field_defs / entity_fields（NovelFields）
         if (auto r = db_.Exec(R"SQL(
@@ -881,7 +913,43 @@ bool NovelDb::RunSchemaSelfCheck() {
         return false;
     }
     (void)eid;
-    log::Info("NovelDb schema 自检通过（v{} 全表 + CRUD）", kTargetSchemaVersion);
+    // —— v7 覆盖：visual_artifacts 表 + visual_assets.status 列 ——
+    if (auto r = mem.Exec(kSchemaV7VisualArtifacts); !r) {
+        log::Error("NovelDb 自检：v7 建表失败 {}", r.error().message);
+        return false;
+    }
+    if (auto r = mem.Exec("CREATE TABLE IF NOT EXISTS visual_assets("
+                          "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                          "status TEXT NOT NULL DEFAULT 'PENDING')");
+        !r) {
+        log::Error("NovelDb 自检：v7 visual_assets 建表失败 {}", r.error().message);
+        return false;
+    }
+    {
+        auto ai = mem.Prepare(
+            "INSERT INTO visual_artifacts(asset_id,layer,status,degraded,created,updated)"
+            " VALUES(1,'front','PENDING',0,1,1)");
+        if (!ai || !ai->Step()) {
+            log::Error("NovelDb 自检：insert visual_artifacts 失败");
+            return false;
+        }
+        auto as = mem.Prepare("SELECT COUNT(*) FROM visual_artifacts WHERE layer='front'");
+        if (!as || !as->Step() || as->ColumnInt(0) != 1) {
+            log::Error("NovelDb 自检：select visual_artifacts 失败");
+            return false;
+        }
+        auto vi = mem.Prepare("INSERT INTO visual_assets(status) VALUES('SHEET_READY')");
+        if (!vi || !vi->Step()) {
+            log::Error("NovelDb 自检：insert visual_assets.status 失败");
+            return false;
+        }
+        auto vs = mem.Prepare("SELECT status FROM visual_assets LIMIT 1");
+        if (!vs || !vs->Step() || vs->ColumnText(0) != "SHEET_READY") {
+            log::Error("NovelDb 自检：select visual_assets.status 失败");
+            return false;
+        }
+    }
+    log::Info("NovelDb schema 自检通过（v{} 全表 + CRUD + visual_artifacts）", kTargetSchemaVersion);
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {

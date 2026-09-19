@@ -18,6 +18,20 @@ constexpr std::string_view kDefaultNegative =
     "lowres, blurry, extra fingers, deformed hands, watermark, text, logo, "
     "extra limbs, bad anatomy, duplicate person";
 
+// 形象层派生序（11 §2.6.2）：front → turnaround → base_body → wardrobe → stage → shot
+constexpr std::string_view kArtifactLayerOrder[] = {"front",    "turnaround", "base_body",
+                                                    "wardrobe", "stage",      "shot"};
+constexpr std::size_t kArtifactLayerOrderN =
+    sizeof(kArtifactLayerOrder) / sizeof(kArtifactLayerOrder[0]);
+
+// 未知 layer 返回 N（排最后，保留其相对顺序）
+[[nodiscard]] constexpr std::size_t ArtifactLayerRank(std::string_view layer) noexcept {
+    for (std::size_t i = 0; i < kArtifactLayerOrderN; ++i) {
+        if (kArtifactLayerOrder[i] == layer) return i;
+    }
+    return kArtifactLayerOrderN;
+}
+
 } // namespace
 
 std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row) {
@@ -25,8 +39,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row
     if (row.id > 0) {
         auto st = db_->Prepare(
             "UPDATE visual_assets SET entity_id=?1,kind=?2,name=?3,base_desc=?4,"
-            "materials_colors=?5,permanent_tags_json=?6,sheet_rel_path=?7,canon_status=?8,note=?9 "
-            "WHERE id=?10");
+            "materials_colors=?5,permanent_tags_json=?6,sheet_rel_path=?7,canon_status=?8,"
+            "status=?9,note=?10 WHERE id=?11");
         if (!st) return std::unexpected(st.error());
         (void)st->BindInt(1, row.entity_id);
         (void)st->BindText(2, row.kind);
@@ -36,15 +50,16 @@ std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row
         (void)st->BindText(6, row.permanent_tags_json);
         (void)st->BindText(7, row.sheet_rel_path);
         (void)st->BindText(8, row.canon_status);
-        (void)st->BindText(9, row.note);
-        (void)st->BindInt(10, row.id);
+        (void)st->BindText(9, row.status.empty() ? "PENDING" : row.status);
+        (void)st->BindText(10, row.note);
+        (void)st->BindInt(11, row.id);
         if (auto s = st->Step(); !s) return std::unexpected(s.error());
         return row.id;
     }
     auto st = db_->Prepare(
         "INSERT INTO visual_assets(entity_id,kind,name,base_desc,materials_colors,"
-        "permanent_tags_json,sheet_rel_path,canon_status,note)"
-        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)");
+        "permanent_tags_json,sheet_rel_path,canon_status,status,note)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, row.entity_id);
     (void)st->BindText(2, row.kind);
@@ -54,7 +69,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row
     (void)st->BindText(6, row.permanent_tags_json.empty() ? "[]" : row.permanent_tags_json);
     (void)st->BindText(7, row.sheet_rel_path);
     (void)st->BindText(8, row.canon_status);
-    (void)st->BindText(9, row.note);
+    (void)st->BindText(9, row.status.empty() ? "PENDING" : row.status);
+    (void)st->BindText(10, row.note);
     if (auto s = st->Step(); !s) return std::unexpected(s.error());
     return db_->LastInsertRowId();
 }
@@ -62,7 +78,7 @@ std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row
 std::expected<VisualAssetRow, DbError> NovelVisual::GetAsset(RowId id) const {
     auto st = db_->Prepare(
         "SELECT id,entity_id,kind,name,base_desc,materials_colors,permanent_tags_json,"
-        "sheet_rel_path,canon_status,note FROM visual_assets WHERE id=?1");
+        "sheet_rel_path,canon_status,status,note FROM visual_assets WHERE id=?1");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, id);
     auto s = st->Step();
@@ -78,7 +94,8 @@ std::expected<VisualAssetRow, DbError> NovelVisual::GetAsset(RowId id) const {
     r.permanent_tags_json = st->ColumnText(6);
     r.sheet_rel_path = st->ColumnText(7);
     r.canon_status = st->ColumnText(8);
-    r.note = st->ColumnText(9);
+    r.status = st->ColumnText(9);
+    r.note = st->ColumnText(10);
     return r;
 }
 
@@ -93,6 +110,116 @@ std::expected<VisualAssetRow, DbError> NovelVisual::FindAssetByEntity(RowId enti
         return std::unexpected(VErr("该实体尚无视觉资产"));
     }
     return GetAsset(st->ColumnInt(0));
+}
+
+// —— 形象层产物（V0 ASSET_PIPELINE）——
+
+std::expected<RowId, DbError> NovelVisual::UpsertArtifact(const VisualArtifactRow& row) {
+    if (row.asset_id <= 0) return std::unexpected(VErr("形象层产物必须指定 asset_id"));
+    if (row.layer.empty()) return std::unexpected(VErr("形象层产物必须指定 layer"));
+    const auto now = NowSec();
+    const std::string_view status = row.status.empty() ? std::string_view{"PENDING"} : row.status;
+    if (row.id > 0) {
+        auto st = db_->Prepare(
+            "UPDATE visual_artifacts SET asset_id=?1,layer=?2,chapter_scope=?3,chapter_to=?4,"
+            "rel_path=?5,parent_artifact_id=?6,prompt_artifact_id=?7,job_id=?8,status=?9,"
+            "degraded=?10,note=?11,updated=?12 WHERE id=?13");
+        if (!st) return std::unexpected(st.error());
+        (void)st->BindInt(1, row.asset_id);
+        (void)st->BindText(2, row.layer);
+        (void)st->BindInt(3, row.chapter_scope);
+        (void)st->BindInt(4, row.chapter_to);
+        (void)st->BindText(5, row.rel_path);
+        (void)st->BindInt(6, row.parent_artifact_id);
+        (void)st->BindInt(7, row.prompt_artifact_id);
+        (void)st->BindText(8, row.job_id);
+        (void)st->BindText(9, status);
+        (void)st->BindInt(10, row.degraded ? 1 : 0);
+        (void)st->BindText(11, row.note);
+        (void)st->BindInt(12, now);
+        (void)st->BindInt(13, row.id);
+        if (auto s = st->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
+    auto st = db_->Prepare(
+        "INSERT INTO visual_artifacts(asset_id,layer,chapter_scope,chapter_to,rel_path,"
+        "parent_artifact_id,prompt_artifact_id,job_id,status,degraded,note,created,updated)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, row.asset_id);
+    (void)st->BindText(2, row.layer);
+    (void)st->BindInt(3, row.chapter_scope);
+    (void)st->BindInt(4, row.chapter_to);
+    (void)st->BindText(5, row.rel_path);
+    (void)st->BindInt(6, row.parent_artifact_id);
+    (void)st->BindInt(7, row.prompt_artifact_id);
+    (void)st->BindText(8, row.job_id);
+    (void)st->BindText(9, status);
+    (void)st->BindInt(10, row.degraded ? 1 : 0);
+    (void)st->BindText(11, row.note);
+    (void)st->BindInt(12, now);
+    (void)st->BindInt(13, now);
+    if (auto s = st->Step(); !s) return std::unexpected(s.error());
+    return db_->LastInsertRowId();
+}
+
+std::expected<VisualArtifactRow, DbError> NovelVisual::GetArtifact(RowId id) const {
+    auto st = db_->Prepare(
+        "SELECT id,asset_id,layer,chapter_scope,chapter_to,rel_path,parent_artifact_id,"
+        "prompt_artifact_id,job_id,status,degraded,note FROM visual_artifacts WHERE id=?1");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, id);
+    auto s = st->Step();
+    if (!s) return std::unexpected(s.error());
+    if (*s == db::sqlite::StepResult::Done) return std::unexpected(VErr("形象层产物不存在"));
+    VisualArtifactRow r;
+    r.id = st->ColumnInt(0);
+    r.asset_id = st->ColumnInt(1);
+    r.layer = st->ColumnText(2);
+    r.chapter_scope = st->ColumnInt(3);
+    r.chapter_to = st->ColumnInt(4);
+    r.rel_path = st->ColumnText(5);
+    r.parent_artifact_id = st->ColumnInt(6);
+    r.prompt_artifact_id = st->ColumnInt(7);
+    r.job_id = st->ColumnText(8);
+    r.status = st->ColumnText(9);
+    r.degraded = st->ColumnInt(10) != 0;
+    r.note = st->ColumnText(11);
+    return r;
+}
+
+std::expected<std::vector<VisualArtifactRow>, DbError>
+NovelVisual::ListArtifacts(RowId assetId) const {
+    std::vector<VisualArtifactRow> out;
+    auto st = db_->Prepare(
+        "SELECT id,asset_id,layer,chapter_scope,chapter_to,rel_path,parent_artifact_id,"
+        "prompt_artifact_id,job_id,status,degraded,note FROM visual_artifacts "
+        "WHERE asset_id=?1 ORDER BY id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, assetId);
+    for (;;) {
+        auto s = st->Step();
+        if (!s) return std::unexpected(s.error());
+        if (*s == db::sqlite::StepResult::Done) break;
+        VisualArtifactRow r;
+        r.id = st->ColumnInt(0);
+        r.asset_id = st->ColumnInt(1);
+        r.layer = st->ColumnText(2);
+        r.chapter_scope = st->ColumnInt(3);
+        r.chapter_to = st->ColumnInt(4);
+        r.rel_path = st->ColumnText(5);
+        r.parent_artifact_id = st->ColumnInt(6);
+        r.prompt_artifact_id = st->ColumnInt(7);
+        r.job_id = st->ColumnText(8);
+        r.status = st->ColumnText(9);
+        r.degraded = st->ColumnInt(10) != 0;
+        r.note = st->ColumnText(11);
+        out.push_back(std::move(r));
+    }
+    // 派生序 front → turnaround → base_body → wardrobe → stage → shot（11 §2.6.2）
+    std::ranges::stable_sort(
+        out, {}, [](const VisualArtifactRow& r) { return ArtifactLayerRank(r.layer); });
+    return out;
 }
 
 std::expected<RowId, DbError> NovelVisual::UpsertState(const VisualStateRow& row) {
@@ -528,7 +655,8 @@ bool NovelVisual::RunSelfCheck() {
     }
     // 最小表
     if (auto r = mem.Exec(R"SQL(
-CREATE TABLE IF NOT EXISTS visual_assets(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,kind TEXT,name TEXT,base_desc TEXT,materials_colors TEXT,permanent_tags_json TEXT,sheet_rel_path TEXT,canon_status TEXT,note TEXT);
+CREATE TABLE IF NOT EXISTS visual_assets(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,kind TEXT,name TEXT,base_desc TEXT,materials_colors TEXT,permanent_tags_json TEXT,sheet_rel_path TEXT,canon_status TEXT,status TEXT NOT NULL DEFAULT 'PENDING',note TEXT);
+CREATE TABLE IF NOT EXISTS visual_artifacts(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER NOT NULL DEFAULT 0,layer TEXT NOT NULL DEFAULT '',chapter_scope INTEGER NOT NULL DEFAULT 0,chapter_to INTEGER NOT NULL DEFAULT 0,rel_path TEXT NOT NULL DEFAULT '',parent_artifact_id INTEGER NOT NULL DEFAULT 0,prompt_artifact_id INTEGER NOT NULL DEFAULT 0,job_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'PENDING',degraded INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS visual_states(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER,stage_key TEXT,stage_label TEXT,ord INTEGER,from_chapter INTEGER,to_chapter INTEGER,appearance TEXT,materials_colors TEXT,clothing_asset_id INTEGER,item_asset_ids_json TEXT,effects TEXT,environment_hint TEXT,canon_status TEXT,note TEXT);
 CREATE TABLE IF NOT EXISTS scene_visuals(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,env_desc TEXT,time_of_day TEXT,weather TEXT,mood TEXT,canon_status TEXT);
 CREATE TABLE IF NOT EXISTS camera_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,shot_size TEXT,angle TEXT,lens_note TEXT,movement TEXT,text TEXT,note TEXT);
@@ -549,6 +677,62 @@ CREATE TABLE IF NOT EXISTS visual_canon_logs(id INTEGER PRIMARY KEY AUTOINCREMEN
                                 .base_desc = "young man, black hair, dark eyes",
                                 .materials_colors = "simple cloth"});
     if (!asset) return false;
+    // —— v7：visual_assets.status 默认值 + 形象层产物派生链 CRUD ——
+    {
+        auto a0 = v.GetAsset(*asset);
+        if (!a0 || a0->status != "PENDING") {
+            log::Error("Visual 自检：新资产 status 应为 PENDING，实际={}", a0 ? a0->status : "?");
+            return false;
+        }
+        auto front = v.UpsertArtifact({.asset_id = *asset,
+                                       .layer = "front",
+                                       .rel_path = "visual/gen/front.png",
+                                       .status = "DONE"});
+        auto turn = v.UpsertArtifact({.asset_id = *asset,
+                                      .layer = "turnaround",
+                                      .rel_path = "visual/gen/turn.png",
+                                      .parent_artifact_id = front.value_or(0),
+                                      .status = "PENDING"});
+        auto body = v.UpsertArtifact({.asset_id = *asset,
+                                      .layer = "base_body",
+                                      .parent_artifact_id = turn.value_or(0),
+                                      .prompt_artifact_id = 7,
+                                      .job_id = "pid-abc",
+                                      .degraded = true});
+        if (!front || !turn || !body) {
+            log::Error("Visual 自检：插入形象层产物失败");
+            return false;
+        }
+        auto got = v.GetArtifact(*body);
+        auto list = v.ListArtifacts(*asset);
+        const bool listOk = list && list->size() == 3 && (*list)[0].layer == "front" &&
+                            (*list)[1].layer == "turnaround" && (*list)[2].layer == "base_body";
+        if (!got || !got->degraded || got->prompt_artifact_id != 7 || got->job_id != "pid-abc" ||
+            !listOk) {
+            log::Error("Visual 自检：形象层产物回读/派生序不符 size={}", list ? list->size() : 0);
+            return false;
+        }
+        // 同 id upsert 应为更新而非新增
+        (void)v.UpsertArtifact({.id = *turn,
+                                .asset_id = *asset,
+                                .layer = "turnaround",
+                                .rel_path = "visual/gen/turn2.png",
+                                .status = "DONE"});
+        auto l2 = v.ListArtifacts(*asset);
+        if (!l2 || l2->size() != 3 || (*l2)[1].rel_path != "visual/gen/turn2.png" ||
+            (*l2)[1].status != "DONE") {
+            log::Error("Visual 自检：形象层产物更新语义不符");
+            return false;
+        }
+        // asset.status 写后读
+        (void)v.UpsertAsset({.id = *asset, .entity_id = 1, .name = "林默",
+                             .status = "REF_READY"});
+        auto a2 = v.GetAsset(*asset);
+        if (!a2 || a2->status != "REF_READY") {
+            log::Error("Visual 自检：asset.status 写后读失败");
+            return false;
+        }
+    }
     // 两个阶段：1-2 青年，3+ 受伤
     (void)v.UpsertState({.asset_id = *asset,
                          .stage_key = "youth",

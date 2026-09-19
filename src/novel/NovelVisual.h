@@ -24,6 +24,29 @@ struct VisualAssetRow {
     std::string permanent_tags_json = "[]";
     std::string sheet_rel_path;
     std::string canon_status = "DRAFT";
+    // 生产状态机（8 值，**与 canon_status 正交**，见 Doc/小说系统/11 §2.6.1）：
+    // PENDING | PROMPTING | REF_READY | SHEET_READY | WARDROBE_READY | READY | FAILED | STALE
+    // 下游只以 status 判断「能不能用」，不等 canon_status（否则无人值守会永远等不到）。
+    std::string status = "PENDING";
+    std::string note;
+};
+
+// 形象层产物：V0 ASSET_PIPELINE 的承载表（契约 Doc/小说系统/02 §2.14、表结构 11 §2.6.3）。
+// 与 generated_images（单次出图任务的账）分工不同：本结构回答「这个角色的形象建到哪一层了」。
+struct VisualArtifactRow {
+    RowId id = 0;
+    RowId asset_id = 0;
+    // front | turnaround | base_body | wardrobe | stage | shot（派生链见 11 §2.6.2）
+    std::string layer;
+    RowId chapter_scope = 0; // 0 = 不限章
+    RowId chapter_to = 0;
+    std::string rel_path;         // 产出图（相对工程根）
+    RowId parent_artifact_id = 0; // 派生自哪一张；0 = 文生图起点（正脸）
+    RowId prompt_artifact_id = 0; // 关联 PromptArtifact（含 input_state_hash）
+    std::string job_id;           // Comfy 侧 promptId
+    // 单层生产态（4 值；注意与 VisualAssetRow::status 的 8 值语义不同）
+    std::string status = "PENDING"; // PENDING | RUNNING | DONE | FAILED
+    bool degraded = false;          // 是否走了降级（11 §2.7），须进章级报告（K28）
     std::string note;
 };
 
@@ -96,6 +119,13 @@ public:
     [[nodiscard]] std::expected<VisualAssetRow, DbError> GetAsset(RowId id) const;
     // 按 entity 找主视觉资产（第一个）
     [[nodiscard]] std::expected<VisualAssetRow, DbError> FindAssetByEntity(RowId entityId) const;
+
+    // —— 形象层产物（V0 ASSET_PIPELINE）——
+    [[nodiscard]] std::expected<RowId, DbError> UpsertArtifact(const VisualArtifactRow& row);
+    [[nodiscard]] std::expected<VisualArtifactRow, DbError> GetArtifact(RowId id) const;
+    // 按资产列出各层产物（派生链查询）；排序 = layer 派生序，再按 id
+    [[nodiscard]] std::expected<std::vector<VisualArtifactRow>, DbError>
+    ListArtifacts(RowId assetId) const;
 
     // —— 阶段 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertState(const VisualStateRow& row);
