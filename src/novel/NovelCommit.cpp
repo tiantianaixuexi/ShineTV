@@ -279,9 +279,12 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         return out;
     }
     // 模式校验放在幂等判定**之前**：模式本身非法是"参数错"，不该被"已提交过"盖掉
-    if (ctx.canon_mode == "auto") {
-        // `07` §2.5 C5：禁止在 auto 下跳门禁；本 S 不做 auto（留 S9 的运行模式）
-        out.error = "canon_mode=auto 尚未实现（07 §2.5 的无人值守 Canon 属 S9 的运行模式）；请用 manual";
+    // S9（`07` §2.5）：manual → PROPOSED；auto → CANON。**auto 不跳门禁**（C5）：
+    // 下面的 G1–G5 判定对两种模式完全一致，`auto` 只把块 13 的状态从 PROPOSED 换成 CANON。
+    const std::string canonMode = ctx.canon_mode.empty() ? "manual" : ctx.canon_mode;
+    const bool autoCanon = canonMode == "auto";
+    if (!autoCanon && canonMode != "manual") {
+        out.error = fmt::format("canon_mode='{}' 非法（只能 manual / auto，07 §2.5）", canonMode);
         return out;
     }
     // I1：同章 + 同 diff 哈希 → 跳过（幂等）
@@ -651,14 +654,16 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
     out.applied.push_back(fmt::format("entity_versions: {} 条（提交前采集）",
                                       out.entity_version_ids.size()));
 
-    // 块 13：canon_logs（manual → PROPOSED；**不做自动 Canon**）
-    if (auto canon = graph.SetCanon("chapter", diff.chapter_id, "PROPOSED",
+    // 块 13：canon_logs（manual → PROPOSED；auto → CANON，门禁已在上面判定，S9）
+    const std::string_view canonStatus = autoCanon ? std::string_view{"CANON"}
+                                                   : std::string_view{"PROPOSED"};
+    if (auto canon = graph.SetCanon("chapter", diff.chapter_id, canonStatus,
                                     fmt::format("diff_hash={} verdict={}", out.diff_hash,
                                                 ctx.review_verdict));
         !canon) {
         return fail(fmt::format("块 13 canon_logs 失败：{}", canon.error().message));
     }
-    out.applied.push_back("canon_logs: chapter → PROPOSED（manual）");
+    out.applied.push_back(fmt::format("canon_logs: chapter → {}（{}）", canonStatus, canonMode));
 
     // 块 14：audit_logs（汇总一条；`detail` 内含 diff_hash 供幂等判定）
     if (auto audit = graph.LogAudit(
@@ -925,13 +930,43 @@ int RunCommitSelfCheck() {
         const CommitResult r = CommitChapterState(mem, badKind, ok);
         expect(!r.ok, "D8：kind 不在 31 种内 → 拒绝");
     }
-    // ⑧ auto 模式明确不做
+    // ⑧ `auto`（S9，`07` §2.5）：门禁全满足 → 提交并写 CANON；门禁不满足 → 拒绝（C5 不跳门禁）
     {
+        auto autoChapter = g.UpsertChapter({.ord = 99, .title = "第九九章"});
+        expect(autoChapter.has_value(), "auto：建章");
+        StateDiff autoDiff;
+        autoDiff.chapter_id = autoChapter.value_or(0);
+        autoDiff.input_state_hash = "sha1:auto-check";
+        autoDiff.characters.push_back(
+            {.entity_id = *lin, .mind_state = "决意", .reason = "auto 自检"});
         CommitContext autoMode = ctx;
+        autoMode.chapter_id = autoChapter.value_or(0);
         autoMode.review_pass = true;
         autoMode.canon_mode = "auto";
-        const CommitResult r = CommitChapterState(mem, diff, autoMode);
-        expect(!r.ok && r.error.find("auto") != std::string::npos, "auto 模式未实现 → 明确拒绝（不静默降级）");
+        const CommitResult r = CommitChapterState(mem, autoDiff, autoMode);
+        expect(r.ok && !r.skipped, "auto：G1–G5 全满足 → 提交成功");
+        int canon = 0;
+        if (auto st = mem.Prepare("SELECT COUNT(*) FROM canon_logs WHERE target_kind='chapter' "
+                                  "AND target_id=?1 AND status='CANON'");
+            st) {
+            (void)st->BindInt(1, autoChapter.value_or(0));
+            if (st->Step()) {
+                canon = st->ColumnInt(0);
+            }
+        }
+        expect(canon == 1, "auto：canon_logs 写 CANON（不是 PROPOSED）");
+        // 门禁不满足（G1 评审 FAIL）→ 拒绝，不静默降级为 manual
+        auto gateChapter = g.UpsertChapter({.ord = 100, .title = "第一百章"});
+        expect(gateChapter.has_value(), "auto：建第二张章");
+        StateDiff d2;
+        d2.chapter_id = gateChapter.value_or(0);
+        d2.characters.push_back({.entity_id = *lin, .mind_state = "犹豫", .reason = "gate 自检"});
+        CommitContext bad = ctx;
+        bad.chapter_id = gateChapter.value_or(0);
+        bad.review_pass = false;
+        bad.canon_mode = "auto";
+        const CommitResult r2 = CommitChapterState(mem, d2, bad);
+        expect(!r2.ok && !r2.gates.g1_review_pass, "auto：G1 不满足 → 拒绝（不静默降级）");
     }
     // ⑨ diff 存读往返（`audit_logs.detail` / 快照都用它）
     {
@@ -947,7 +982,8 @@ int RunCommitSelfCheck() {
 
     std::filesystem::remove_all(snapRoot, ec);
     if (fail == 0) {
-        log::Info("S8 提交自检通过（门禁 G1–G5 / 14 块写入 / 幂等 / 快照 / D 规则 / auto 拒绝）");
+        log::Info("S8 提交自检通过（门禁 G1–G5 / 14 块写入 / 幂等 / 快照 / D 规则 / "
+                  "manual→PROPOSED · auto→CANON）");
     }
     return fail;
 }

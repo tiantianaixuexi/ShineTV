@@ -67,6 +67,37 @@ public:
     // `08` §2.3 硬上限：单个工程 field_defs 条数。只约束「新增键」，更新既有键不受限。
     static constexpr int kMaxFieldDefs = 500;
 
+    // —— S9（`08` §2.3）：检查点的 PROPOSED→CANON 自动升格（四条件**全满足**才升）——
+    // ① 已出现 ≥ 5 次；② 值类型始终一致；③ 无同义键冲突（别名表）；④ 最近 3 章内仍在使用。
+    static constexpr int kPromoteMinUsages = 5;
+    static constexpr int kPromoteRecentWindow = 3;
+
+    struct FieldPromotionCandidate {
+        RowId id = 0;
+        std::string field_key;
+        std::string value_type;
+        int usages = 0;          // ①
+        bool type_stable = false; // ②
+        bool no_synonym = false;  // ③
+        bool recently_used = false; // ④
+        std::string reject;       // 未通过的条件（人读）；空 = 四条全过
+        [[nodiscard]] bool Passed() const noexcept {
+            return reject.empty() && usages >= kPromoteMinUsages && type_stable && no_synonym &&
+                   recently_used;
+        }
+    };
+
+    // atChapterOrd：检查点所在章序。④「最近 3 章」以 `chapter_scope`/`chapter_to` 视窗近似
+    //（本仓这两列存的是章序，见 `RunSelfCheck` 的 `universe_of_chapter` 用例）。
+    [[nodiscard]] std::expected<std::vector<FieldPromotionCandidate>, DbError>
+    EvaluateFieldPromotion(RowId atChapterOrd) const;
+    // 升格满足四条件的 PROPOSED 键 → CANON，并写 audit_logs(action='promote_field')。
+    // 返回被升格的键（未通过的保持 PROPOSED，由检查点写入人工复核清单）。
+    [[nodiscard]] std::expected<std::vector<std::string>, DbError>
+    PromoteProposedFields(RowId atChapterOrd);
+    [[nodiscard]] std::expected<void, DbError> SetFieldDefStatus(RowId id,
+                                                                std::string_view status);
+
     // 字段表的**唯一定义来源**：建 field_defs / entity_fields / field_aliases + 旧库 ALTER 回填。
     // 规格 `08` §2.3。`NovelDb::Migrate`、`AgentKit::EnsureSchemaAndSeed`、自检都调这个 ——
     // 原先三处各写一份 DDL，漏更新一处就静默丢种子（S2b 已踩）。幂等，可重复调用。

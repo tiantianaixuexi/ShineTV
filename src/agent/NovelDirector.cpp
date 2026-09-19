@@ -16,11 +16,14 @@
 #include <yyjson.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <random>
 #include <system_error>
+#include <thread>
 
 namespace shine::agent {
 namespace {
@@ -53,6 +56,28 @@ void Report(const std::function<void(const GenerateChapterProgress&)>& cb, Phase
     pr.percent = pct;
     pr.note = std::string{note};
     cb(pr);
+}
+
+// —— S9（`09` §2.4 模型分层 / §2.3 重试退避）——
+// 档位只用于**记账**（`cost_report.json` 与单章「高档调用 ≤ 8」）：按阶段路由是 09-7，本步不做。
+[[nodiscard]] std::string_view TierOfRole(std::string_view role) noexcept {
+    if (role == "writer" || role == "critic") return "high";
+    if (role == "planner") return "mid";
+    return "low"; // extractor
+}
+
+// `09` §2.3：哪些错误可以重试（网络 5xx / 429 / 超时）；本地配置类错误不重试（重试也没用）
+[[nodiscard]] bool IsRetryable(const AgentError& e) {
+    if (e.code == "cancelled" || e.code == "no_llm" || e.code == "bad_args" ||
+        e.code == "no_key" || e.code == "auth" || e.code == "unsupported") {
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool IsRateLimited(const AgentError& e) {
+    return e.code.find("429") != std::string::npos || e.code.find("rate") != std::string::npos ||
+           e.message.find("429") != std::string::npos;
 }
 
 } // namespace
@@ -151,12 +176,55 @@ std::string NovelDirector::LoadPrompt(std::string_view name) const {
 }
 
 std::expected<std::string, AgentError>
-NovelDirector::CallLlm(std::string_view role, std::string_view user) const {
+NovelDirector::CallLlm(std::string_view role, std::string_view user, std::string_view stage,
+                       const GenerateChapterRequest& req, std::vector<LlmCallRecord>& out) {
     if (!call_) {
         return std::unexpected(AgentError{"no_llm", "未配置 LLM 回调"});
     }
     const std::string instructions = LoadPrompt(role);
-    return call_(instructions, user);
+    const std::string tier{TierOfRole(role)};
+    // `09` §2.3：同 Provider 请求间隔 ≥ 200ms（防限流）
+    if (req.min_request_interval_ms > 0 && last_call_ms_ > 0) {
+        const std::int64_t wait = req.min_request_interval_ms - util::ElapsedMillis(last_call_ms_);
+        if (wait > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{wait});
+        }
+    }
+    const int maxAttempts = 1 + std::max(0, req.network_retries);
+    AgentError last{"unknown", "未知错误"};
+    for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+        const std::int64_t t0 = util::MonotonicMillis();
+        auto r = call_(instructions, user);
+        last_call_ms_ = util::MonotonicMillis();
+        LlmCallRecord rec;
+        rec.stage = std::string{stage};
+        rec.role = std::string{role};
+        rec.tier = tier;
+        rec.attempt = attempt;
+        rec.ok = r.has_value();
+        rec.ms = util::ElapsedMillis(t0);
+        if (r) {
+            out.push_back(std::move(rec));
+            return r;
+        }
+        last = r.error();
+        rec.rate_limited = IsRateLimited(last);
+        out.push_back(std::move(rec));
+        if (!IsRetryable(last) || attempt >= maxAttempts) {
+            break;
+        }
+        // `09` §2.3：2s → 4s → 8s → 16s（±20% 抖动）；429（无 Retry-After）从 10s 起
+        std::int64_t delay = rec.rate_limited
+                                 ? req.rate_limit_backoff_ms
+                                 : static_cast<std::int64_t>(req.backoff_base_ms) << (attempt - 1);
+        static thread_local std::mt19937 rng{std::random_device{}()};
+        const double jitter = std::uniform_real_distribution<double>{0.8, 1.2}(rng);
+        delay = static_cast<std::int64_t>(static_cast<double>(delay) * jitter);
+        log::Warn("LLM {}（{}）第 {}/{} 次失败：{} —— {}ms 后重试", stage, role, attempt,
+                  maxAttempts, last.message, delay);
+        std::this_thread::sleep_for(std::chrono::milliseconds{delay});
+    }
+    return std::unexpected(last);
 }
 
 std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
@@ -171,18 +239,27 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
 
     GenerateChapterResult result;
     result.chapter_id = req.chapter_id;
+    // S9：记录走过的阶段（写 `work/ch<NNN>/_manifest.json`），对外回调行为不变
+    std::vector<std::string> stages;
+    auto progressCb = [&](const GenerateChapterProgress& p) {
+        const std::string name{PhaseName(p.phase)};
+        if (stages.empty() || stages.back() != name) {
+            stages.push_back(name);
+        }
+        if (on_progress) on_progress(p);
+    };
     novelcore::NovelGraph g(*db_);
     novelcore::NovelMemory mem(*db_);
     ContextBuilder cb(*db_);
 
-    Report(on_progress, Phase::Analyze, 5, "读取章节");
+    Report(progressCb, Phase::Analyze, 5, "读取章节");
     auto ch = g.GetChapter(req.chapter_id);
     if (!ch) {
         return std::unexpected(AgentError{"not_found", ch.error().message});
     }
 
     // RETRIEVE
-    Report(on_progress, Phase::Retrieve, 15, "组装上下文");
+    Report(progressCb, Phase::Retrieve, 15, "组装上下文");
     auto ctx = cb.Build({.chapter_id = req.chapter_id,
                          .task = req.user_hint.empty() ? fmt::format("写第{}章", ch->ord)
                                                        : req.user_hint,
@@ -194,16 +271,17 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     }
 
     // PLAN
-    Report(on_progress, Phase::Plan, 30, "Planner");
+    Report(progressCb, Phase::Plan, 30, "Planner");
     const std::string planUser = fmt::format("{}\n\n【任务】\n{}", ctx->text, req.user_hint);
-    auto planResp = CallLlm("planner", planUser);
+    auto planResp = CallLlm("planner", planUser, "PLAN", req, result.calls);
     if (!planResp) {
         return std::unexpected(planResp.error());
     }
     result.plan_json = ExtractOutputText(*planResp);
     if (result.plan_json.empty()) {
-        // 解析失败重试 1 次
-        planResp = CallLlm("planner", planUser);
+        // 解析失败重试 1 次（`09` §2.3「契约重试 = 1」）—— 计一次契约失败（`09` §2.2 S4 的输入）
+        ++result.contract_failures;
+        planResp = CallLlm("planner", planUser, "PLAN", req, result.calls);
         if (!planResp) return std::unexpected(planResp.error());
         result.plan_json = ExtractOutputText(*planResp);
     }
@@ -212,26 +290,36 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     }
 
     // WRITE（可 stream）
-    Report(on_progress, Phase::Write, 50, "Writer");
+    Report(progressCb, Phase::Write, 50, "Writer");
     const std::string writeUser =
         fmt::format("{}\n\n【章节计划 JSON】\n{}\n\n【写出正文】", ctx->text, result.plan_json);
     std::string body;
     if (stream_) {
         auto onDelta = [&](std::string_view d) {
-            if (on_progress) {
-                GenerateChapterProgress pr;
-                pr.phase = Phase::Write;
-                pr.percent = 55;
-                pr.text_delta = std::string{d};
-                on_progress(pr);
-            }
+            GenerateChapterProgress pr;
+            pr.phase = Phase::Write;
+            pr.percent = 55;
+            pr.text_delta = std::string{d};
+            progressCb(pr);
         };
+        const std::int64_t t0 = util::MonotonicMillis();
         auto wr = stream_(LoadPrompt("writer"), writeUser, onDelta);
+        last_call_ms_ = util::MonotonicMillis();
+        {
+            LlmCallRecord rec;
+            rec.stage = "WRITE";
+            rec.role = "writer";
+            rec.tier = "high";
+            rec.attempt = 1;
+            rec.ok = wr.has_value();
+            rec.ms = util::ElapsedMillis(t0);
+            result.calls.push_back(std::move(rec));
+        }
         if (!wr) return std::unexpected(wr.error());
         body = ExtractOutputText(*wr);
         if (body.empty()) body = *wr;
     } else {
-        auto wr = CallLlm("writer", writeUser);
+        auto wr = CallLlm("writer", writeUser, "WRITE", req, result.calls);
         if (!wr) return std::unexpected(wr.error());
         body = ExtractOutputText(*wr);
     }
@@ -244,12 +332,12 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     std::string criticJson;
     bool reviewPassed = false; // 提交门禁 G1 要用的**最终评审结论**（循环外可见）
     while (revisions <= req.max_revisions) {
-        Report(on_progress, revisions == 0 ? Phase::Review : Phase::Revision,
+        Report(progressCb, revisions == 0 ? Phase::Review : Phase::Revision,
                70 + revisions * 5, fmt::format("Critic 第{}轮", revisions + 1));
         const std::string criticUser =
             fmt::format("{}\n\n【计划】\n{}\n\n【正文】\n{}\n\n请审校并输出 JSON。", ctx->text,
                         result.plan_json, body);
-        auto cr = CallLlm("critic", criticUser);
+        auto cr = CallLlm("critic", criticUser, "REVIEW", req, result.calls);
         if (!cr) break; // Critic 失败不阻断保存
         criticJson = ExtractOutputText(*cr);
         result.critic_json = criticJson;
@@ -263,7 +351,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         const std::string revUser = fmt::format(
             "{}\n\n【计划】\n{}\n\n【原稿】\n{}\n\n【审校意见】\n{}\n\n请输出修订后的完整正文。", ctx->text,
             result.plan_json, body, criticJson);
-        auto rr = CallLlm("writer", revUser);
+        auto rr = CallLlm("writer", revUser, "REVISION", req, result.calls);
         if (!rr) break;
         const auto newBody = ExtractOutputText(*rr);
         if (!newBody.empty()) body = newBody;
@@ -273,9 +361,9 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     result.title = ch->title;
 
     // EXTRACT（`07` §2.2 的 ②）：LLM 只负责"从正文里看出变化"，**基线由代码读**
-    Report(on_progress, Phase::Extract, 90, "Extractor");
+    Report(progressCb, Phase::Extract, 90, "Extractor");
     const std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
-    auto er = CallLlm("extractor", exUser);
+    auto er = CallLlm("extractor", exUser, "EXTRACT", req, result.calls);
     std::string summary = body.substr(0, std::min<std::size_t>(body.size(), 80));
     novelcore::StateDiff diff;
     bool hasDiff = false;
@@ -302,7 +390,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     }
 
     // SAVE
-    Report(on_progress, Phase::Save, 95, "写入章节");
+    Report(progressCb, Phase::Save, 95, "写入章节");
     novelcore::ChapterRow row = *ch;
     row.body = body;
     row.words = static_cast<int>(body.size());
@@ -325,6 +413,8 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         cctx.chapter_id = req.chapter_id;
         cctx.review_pass = reviewPassed;
         cctx.review_verdict = reviewPassed ? "PASS" : "FAIL";
+        // S9：`auto` 模式（门禁 G1–G5 全满足才写 CANON）；manual 默认写 PROPOSED
+        cctx.canon_mode = req.canon_mode.empty() ? "manual" : req.canon_mode;
         cctx.chapter_summary = summary;
         cctx.snapshot_dir = req.snapshot_dir;
         if (cctx.snapshot_dir.empty() && novelcore::NovelDb::Instance().isOpen()) {
@@ -333,6 +423,15 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                 util::PathToUtf8(novelcore::NovelDb::Instance().path().parent_path() / "snapshots");
         }
         const novelcore::CommitResult commit = novelcore::CommitChapterState(*db_, diff, cctx);
+        // S9（`09` §2.2 S4/S9）：契约类问题的观测量 —— 缺失引用处数 + G4（契约非空/合法）失败
+        for (const auto& iss : commit.gates.issues) {
+            if (iss.code == "contract") {
+                ++result.missing_entity_refs;
+            }
+        }
+        if (!commit.ok && !commit.gates.g4_diff_valid) {
+            ++result.contract_failures;
+        }
         result.state_committed = commit.ok && !commit.skipped;
         result.state_skipped = commit.skipped;
         result.commit_note = commit.ok ? (commit.skipped ? "已提交过（幂等跳过）" : "状态已回写")
@@ -348,7 +447,18 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         result.commit_note = "extractor 没有给出 StateDiff，未回写状态";
     }
 
-    Report(on_progress, Phase::Done, 100, "完成");
+    // S9（`09` §2.4）：单章成本账（含重试）—— `cost_report.json` 与停止条件 S5 的数据来源
+    for (const auto& c : result.calls) {
+        ++result.llm_calls;
+        if (c.tier == "high") {
+            ++result.high_tier_calls;
+        }
+    }
+    result.stages = stages;
+    result.review_passed = reviewPassed;
+    result.semantic_only = !reviewPassed && result.contract_failures == 0 &&
+                           result.missing_entity_refs == 0;
+    Report(progressCb, Phase::Done, 100, "完成");
     log::Info("GenerateChapter 完成：章={} 正文 {} 字 修订 {}", req.chapter_id, body.size(),
               revisions);
     return result;

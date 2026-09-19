@@ -98,6 +98,17 @@ struct AppSettings {
     // P10：当前小说工程 novel.db（stdio/HTTP MCP 共用；空 = 不自动打开库）
     std::string mcpNovelDbPath;
 
+    // —— S9：无人值守运行（`09` §2.1 / §2.4 / §2.5）——
+    // 运行模式：manual | semi | auto（工程级；每次运行写 audit_logs(action='run_mode')）
+    std::string novelRunMode = "manual";
+    int novelRunMaxChapters = 0;   // 0 = 不限；auto 连跑请显式给 > 0
+    int novelCheckpointEvery = 10; // `09` §2.5 检查点周期（章）
+    int novelMaxLlmCallsPerChapter = 40;
+    int novelMaxHighTierCallsPerChapter = 8;
+    int novelMaxImagesPerChapter = 2;
+    int novelChapterWallClockMinutes = 30;
+    bool novelAutoCreateChapters = false; // 无非完成章时自动建下一章（`03` CHAPTER_GOAL 未实现前的替代）
+
     // —— P6.3 画布 inpaint ——
     std::string paintCheckpoint;
     std::string paintPrompt = "high quality photo";

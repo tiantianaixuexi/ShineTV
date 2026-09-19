@@ -1,6 +1,7 @@
 #include "novel/NovelFields.h"
 
 #include "core/Log.h"
+#include "novel/NovelGraph.h" // S9：升格写 audit_logs(action='promote_field')
 #include "util/Time.h"
 
 #include <fmt/format.h>
@@ -658,6 +659,166 @@ std::expected<std::string, DbError> NovelFields::EntityFieldsJson(RowId entityId
     }
     arr += "]";
     return arr;
+}
+
+// —— S9（`08` §2.3）：检查点的 PROPOSED→CANON 自动升格 ——
+namespace {
+
+// 值形状是否与 value_type 一致（条件 ② 值类型始终一致）—— 与写入侧 ValidateFieldValue 同口径。
+[[nodiscard]] bool ValueShapeOk(std::string_view valueType, const std::string& valueText,
+                               const std::string& valueJson, const std::string& enumJson) {
+    if (valueType == "text") {
+        return !valueText.empty() && valueText.size() <= 4096;
+    }
+    if (valueType == "number") {
+        double out = 0.0;
+        const auto* b = valueText.data();
+        const auto* e = b + valueText.size();
+        const auto [p, ec] = std::from_chars(b, e, out);
+        return !valueText.empty() && ec == std::errc{} && p == e;
+    }
+    if (valueType == "json") {
+        yyjson_doc* d = yyjson_read(valueJson.c_str(), valueJson.size(), 0);
+        if (d == nullptr) return false;
+        yyjson_val* root = yyjson_doc_get_root(d);
+        const bool shaped = yyjson_is_obj(root) || yyjson_is_arr(root);
+        yyjson_doc_free(d);
+        return shaped;
+    }
+    if (valueType == "enum") {
+        yyjson_doc* d = yyjson_read(enumJson.c_str(), enumJson.size(), 0);
+        if (d == nullptr) return false;
+        bool hit = false;
+        yyjson_val* root = yyjson_doc_get_root(d);
+        if (yyjson_is_arr(root)) {
+            const std::size_t n = yyjson_arr_size(root);
+            for (std::size_t i = 0; i < n; ++i) {
+                yyjson_val* v = yyjson_arr_get(root, i);
+                if (v != nullptr && yyjson_is_str(v) && valueText == yyjson_get_str(v)) {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        yyjson_doc_free(d);
+        return hit;
+    }
+    return false;
+}
+
+} // namespace
+
+std::expected<std::vector<NovelFields::FieldPromotionCandidate>, DbError>
+NovelFields::EvaluateFieldPromotion(RowId atChapterOrd) const {
+    auto defs = ListFieldDefs();
+    if (!defs) {
+        return std::unexpected(defs.error());
+    }
+    std::vector<FieldPromotionCandidate> out;
+    for (const auto& def : *defs) {
+        if (def.status != "PROPOSED") {
+            continue;
+        }
+        FieldPromotionCandidate c;
+        c.id = def.id;
+        c.field_key = def.field_key;
+        c.value_type = def.value_type;
+        // ① 已出现 ≥ 5 次
+        if (auto st = db_->Prepare("SELECT COUNT(*) FROM entity_fields WHERE field_key=?1")) {
+            (void)st->BindText(1, def.field_key);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                c.usages = st->ColumnInt(0);
+            }
+        }
+        // ② 值类型始终一致（至少一行，且每行形状都对）
+        bool any = false;
+        bool stable = true;
+        if (auto st = db_->Prepare("SELECT value_text,value_json FROM entity_fields WHERE field_key=?1")) {
+            (void)st->BindText(1, def.field_key);
+            while (auto s = st->Step()) {
+                if (*s != db::sqlite::StepResult::Row) break;
+                any = true;
+                if (!ValueShapeOk(def.value_type, st->ColumnText(0), st->ColumnText(1),
+                                  def.enum_json)) {
+                    stable = false;
+                    break;
+                }
+            }
+        }
+        c.type_stable = any && stable;
+        // ③ 无同义键冲突（`08` §2.4 别名表；语义重叠本身不自动合并，只挡已登记的别名冲突）
+        int aliasConflicts = 0;
+        if (auto st = db_->Prepare("SELECT COUNT(*) FROM field_aliases WHERE (alias=?1 AND "
+                                   "canonical_key<>?1) OR (canonical_key=?1 AND alias<>?1)")) {
+            (void)st->BindText(1, def.field_key);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                aliasConflicts = st->ColumnInt(0);
+            }
+        }
+        c.no_synonym = aliasConflicts == 0;
+        // ④ 最近 3 章内仍在使用（chapter_scope/chapter_to 视窗近似）
+        const RowId from = atChapterOrd > kPromoteRecentWindow
+                               ? atChapterOrd - kPromoteRecentWindow + 1
+                               : 0;
+        int recent = 0;
+        if (auto st = db_->Prepare("SELECT COUNT(*) FROM entity_fields WHERE field_key=?1 AND "
+                                   "(chapter_scope=0 OR chapter_scope<=?2) AND (chapter_to=0 OR "
+                                   "chapter_to>=?3)")) {
+            (void)st->BindText(1, def.field_key);
+            (void)st->BindInt(2, atChapterOrd);
+            (void)st->BindInt(3, from);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                recent = st->ColumnInt(0);
+            }
+        }
+        c.recently_used = recent > 0;
+        std::string why;
+        if (c.usages < kPromoteMinUsages) {
+            why += fmt::format("出现次数 {}/{}；", c.usages, kPromoteMinUsages);
+        }
+        if (!c.type_stable) why += "值类型不一致；";
+        if (!c.no_synonym) why += "存在同义键冲突（别名表）；";
+        if (!c.recently_used) why += "最近 3 章未使用；";
+        c.reject = why;
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+std::expected<void, DbError> NovelFields::SetFieldDefStatus(RowId id, std::string_view status) {
+    if (status != "PROPOSED" && status != "CANON") {
+        return std::unexpected(
+            DbError{0, fmt::format("contract：status '{}' 只能是 PROPOSED / CANON", status)});
+    }
+    return db_->Exec(fmt::format("UPDATE field_defs SET status='{}', updated={} WHERE id={}",
+                                 Esc(status), util::NowMillis() / 1000, id));
+}
+
+std::expected<std::vector<std::string>, DbError>
+NovelFields::PromoteProposedFields(RowId atChapterOrd) {
+    auto cands = EvaluateFieldPromotion(atChapterOrd);
+    if (!cands) {
+        return std::unexpected(cands.error());
+    }
+    std::vector<std::string> promoted;
+    for (const auto& c : *cands) {
+        if (!c.Passed()) {
+            continue;
+        }
+        if (auto r = SetFieldDefStatus(c.id, "CANON"); !r) {
+            log::Warn("Fields：'{}' 自动升格失败：{}", c.field_key, r.error().message);
+            continue;
+        }
+        NovelGraph g(*db_);
+        if (auto a = g.LogAudit("orchestrator", "promote_field", "field_def", c.id,
+                                fmt::format("usages={} at_ch={}", c.usages, atChapterOrd));
+            !a) {
+            log::Warn("Fields：'{}' 升格审计失败：{}", c.field_key, a.error().message);
+        }
+        log::Info("Fields：PROPOSED→CANON 自动升格 '{}'（出现 {} 次）", c.field_key, c.usages);
+        promoted.push_back(c.field_key);
+    }
+    return promoted;
 }
 
 void NovelFields::SeedBuiltinFieldDefs(NovelFields& fields) {
