@@ -38,6 +38,7 @@
 #include "novel/NovelImageGen.h"
 #include "novel/NovelImageStore.h"
 #include "novel/NovelAssetPipeline.h"
+#include "novel/NovelCommit.h"
 #include "theme/Theme.h"
 #include "util/Strings.h"
 
@@ -251,27 +252,29 @@ bool Init() {
                               ::shine::novelcore::RunImageQueueSelfCheck();
         // S3（V0 ASSET_PIPELINE）：编排骨架 + 依赖等待 C+B
         const bool assetOk = ::shine::novelcore::RunAssetPipelineSelfCheck();
+        // S8（状态回写与提交）：StateDiff + 门禁 G1–G5 + 14 块事务 + 幂等 + 快照
+        const bool commitOk = ::shine::novelcore::RunCommitSelfCheck() == 0;
         if (const char* p = std::getenv("SHINE_NOVEL_CHECK_OUT"); p && *p) {
             FILE* f = std::fopen(p, "ab");
             if (f) {
                 const std::string line = fmt::format(
-                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\nasset:{}\n",
+                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\nasset:{}\ncommit:{}\n",
                     chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
                     visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
                     jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
-                    imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail");
+                    imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail", commitOk ? "ok" : "fail");
                 std::fwrite(line.data(), 1, line.size(), f);
                 std::fclose(f);
             }
         }
         log::Info(
-            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={} asset={}",
+            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={} asset={} commit={}",
             schemaOk ? "ok" : "fail", graphOk ? "ok" : "fail", ctxOk ? "ok" : "fail",
             toolsOk ? "ok" : "fail", dirOk ? "ok" : "fail", mvpOk ? "ok" : "fail",
             chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
             visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
             jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
-            imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail");
+            imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail", commitOk ? "ok" : "fail");
         g_selfExitRequested = true;
     }
     // P7.1 自检：SHINE_MCP_CHECK=1 跑 MCP 注册表验收后自动退出（无网络）

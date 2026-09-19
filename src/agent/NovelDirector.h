@@ -35,6 +35,9 @@ struct GenerateChapterRequest {
     std::int64_t chapter_id = 0;
     std::string user_hint;
     int max_revisions = 3;
+    // S8（`07` §2.4）：章级快照落盘目录（UTF-8）。空 → 尝试从 `NovelDb` 单例推工程根；
+    // 仍为空 → G3 不过、**状态回写被拒绝**（不变式 I11）。
+    std::string snapshot_dir;
 };
 
 struct GenerateChapterProgress {
@@ -52,6 +55,10 @@ struct GenerateChapterResult {
     std::string critic_json;
     int revisions = 0;
     std::vector<std::string> callLog;
+    // S8：状态回写的结果（`false` + `commit_note` 非空 = 被门禁拒绝，原因可读）
+    bool state_committed = false;
+    bool state_skipped = false; // 幂等命中（同一 diff 已提交过）
+    std::string commit_note;
 };
 
 struct AgentError {

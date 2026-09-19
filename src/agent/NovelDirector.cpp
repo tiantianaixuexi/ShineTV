@@ -2,10 +2,13 @@
 
 #include "core/Log.h"
 #include "core/Settings.h"
+#include "novel/NovelCommit.h" // S8：StateDiff + 提交门禁 + 14 块事务
 #include "novel/NovelGraph.h"
 #include "novel/NovelMemory.h"
+#include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Json.h"
+#include "util/Strings.h"
 #include "util/Time.h"
 
 #include <fmt/format.h>
@@ -16,6 +19,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 namespace shine::agent {
 namespace {
@@ -237,6 +242,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     // REVIEW + REVISION
     int revisions = 0;
     std::string criticJson;
+    bool reviewPassed = false; // 提交门禁 G1 要用的**最终评审结论**（循环外可见）
     while (revisions <= req.max_revisions) {
         Report(on_progress, revisions == 0 ? Phase::Review : Phase::Revision,
                70 + revisions * 5, fmt::format("Critic 第{}轮", revisions + 1));
@@ -250,6 +256,7 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         const bool passed =
             criticJson.find("\"passed\":true") != std::string::npos ||
             criticJson.find("\"passed\": true") != std::string::npos;
+        reviewPassed = passed; // ⚠️ 目前是子串判定（`06` §2.4 的 ReviewVerdict 落地后换掉）
         if (passed || revisions >= req.max_revisions) break;
         ++revisions;
         // 改稿
@@ -265,11 +272,13 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     result.body = body;
     result.title = ch->title;
 
-    // EXTRACT
+    // EXTRACT（`07` §2.2 的 ②）：LLM 只负责"从正文里看出变化"，**基线由代码读**
     Report(on_progress, Phase::Extract, 90, "Extractor");
     const std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
     auto er = CallLlm("extractor", exUser);
     std::string summary = body.substr(0, std::min<std::size_t>(body.size(), 80));
+    novelcore::StateDiff diff;
+    bool hasDiff = false;
     if (er) {
         const auto ej = ExtractOutputText(*er);
         yyjson_doc* doc = yyjson_read(ej.data(), ej.size(), 0);
@@ -278,6 +287,17 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
             const auto s = util::json::GetStrCopy(root, "summary");
             if (!s.empty()) summary = s;
             yyjson_doc_free(doc);
+        }
+        // S8：把 extractor 的**完整** StateDiff 解出来（契约 `02` §2.5）—— 原先这里只取 summary，
+        // 于是章节生成完**从不回写世界状态**（`07` 差距 07-1，本章不改变世界，长篇必崩）。
+        if (novelcore::StateDiffFromJson(ej, diff)) {
+            if (diff.chapter_id <= 0) {
+                diff.chapter_id = req.chapter_id;
+            }
+            hasDiff = true;
+        } else if (!util::Trim(ej).empty()) {
+            log::Warn("Extractor 输出不是合法的 StateDiff JSON（本章不回写状态）：{}",
+                      util::Trim(ej).substr(0, 200));
         }
     }
 
@@ -296,6 +316,37 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                      .summary = summary});
     (void)g.LogAudit("agent", "generate_chapter", "chapter", req.chapter_id,
                      fmt::format("revisions={}", revisions));
+
+    // S8（闭环回写）：门禁 G1–G5 + 14 块事务。G1 = 本章评审结论；G2 = 提交模块自己能跑的机器校验
+    // （`06` 的 K01–K29 尚未全量实现，见 `NovelCommit.h` 的说明）。**门禁拒绝 ≠ 生成失败**：
+    // 正文已落盘，状态回写留给修订后重提（`07` §2.3 的失败处理）。
+    if (hasDiff) {
+        novelcore::CommitContext cctx;
+        cctx.chapter_id = req.chapter_id;
+        cctx.review_pass = reviewPassed;
+        cctx.review_verdict = reviewPassed ? "PASS" : "FAIL";
+        cctx.chapter_summary = summary;
+        cctx.snapshot_dir = req.snapshot_dir;
+        if (cctx.snapshot_dir.empty() && novelcore::NovelDb::Instance().isOpen()) {
+            // 工程根 = novel.db 的父目录（与 `NovelImageStore::ProjectDirOfDb` 同口径）
+            cctx.snapshot_dir =
+                util::PathToUtf8(novelcore::NovelDb::Instance().path().parent_path() / "snapshots");
+        }
+        const novelcore::CommitResult commit = novelcore::CommitChapterState(*db_, diff, cctx);
+        result.state_committed = commit.ok && !commit.skipped;
+        result.state_skipped = commit.skipped;
+        result.commit_note = commit.ok ? (commit.skipped ? "已提交过（幂等跳过）" : "状态已回写")
+                                       : commit.error;
+        if (!commit.ok) {
+            log::Warn("章节 {} 的状态回写未提交：{}", req.chapter_id, commit.error);
+        } else if (!commit.skipped) {
+            log::Info("章节 {} 状态已回写：{}", req.chapter_id, commit.applied.size() > 0
+                                                          ? commit.applied.front()
+                                                          : std::string{"（无变化块）"});
+        }
+    } else {
+        result.commit_note = "extractor 没有给出 StateDiff，未回写状态";
+    }
 
     Report(on_progress, Phase::Done, 100, "完成");
     log::Info("GenerateChapter 完成：章={} 正文 {} 字 修订 {}", req.chapter_id, body.size(),
@@ -335,7 +386,33 @@ bool NovelDirector::RunSelfCheck() {
             return std::string{R"({"output_text":"{\"passed\":true,\"issues\":[]}"})"};
         }
         if (ins.find("抽取") != std::string::npos || ins.find("extractor") != std::string::npos) {
-            return std::string{R"({"output_text":"{\"summary\":\"林默在雪原负伤前行。\",\"new_entities\":[],\"events\":[],\"foreshadow_updates\":[]}"})"};
+            // S8：extractor 的产物是**完整 StateDiff**（`02` §2.5），不再是只有 summary 的壳。
+            // 这里造最小一份：一条角色状态 + 一条伏笔 → 提交后库里应能查到（端到端判据）。
+            novelcore::StateDiff d;
+            d.chapter_id = *ch;
+            d.input_state_hash = "sha1:director-selfcheck";
+            d.characters.push_back({.entity_id = *pov,
+                                    .body_state = "旧伤",
+                                    .mind_state = "警觉",
+                                    .goal = "活着走出雪原",
+                                    .reason = "自检：雪原负伤前行"});
+            d.foreshadows.push_back({.op = "new",
+                                     .title = "黑戒指",
+                                     .content = "雪原上捡到的黑戒指",
+                                     .status = "PLANTED",
+                                     .setup_ch = *ch,
+                                     .importance = 70});
+            const std::string inner = novelcore::StateDiffToJson(d);
+            yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
+            yyjson_mut_val* root = yyjson_mut_obj(doc);
+            yyjson_mut_doc_set_root(doc, root);
+            yyjson_mut_obj_add_strncpy(doc, root, "output_text", inner.data(), inner.size());
+            std::size_t len = 0;
+            char* text = yyjson_mut_val_write(root, 0, &len);
+            yyjson_mut_doc_free(doc);
+            std::string resp = text != nullptr ? std::string{text, len} : std::string{"{}"};
+            std::free(text);
+            return resp;
         }
         // writer
         return std::string{R"({"output_text":"雪原上只剩下风声。林默按住伤口，继续向前。"})"};
@@ -343,8 +420,15 @@ bool NovelDirector::RunSelfCheck() {
 
     NovelDirector dir(mem, mock);
     std::vector<Phase> phases;
+    const std::filesystem::path snapRoot =
+        std::filesystem::temp_directory_path() / "shine_director_commit_check";
+    std::error_code ec;
+    std::filesystem::remove_all(snapRoot, ec);
     auto out = dir.GenerateChapter(
-        {.chapter_id = *ch, .user_hint = "写第一章", .max_revisions = 3},
+        {.chapter_id = *ch,
+         .user_hint = "写第一章",
+         .max_revisions = 3,
+         .snapshot_dir = util::PathToUtf8(snapRoot)},
         [&](const GenerateChapterProgress& p) { phases.push_back(p.phase); });
     if (!out) {
         log::Error("Director 自检：Generate 失败 {}", out.error().message);
@@ -360,12 +444,17 @@ bool NovelDirector::RunSelfCheck() {
     const bool savedOk = saved && saved->body.find("雪原") != std::string::npos;
     auto summaries = novelcore::NovelMemory(mem).RecentChapterSummaries(1);
     const bool memOk = summaries && !summaries->empty();
-    if (!hasBody || !hasRev || !hasPhases || !savedOk || !memOk) {
-        log::Error("Director 自检失败：body={} rev={} phases={} saved={} mem={}", hasBody, hasRev,
-                   hasPhases, savedOk, memOk);
+    // S8：**生成一章后世界状态确有变化**（本 S 的判据）—— 端到端经 GenerateChapter 走一遍
+    auto statusAfter = g.GetLatestCharacterStatus(*pov, *ch);
+    auto openFores = g.ListOpenForeshadows();
+    const bool committed = out->state_committed && statusAfter && statusAfter->body_state == "旧伤" &&
+                           openFores && !openFores->empty();
+    if (!hasBody || !hasRev || !hasPhases || !savedOk || !memOk || !committed) {
+        log::Error("Director 自检失败：body={} rev={} phases={} saved={} mem={} committed={}（{}）",
+                   hasBody, hasRev, hasPhases, savedOk, memOk, committed, out->commit_note);
         return false;
     }
-    log::Info("Director 自检通过（Plan→Write→Review→Revise→Extract→Save）");
+    log::Info("Director 自检通过（Plan→Write→Review→Revise→Extract→**Commit 回写**→Save）");
     {
         const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT");
         if (path && *path) {

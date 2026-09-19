@@ -298,6 +298,7 @@ add_executable(ShineTVStudio WIN32
   src/novel/NovelImageGen.cpp
   src/novel/NovelImageStore.cpp
   src/novel/NovelAssetPipeline.cpp
+  src/novel/NovelCommit.cpp
   src/agent/ContextBuilder.cpp
   src/agent/ToolRegistry.cpp
   src/agent/BuiltinTools.cpp
