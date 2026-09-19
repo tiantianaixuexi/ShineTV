@@ -208,10 +208,11 @@ struct CommitIssue {
 struct CommitGateReport {
     bool ok = false;
     bool g1_review_pass = false;   // 评审 PASS
-    bool g2_checks_pass = false;   // 机器校验无 high
-    // G2 的口径来源：true = 用了 `06` §2.3 的 K01–K29 全量报告（`CommitContext::validation`）；
-    // false = 退回本模块自己的机器校验（`ValidateStateDiff` + G4/G5）—— 记账用，别再猜。
-    bool g2_from_checks = false;
+    bool g2_checks_pass = false;   // `06` §2.3 的 K01–K29 全量报告无阻断项（low 放行）
+    // G2 的口径来源（可查，别再猜）：
+    //   "caller" = 调用方传了 `CommitContext::validation`；
+    //   "inline" = 本模块在写完章级快照后自己跑了 `RunChapterChecks`（S11 起的默认路径）。
+    std::string g2_source;
     bool g3_snapshot_ready = false; // 提交前快照已就绪（I11）
     bool g4_diff_valid = false;    // StateDiff 契约通过且非空（或显式声明无变化）
     bool g5_no_high_issue = false; // 无未解决的 high issue
@@ -225,10 +226,10 @@ struct CommitContext {
     bool review_pass = false;
     std::string review_verdict; // 原样记账（PASS/FAIL/…）
     // G2：机器校验结论。传 `validation`（`06` §2.3 的 K01–K29 全量报告）时以它为准；
-    // 不传则退回本模块自己能跑的机器校验（ValidateStateDiff + 下面的 G4/G5），并在
-    // `CommitGateReport::g2_from_checks` 记明口径。`machine_checks_pass` 只在退回时生效。
+    // 不传则 `CommitChapterState` **自己跑** `RunChapterChecks`（默认路径，`g2_source="inline"`）。
     const ValidationReport* validation = nullptr;
-    bool machine_checks_pass = true;
+    // 工程根：K12 的 `work/`、K28 的降级账都按它找。空 = 只看内存内对象（K12）/ 不看盘（K28）。
+    std::string project_dir;
     std::vector<CommitIssue> upstream_issues; // 上游（`06`）已发现的问题 → 进 G5 判定与记账
     std::string canon_mode = "manual";        // manual | auto（**auto 不在本 S**：`07` §2.5 C5）
     // 章级快照落盘：`<此目录>/ch<NNN>.json`（不变式 I11；写失败 → 阻断提交）。
@@ -250,6 +251,10 @@ struct CommitResult {
     std::vector<RowId> entity_version_ids; // 本章写下的实体快照
     std::string snapshot_path;             // 章级快照路径（UTF-8）
     CommitGateReport gates;
+    // G2 的 K01–K29 报告（一行摘要 + 不通过的 check_id）。调用方（`NovelDirector` / 运行循环）
+    // 拿它驱动 `09` §2.2 的 S1（同章同 check_id 连续失败）与「回到产出阶段重做」。
+    std::string checks_describe;
+    std::vector<std::string> failed_check_ids;
 };
 
 // 提交一章的状态回写（14 块事务；任一步失败 → ROLLBACK，库回到提交前）

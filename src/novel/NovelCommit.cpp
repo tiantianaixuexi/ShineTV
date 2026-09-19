@@ -298,37 +298,6 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         return out;
     }
 
-    // G2（`06` §2.3）：给了 K01–K29 全量报告就以它为准，并把「非 low 的失败」并入 issue 账
-    // （这样 G5 与拒绝原因都能看到具体是哪条 K 没通过）
-    out.gates.g2_from_checks = ctx.validation != nullptr;
-    if (ctx.validation != nullptr) {
-        for (const CheckResult& cr : ctx.validation->checks) {
-            if (CheckPassed(cr)) {
-                continue;
-            }
-            out.gates.issues.push_back({fmt::format("{} {}", cr.check_id, cr.name), cr.severity,
-                                        cr.detail});
-        }
-    }
-
-    const auto hasHigh = [&out]() {
-        for (const CommitIssue& issue : out.gates.issues) {
-            if (issue.severity == "high") {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    // G4：契约校验通过且非空（或显式声明无变化）
-    out.gates.g4_diff_valid = !hasHigh() && (diff.HasAnyDelta() || diff.no_change_declared);
-    // G1 / G2 / G5
-    out.gates.g1_review_pass = ctx.review_pass;
-    out.gates.g2_checks_pass = ctx.validation != nullptr
-                                   ? ctx.validation->Ok()
-                                   : (ctx.machine_checks_pass && !hasHigh());
-    out.gates.g5_no_high_issue = !hasHigh();
-
     // 涉及实体（用于提交前快照）
     std::set<RowId> touched;
     for (const CharacterDelta& c : diff.characters) {
@@ -354,6 +323,9 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // G3 / 不变式 I11：**提交前**必须已有快照。实体级快照在事务里采（Before 值），
     // 章级快照文件在事务外先落盘；写失败即阻断。
+    //
+    // ⚠️ 顺序：快照必须排在 G2 **之前** —— K13（`snapshot.before_commit`）的受检对象就是
+    // 这个文件，先写它这条才有对象可判（S11 把 K 校验接进提交路径时踩实的）。
     const auto snapshot = WriteChapterSnapshot(ctx.snapshot_dir, diff, out.diff_hash,
                                                out.entity_version_ids);
     if (!snapshot) {
@@ -363,6 +335,59 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         out.gates.g3_snapshot_ready = true;
         out.snapshot_path = util::PathToUtf8(*snapshot);
     }
+
+    // ———— G2：`06` §2.3 的 K01–K29 全量报告（S11 起是**真门禁**）————
+    // 调用方给了报告就用它（`g2_source="caller"`）；没给则在本函数内跑一遍（`"inline"`）——
+    // 这样「谁能提交」在任何入口都是同一套判据，不给调用方留后门。
+    // 不通过的条目以 `{check_id, severity, detail}` 并入 issue 账 → G5 与拒绝原因都能指名道姓。
+    bool g2Pass = true;
+    if (ctx.validation != nullptr) {
+        out.gates.g2_source = "caller";
+        g2Pass = ctx.validation->Ok();
+        out.checks_describe = ctx.validation->Describe();
+        out.failed_check_ids = ctx.validation->FailedIds();
+        for (const CheckResult& cr : ctx.validation->checks) {
+            if (CheckPassed(cr)) {
+                continue;
+            }
+            out.gates.issues.push_back({fmt::format("{} {}", cr.check_id, cr.name), cr.severity,
+                                        cr.detail});
+        }
+    } else {
+        out.gates.g2_source = "inline";
+        CheckInputs cin;
+        cin.chapter_id = diff.chapter_id;
+        cin.project_dir = util::PathFromUtf8(ctx.project_dir);
+        cin.snapshot_dir = util::PathFromUtf8(ctx.snapshot_dir);
+        cin.diff = &diff; // 内存里的 StateDiff 就是 K12 的受检对象（`03` 的产物落盘尚未落地）
+        const ValidationReport report = RunChapterChecks(db, cin);
+        g2Pass = report.Ok();
+        out.checks_describe = report.Describe();
+        out.failed_check_ids = report.FailedIds();
+        for (const CheckResult& cr : report.checks) {
+            if (CheckPassed(cr)) {
+                continue;
+            }
+            out.gates.issues.push_back({fmt::format("{} {}", cr.check_id, cr.name), cr.severity,
+                                        cr.detail});
+        }
+    }
+
+    const auto hasHigh = [&out]() {
+        for (const CommitIssue& issue : out.gates.issues) {
+            if (issue.severity == "high") {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // G4：契约校验通过且非空（或显式声明无变化）
+    out.gates.g4_diff_valid = !hasHigh() && (diff.HasAnyDelta() || diff.no_change_declared);
+    // G1 / G2 / G5
+    out.gates.g1_review_pass = ctx.review_pass;
+    out.gates.g2_checks_pass = g2Pass && !hasHigh();
+    out.gates.g5_no_high_issue = !hasHigh();
 
     out.gates.ok = out.gates.g1_review_pass && out.gates.g2_checks_pass &&
                    out.gates.g3_snapshot_ready && out.gates.g4_diff_valid && out.gates.g5_no_high_issue;
@@ -592,11 +617,22 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
             return fail(fmt::format("块 8 谜团失败：{}", id.error().message));
         }
         if (!m.beat.content.empty() || !m.beat.beat_type.empty()) {
+            // 同块 9：节拍序在被父下编号（原先写死 0，属同一处缺陷）
+            RowId nextOrd = 1;
+            if (auto st = db.Prepare("SELECT COALESCE(MAX(ord),0)+1 FROM mystery_beats "
+                                     "WHERE mystery_id=?1");
+                st) {
+                (void)st->BindInt(1, *id);
+                if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    nextOrd = st->ColumnInt(0);
+                }
+            }
             if (auto beat = graph.UpsertMysteryBeat({.mystery_id = *id,
                                                     .beat_type = m.beat.beat_type,
                                                     .chapter_id = diff.chapter_id,
                                                     .content = m.beat.content,
-                                                    .target_entity_id = m.beat.target_entity_id});
+                                                    .target_entity_id = m.beat.target_entity_id,
+                                                    .ord = static_cast<int>(nextOrd)});
                 !beat) {
                 return fail(fmt::format("块 8 谜团节拍失败：{}", beat.error().message));
             }
@@ -617,9 +653,19 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
             return fail(fmt::format("块 9 剧情线失败：{}", id.error().message));
         }
         if (!pd.beat.title.empty() || !pd.beat.summary.empty()) {
+            // `ord` 必须**父下严格递增**（`06` §2.3 K08）：原先写死 0，同一剧情线的多个节拍
+            // 会全部挤在 ord=0 → K08 判不严格递增。节拍序由本函数编号（`PlotBeatDelta` 本身没有 ord）。
+            RowId nextOrd = 1;
+            if (auto st = db.Prepare("SELECT COALESCE(MAX(ord),0)+1 FROM plot_beats WHERE plot_id=?1");
+                st) {
+                (void)st->BindInt(1, *id);
+                if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    nextOrd = st->ColumnInt(0);
+                }
+            }
             if (auto beat = graph.UpsertPlotBeat({.plot_id = *id,
                                                  .chapter_id = diff.chapter_id,
-                                                 .ord = 0,
+                                                 .ord = static_cast<int>(nextOrd),
                                                  .beat_type = pd.beat.beat_type,
                                                  .title = pd.beat.title,
                                                  .summary = pd.beat.summary});
@@ -960,7 +1006,9 @@ int RunCommitSelfCheck() {
         autoMode.review_pass = true;
         autoMode.canon_mode = "auto";
         const CommitResult r = CommitChapterState(mem, autoDiff, autoMode);
-        expect(r.ok && !r.skipped, "auto：G1–G5 全满足 → 提交成功");
+        // 失败时把原因带上（诊断用；`checks_describe` 会指名道姓是哪条 K）
+        expect(r.ok && !r.skipped,
+               fmt::format("auto：G1–G5 全满足 → 提交成功（{}｜{}）", r.error, r.checks_describe));
         int canon = 0;
         if (auto st = mem.Prepare("SELECT COUNT(*) FROM canon_logs WHERE target_kind='chapter' "
                                   "AND target_id=?1 AND status='CANON'");
@@ -994,6 +1042,30 @@ int RunCommitSelfCheck() {
                "StateDiff JSON 往返一致（含嵌套 TempoRef）");
         StateDiff broken;
         expect(!StateDiffFromJson("{ not json", broken), "非法 JSON → 解析失败");
+    }
+    // ⑩ S11：G2 真的是 `06` §2.3 的 K01–K29 报告（`inline`），且失败项指名道姓
+    {
+        expect(first.gates.g2_source == "inline", "G2 口径 = 提交路径内跑 K01–K29（inline）");
+        expect(first.checks_describe.find("K01") != std::string::npos &&
+                   first.failed_check_ids.empty(),
+               "K 报告摘要可读且干净提交无失败项");
+
+        StateDiff dangling;
+        dangling.chapter_id = *chapter;
+        dangling.characters.push_back(
+            {.entity_id = 999999, .body_state = "不该存在", .reason = "S11 自检"});
+        CommitContext ok = ctx;
+        ok.review_pass = true;
+        const CommitResult r = CommitChapterState(mem, dangling, ok);
+        bool hasK02 = false;
+        for (const std::string& id : r.failed_check_ids) {
+            if (id == "K02") {
+                hasK02 = true;
+            }
+        }
+        expect(!r.ok && hasK02, "K02（引用不存在实体）→ 拒绝提交并把 K02 报给调用方");
+        expect(!r.checks_describe.empty() && r.checks_describe.find("K02") != std::string::npos,
+               "被拒时报告里能看到 K02");
     }
 
     std::filesystem::remove_all(snapRoot, ec);

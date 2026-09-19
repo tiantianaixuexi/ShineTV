@@ -256,6 +256,7 @@ struct ReadCtx {
     RowId chapter = 0;
     int ord = 0;
     const std::filesystem::path* projectDir = nullptr;
+    const std::filesystem::path* snapshotDir = nullptr; // K13
     int wordTarget = 3000;
     const StateDiff* diff = nullptr;
     std::span<const ShotStateSnapshot> shots;
@@ -568,10 +569,13 @@ struct Ref {
 // ———— K08 ————
 [[nodiscard]] std::string CheckOrderMonotonic(db::sqlite::Database& db, std::string_view sql,
                                               std::string_view what) {
+    // 判据 = `06` §2.3 K08 原文：**在其父下严格递增**（`ord` 相等即违规）。
+    // 刻意不额外要求「首行 ord > 0」—— `ord=0` 在库里表示"未编号"，那不是我该判的东西
+    // （编号责任在写入方；`NovelCommit` 已给节拍编号，见块 8/块 9）。
     std::string bad;
     RowId parent = -1;
     int prev = -1;
-    int first = 1;
+    bool first = true;
     if (auto st = db.Prepare(sql); st) {
         while (true) {
             auto s = st->Step();
@@ -583,15 +587,14 @@ struct Ref {
             if (p != parent) {
                 parent = p;
                 prev = -1;
-                first = 1;
+                first = true;
             }
-            const bool ok = (first == 1) ? (ord > 0) : (ord > prev);
-            if (!ok && bad.size() < 96) {
+            if (!first && ord <= prev && bad.size() < 96) {
                 bad += fmt::format("{}父 {} 的 ord {} 未严格递增（前一个 {}）", bad.empty() ? "" : "；",
                                    p, ord, prev);
             }
             prev = ord;
-            first = 0;
+            first = false;
         }
     }
     if (!bad.empty()) {
@@ -890,15 +893,14 @@ struct Ref {
 
 // ———— K13 ————
 [[nodiscard]] CheckResult CheckK13(const ReadCtx& c) {
-    if (c.projectDir == nullptr || c.projectDir->empty()) {
-        return Mk("K13", CheckOutcome::Missing, "未给工程根 → 无法查 snapshots/ch<NNN>.json");
+    if (c.snapshotDir == nullptr || c.snapshotDir->empty()) {
+        return Mk("K13", CheckOutcome::Missing, "未给快照目录 → 无法查 ch<NNN>.json");
     }
     if (c.chapter <= 0) {
         return Mk("K13", CheckOutcome::Missing, "chapter_id 未知");
     }
     std::error_code ec;
-    const std::filesystem::path file =
-        *c.projectDir / "snapshots" / fmt::format("ch{:03}.json", c.chapter);
+    const std::filesystem::path file = *c.snapshotDir / fmt::format("ch{:03}.json", c.chapter);
     if (std::filesystem::exists(file, ec)) {
         return Mk("K13", CheckOutcome::Pass, fmt::format("{} 存在", util::PathToUtf8(file)));
     }
@@ -1817,6 +1819,13 @@ ValidationReport RunChapterChecks(db::sqlite::Database& db, const CheckInputs& i
     ValidationReport report;
     report.chapter_id = in.chapter_id;
 
+    // K13 的快照目录：优先用显式传入的（`NovelCommit` 只知道 `snapshot_dir`），否则按工程根约定
+    const std::filesystem::path snapDir =
+        !in.snapshot_dir.empty()
+            ? in.snapshot_dir
+            : (in.project_dir.empty() ? std::filesystem::path{}
+                                      : in.project_dir / "snapshots");
+
     ReadCtx c;
     c.db = &db;
     c.chapter = in.chapter_id;
@@ -1824,6 +1833,7 @@ ValidationReport RunChapterChecks(db::sqlite::Database& db, const CheckInputs& i
                                : static_cast<int>(IntSql1(db, "SELECT ord FROM chapters WHERE id=?1",
                                                           in.chapter_id));
     c.projectDir = &in.project_dir;
+    c.snapshotDir = &snapDir;
     c.wordTarget = in.word_target > 0 ? in.word_target : 3000;
     c.shots = in.shots;
     c.beats = in.beats;

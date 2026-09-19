@@ -121,9 +121,12 @@ struct GenerationCheckInput {
 
 struct CheckInputs {
     RowId chapter_id = 0;
-    int chapter_ord = 0;             // 0 = 由 chapter_id 反查
-    std::filesystem::path project_dir; // K12 `work/`、K13 `snapshots/`（空 = 这两条 Missing）
-    int word_target = 3000;          // K25（`02` §2.1 默认值）
+    int chapter_ord = 0;               // 0 = 由 chapter_id 反查
+    std::filesystem::path project_dir; // K12 `work/`、K28 降级账（空 = K12 靠内存 diff / K28 不看盘）
+    // K13 的章级快照目录。**单独给一列**是因为 `NovelCommit` 只知道 `snapshot_dir`
+    // （它不一定等于 `<工程根>/snapshots`）；空 = 退回 `project_dir/snapshots`。
+    std::filesystem::path snapshot_dir;
+    int word_target = 3000; // K25（`02` §2.1 默认值）
     // K01/K11/K17：内存里的 StateDiff。空 = 尝试读 `work/ch<NNN>/12_state_diff.json`，
     // 读不到则这三条 NotApplicable（「本章没有 StateDiff 产物」由 K12 负责判）。
     const StateDiff* diff = nullptr;

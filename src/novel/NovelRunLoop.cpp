@@ -549,6 +549,8 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
             info.images = res->images;
             info.contract_failures = res->contract_failures;
             info.missing_entity_refs = res->missing_entity_refs;
+            // S11：G2 的 K01–K29 不通过项 → 停止条件 S1 的输入
+            info.failed_check_ids = res->failed_check_ids;
             info.stages = res->stages;
             info.note = res->commit_note;
             return info;
@@ -614,6 +616,9 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
             obs.contract_failures = info->contract_failures;
             obs.missing_entity_refs = info->missing_entity_refs;
             obs.llm_network_failures = info->llm_network_failures;
+            // S11：机器校验（`06` §2.3 K01–K29）的不通过项 —— `09` §2.2 S1 的唯一输入。
+            // 语义：**重复条目 = 失败次数**（章内重试由产出阶段负责，见 `03` §2.6）。
+            obs.failed_check_ids = info->failed_check_ids;
             obs.note = info->note;
         } else {
             obs.llm_calls = 0;
@@ -1103,6 +1108,36 @@ bool NovelRunLoop::RunSelfCheck() {
 
         NovelRunLoop loop(mem, nullptr);
         int calls = 0;
+        // S11：K01–K29（`06` §2.3）的不通过项必须真的流进停止条件（`09` §2.2 S1）。
+        // 语义：`failed_check_ids` 的**重复条目 = 失败次数**（章内重试由产出阶段负责，`03` §2.6）。
+        {
+            db::sqlite::Database s1db;
+            if (auto r = s1db.Open({.memory = true}); r) {
+                (void)NovelDb::ApplyCanonicalSchema(s1db);
+                (void)NovelGraph(s1db).UpsertChapter({.ord = 1, .title = "S1 章"});
+                NovelRunLoop s1loop(s1db, nullptr);
+                s1loop.SetChapterRunner(
+                    [](RowId, const RunLimits&, RunMode,
+                       const std::function<void(const agent::GenerateChapterProgress&)>&)
+                        -> std::expected<ChapterRunInfo, agent::AgentError> {
+                        ChapterRunInfo info;
+                        info.ok = true;
+                        info.review_passed = true;
+                        info.failed_check_ids = {"K02", "K02"}; // 同章同 check_id 2 次
+                        return info;
+                    });
+                RunRequest s1req;
+                s1req.project_dir = dir / "s1";
+                s1req.mode = RunMode::Manual;
+                s1req.max_chapters = 1;
+                const RunOutcome s1 = s1loop.Run(s1req);
+                expect(s1.stop && s1.stop->code == StopCode::S1 &&
+                           s1.stop->detail.find("K02") != std::string::npos,
+                       "S11：K01–K29 失败项 → 观测 → S1 触发（停止条件真的接上了）");
+            } else {
+                expect(false, "S1 用例：内存库打开失败");
+            }
+        }
         loop.SetChapterRunner([&calls](RowId chapter_id, const RunLimits&, RunMode,
                                        const std::function<void(
                                            const agent::GenerateChapterProgress&)>&)
