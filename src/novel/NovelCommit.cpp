@@ -336,6 +336,28 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         out.snapshot_path = util::PathToUtf8(*snapshot);
     }
 
+    // `07` §2.1 / 不变式 I10：`work/ch<NNN>/12_state_diff.json` 必须存在。原先**没有任何写入点**
+    // （`03` 的阶段产物未落地）→ K12 只能拿内存对象当受检对象。这里补上：本章的 StateDiff 与
+    // 正文/快照一起留档，断点续跑与事后审计都有据可查。写失败**只告警**（审计产物，不阻断提交）。
+    if (!ctx.project_dir.empty() && diff.chapter_id > 0) {
+        RowId ord = 0;
+        if (auto st = db.Prepare("SELECT ord FROM chapters WHERE id=?1"); st) {
+            (void)st->BindInt(1, diff.chapter_id);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                ord = st->ColumnInt(0);
+            }
+        }
+        if (ord > 0) {
+            const std::filesystem::path dir =
+                util::PathFromUtf8(ctx.project_dir) / "work" / fmt::format("ch{:03}", ord);
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            if (!util::WriteFileBytes(dir / "12_state_diff.json", StateDiffToJson(diff))) {
+                log::Warn("章节 {} 的 12_state_diff.json 落盘失败（不影响提交）", diff.chapter_id);
+            }
+        }
+    }
+
     // ———— G2：`06` §2.3 的 K01–K29 全量报告（S11 起是**真门禁**）————
     // 调用方给了报告就用它（`g2_source="caller"`）；没给则在本函数内跑一遍（`"inline"`）——
     // 这样「谁能提交」在任何入口都是同一套判据，不给调用方留后门。
@@ -888,6 +910,7 @@ int RunCommitSelfCheck() {
     {
         CommitContext ok = ctx;
         ok.review_pass = true;
+        ok.project_dir = util::PathToUtf8(snapRoot); // S12：让 StateDiff 产物有地方落
         first = CommitChapterState(mem, diff, ok);
         expect(first.ok && !first.skipped, "门禁齐备 → 提交成功");
         expect(first.gates.g1_review_pass && first.gates.g2_checks_pass &&
@@ -895,6 +918,12 @@ int RunCommitSelfCheck() {
                    first.gates.g5_no_high_issue,
                "G1–G5 逐条为真");
         expect(!first.entity_version_ids.empty(), "提交前写了实体级快照（Before 值）");
+        // S12（`07` §2.1 / 不变式 I10）：本章 StateDiff 必须落成 work/ch<NNN>/12_state_diff.json
+        const auto diffPath = snapRoot / "work" / "ch001" / "12_state_diff.json";
+        const auto bytes = util::ReadFileBytes(diffPath);
+        StateDiff reread;
+        expect(bytes && StateDiffFromJson(*bytes, reread) && reread.Hash() == diff.Hash(),
+               "S12：work/ch001/12_state_diff.json 落盘且读回一致（不变式 I10）");
     }
     // ④ 世界状态**确有变化**（这是本 S 的核心判据）
     {
