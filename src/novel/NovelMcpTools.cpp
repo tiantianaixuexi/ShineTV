@@ -144,6 +144,9 @@ void AuditWrite(db::sqlite::Database& db, std::string_view action, std::string_v
     (void)g.LogAudit("mcp", action, targetKind, targetId, detail);
 }
 
+// S18：`novel_generate_chapter` 的实现（由装配层注入；未注入 → 工具明确报错）
+ChapterGeneratorFn g_chapterGenerator;
+
 // P10.4 Redis 可选：池未就绪静默跳过（SQLite 权威）
 [[nodiscard]] bool RedisGet(std::string_view key, std::string& out) {
     if (!db::redisReady()) return false;
@@ -173,6 +176,27 @@ void RedisDel(std::string_view key) {
 }
 
 // ── handlers ────────────────────────────────────────────
+
+// S18：`novel_generate_chapter` —— 走**注入的生成器**（与 UI/CLI 同一条路：`NovelPipeline`）。
+// 属于写工具（会改库、花 LLM 调用），受 `McpWriteAllowed` 管；未注入实现时明确报错。
+mcp::CallOutcome HGenerateChapter(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_generate_chapter");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    const std::int64_t chapterId = ArgI64(args, "chapter_id", 0);
+    if (chapterId <= 0) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments,
+                                      "需要 chapter_id（> 0）；要「一直写到某章」请用 --novel-run 连跑");
+    }
+    if (!g_chapterGenerator) {
+        return mcp::CallOutcome::Fail(
+            mcp::CallStatus::InternalError,
+            "未注入章节生成器：启动时应由 NovelPipeline 注入（见 mcp/McpBootstrap）");
+    }
+    const std::string result = g_chapterGenerator(*db, chapterId);
+    return mcp::CallOutcome::Ok(
+        fmt::format(R"({{"chapter_id":{},"result":"{}"}})", chapterId, Esc(result)));
+}
 
 mcp::CallOutcome HListAgents(yyjson_val* args) {
     db::sqlite::Database* db = ResolveDb();
@@ -868,6 +892,8 @@ std::string ResolveAgentMcpToolsJson(std::string_view agentId, const mcp::ToolRe
         mcpHit, missing);
 }
 
+void SetChapterGenerator(ChapterGeneratorFn fn) { g_chapterGenerator = std::move(fn); }
+
 void RegisterMcpTools(mcp::ToolRegistry& reg) {
     reg.EnsureModule(mcp::ModuleInfo{.id = "novel", .title = "小说 Agent / 图谱 / 动态字段"});
 
@@ -1185,6 +1211,20 @@ void RegisterMcpTools(mcp::ToolRegistry& reg) {
             mcp::schema::AddString(d, s, "note", "说明", false);
         }),
         .handler = HLinkCausal,
+    });
+
+    // S18：生成一章 —— **与 UI/CLI 同一条路**（装配层注入 `NovelPipeline`；见 McpBootstrap）。
+    // ⚠️ 分钟级阻塞调用 + 会花 LLM 钱，所以是写工具（默认禁用），且要前端自己设超时。
+    regTool(mcp::Tool{
+        .name = "novel_generate_chapter",
+        .title = "生成一章正文（需允许写；会调用 LLM）",
+        .description = "Planner→Writer→Critic→状态回写，与 UI/CLI 同一条路。分钟级耗时，"
+                       "需已配置 API Key；默认禁用写。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "chapter_id", "章节 id", true);
+        }),
+        .handler = HGenerateChapter,
     });
 
     log::Info("mcp novel 模块已注册 tools={}", reg.ToolNames("novel").size());

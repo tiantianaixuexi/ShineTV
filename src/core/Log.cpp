@@ -76,7 +76,16 @@ void Init() {
         return;
     }
     auto ui = std::make_shared<UiSink<std::mutex>>();
-    auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    // S18：`SHINE_LOG_TO_STDERR=1` → 日志走 stderr 而不是 stdout。
+    // 必须的场合：**stdio MCP**（`--mcp-stdio`）—— 协议要求 stdout **只走 JSON-RPC**，
+    // 日志混进去会让客户端解析失败（实测：响应里夹着 `[..] [info] mcp Register…` 行）。
+    std::shared_ptr<spdlog::sinks::sink> console;
+    if (const char* env = std::getenv("SHINE_LOG_TO_STDERR"); env != nullptr && *env != '\0' &&
+                                                                     env[0] != '0') {
+        console = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+    } else {
+        console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    }
     std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks{ui, console};
     std::string logFile;
     if (const char* env = std::getenv("SHINE_LOG_FILE"); env != nullptr && *env != '\0') {

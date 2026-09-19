@@ -116,6 +116,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     // P10.1：stdio MCP（Claude Desktop 等）—— 不建窗口/D3D，stdout 只走 JSON-RPC
     if (lpCmdLine != nullptr &&
         (wcsstr(lpCmdLine, L"--mcp-stdio") != nullptr || wcsstr(lpCmdLine, L"/mcp-stdio") != nullptr)) {
+        // S18：日志必须去 **stderr** —— 否则 stdout 的 JSON-RPC 流里会夹日志行，
+        // 客户端解析失败（实测确认过）。
+        // ⚠️ 必须用 `_putenv_s`（CRT 层）—— `SetEnvironmentVariableA` 只改进程环境块，
+        // `std::getenv`（`log::Init` 读的那个）看不到它（实测踩到：日志仍进 stdout）。
+        (void)_putenv_s("SHINE_LOG_TO_STDERR", "1");
         return static_cast<int>(shine::mcp::RunStdioServerMain());
     }
 

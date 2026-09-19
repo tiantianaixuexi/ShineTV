@@ -1,11 +1,14 @@
 #include "mcp/McpBootstrap.h"
 
+#include "app/novel/NovelPipeline.h" // S18：注入生成一章的实现（与 UI/CLI 同一条路）
 #include "core/Log.h"
 #include "mcp/BuiltinTools.h"
 #include "mcp/Schema.h"
+#include "novel/NovelDb.h"
 #include "novel/NovelMcpTools.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <fmt/format.h>
 #include <stdexcept>
 #include <string>
@@ -103,6 +106,18 @@ void RegisterAllModules(ToolRegistry& reg) {
 
     // 小说多 Agent + 动态字段（P10：只读默认，写受 SHINE_MCP_ALLOW_WRITE 约束）
     novelcore::RegisterMcpTools(reg);
+
+    // S18：把「生成一章」的实现注入给 MCP（`novel_generate_chapter`）——
+    // 用的就是 UI/CLI 那条路（`NovelPipeline`）：同一份按 `LlmRole` 选模型的回调、
+    // 同一份前置判定（空 Key 直接给可读原因）。装配层做这件事，`src/novel` 不依赖 `openai`。
+    novelcore::SetChapterGenerator([](::shine::db::sqlite::Database& db, std::int64_t chapter_id) {
+        std::filesystem::path projectDir;
+        if (auto& inst = novelcore::NovelDb::Instance(); inst.isOpen()) {
+            projectDir = inst.path().parent_path();
+        }
+        return app::novel::GenerateOneChapter(db, chapter_id, projectDir, 2, nullptr, nullptr)
+            .Describe();
+    });
 
     // P7.4：comfy_* + shinetv_* 内置工具（幂等同名覆盖）
     RegisterAllBuiltinTools(reg);

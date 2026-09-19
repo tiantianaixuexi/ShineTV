@@ -66,6 +66,7 @@
 填好 Key 后，`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0`（或直接点「生成本章」）即可真生成一章。
 
 **仍未做的（都不阻塞跑流程，见 §0.3 的说明）**：`03` 的 T1–T17 细阶段机（真阶段级续跑）、V9 分镜链本体（影视化链）、`10` 初始化链编排、`09` 的 09-7/09-8/09-11/09-12、K19–K21 由生成侧回填、真机 SD 出图、P8 的开关机压测。
+- [x] **S18** MCP 工具 `novel_generate_chapter`（AI 助手可直接驱动生成）+ 修 stdio 日志污染 — `s18-mcp-generate`｜生成实现由装配层**注入**（`NovelMcpTools::SetChapterGenerator`，`src/novel` 不依赖 `openai`/`app`），注入的就是 UI/CLI 那条路（`NovelPipeline::GenerateOneChapter`）；写工具（受 `McpWriteAllowed` 管，未注入实现时明确报错不假装成功）；novel 模块工具数 **25 → 26**；**端到端实测**（`--mcp-stdio` + `SHINE_MCP_ALLOW_WRITE=1`）：`tools/call novel_generate_chapter {chapter_id:1}` → `{"chapter_id":1,"result":"生成失败：未配置 OpenAI 的 API Key（设置 → LLM）"}`；🔴 **顺带修既有真 bug**：stdio 模式下日志写进了 **stdout**（协议流被污染、客户端会解析失败）→ 加 `SHINE_LOG_TO_STDERR`（`log::Init` 支持；`--mcp-stdio` 分支用 **`_putenv_s`** 打开，`SetEnvironmentVariableA` 不同步给 `getenv`）；修后 stdout **只剩 2 行 JSON-RPC**、日志 49 行进 stderr；**19 项全 ok**
 - [x] **S17** headless CLI（`--novel-generate` / `--novel-run`）+ 生成/连跑抽成 **UI 与 CLI 共用入口** — `s17-cli-entry`｜新增 `src/app/novel/NovelPipeline.*`（`MakeLlmCall` 按 `LlmRole` 选模型 / `CrossReviewEffective` / `GenerateOneChapter` / `FillPreconditions` / `RunOnce`）与 `NovelCli.*`（手写参数解析，无新依赖）；`main.cpp` 在 `--mcp-stdio` 之后加分支（**不建窗口**）；`NovelView` 改调 pipeline（删掉本地 LLM 回调与内联 worker —— 上一轮只是 UI 内部抽函数，这轮才真正跨载体共用）；退出码 0/1/2（成功 / 业务失败 / 参数错）；`SHINE_NOVEL_CHECK_OUT` 追加 `novel-cli:ok|fail <detail>`；**真跑**：`--novel-generate 0` → 自动选章 #1 → `生成失败：未配置 OpenAI 的 API Key（设置 → LLM）`、ExitCode=1（⚠️ 顺带修真 bug：CLI 路径没调 `LoadSettings()`，库路径读不到）；**19 项全 ok**
 - [x] **S16** `09` 卷四项收口（**09-7 模型分层 / 09-8 交叉复核 / 09-11 限流 / 09-12 全书预算**）— `s16-model-routing`｜`agent::LlmCallFn`/`LlmStreamFn` 加 **`LlmRole`**（Planner/Writer/Critic/Extractor）→ 调用方按 `openai::ResolveModel(LlmRoleName(role))` 选模型 → `openai::LlmComplete(..., model)` 可指定模型（Chat/Responses/Anthropic 三路都通）；**09-8 硬要求**：判**生效模型** `critic ≠ writer`，相同则 UI ⚠ 提示 + **`auto` 前置⑤拒绝**（manual/semi 只提示）；**09-12**：`EstimateBookBudget`（剩余章 × 每章上限 40）+ 新配置 `novelMaxTotalLlmCalls`（0=不限）→ **前置⑥拒绝**，拒绝原因带估算明细（⚠️ 单价未纳入：无 token 计数，不假装算钱）；**09-11** 并发=1/间隔 200ms/429 退避（S9 已有，S16 补断言）；自检新增「四个 LlmRole 均到回调 0b1111」「⑤/⑥ 拒绝且原因可读」「预算估算 min(剩余,上限)」；**19 项全 ok**
 - [x] **S15** 真实流程前置收口（LLM 真判 + 一键跑法）— `s15-real-flow`｜🔴 修真 bug：`Run` 里 `ProbeAutoPrecondition(*db_, true)` **硬编码** → 空 Key 也能启动 auto（新增 `RunRequest::llm_ready` 由调用方给真实值）；抽 `StartChapterGeneration`（按钮与验收开关**共用同一条路**）+ 空 Key 可读提示不进 worker；「连跑」同样前置检查；新增 **`SHINE_NOVEL_GENERATE=<id>`** 验收开关（⚠️ **时间驱动**而非帧驱动 —— 实测 12 秒跑不到 30 帧）；**真实工程实跑**：`SHINE_NOVEL_OPEN=rain-signal` + `SHINE_NOVEL_GENERATE=0` → 自动选章 #1 → `章节 #1 未开始生成：OpenAI 的 API Key 为空`，UI 显示「未配置 OpenAI 的 API Key：设置 → LLM 里填好后重试」；**19 项全 ok**
@@ -95,7 +96,9 @@
 - `10` 的**初始化链编排 I1–I16**（API 已齐；新工程"从零到能写"的一键初始化）
 - **V9 分镜链本体**（影视化：小说 → 分镜 → 出图；`shots` 三列与 `prompt_artifacts` 已就绪）
 - **K19–K21 由生成侧回填**（结论本来产生在 `video` 侧，`novel` 不复刻规则）
-- ✅ **已完成 S17**：headless **CLI**（`--novel-generate` / `--novel-run`，无界面可跑）；**MCP 工具**版生成入口仍未做（若要让 AI 助手直接驱动再加，复用 `NovelPipeline` 即可）
+- ✅ **已完成 S17**：headless **CLI**（`--novel-generate` / `--novel-run`，无界面可跑）
+- ✅ **已完成 S18**：**MCP 工具** `novel_generate_chapter`（AI 助手可直接驱动；实现由装配层注入 `NovelPipeline`）
+- **K19–K21 的真相（2026-09-20 核实）**：它们的"事实"来自出图侧（`VideoProject::Sanitize` / `object_info`），而 **`ToGenShot` 至今只有自检调用、没有生产调用点** ⇒ 这三条**不是"忘了回填"，而是"共享了 V9/V10/V11 影视化链的缺失"** —— 先有"小说 → 分镜 → 出图"的生产路径，才有事实可回填。已并入下面 V9/V10 那一批。
 
 **C. 已定不做（设计如此，非遗漏）**
 

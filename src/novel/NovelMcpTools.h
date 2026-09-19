@@ -1,6 +1,8 @@
 ﻿#pragma once
 // 小说模块 MCP 注册（P10）：外部 AI / Claude Desktop 可 list/call
 // 调度原则：工具全集只在 MCP 注册表；Agent 运行时只拿 tools_json 白名单交集
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -11,6 +13,15 @@ namespace shine::novelcore {
 
 // 注册 novel_* 工具到 MCP（幂等，同名覆盖）
 void RegisterMcpTools(mcp::ToolRegistry& reg);
+
+// ———— S18：`novel_generate_chapter` 的**实现注入** ————
+// 「生成一章」要 LLM（`openai`）与生成编排（`NovelPipeline`），而 `src/novel` 至今不依赖
+// `openai`/`app`（与 `NovelRunLoop` 注入 `LlmCallFn` 同款纪律）。所以这里只登记一个入口，
+// 由装配层（`mcp/McpBootstrap`）注入实现 —— 且注入的就是 UI/CLI 用的**同一条路**。
+// 未注入 → 工具**明确报错**（`internal_error`），不假装成功。
+using ChapterGeneratorFn =
+    std::function<std::string(db::sqlite::Database& db, std::int64_t chapter_id)>;
+void SetChapterGenerator(ChapterGeneratorFn fn);
 
 // 测试注入；nullptr = NovelDb::Instance()（需已打开工程）
 void SetMcpDbOverride(db::sqlite::Database* db) noexcept;
