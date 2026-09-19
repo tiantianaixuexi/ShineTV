@@ -19,6 +19,7 @@
 #include "novel/NovelDb.h"
 #include "novel/NovelFields.h"
 #include "novel/NovelGraph.h"
+#include "novel/NovelImageStore.h"
 #include "novel/NovelProjects.h"
 #include "openai/OpenAIClient.h"
 #include "openai/OpenAIConfig.h"
@@ -66,6 +67,11 @@ void EnsureProjectSchema() {
     }
     shine::agent::AgentKit kit(biz::NovelDb::Instance().raw(), true);
     (void)kit.EnsureSchemaAndSeed();
+    // 启动回收：上次进程遗留的 RUNNING/QUEUED 行会让下游误以为「还在生成」（staleSeconds=0 = 无条件）
+    if (auto reaped = shine::novelcore::ReapStaleImageJobs(biz::NovelDb::Instance().raw(), 0);
+        reaped && *reaped > 0) {
+        g_status = fmt::format("已回收 {} 条遗留出图任务（判为失败）", *reaped);
+    }
 }
 
 void EnsureScan() {

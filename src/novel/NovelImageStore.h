@@ -65,6 +65,13 @@ GetGeneratedImage(db::sqlite::Database& db, RowId id);
 [[nodiscard]] std::expected<void, DbError>
 SetGeneratedImageStatus(db::sqlite::Database& db, RowId id, std::string_view status);
 
+// 孤儿态回收：把长时间停在 QUEUED/RUNNING 的任务改判为 FAILED。
+// 用途：进程崩溃/重启后，上一次遗留的 RUNNING 行会让下游误以为「还在生成」，从而不知道该等还是该跳。
+// staleSeconds <= 0 表示无条件回收（启动时用 —— 刚启动不可能有本进程的任务在跑）。
+// 只改数据、不改 schema；成功返回被改判的行数（无遗漏则 0）。
+[[nodiscard]] std::expected<int, DbError>
+ReapStaleImageJobs(db::sqlite::Database& db, std::int64_t staleSeconds = 1800);
+
 // 工程目录：db 路径的父目录
 [[nodiscard]] std::filesystem::path ProjectDirOfDb(const std::filesystem::path& dbPath);
 

@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "novel/NovelDb.h"
+#include "novel/NovelGraph.h"
 #include "novel/NovelVisual.h"
 #include "util/Encoding.h"
 #include "util/Time.h"
@@ -273,6 +274,61 @@ std::expected<void, DbError> SetGeneratedImageStatus(db::sqlite::Database& db, R
     return {};
 }
 
+std::expected<int, DbError> ReapStaleImageJobs(db::sqlite::Database& db,
+                                               std::int64_t staleSeconds) {
+    const std::int64_t now = NowSec();
+    const std::int64_t cutoff = now - (staleSeconds > 0 ? staleSeconds : 0);
+
+    // 先数：Database 未暴露 Changes()，用 COUNT 代替
+    int staleCount = 0;
+    {
+        auto st = db.Prepare(
+            "SELECT COUNT(*) FROM generated_images "
+            "WHERE status IN ('RUNNING','QUEUED') AND updated<?1");
+        if (!st) {
+            return std::unexpected(st.error());
+        }
+        (void)st->BindInt(1, cutoff);
+        if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+            staleCount = static_cast<int>(st->ColumnInt(0));
+        }
+    }
+    if (staleCount <= 0) {
+        return 0;
+    }
+
+    const std::string reason =
+        staleSeconds > 0
+            ? fmt::format("stale: 超过 {}s 未更新，判定失败（原状态 RUNNING/QUEUED）", staleSeconds)
+            : std::string{"stale: 上次进程遗留（启动回收），判定失败"};
+
+    auto up = db.Prepare(
+        "UPDATE generated_images SET status='FAILED',error=?1,updated=?2 "
+        "WHERE status IN ('RUNNING','QUEUED') AND updated<?3");
+    if (!up) {
+        return std::unexpected(up.error());
+    }
+    (void)up->BindText(1, reason);
+    (void)up->BindInt(2, now);
+    (void)up->BindInt(3, cutoff);
+    if (auto s = up->Step(); !s) {
+        return std::unexpected(s.error());
+    }
+
+    // 审计：audit_logs 缺失时只告警，不影响回收本身
+    NovelGraph graph(db);
+    if (auto audit = graph.LogAudit("startup_reaper", "reap_stale_image_jobs", "generated_images", 0,
+                                    fmt::format("reaped={} cutoff={} now={}", staleCount, cutoff,
+                                                now));
+        !audit) {
+        log::Warn("出图孤儿回收：写 audit_logs 失败：{}", audit.error().message);
+    }
+
+    // 必须可见：这代表上一次运行有任务没走完
+    log::Warn("出图孤儿回收：{} 条 RUNNING/QUEUED 任务改判 FAILED（cutoff={}）", staleCount, cutoff);
+    return staleCount;
+}
+
 std::expected<GeneratedImageRow, ImageGenError> RunImageJob(db::sqlite::Database& db,
                                                             const ImageJobInput& in) {
     const std::int64_t now = NowSec();
@@ -472,6 +528,14 @@ CREATE TABLE IF NOT EXISTS visual_canon_logs(
   status TEXT NOT NULL DEFAULT 'PROPOSED',
   note TEXT NOT NULL DEFAULT '',
   created INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS audit_logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  target_kind TEXT NOT NULL DEFAULT '',
+  target_id INTEGER NOT NULL DEFAULT 0,
+  detail TEXT NOT NULL DEFAULT '',
+  created INTEGER NOT NULL DEFAULT 0);
 )SQL"); !r) {
         log::Error("P9 队列自检：建表失败 {}", r.error().message);
         return false;
@@ -557,7 +621,50 @@ CREATE TABLE IF NOT EXISTS visual_canon_logs(
         return false;
     }
 
-    log::Info("P9 队列自检通过（PROPOSED→CANON / FAILED 行 / checklist）");
+    // 孤儿态回收：stale 行（updated=0）应改判 FAILED；updated 在未来的行必须保留
+    {
+        if (auto r = mem.Exec("INSERT INTO generated_images(job_id,status,created,updated) "
+                              "VALUES('stale_job_1','RUNNING',0,0)");
+            !r) {
+            log::Error("P9 队列自检：插入 stale 行失败 {}", r.error().message);
+            return false;
+        }
+        if (auto r = mem.Exec("INSERT INTO generated_images(job_id,status,created,updated) "
+                              "VALUES('fresh_job_1','RUNNING',9999999999,9999999999)");
+            !r) {
+            log::Error("P9 队列自检：插入 fresh 行失败 {}", r.error().message);
+            return false;
+        }
+        auto reaped = ReapStaleImageJobs(mem, 0);
+        if (!reaped) {
+            log::Error("P9 队列自检：孤儿回收失败 {}", reaped.error().message);
+            return false;
+        }
+        if (*reaped != 1) {
+            log::Error("P9 队列自检：孤儿回收应改判 1 条，实际 {}", *reaped);
+            return false;
+        }
+        auto rows = ListGeneratedImages(mem, 20);
+        bool staleFailed = false;
+        bool freshKept = false;
+        if (rows) {
+            for (const auto& r : *rows) {
+                if (r.job_id == "stale_job_1" && r.status == "FAILED") {
+                    staleFailed = true;
+                }
+                if (r.job_id == "fresh_job_1" && r.status == "RUNNING") {
+                    freshKept = true;
+                }
+            }
+        }
+        if (!staleFailed || !freshKept) {
+            log::Error("P9 队列自检：孤儿回收结果不符 staleFailed={} freshKept={}", staleFailed,
+                       freshKept);
+            return false;
+        }
+    }
+
+    log::Info("P9 队列自检通过（PROPOSED→CANON / FAILED 行 / checklist / 孤儿回收）");
     return true;
 }
 

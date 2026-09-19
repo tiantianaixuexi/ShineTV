@@ -43,7 +43,8 @@
 
 - [x] **S-doc** 文档集入库（`Doc/小说系统/` 14 卷 + `Doc/AGENTS.md` 地图行）— 分支 `docs-novel-system`
       ✅ 判据通过：`git ls-files Doc/小说系统` = **14**；14 卷 CR = **0**（纯 LF）；`Doc/AGENTS.md` 文档地图已加行；入库 **4598** 行
-- [ ] **S0-pre** 孤儿回收 `ReapStaleImageJobs` 入库（**已实现 + 已验证**，见 `证据.md`）— 分支 `s0pre-orphan-reap`
+- [x] **S0-pre** 孤儿回收 `ReapStaleImageJobs` 入库（`NovelImageStore.h/.cpp` + `NovelView.cpp`）— 分支 `s0pre-orphan-reap`
+      ✅ 判据通过：`SHINE_NOVEL_GRAPH_CHECK=1` → `imagegen:ok`；日志 `P9 队列自检通过（… / 孤儿回收）` + `出图孤儿回收：1 条 RUNNING/QUEUED 改判 FAILED`；自检内断言 stale(updated=0)→FAILED、future→保留。证据见 `证据.md`「S0-pre」段
 - [ ] **S0** MCP 工具 `input_schema` 序列化修复 + `RunNovelMcpSelfCheck` 复位写开关 — 分支 `s0-mcp-schema`
 - [ ] **S1** `visual_assets.status` + `visual_artifacts`（schema v7）— 分支 `s1-visual-status-artifacts`
 - [ ] **S2** P0 八表补 API — 分支 `s2-p0-graph-api`
