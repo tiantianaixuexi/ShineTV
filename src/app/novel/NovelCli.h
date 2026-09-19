@@ -2,6 +2,8 @@
 // S17：小说侧 headless 命令行入口（`main.cpp` 在 `--mcp-stdio` 分支之后、建窗口之前调用）。
 //
 // 支持：
+//   `--novel-init`                   初始化链（`10`）：建结构骨架 + 报「可开写」门禁（N1–N14）
+//                                    子项：`--book <书名>`、`--target-chapters N`、`--gate-only`（只查门禁）
 //   `--novel-generate <chapter_id>`  生成一章（`0` 或缺省 → 第一张未完成的章）
 //   `--novel-run <manual|semi|auto>` 连跑（`09` §2.1）
 // 公共项：
