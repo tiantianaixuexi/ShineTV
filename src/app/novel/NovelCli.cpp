@@ -1,6 +1,7 @@
 #include "app/novel/NovelCli.h"
 
 #include "agent/NovelDirector.h"
+#include "agent/NovelStoryboard.h" // S23：V9 叙事分镜
 #include "app/novel/NovelPipeline.h"
 #include "core/Log.h"
 #include "core/Settings.h"
@@ -109,9 +110,10 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantGen = Has(args, "--novel-generate");
     const bool wantRun = Has(args, "--novel-run");
     const bool wantInit = Has(args, "--novel-init");
-    if (!wantGen && !wantRun && !wantInit) {
-        log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-generate <chapter_id>` / "
-                   "`--novel-run <manual|semi|auto>`）");
+    const bool wantSb = Has(args, "--novel-storyboard");
+    if (!wantGen && !wantRun && !wantInit && !wantSb) {
+        log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-storyboard <chapter_id>` / "
+                   "`--novel-generate <chapter_id>` / `--novel-run <manual|semi|auto>`）");
         return 2;
     }
 
@@ -158,6 +160,34 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         AppendCheckOut(gate.passed, gate.Describe());
         return gate.passed ? 0 : 1;
+    }
+
+    if (wantSb) {
+        // S23（`11` §2.2 的 V9）：叙事分镜 —— 读该章的 `scenes` → LLM 推演 V1–V8 →
+        // `NarrativeShot[]` 落 `shots` 表（K09/K22/K24 的受检对象由此而来）。
+        std::int64_t cid = std::atoll(Opt(args, "--novel-storyboard", "").c_str());
+        if (cid <= 0) {
+            cid = PickChapter(db);
+        }
+        if (cid <= 0) {
+            log::Error("novel-cli：库里没有可用章节");
+            AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        auto sb = agent::GenerateStoryboard(
+            db, MakeLlmCall(&cancel),
+            {.chapter_id = cid, .project_dir = projectDir, .extra_hint = Opt(args, "--hint")});
+        if (!sb) {
+            log::Error("novel-cli：分镜产出失败 [{}] {}", sb.error().code, sb.error().message);
+            AppendCheckOut(false, sb.error().message);
+            return 1;
+        }
+        log::Info("novel-cli：{}", sb->Describe());
+        for (const std::string& w : sb->warnings) {
+            log::Warn("  {}", w);
+        }
+        AppendCheckOut(true, sb->Describe());
+        return 0;
     }
 
     if (wantGen) {

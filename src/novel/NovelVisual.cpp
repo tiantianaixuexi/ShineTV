@@ -409,6 +409,41 @@ std::expected<RowId, DbError> NovelVisual::UpsertStyle(std::string_view name,
 
 std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
     if (row.scene_id <= 0) return std::unexpected(VErr("shot 缺 scene_id"));
+    // S23：`row.id > 0` → **更新那一镜**。原先这里只有 INSERT ⇒ 名字叫 `Upsert` 却会插重复行
+    // （`NovelStoryboard` 的第二遍落库就撞上了）。
+    if (row.id > 0) {
+        auto up = db_->Prepare(
+            "UPDATE shots SET scene_id=?1,ord=?2,duration_note=?3,camera_id=?4,character_ids_json=?5,"
+            "action=?6,expression=?7,prop_ids_json=?8,lighting_id=?9,composition_id=?10,dialogue=?11,"
+            "narration=?12,sfx=?13,mood=?14,prompt_text=?15,negative_text=?16,reference_json=?17,"
+            "start_state_json=?18,end_state_json=?19,timeline_json=?20,canon_status=?21 WHERE id=?22");
+        if (!up) return std::unexpected(up.error());
+        (void)up->BindInt(1, row.scene_id);
+        (void)up->BindInt(2, row.ord);
+        (void)up->BindText(3, row.duration_note);
+        (void)up->BindInt(4, row.camera_id);
+        (void)up->BindText(5, row.character_ids_json.empty() ? "[]" : row.character_ids_json);
+        (void)up->BindText(6, row.action);
+        (void)up->BindText(7, row.expression);
+        (void)up->BindText(8, row.prop_ids_json.empty() ? "[]" : row.prop_ids_json);
+        (void)up->BindInt(9, row.lighting_id);
+        (void)up->BindInt(10, row.composition_id);
+        (void)up->BindText(11, row.dialogue);
+        (void)up->BindText(12, row.narration);
+        (void)up->BindText(13, row.sfx);
+        (void)up->BindText(14, row.mood);
+        (void)up->BindText(15, row.prompt_text);
+        (void)up->BindText(16, row.negative_text.empty() ? std::string{kDefaultNegative}
+                                                         : row.negative_text);
+        (void)up->BindText(17, row.reference_json.empty() ? "{}" : row.reference_json);
+        (void)up->BindText(18, row.start_state_json.empty() ? "{}" : row.start_state_json);
+        (void)up->BindText(19, row.end_state_json.empty() ? "{}" : row.end_state_json);
+        (void)up->BindText(20, row.timeline_json.empty() ? "{}" : row.timeline_json);
+        (void)up->BindText(21, row.canon_status);
+        (void)up->BindInt(22, row.id);
+        if (auto s = up->Step(); !s) return std::unexpected(s.error());
+        return row.id;
+    }
     auto st = db_->Prepare(
         "INSERT INTO shots(scene_id,ord,duration_note,camera_id,character_ids_json,action,"
         "expression,prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,"

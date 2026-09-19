@@ -38,6 +38,7 @@
 #include "novel/NovelImageGen.h"
 #include "novel/NovelImageStore.h"
 #include "novel/NovelAssetPipeline.h"
+#include "agent/NovelStoryboard.h"
 #include "novel/NovelChecks.h"
 #include "novel/NovelInit.h"
 #include "novel/NovelCommit.h"
@@ -269,29 +270,33 @@ bool Init() {
         const bool checksOk = ::shine::novelcore::RunChecksSelfCheck() == 0;
         // S21（`10` §2.3）：初始化链门禁 N1–N14（"可开写"的判据，差距 10-3）
         const bool initOk = ::shine::novelcore::RunInitSelfCheck();
+        // S23（`11` §2.2 的 V9）：叙事分镜产出（`NarrativeShot[]` → `shots` 表）
+        const bool storyboardOk = ::shine::agent::RunStoryboardSelfCheck();
         if (const char* p = std::getenv("SHINE_NOVEL_CHECK_OUT"); p && *p) {
             FILE* f = std::fopen(p, "ab");
             if (f) {
                 const std::string line = fmt::format(
-                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\nasset:{}\ncommit:{}\nrunloop:{}\nchecks:{}\ninit:{}\n",
+                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\nasset:{}\ncommit:{}\nrunloop:{}\nchecks:{}\ninit:{}\nstoryboard:{}\n",
                     chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
                     visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
                     jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
                     imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail", commitOk ? "ok" : "fail",
-                    runLoopOk ? "ok" : "fail", checksOk ? "ok" : "fail", initOk ? "ok" : "fail");
+                    runLoopOk ? "ok" : "fail", checksOk ? "ok" : "fail", initOk ? "ok" : "fail",
+                    storyboardOk ? "ok" : "fail");
                 std::fwrite(line.data(), 1, line.size(), f);
                 std::fclose(f);
             }
         }
         log::Info(
-            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={} asset={} commit={} runloop={} checks={} init={}",
+            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={} asset={} commit={} runloop={} checks={} init={} storyboard={}",
             schemaOk ? "ok" : "fail", graphOk ? "ok" : "fail", ctxOk ? "ok" : "fail",
             toolsOk ? "ok" : "fail", dirOk ? "ok" : "fail", mvpOk ? "ok" : "fail",
             chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
             visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
             jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
             imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail", commitOk ? "ok" : "fail",
-            runLoopOk ? "ok" : "fail", checksOk ? "ok" : "fail", initOk ? "ok" : "fail");
+            runLoopOk ? "ok" : "fail", checksOk ? "ok" : "fail", initOk ? "ok" : "fail",
+            storyboardOk ? "ok" : "fail");
         g_selfExitRequested = true;
     }
     // P7.1 自检：SHINE_MCP_CHECK=1 跑 MCP 注册表验收后自动退出（无网络）

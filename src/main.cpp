@@ -131,7 +131,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     // 与 UI 走**同一份** `NovelPipeline`（同一份 LLM 回调与前置判定）。
     // ⚠️ **子命令必须登记在这张表里**：漏一个的后果不是"报错"，而是**照常进 GUI 建窗口**
     // —— 表现为"命令卡住不退出"（S21 就漏了 `--novel-init`，实测踩到）。
-    for (const wchar_t* sub : {L"--novel-init", L"--novel-generate", L"--novel-run"}) {
+    for (const wchar_t* sub : {L"--novel-init", L"--novel-storyboard", L"--novel-generate",
+                              L"--novel-run"}) {
         if (lpCmdLine != nullptr && wcsstr(lpCmdLine, sub) != nullptr) {
             return shine::app::novel::RunNovelCli(lpCmdLine);
         }
