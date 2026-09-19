@@ -1,7 +1,7 @@
 # ShineTV Studio — 进度表（合并后 2026-09-19）
 
 > 唯一进度入口。状态：⬜ 未开始 ｜ 🟡 进行中 ｜ ✅ 通过 ｜ ⛔ 阻塞 ｜ ⏸ 搁置。
-> **当前**：`main` = land + P5.7 + P6.1–P6.4 代码 + P8 关键项 + 小说系统 S9-auto-run；自检 **18 项全 ok**。
+> **当前**：`main` = land + P5.7 + P6.1–P6.4 代码 + P8 关键项 + 小说系统 S9-auto-run + **S10 K01–K29 全量校验**；自检 **19 项全 ok**。
 
 ---
 
@@ -22,7 +22,7 @@
 **现在做哪个**
 
 1. **真机 SD 全流程**：Comfy 在线 `:8188`；SD1.5 checkpoint 下载中 → 完成后跑 `runtime/sd-e2e` 分镜出图（P5.7 / P6.3）
-2. **小说系统**：S 序列 16 个**已全完成**（见 §0.1）；后续 = `09` 卷留后续项（09-7/09-8 模型路由与交叉复核、09-11 限流、09-12 全书预算）+ `06` 的 K01–K29 全量校验 + `NovelView` 的「连跑」UI 入口
+2. **小说系统**：S 序列 16 个**已全完成**（见 §0.1）+ **S10 K01–K29 全量校验**（见 §0.2，`auto` 的唯一阻塞项已消）；后续 = `09` 卷留后续项（09-7/09-8 模型路由与交叉复核、09-11 限流、09-12 全书预算）+ 把 `ValidationReport` 接进 `NovelDirector` 的提交路径 + `NovelView` 的「连跑」UI 入口
 3. **小说 Agent 连写**：`novels/mcp-bridge`《灯语回声》2 章（MCP 工具环，trace `agent/mcp-tool-loop.jsonl`）；P10.4 Garnet cache + LLM Key 待测
 4. （可选）G AVIF
 
@@ -60,8 +60,9 @@
 > 16 个 S 已全完成，下面是「S 序列外」的收口项；同样一分支一提交。
 
 - [x] **S9-ui** `NovelView` 无人值守 UI 入口（S9 只有代码 API + 自检，无法真跑）— `s9-runloop-ui`｜「小说」页新增「无人值守（S9）」段（运行模式 `manual`/`semi`/`auto` + 连跑章数上限 + 检查点周期 + 自动建下一章 + 「连跑」/「停止连跑」+ 状态与停止报告路径）；worker 调 `NovelRunLoop::Run`、进度与结果 `PostToUi` 回 UI；顺带加截图开关 `SHINE_NOVEL_OPEN=<书名>` 与 `SHINE_SIDE_VIEW/WINDOW=novel`；截图验收通过、**18 项自检无回归**
+- [x] **S10** `06` §2.3 的 **K01–K29 全量机器校验**（`auto` 的唯一阻塞项）— `s10-k-checks`｜新增 `src/novel/NovelChecks.*`（已登记 CMake）；**29/29 实现点**（目录 `CheckCatalog()`，`CheckSpec::availability` 分 `library`/`artifact`/`contract-input` 三类），四态结果 `pass`/`fail`/`missing`/`n/a`（`n/a` = 无受检对象，空真放行但**分开记账**；`low` 按 `07` §2.3 放行）；`ValidationReport::RanIds()` = `06` §2.7 M1 的 `checks_run`；与 `07` G2 对接（`CommitContext::validation` + `CommitGateReport::g2_from_checks`）；`ProbeAutoPrecondition` 的 `verifiers_complete` 改由 `VerifiersComplete()` 判定（**不再恒 false**）；`sha1` 实现在本模块（`04` §2.5，FIPS 向量自检）；自检项 18 → **19**（`checks`）、**19 项全 ok**、ExitCode=0
 
-**待办（未做）**：`06` 的 **K01–K29 全量校验** —— `auto` 的唯一阻塞项（`ProbeAutoPrecondition` 的 `verifiers_complete` 恒 false）。
+**待办（未做）**：① 把 `ValidationReport` 接进 `NovelDirector` 的提交路径（目前只有 API + 自检驱动，`NovelCommit` 的 G2 仍走旧的 `machine_checks_pass` 退回口径）；② K09 的 `shots` 起止状态列（`12` §1.4 缺口）与 `Beat[]`/`PromptArtifact` 的承载表 —— 这三组目前是 `contract-input`，传空即 `n/a`。
 
 **已知布局问题（既有，非本次引入）**：`小说` dock 面板偏矮，「生成本章」与「S9 连跑」段在默认 1600×900 窗口下会被裁掉（该 dock 窗口是 `NoScrollbar|NoScrollWithMouse`）→ 需手动拖大面板，或后续给该页加内部滚动。
 

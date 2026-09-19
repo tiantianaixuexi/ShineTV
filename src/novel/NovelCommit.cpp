@@ -1,6 +1,7 @@
 #include "novel/NovelCommit.h"
 
 #include "core/Log.h"
+#include "novel/NovelChecks.h"
 #include "novel/NovelGraph.h"
 #include "util/Encoding.h"
 #include "util/File.h"
@@ -297,6 +298,19 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         return out;
     }
 
+    // G2（`06` §2.3）：给了 K01–K29 全量报告就以它为准，并把「非 low 的失败」并入 issue 账
+    // （这样 G5 与拒绝原因都能看到具体是哪条 K 没通过）
+    out.gates.g2_from_checks = ctx.validation != nullptr;
+    if (ctx.validation != nullptr) {
+        for (const CheckResult& cr : ctx.validation->checks) {
+            if (CheckPassed(cr)) {
+                continue;
+            }
+            out.gates.issues.push_back({fmt::format("{} {}", cr.check_id, cr.name), cr.severity,
+                                        cr.detail});
+        }
+    }
+
     const auto hasHigh = [&out]() {
         for (const CommitIssue& issue : out.gates.issues) {
             if (issue.severity == "high") {
@@ -310,7 +324,9 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
     out.gates.g4_diff_valid = !hasHigh() && (diff.HasAnyDelta() || diff.no_change_declared);
     // G1 / G2 / G5
     out.gates.g1_review_pass = ctx.review_pass;
-    out.gates.g2_checks_pass = ctx.machine_checks_pass && !hasHigh();
+    out.gates.g2_checks_pass = ctx.validation != nullptr
+                                   ? ctx.validation->Ok()
+                                   : (ctx.machine_checks_pass && !hasHigh());
     out.gates.g5_no_high_issue = !hasHigh();
 
     // 涉及实体（用于提交前快照）
