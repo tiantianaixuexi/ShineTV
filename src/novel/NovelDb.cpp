@@ -754,6 +754,23 @@ std::expected<void, DbError> NovelDb::ExecAll(std::string_view sql) {
     return db_.Exec(sql);
 }
 
+std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database& db) {
+    // 与 `Migrate()` 的**表 DDL 段**共用同一批常量 —— 别再各抄一份（本函数就是为此而存在）
+    constexpr std::string_view kParts[] = {kSchemaV3, kSchemaV4Visual, kSchemaV5Agents, kSchemaV6ImageGen,
+                                          kSchemaV7VisualArtifacts};
+    for (const std::string_view sql : kParts) {
+        if (auto r = db.Exec(sql); !r) {
+            return r;
+        }
+    }
+    // 字段门禁三表（S2b）的唯一来源
+    return NovelFields::EnsureSchema(db);
+}
+
+std::expected<void, DbError> NovelDb::EnsureAgentSchema(db::sqlite::Database& db) {
+    return db.Exec(kSchemaV5Agents);
+}
+
 std::expected<void, DbError> NovelDb::Open(const std::filesystem::path& dbPath) {
     Close();
     if (dbPath.empty()) {

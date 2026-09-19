@@ -499,44 +499,7 @@ bool RunImageQueueSelfCheck() {
         log::Error("P9 队列自检：内存库打开失败");
         return false;
     }
-    if (auto r = mem.Exec(R"SQL(
-CREATE TABLE IF NOT EXISTS generated_images(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_id TEXT NOT NULL DEFAULT '',
-  backend TEXT NOT NULL DEFAULT '',
-  model TEXT NOT NULL DEFAULT '',
-  prompt TEXT NOT NULL DEFAULT '',
-  negative TEXT NOT NULL DEFAULT '',
-  width INTEGER NOT NULL DEFAULT 0,
-  height INTEGER NOT NULL DEFAULT 0,
-  steps INTEGER NOT NULL DEFAULT 0,
-  rel_path TEXT NOT NULL DEFAULT '',
-  source_kind TEXT NOT NULL DEFAULT '',
-  source_id INTEGER NOT NULL DEFAULT 0,
-  chapter_id INTEGER NOT NULL DEFAULT 0,
-  scene_id INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'PROPOSED',
-  error TEXT NOT NULL DEFAULT '',
-  raw_meta TEXT NOT NULL DEFAULT '{}',
-  checklist_json TEXT NOT NULL DEFAULT '{}',
-  created INTEGER NOT NULL DEFAULT 0,
-  updated INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS visual_canon_logs(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_kind TEXT NOT NULL,
-  target_id INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'PROPOSED',
-  note TEXT NOT NULL DEFAULT '',
-  created INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS audit_logs(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  actor TEXT NOT NULL DEFAULT '',
-  action TEXT NOT NULL DEFAULT '',
-  target_kind TEXT NOT NULL DEFAULT '',
-  target_id INTEGER NOT NULL DEFAULT 0,
-  detail TEXT NOT NULL DEFAULT '',
-  created INTEGER NOT NULL DEFAULT 0);
-)SQL"); !r) {
+    if (auto r = ::shine::novelcore::NovelDb::ApplyCanonicalSchema(mem); !r) {
         log::Error("P9 队列自检：建表失败 {}", r.error().message);
         return false;
     }

@@ -548,20 +548,10 @@ novelcore::NovelGraph& AgentKit::Graph() const {
 }
 
 std::expected<void, DbError> AgentKit::EnsureSchemaAndSeed() {
-    if (auto r = db_->Exec(R"SQL(
-CREATE TABLE IF NOT EXISTS agent_defs(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent_id TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL DEFAULT '',
-  role_tags TEXT NOT NULL DEFAULT '',
-  system_prompt TEXT NOT NULL DEFAULT '',
-  tools_json TEXT NOT NULL DEFAULT '[]',
-  output_hint TEXT NOT NULL DEFAULT '',
-  enabled INTEGER NOT NULL DEFAULT 1,
-  is_builtin INTEGER NOT NULL DEFAULT 1,
-  version INTEGER NOT NULL DEFAULT 1,
-  updated INTEGER NOT NULL DEFAULT 0);
-)SQL"); !r) {
+    // `agent_defs` 的 DDL **只保留在 NovelDb.cpp 一处**；这里走它的窄入口。
+    // （本函数在每次 MCP 工具分发前都会调一次 → 不能跑整套建表，所以用 EnsureAgentSchema 而不是
+    //  ApplyCanonicalSchema。）
+    if (auto r = novelcore::NovelDb::EnsureAgentSchema(*db_); !r) {
         return r;
     }
     // 字段表（field_defs / entity_fields / field_aliases）的 DDL **不在上面** —— 规格 `08` §2.3。
@@ -1267,13 +1257,7 @@ bool RunMultiAgentSelfCheck() {
         return fail("打开内存库失败");
     }
     // 最小 schema（图谱 + 字段 + agent）
-    if (auto r = mem.Exec(R"SQL(
-CREATE TABLE IF NOT EXISTS entities(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,name TEXT,summary TEXT,status TEXT,meta_json TEXT,created_chapter INTEGER,updated INTEGER);
-CREATE TABLE IF NOT EXISTS relations(id INTEGER PRIMARY KEY AUTOINCREMENT,from_id INTEGER,to_id INTEGER,rel_type TEXT,strength INTEGER,from_chapter INTEGER,to_chapter INTEGER,reason TEXT,status TEXT);
-CREATE TABLE IF NOT EXISTS chapters(id INTEGER PRIMARY KEY AUTOINCREMENT,volume_id INTEGER,ord INTEGER,title TEXT,status TEXT,summary TEXT,body TEXT,pov_entity_id INTEGER,words INTEGER,updated INTEGER);
-CREATE TABLE IF NOT EXISTS canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
-CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,target_kind TEXT,target_id INTEGER,detail TEXT,created INTEGER);
-)SQL"); !r) {
+    if (auto r = ::shine::novelcore::NovelDb::ApplyCanonicalSchema(mem); !r) {
         return fail(fmt::format("建最小表失败 {}", r.error().message));
     }
 

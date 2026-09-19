@@ -1,4 +1,4 @@
-﻿#include "novel/NovelGraph.h"
+#include "novel/NovelGraph.h"
 
 #include "core/Log.h"
 #include "util/Reflect.h" // 快照载荷（EntitySnapshot）走反射序列化
@@ -20,40 +20,6 @@ namespace {
 [[nodiscard]] DbError Err(std::string_view msg) { return DbError{0, std::string{msg}}; }
 
 // 自检用最小 schema（列名与 v3 对齐）
-constexpr std::string_view kMinSchema = R"SQL(
-CREATE TABLE IF NOT EXISTS entities(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,name TEXT NOT NULL,summary TEXT,status TEXT,meta_json TEXT,created_chapter INTEGER,updated INTEGER);
-CREATE TABLE IF NOT EXISTS relations(id INTEGER PRIMARY KEY AUTOINCREMENT,from_id INTEGER,to_id INTEGER,rel_type TEXT,strength INTEGER,from_chapter INTEGER,to_chapter INTEGER,reason TEXT,status TEXT);
-CREATE TABLE IF NOT EXISTS entity_personas(entity_id INTEGER PRIMARY KEY,age TEXT,appearance TEXT,personality TEXT,background TEXT,"values" TEXT,desire TEXT,goal TEXT,fear TEXT,weakness TEXT,strength TEXT,ability_note TEXT,knowledge_note TEXT,memory_note TEXT);
-CREATE TABLE IF NOT EXISTS character_status(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,chapter_id INTEGER,location_id INTEGER,body_state TEXT,mind_state TEXT,emotion_json TEXT,goal TEXT,relation_note TEXT,resource_note TEXT,secret_note TEXT,updated INTEGER);
-CREATE TABLE IF NOT EXISTS chapters(id INTEGER PRIMARY KEY AUTOINCREMENT,volume_id INTEGER,ord INTEGER,title TEXT,status TEXT,summary TEXT,body TEXT,pov_entity_id INTEGER,words INTEGER,updated INTEGER);
-CREATE TABLE IF NOT EXISTS volumes(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT,ord INTEGER,summary TEXT);
-CREATE TABLE IF NOT EXISTS scenes(id INTEGER PRIMARY KEY AUTOINCREMENT,chapter_id INTEGER,ord INTEGER,title TEXT,location_id INTEGER,time_label TEXT,pov_entity_id INTEGER,conflict_id INTEGER,goal TEXT,action TEXT,conflict TEXT,result TEXT,emotion TEXT,info_reveal TEXT,hook TEXT,body TEXT);
-CREATE TABLE IF NOT EXISTS event_details(entity_id INTEGER PRIMARY KEY,time_label TEXT,location_id INTEGER,cause_note TEXT,result_note TEXT);
-CREATE TABLE IF NOT EXISTS causal_links(id INTEGER PRIMARY KEY AUTOINCREMENT,cause_event_id INTEGER,effect_event_id INTEGER,link_type TEXT,note TEXT,ord INTEGER);
-CREATE TABLE IF NOT EXISTS foreshadowings(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT,content TEXT,status TEXT,setup_ch INTEGER,payoff_ch INTEGER,importance INTEGER,truth TEXT,entity_ids_json TEXT);
-CREATE TABLE IF NOT EXISTS secrets(id INTEGER PRIMARY KEY AUTOINCREMENT,content TEXT,truth TEXT,reveal_ch INTEGER,reveal_condition TEXT,entity_id INTEGER,scope TEXT);
-CREATE TABLE IF NOT EXISTS secret_knowledge(id INTEGER PRIMARY KEY AUTOINCREMENT,secret_id INTEGER,entity_id INTEGER,knows INTEGER,chapter_known INTEGER);
-CREATE TABLE IF NOT EXISTS entity_ownerships(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER,item_id INTEGER,from_chapter INTEGER,to_chapter INTEGER,how TEXT,note TEXT);
-CREATE TABLE IF NOT EXISTS character_knowledge(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,fact_kind TEXT,fact_id INTEGER,fact_text TEXT,knows INTEGER,chapter_known INTEGER);
-CREATE TABLE IF NOT EXISTS event_participants(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id INTEGER,entity_id INTEGER,role TEXT);
-CREATE TABLE IF NOT EXISTS scene_cast(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,entity_id INTEGER,role TEXT);
-CREATE TABLE IF NOT EXISTS scene_foreshadows(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,foreshadowing_id INTEGER,action TEXT);
-CREATE TABLE IF NOT EXISTS plots(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,title TEXT,status TEXT,intro_ch INTEGER,target_ch INTEGER,note TEXT);
-CREATE TABLE IF NOT EXISTS plot_beats(id INTEGER PRIMARY KEY AUTOINCREMENT,plot_id INTEGER,chapter_id INTEGER,ord INTEGER,beat_type TEXT,title TEXT,summary TEXT,cast_json TEXT);
-CREATE TABLE IF NOT EXISTS mysteries(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,question TEXT,answer TEXT,status TEXT,ask_ch INTEGER,answer_ch INTEGER,importance INTEGER);
-CREATE TABLE IF NOT EXISTS mystery_beats(id INTEGER PRIMARY KEY AUTOINCREMENT,mystery_id INTEGER,beat_type TEXT,chapter_id INTEGER,content TEXT,target_entity_id INTEGER,ord INTEGER);
-CREATE TABLE IF NOT EXISTS character_arcs(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER NOT NULL,ord INTEGER NOT NULL DEFAULT 0,stage TEXT NOT NULL DEFAULT '',trigger_event_id INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS dialogue_styles(entity_id INTEGER PRIMARY KEY,sentence_len TEXT NOT NULL DEFAULT '',vocabulary TEXT NOT NULL DEFAULT '',catchphrase TEXT NOT NULL DEFAULT '',taboo_words TEXT NOT NULL DEFAULT '',habit TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS world_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS themes(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,statement TEXT NOT NULL DEFAULT '',linked_plot_id INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS entity_versions(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER NOT NULL,ver INTEGER NOT NULL DEFAULT 1,snapshot_json TEXT NOT NULL DEFAULT '{}',note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS location_distances(id INTEGER PRIMARY KEY AUTOINCREMENT,from_id INTEGER NOT NULL,to_id INTEGER NOT NULL,distance_km REAL NOT NULL DEFAULT 0,travel_note TEXT NOT NULL DEFAULT '',days_estimate REAL NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS writing_style(id INTEGER PRIMARY KEY CHECK(id=1),pov_mode TEXT NOT NULL DEFAULT 'third_limited',sentence_len TEXT NOT NULL DEFAULT 'medium',density TEXT NOT NULL DEFAULT '',dialogue_ratio REAL NOT NULL DEFAULT 0.3,action_ratio REAL NOT NULL DEFAULT 0.3,thought_ratio REAL NOT NULL DEFAULT 0.2,env_ratio REAL NOT NULL DEFAULT 0.2,humor INTEGER NOT NULL DEFAULT 0,serious INTEGER NOT NULL DEFAULT 50,pacing TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS author_rules(id INTEGER PRIMARY KEY AUTOINCREMENT,rule TEXT NOT NULL,severity TEXT NOT NULL DEFAULT 'warn',note TEXT NOT NULL DEFAULT '');
-CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT,action TEXT,target_kind TEXT,target_id INTEGER,detail TEXT,created INTEGER);
-CREATE TABLE IF NOT EXISTS canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
-)SQL";
-
 } // namespace
 
 EntityRow NovelGraph::ReadEntity(db::sqlite::Statement& st) const {
@@ -1890,7 +1856,7 @@ bool NovelGraph::RunGraphSelfCheck() {
     // 为避免重复巨型 SQL：打开一个临时文件库走 Open()
     NovelGraph g(mem);
     // 手工建本自检需要的最小表集（与 v3 列名一致）
-    if (auto r = mem.Exec(kMinSchema); !r) {
+    if (auto r = ::shine::novelcore::NovelDb::ApplyCanonicalSchema(mem); !r) {
         log::Error("NovelGraph 自检：建表失败 {}", r.error().message);
         return false;
     }

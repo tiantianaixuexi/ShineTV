@@ -717,19 +717,7 @@ bool NovelVisual::RunSelfCheck() {
         return false;
     }
     // 最小表
-    if (auto r = mem.Exec(R"SQL(
-CREATE TABLE IF NOT EXISTS visual_assets(id INTEGER PRIMARY KEY AUTOINCREMENT,entity_id INTEGER,kind TEXT,name TEXT,base_desc TEXT,materials_colors TEXT,permanent_tags_json TEXT,sheet_rel_path TEXT,canon_status TEXT,status TEXT NOT NULL DEFAULT 'PENDING',note TEXT);
-CREATE TABLE IF NOT EXISTS visual_artifacts(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER NOT NULL DEFAULT 0,layer TEXT NOT NULL DEFAULT '',chapter_scope INTEGER NOT NULL DEFAULT 0,chapter_to INTEGER NOT NULL DEFAULT 0,rel_path TEXT NOT NULL DEFAULT '',parent_artifact_id INTEGER NOT NULL DEFAULT 0,prompt_artifact_id INTEGER NOT NULL DEFAULT 0,job_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'PENDING',degraded INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '',created INTEGER NOT NULL DEFAULT 0,updated INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS visual_states(id INTEGER PRIMARY KEY AUTOINCREMENT,asset_id INTEGER,stage_key TEXT,stage_label TEXT,ord INTEGER,from_chapter INTEGER,to_chapter INTEGER,appearance TEXT,materials_colors TEXT,clothing_asset_id INTEGER,item_asset_ids_json TEXT,effects TEXT,environment_hint TEXT,canon_status TEXT,note TEXT);
-CREATE TABLE IF NOT EXISTS scene_visuals(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,env_desc TEXT,time_of_day TEXT,weather TEXT,mood TEXT,canon_status TEXT);
-CREATE TABLE IF NOT EXISTS camera_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,shot_size TEXT,angle TEXT,lens_note TEXT,movement TEXT,text TEXT,note TEXT);
-CREATE TABLE IF NOT EXISTS composition_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,rule TEXT,framing TEXT,text TEXT,note TEXT);
-CREATE TABLE IF NOT EXISTS lighting_defs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,time_hint TEXT,key_light TEXT,mood TEXT,text TEXT,note TEXT);
-CREATE TABLE IF NOT EXISTS visual_styles(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT,payload_json TEXT,text TEXT,note TEXT);
-CREATE TABLE IF NOT EXISTS prompt_layers(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_kind TEXT,owner_id INTEGER,layer TEXT,text TEXT,model_hint TEXT,version INTEGER,canon_status TEXT);
-CREATE TABLE IF NOT EXISTS shots(id INTEGER PRIMARY KEY AUTOINCREMENT,scene_id INTEGER,ord INTEGER,duration_note TEXT,camera_id INTEGER,character_ids_json TEXT,action TEXT,expression TEXT,prop_ids_json TEXT,lighting_id INTEGER,composition_id INTEGER,dialogue TEXT,narration TEXT,sfx TEXT,mood TEXT,prompt_text TEXT,negative_text TEXT,reference_json TEXT,canon_status TEXT);
-CREATE TABLE IF NOT EXISTS visual_canon_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,target_kind TEXT,target_id INTEGER,status TEXT,note TEXT,created INTEGER);
-)SQL"); !r) {
+    if (auto r = ::shine::novelcore::NovelDb::ApplyCanonicalSchema(mem); !r) {
         log::Error("Visual 自检：建表失败 {}", r.error().message);
         return false;
     }

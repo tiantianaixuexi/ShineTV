@@ -27,6 +27,18 @@ public:
 
     [[nodiscard]] int schemaVersion() const noexcept { return schemaVersion_; }
 
+    // 把**规范 schema**（v3–v8 的表/索引）建到**任意**库上 —— **DDL 的唯一来源**就是本文件里的
+    // `kSchemaV*` 常量 + `NovelFields::EnsureSchema`。
+    // 用途：各处自检夹具（内存库）。原先 9 个夹具各自手抄一份建表 SQL（合计 121 条 CREATE TABLE），
+    // 已经抄漏过一次：夹具里的 `writing_style` 只有 4 列（规范 12 列）、`entity_personas` 的
+    // 关键字列 `values` 也在两处抄法不同。幂等（全部 IF NOT EXISTS）；**不做**版本迁移与 ALTER
+    // （那是 `Migrate()` 的事）。
+    [[nodiscard]] static std::expected<void, DbError> ApplyCanonicalSchema(db::sqlite::Database& db);
+
+    // 只建 **agent 相关表**（`agent_defs`）：给 `AgentKit::EnsureSchemaAndSeed()` 这种**高频**入口用
+    // （它在每次 MCP 工具分发前都会调一次，不能跑整套建表）。DDL 同样以 NovelDb.cpp 的常量为唯一来源。
+    [[nodiscard]] static std::expected<void, DbError> EnsureAgentSchema(db::sqlite::Database& db);
+
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();
 
