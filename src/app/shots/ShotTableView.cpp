@@ -524,7 +524,7 @@ void MaybeRunRunnerSelfTest() {
             }
             return {util::PathToUtf8(source)};
         };
-        job.build = [](const std::map<std::string, std::string>& uploadedNames, std::string& error) -> std::string {
+        job.build = [](const std::map<std::string, std::string>& uploadedNames, std::string& error) -> VideoBuildResult {
             if (uploadedNames.empty()) {
                 error = "没有拿到上传映射";
                 return {};
@@ -533,11 +533,12 @@ void MaybeRunRunnerSelfTest() {
             SelfTestNote(std::string(uploaded != original ? "PASS" : "FAIL") + " 上传改名：" + original + " → " + uploaded);
             if (std::getenv("SHINE_VIDEO_SELFTEST_BAD") != nullptr) {
                 // 故意引用一个不存在的节点类 → 期望 /prompt 400 → 中文错误
-                return std::string("{\"1\":{\"class_type\":\"ShineTVNoSuchNode\",\"inputs\":{}}}");
+                return VideoBuildResult{.apiJson = "{\"1\":{\"class_type\":\"ShineTVNoSuchNode\",\"inputs\":{}}}"};
             }
-            return std::string("{\"1\":{\"class_type\":\"LoadImage\",\"inputs\":{\"image\":\"") + uploaded +
-                   "\"}},\"2\":{\"class_type\":\"SaveImage\",\"inputs\":{\"images\":[\"1\",0],"
-                   "\"filename_prefix\":\"shinetv_p55\"}}}";
+            return VideoBuildResult{.apiJson =
+                                        std::string("{\"1\":{\"class_type\":\"LoadImage\",\"inputs\":{\"image\":\"") + uploaded +
+                                        "\"}},\"2\":{\"class_type\":\"SaveImage\",\"inputs\":{\"images\":[\"1\",0],"
+                                        "\"filename_prefix\":\"shinetv_p55\"}}}"};
         };
         job.onFinish = [](const VideoTaskState& state) {
             const bool badMode = std::getenv("SHINE_VIDEO_SELFTEST_BAD") != nullptr;

@@ -17,6 +17,7 @@
 // 只把新名字写进**本次提交的工作副本**（`H3BuildOptions::uploadedNames`），**绝不改用户工程字段**。
 #include "comfy/ComfyTypes.h" // HistoryMedia / HistoryResult（私有实现用）
 #include "video/ApiGraphValidator.h"
+#include "video/GenerationLedger.h"
 #include "video/H3WorkflowBuilder.h"
 
 #include <cstddef>
@@ -56,10 +57,21 @@ struct VideoTaskState {
     std::size_t uploadDone = 0;
     std::size_t uploadTotal = 0;
     std::int64_t startedMs = 0;
+    // K28「降级必须可见」：本次任务编译期发生的降级（无参考图 / 缺 ControlNet / 尺寸对齐…）。
+    // 失败时**不清空**（降级原因正是排查线索），由 UI 汇总进章级报告。
+    std::vector<GenerationDegradation> degradations;
 
     [[nodiscard]] bool Busy() const noexcept {
         return phase != VideoTaskPhase::Idle && phase != VideoTaskPhase::Done && phase != VideoTaskPhase::Failed;
     }
+};
+
+// 编译阶段的产物：API JSON + **降级账**（K28）。
+// 为什么把降级随产物一起回传：编译发生在 worker，降级也在那时产生；只有随返回值出境，
+// 才能既不跨线程改状态、又不丢账（以前只有一个 bool，出了 `build` 就没了）。
+struct VideoBuildResult {
+    std::string apiJson;                          // 空 = 编译失败（此时看 error）
+    std::vector<GenerationDegradation> degradations;
 };
 
 // 一次要跑的任务：两个阶段各给一个"生产函数"（都跑在 **worker** 上）。
@@ -69,8 +81,8 @@ struct VideoJob {
     std::size_t shotIndex = static_cast<std::size_t>(-1);
     // ① 解析阶段：产出**要上传的本地文件绝对路径**（UTF-8）；失败写 error 并返回空
     std::function<std::vector<std::string>(std::string& error)> collectUploads;
-    // ② 编译阶段：拿到"原始文件名 → 上传后的文件名"映射，产出最终 API JSON；失败写 error
-    std::function<std::string(const std::map<std::string, std::string>& uploadedNames, std::string& error)> build;
+    // ② 编译阶段：拿到"原始文件名 → 上传后的文件名"映射，产出 API JSON + 降级账；失败写 error
+    std::function<VideoBuildResult(const std::map<std::string, std::string>& uploadedNames, std::string& error)> build;
     // 完成（Done/Failed）时在 **UI 线程**回调一次（UI 用它回填分镜字段）
     std::function<void(const VideoTaskState&)> onFinish;
 };
@@ -100,7 +112,8 @@ public:
     void Acknowledge();
 
     // 把一份 API JSON 对着**本机 `/object_info`** 校验（**UI 线程**；提交前必做，见 `.cpp` 里的说明）。
-    // 未连接 / object_info 还没加载 → 返回 `ok=true` 并在日志里写明"跳过校验"（不阻断离线自测）。
+    // S4：`/object_info` 还没拿到 → **`ok=false` + `blocked=true`（拒绝提交）**，不再"跳过校验"。
+    // 「没校验过」不等于「校验通过」—— 否则写错的输入名会被 ComfyUI 静默忽略，参考图悄悄丢掉。
     [[nodiscard]] static GraphCheckResult CheckAgainstComfyUI(std::string_view apiJson);
 
 private:

@@ -113,11 +113,20 @@ VideoTaskRunner& VideoTaskRunner::Instance() {
 }
 
 GraphCheckResult VideoTaskRunner::CheckAgainstComfyUI(std::string_view apiJson) {
+    // S4：`/object_info` 未就绪 = **校验根本没跑成**。旧行为返回 ok=true 只打一行日志（"假通过"），
+    // 于是没校验过的图照样提交 —— 而 ComfyUI 的 `/prompt` 只查必填缺失、**会静默忽略写错的输入名**
+    // （`execution.py::validate_inputs`，见 `ApiGraphValidator.h` 开头的教训）→ 参考图被悄悄丢掉。
+    // 所以现在：**一律阻止提交**，并给出可操作的中文原因。
     if (comfy::ComfySession::Instance().ObjectInfoNodeCount() <= 0) {
-        log::Warn("尚未拿到 /object_info：跳过图校验（连接 ComfyUI 后会自动带上）");
-        GraphCheckResult skipped;
-        skipped.ok = true;
-        return skipped;
+        GraphCheckResult blocked;
+        blocked.ok = false;
+        blocked.blocked = true;
+        blocked.issues.push_back(
+            {std::string{}, std::string{}, std::string{},
+             "尚未拿到本机 ComfyUI 的 /object_info：无法对账节点类名与输入名，已阻止提交。"
+             "请先在设置里确认 ComfyUI 地址可连，等节点清单加载完成后再提交。"});
+        log::Warn("提交被阻止：/object_info 未就绪（无法校验工作流，拒绝盲提交）");
+        return blocked;
     }
     return ValidateApiGraph(apiJson, &LookupNodeDef);
 }
@@ -211,26 +220,44 @@ bool VideoTaskRunner::Start(VideoJob job) {
             state_.phase = VideoTaskPhase::Compiling;
             state_.detail = "编译工作流（API JSON）…";
         });
-        std::string apiJson = build(uploadedNames, error);
-        if (!error.empty() || apiJson.empty()) {
+        VideoBuildResult built = build(uploadedNames, error);
+        if (!error.empty() || built.apiJson.empty()) {
             const std::string why = error.empty() ? std::string{"编译失败（内部错误）"} : error;
             async::PostToUi([this, why]() { Fail(why); });
             return;
         }
+        std::string apiJson = std::move(built.apiJson);
+        std::vector<GenerationDegradation> degradations = std::move(built.degradations);
 
         // ———— Submitting（回 UI 线程：**先对本机 /object_info 校验**，再调既有异步接口）————
-        async::PostToUi([this, apiJson = std::move(apiJson)]() {
+        async::PostToUi([this, apiJson = std::move(apiJson), degradations = std::move(degradations)]() {
             // 为什么必须校验：ComfyUI 的 /prompt 只查"必填缺失"，**写错的输入名会被静默忽略**
             // （`execution.py::validate_inputs`）→ 不校验就可能提交一个"能跑但结果不对"的图。
             // `FindNodeDef` 读的是 UI 线程独占的 object_info 缓存，所以校验必须在这里做。
-            const GraphCheckResult check = ValidateApiGraph(apiJson, &LookupNodeDef);
-            if (!check.ok) {
-                std::string text = "工作流未通过本机 /object_info 校验（共 " + FromInt(check.issues.size()) + " 处）：";
-                for (std::size_t i = 0; i < check.issues.size() && i < 5; ++i) {
-                    text += "\n· " + check.issues[i].message;
+            // S4：统一走 `CheckAgainstComfyUI`（未就绪 → blocked → 拒绝提交，不再"假通过"）。
+            // K28：降级账挂到 state 上（失败也不清），UI 据此汇总进章级报告。
+            if (!degradations.empty()) {
+                state_.degradations = degradations;
+                log::Warn("本次生成有 {} 条降级（K28 降级必须可见）：{}", degradations.size(),
+                          DegradationsToJson(degradations));
+                for (const GenerationDegradation& item : degradations) {
+                    log::Warn("  · {}", DegradationLine(item));
                 }
-                if (check.issues.size() > 5) {
-                    text += "\n· …还有 " + FromInt(check.issues.size() - 5) + " 处（见日志）";
+            }
+            const GraphCheckResult check = CheckAgainstComfyUI(apiJson);
+            if (!check.ok) {
+                std::string text;
+                if (check.blocked) {
+                    text = check.issues.empty() ? std::string{"未拿到 /object_info：已阻止提交"}
+                                                : check.issues.front().message;
+                } else {
+                    text = "工作流未通过本机 /object_info 校验（共 " + FromInt(check.issues.size()) + " 处）：";
+                    for (std::size_t i = 0; i < check.issues.size() && i < 5; ++i) {
+                        text += "\n· " + check.issues[i].message;
+                    }
+                    if (check.issues.size() > 5) {
+                        text += "\n· …还有 " + FromInt(check.issues.size() - 5) + " 处（见日志）";
+                    }
                 }
                 for (const GraphCheckIssue& issue : check.issues) {
                     log::Warn("图校验失败：节点 {} ({}) 输入「{}」：{}", issue.nodeId, issue.className, issue.inputName,
@@ -304,7 +331,7 @@ bool VideoTaskRunner::StartShot(const VideoProject& project, std::size_t shotInd
     // ② 编译：**用上传后的名字**编译（原始工程字段一个字都不改）
     const VideoProject projectCopy = project;
     job.build = [projectCopy, projectDir, mediaLibraryDir, shotIndex](
-                    const std::map<std::string, std::string>& uploadedNames, std::string& error) -> std::string {
+                    const std::map<std::string, std::string>& uploadedNames, std::string& error) -> VideoBuildResult {
         // 只编这一个分镜：其余分镜不可提交 → 编译器只会为它建链路
         VideoProject single;
         single.name = projectCopy.name;
@@ -330,7 +357,9 @@ bool VideoTaskRunner::StartShot(const VideoProject& project, std::size_t shotInd
         for (const H3BuildWarning& warning : built.warnings) {
             log::Warn("H3 编译告警：{}", warning.text);
         }
-        return built.apiJson;
+        // H3 侧的降级目前仍是**文本告警**（`H3BuildWarning`，含"等于纯文本出片"/"参考图截断"等），
+        // 尚未类型化 → 这里不伪造类型化降级账。分镜图路径（`SceneToImageBuilder`）已完整记账。
+        return VideoBuildResult{.apiJson = built.apiJson};
     };
     return Start(std::move(job));
 }
