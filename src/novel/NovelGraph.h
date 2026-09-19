@@ -106,6 +106,27 @@ public:
     [[nodiscard]] std::expected<std::vector<MysteryBeatRow>, DbError>
     ListMysteryBeats(RowId mysteryId) const;
 
+    // —— 初始化链 API 前置（S3-pre）：`10` §2.3 门禁的硬依赖，原先四张表零写入口 ——
+
+    // 角色弧光（character_arcs）：门禁要求「主角必须有一条 arc，stage 至少含起点与终点」
+    [[nodiscard]] std::expected<RowId, DbError> UpsertArc(const CharacterArcRow& row);
+    // entityId <= 0 → 全表；按 ord、id 升序
+    [[nodiscard]] std::expected<std::vector<CharacterArcRow>, DbError>
+    ListArcs(RowId entityId = 0) const;
+
+    // 角色级说话方式（dialogue_styles，一人一行）
+    [[nodiscard]] std::expected<RowId, DbError> UpsertDialogueStyle(const DialogueStyleRow& row);
+    [[nodiscard]] std::expected<DialogueStyleRow, DbError> GetDialogueStyle(RowId entityId) const;
+
+    // 世界级键值（world_meta）：`10` §2.3 N1 要写 `book_title`
+    [[nodiscard]] std::expected<void, DbError> SetWorldMeta(std::string_view key,
+                                                            std::string_view value);
+    [[nodiscard]] std::expected<std::string, DbError> GetWorldMeta(std::string_view key) const;
+
+    // 主题（themes）：`10` 初始化要写；`04` L4 已在读
+    [[nodiscard]] std::expected<RowId, DbError> UpsertTheme(const ThemeRow& row);
+    [[nodiscard]] std::expected<std::vector<ThemeRow>, DbError> ListThemes() const;
+
     // —— 持有 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertOwnership(const OwnershipRow& row);
     [[nodiscard]] std::expected<std::vector<OwnershipRow>, DbError>
