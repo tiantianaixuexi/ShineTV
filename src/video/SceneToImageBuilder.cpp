@@ -1,7 +1,9 @@
 #include "video/SceneToImageBuilder.h"
 
+#include "comfy/ComfySession.h" // S4 自检：提交闸门要看 /object_info 是否就绪
 #include "core/Log.h"
 #include "util/Encoding.h"
+#include "util/File.h"
 #include "util/Strings.h"
 #include "video/VideoTaskRunner.h"
 
@@ -10,8 +12,11 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <string_view>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 namespace shine::video {
 namespace {
@@ -146,9 +151,11 @@ SceneToImageResult BuildSceneToImageWorkflow(const SceneToImageOptions& options)
     out.height = height;
 
     if ((project.sceneWidth > 0 && project.sceneWidth != width) || (project.sceneHeight > 0 && project.sceneHeight != height)) {
-        out.warnings.push_back({static_cast<std::size_t>(-1),
-                                fmt::format("分镜图宽高已对齐到 {} 的倍数：{}x{} → {}x{}", kSceneSizeMultiple,
-                                            project.sceneWidth, project.sceneHeight, width, height)});
+        const std::string text = fmt::format("分镜图宽高已对齐到 {} 的倍数：{}x{} → {}x{}", kSceneSizeMultiple,
+                                            project.sceneWidth, project.sceneHeight, width, height);
+        out.warnings.push_back({kDegradeNoShot, text});
+        // K28：`Sanitize` 式纠正也算降级，必须留痕（否则"图为什么尺寸不对"永远查不到）
+        out.degradations.push_back({std::string{kDegradeSizeAligned}, text});
     }
 
     // 颜色图
@@ -158,11 +165,15 @@ SceneToImageResult BuildSceneToImageWorkflow(const SceneToImageOptions& options)
     }
     const bool hasColor = FileLooksPresent(colorRaw, mediaDir, options.dryRun);
     if (!colorRaw.empty() && !hasColor) {
-        out.warnings.push_back({static_cast<std::size_t>(-1), "颜色图不存在，已降级为纯文生图（EmptyLatentImage）"});
+        const std::string text = "颜色图不存在，已降级为纯文生图（EmptyLatentImage）";
+        out.warnings.push_back({kDegradeNoShot, text});
+        out.degradations.push_back({std::string{kDegradeNoReference}, text});
     }
     if (!hasColor) {
         out.degraded = true;
-        out.warnings.push_back({static_cast<std::size_t>(-1), "未提供颜色/参考图：使用 EmptyLatentImage，denoise 强制 1.0"});
+        const std::string text = "未提供颜色/参考图：使用 EmptyLatentImage，denoise 强制 1.0";
+        out.warnings.push_back({kDegradeNoShot, text});
+        out.degradations.push_back({std::string{kDegradeNoReference}, text});
     }
 
     // ControlNet（可选，串接）
@@ -171,13 +182,19 @@ SceneToImageResult BuildSceneToImageWorkflow(const SceneToImageOptions& options)
     const bool hasDepthImg = FileLooksPresent(project.sceneControlDepthPath, mediaDir, options.dryRun);
     const bool hasNormalImg = FileLooksPresent(project.sceneControlNormalPath, mediaDir, options.dryRun);
     if ((hasDepthCfg || hasNormalCfg) && !(hasDepthImg || hasNormalImg)) {
-        out.warnings.push_back({static_cast<std::size_t>(-1), "配置了 ControlNet 但没有可用控制图：已降级为无 ControlNet"});
+        const std::string text = "配置了 ControlNet 但没有可用控制图：已降级为无 ControlNet";
+        out.warnings.push_back({kDegradeNoShot, text});
+        out.degradations.push_back({std::string{kDegradeNoControlNet}, text});
         out.degraded = true;
     }
     const bool useDepth = hasDepthCfg && hasDepthImg;
     const bool useNormal = hasNormalCfg && hasNormalImg;
     if ((hasDepthCfg || hasNormalCfg) && !(useDepth || useNormal)) {
         out.degraded = true;
+        if (!HasDegradation(out.degradations, kDegradeNoControlNet)) {
+            const std::string text = "ControlNet 配置存在但控制图不可用：本次未串接 ControlNet";
+            out.degradations.push_back({std::string{kDegradeNoControlNet}, text});
+        }
     }
 
     double denoise = project.sceneDenoise;
@@ -386,15 +403,15 @@ bool StartSceneImage(const VideoProject& project, std::size_t shotIndex,
         }
         return CollectSceneUploads(shotCopy, projectCopy, mediaLibraryDir);
     };
-    job.build = [shotCopy, projectCopy, mediaLibraryDir](const std::map<std::string, std::string>& uploadedNames,
-                                                         std::string& error) -> std::string {
+    job.build = [shotCopy, projectCopy, mediaLibraryDir, shotIndex](
+                    const std::map<std::string, std::string>& uploadedNames, std::string& error) -> VideoBuildResult {
         SceneToImageOptions opt;
         opt.shot = shotCopy;
         opt.project = projectCopy;
         opt.mediaLibraryDir = mediaLibraryDir;
         opt.uploadedNames = uploadedNames;
         opt.dryRun = false;
-        const SceneToImageResult built = BuildSceneToImageWorkflow(opt);
+        SceneToImageResult built = BuildSceneToImageWorkflow(opt);
         if (!built.ok) {
             error = built.error;
             return {};
@@ -402,7 +419,28 @@ bool StartSceneImage(const VideoProject& project, std::size_t shotIndex,
         for (const H3BuildWarning& warning : built.warnings) {
             log::Warn("分镜图编译告警：{}", warning.text);
         }
-        return built.apiJson;
+        // K28「降级必须可见」：给降级账盖上分镜号，并**追加落盘**（worker 上写；章级报告从这里合并）。
+        // 记账失败只告警 —— 不能反过来让出图失败。
+        for (GenerationDegradation& item : built.degradations) {
+            item.shotIndex = shotIndex;
+        }
+        if (!built.degradations.empty()) {
+            const std::string shotTitle = projectCopy.shots[shotIndex].title;
+            const std::string label = shotTitle.empty()
+                                          ? fmt::format("分镜图 #{}", shotIndex + 1)
+                                          : fmt::format("分镜图 #{} {}", shotIndex + 1, shotTitle);
+            const std::filesystem::path ledger = VideoOutputDir() / "degradations.jsonl";
+            if (AppendDegradationLedger(VideoOutputDir(), label, built.degradations) < 0) {
+                log::Warn("降级账写入失败（不影响出图）：{}", util::PathToUtf8(ledger));
+            } else {
+                log::Warn("分镜图降级已记账 {} 条 → {}", built.degradations.size(),
+                          util::PathToUtf8(ledger));
+            }
+        }
+        VideoBuildResult out;
+        out.apiJson = std::move(built.apiJson);
+        out.degradations = std::move(built.degradations);
+        return out;
     };
     job.onFinish = std::move(onFinish);
     return VideoTaskRunner::Instance().Start(std::move(job));
@@ -480,6 +518,83 @@ int RunSceneToImageSelfCheck() {
         opt.dryRun = true;
         const SceneToImageResult r = BuildSceneToImageWorkflow(opt);
         expect(r.ok && !r.usedControlNet && r.degraded, "controlnet configured but no map → degrade");
+    }
+
+    // —— S4 / K28：降级必须**类型化 + 可汇总 + 可落盘**（旧行为只有一个 bool + 一行日志）——
+    // ① 无图 + 宽高被纠正 → 每一条降级都有自己的 kind
+    {
+        SceneToImageOptions opt;
+        opt.shot = shot;
+        opt.project = project;
+        opt.dryRun = true;
+        const SceneToImageResult r = BuildSceneToImageWorkflow(opt);
+        expect(r.degraded && HasDegradation(r.degradations, kDegradeNoReference),
+               "K28: no reference image → degrade kind no_reference");
+        expect(HasDegradation(r.degradations, kDegradeSizeAligned),
+               "K28: size alignment correction → degrade kind size_aligned");
+        const std::string json = DegradationsToJson(r.degradations);
+        expect(json.find("\"kind\":\"no_reference\"") != std::string::npos &&
+                   json.find("\"shot\":-1") != std::string::npos,
+               "K28: DegradationsToJson carries kind + project-level shot");
+    }
+    // ② 有颜色图、ControlNet 缺控制图 → 只记 no_controlnet（不误报 no_reference）
+    {
+        SceneToImageOptions opt;
+        opt.shot = shot;
+        opt.shot.firstFramePath = "color.png";
+        opt.project = project;
+        opt.project.sceneControlNetDepth = "control_v11f1p_sd15_depth.safetensors";
+        opt.dryRun = true;
+        const SceneToImageResult r = BuildSceneToImageWorkflow(opt);
+        expect(r.degraded && HasDegradation(r.degradations, kDegradeNoControlNet),
+               "K28: controlnet without control map → degrade kind no_controlnet");
+        expect(!HasDegradation(r.degradations, kDegradeNoReference),
+               "K28: with color image there is no no_reference entry");
+        std::size_t controlNetEntries = 0;
+        for (const GenerationDegradation& item : r.degradations) {
+            if (item.kind == kDegradeNoControlNet) {
+                ++controlNetEntries;
+            }
+        }
+        expect(controlNetEntries == 1, "K28: no_controlnet recorded exactly once (no duplicate bookkeeping)");
+    }
+    // ③ 账要**追加落盘**（一行一条 JSONL），第二次追加不清空前一次
+    {
+        const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "shine_s4_degradation_ledger";
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        const std::vector<GenerationDegradation> list = {
+            {std::string{kDegradeNoReference}, "缺参考图", 2},
+            {std::string{kDegradeNoControlNet}, "缺控制图", 2},
+        };
+        const int first = AppendDegradationLedger(dir, "自检", list);
+        const auto bytes1 = util::ReadFileBytes(dir / "degradations.jsonl");
+        const std::string text1 = bytes1 ? *bytes1 : std::string{};
+        expect(first == 2 && text1.find("\"kind\":\"no_reference\"") != std::string::npos &&
+                   text1.find("\"shot\":2") != std::string::npos &&
+                   text1.find("\"task\":\"自检\"") != std::string::npos,
+               "K28: ledger jsonl carries task/shot/kind");
+        const int second = AppendDegradationLedger(dir, "自检2", list);
+        const auto bytes2 = util::ReadFileBytes(dir / "degradations.jsonl");
+        const std::string text2 = bytes2 ? *bytes2 : std::string{};
+        expect(second == 2 && text2.size() > text1.size(), "K28: ledger appends instead of truncating");
+        expect(AppendDegradationLedger(dir, "空账", {}) == 0, "K28: empty degradation list writes nothing");
+        std::filesystem::remove_all(dir, ec);
+    }
+    // ④ S4 提交闸门：**没校验过 ≠ 校验通过**
+    //    离线跑（本机没连 ComfyUI）→ 必须 `blocked`；已连上 → 不存在的类必须被报出来。
+    {
+        const GraphCheckResult gate = VideoTaskRunner::CheckAgainstComfyUI(
+            "{\"1\":{\"class_type\":\"ShineTVNoSuchNodeXYZ\",\"inputs\":{}}}");
+        if (comfy::ComfySession::Instance().ObjectInfoNodeCount() <= 0) {
+            expect(gate.blocked && !gate.ok && !gate.issues.empty(),
+                   "S4 gate: /object_info not ready → blocked, not fake-pass");
+        } else {
+            expect(!gate.ok && !gate.blocked, "S4 gate: unknown class_type reported when object_info is ready");
+        }
+        // 空图 / 非法 JSON 也不能"通过"
+        expect(!VideoTaskRunner::CheckAgainstComfyUI("").ok, "S4 gate: empty api json must not pass");
     }
 
     log::Info("SCENE_IMAGE_SELF_CHECK pass={} fail={} {}", pass, fail, fail == 0 ? "PASS" : "FAIL");

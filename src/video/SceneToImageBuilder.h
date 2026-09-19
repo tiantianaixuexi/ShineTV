@@ -7,10 +7,13 @@
 //   → [可选 ControlNet 串接] → KSampler(dpmpp_2m, karras) → VAEDecode
 //   → SaveImage + PreviewImage
 //
-// 降级（S4）：
+// 降级（S4 / K28「降级必须可见」）：
 //   * 缺 checkpoint → 中文错误，**不产出 JSON**；
 //   * 无颜色/参考图 → `EmptyLatentImage` 纯文生图（denoise 强制 1.0）+ 告警；
-//   * 缺 ControlNet 或控制图 → 自动走无 ControlNet 路径 + 告警。
+//   * 缺 ControlNet 或控制图 → 自动走无 ControlNet 路径 + 告警；
+//   * 宽高被对齐纠正 → 告警。
+//   以上降级除 `warnings`（人读）外，还会进 `degradations`（**类型化**，见 `GenerationLedger.h`），
+//   由 `StartSceneImage` 追加写 `<输出目录>/degradations.jsonl` 并随任务状态上抛给章级报告。
 //
 // 纪律同 H3：确定性发号、失败不产半成品 JSON、只读工程副本。
 #include "video/H3WorkflowBuilder.h" // H3BuildWarning
@@ -56,7 +59,10 @@ struct SceneToImageResult {
     std::string filenamePrefix;
     bool usedImg2Img = false;     // 是否走 LoadImage+VAEEncode
     bool usedControlNet = false;
-    bool degraded = false;        // 触发了降级（无图纯文生图 / 无 ControlNet）
+    bool degraded = false;        // 触发了降级（无图纯文生图 / 无 ControlNet / 尺寸对齐）
+    // 降级明细（K28）：`kind` 见 `GenerationLedger.h` 的 `kDegrade*` 常量。
+    // 与 `warnings` 的分工：`warnings` 给人看，`degradations` 给章级报告合并。
+    std::vector<GenerationDegradation> degradations;
     int width = 0;                // 对齐 64 后
     int height = 0;
     std::int64_t seed = 0;        // 实际写入 KSampler 的种子

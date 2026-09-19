@@ -37,6 +37,9 @@ struct GraphCheckIssue {
 
 struct GraphCheckResult {
     bool ok = false;                  // ok = 没有任何 issue
+    // S4：**校验没跑成**（本机 `/object_info` 还没拿到）—— 与"图有问题"是两回事：
+    // 前者必须**阻止提交**（否则等于假通过），后者要列具体问题给人改。
+    bool blocked = false;
     std::size_t nodeCount = 0;
     std::size_t inputCount = 0;       // 输入名展开后的总数（诊断用）
     std::vector<GraphCheckIssue> issues;
