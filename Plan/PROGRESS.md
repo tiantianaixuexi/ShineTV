@@ -55,7 +55,8 @@
 - [ ] **S7** P1 九表补 API + 快照 — 分支 `s7-p1-graph-api`
 - [ ] **S8** 闭环回写（`StateDiff` + 门禁 G1–G5 + 快照）— 分支 `s8-state-commit`
 
-**基线坑（起分支前必须知道）**：`main` 上有 **40 项未提交改动**，其中含 **他人**在改的 `src/novel/NovelMcpTools.cpp` 与 **31 个 `Plan/归档/` 删除**；`runtime/` 未跟踪。
+**基线坑（起分支前必须知道）**：`main` 上仍有**他人**未提交的 `src/novel/NovelMcpTools.cpp`；`runtime/` 未跟踪（**不要提交**）。
+~~31 个 `Plan/归档/` 删除~~ 已于 2026-09-19 正式提交（`0bdf565` / 合并 `d872896`）。
 → **每个 S 只 `git add` 自己那几个文件，绝不 `git add -A`。**
 
 ---
@@ -96,7 +97,7 @@
 | P10.4 Garnet cache | 🟡 待本机 `127.0.0.1:6379` 实测 |
 | 附加 | AgentKit / NovelFields / 多模型 LLM / schema v5 ✅ |
 
-明细：`docs/compose/plans/novel-agent/PROGRESS.md`（合并后已更新）与 `Plan/归档/novel-agent/PROGRESS.md`。
+明细：`docs/compose/plans/novel-agent/PROGRESS.md`（合并后已更新）；原 `Plan/归档/novel-agent/PROGRESS.md` **已删除**（2026-09-19，`0bdf565`），原文用 `git show 0bdf565^:Plan/归档/novel-agent/PROGRESS.md` 取。
 
 ---
 
