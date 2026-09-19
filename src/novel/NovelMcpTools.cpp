@@ -30,6 +30,8 @@ namespace {
 
 db::sqlite::Database* g_dbOverride = nullptr;
 bool g_mcpAllowWrite = false;
+// 自检专用：为 true 时无条件拒绝写（盖过 g_mcpAllowWrite / Settings / 环境变量）
+bool g_writeForceDeny = false;
 
 [[nodiscard]] bool EnvWriteOn() {
     if (const char* e = std::getenv("SHINE_MCP_ALLOW_WRITE"); e && *e && *e != '0') {
@@ -516,6 +518,36 @@ mcp::CallOutcome HUpsertEntityField(yyjson_val* args) {
     return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{}}})", *id));
 }
 
+// P10 外部 Agent 写章节：正文由模型代笔，经 MCP 落库（PROPOSED/draft）
+mcp::CallOutcome HUpsertChapter(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_chapter");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    ChapterRow row;
+    row.id = ArgI64(args, "id");
+    row.volume_id = ArgI64(args, "volume_id");
+    row.ord = static_cast<int>(ArgI64(args, "ord"));
+    row.title = ArgStr(args, "title");
+    row.status = ArgStr(args, "status");
+    if (row.status.empty()) row.status = "draft";
+    row.summary = ArgStr(args, "summary");
+    row.body = ArgStr(args, "body");
+    row.pov_entity_id = ArgI64(args, "pov_entity_id");
+    row.words = static_cast<int>(ArgI64(args, "words"));
+    if (row.words <= 0) row.words = static_cast<int>(row.body.size());
+    if (row.title.empty() && row.id <= 0) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 title（新建）或 id（更新）");
+    }
+    auto id = g.UpsertChapter(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("chapter", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_chapter", "chapter", *id,
+               fmt::format("ord={} title={} words={}", row.ord, row.title, row.words));
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"words":{},"status":"{}","canon":"PROPOSED"}})",
+                                             *id, row.words, Esc(row.status)));
+}
+
 mcp::CallOutcome HLinkRelation(yyjson_val* args) {
     if (!McpWriteAllowed()) return WriteDenied("novel_link_relation");
     db::sqlite::Database* db = ResolveDb();
@@ -795,7 +827,10 @@ void SetMcpDbOverride(db::sqlite::Database* db) noexcept { g_dbOverride = db; }
 
 void SetMcpAllowWrite(bool allow) noexcept { g_mcpAllowWrite = allow; }
 
+void SetMcpWriteForceDeny(bool deny) noexcept { g_writeForceDeny = deny; }
+
 bool McpWriteAllowed() noexcept {
+    if (g_writeForceDeny) return false; // 自检期间无条件拒绝（盖过设置与环境变量）
     return g_mcpAllowWrite || Settings().mcpAllowWrite || EnvWriteOn();
 }
 
@@ -1085,6 +1120,25 @@ void RegisterMcpTools(mcp::ToolRegistry& reg) {
     });
 
     regTool(mcp::Tool{
+        .name = "novel_upsert_chapter",
+        .title = "写入章节正文（需允许写）",
+        .description = "外部 Agent/novel_writer 经 MCP 落库章节；写成功 canon=PROPOSED。默认禁用。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的章节 id", false);
+            mcp::schema::AddInteger(d, s, "volume_id", "卷 id", false);
+            mcp::schema::AddInteger(d, s, "ord", "章序", false);
+            mcp::schema::AddString(d, s, "title", "章标题（新建必填）", false);
+            mcp::schema::AddString(d, s, "status", "draft|writing|review|done", false);
+            mcp::schema::AddString(d, s, "summary", "摘要", false);
+            mcp::schema::AddString(d, s, "body", "正文", false);
+            mcp::schema::AddInteger(d, s, "pov_entity_id", "POV 人物实体 id", false);
+            mcp::schema::AddInteger(d, s, "words", "字数；空则按 body 长度", false);
+        }),
+        .handler = HUpsertChapter,
+    });
+
+    regTool(mcp::Tool{
         .name = "novel_upsert_entity_field",
         .title = "写入实体动态字段（需允许写）",
         .description =
@@ -1136,7 +1190,20 @@ void RegisterMcpTools(mcp::ToolRegistry& reg) {
     log::Info("mcp novel 模块已注册 tools={}", reg.ToolNames("novel").size());
 }
 
+namespace {
+
+// 自检期间**无条件**拒绝写工具；析构复位，覆盖所有 return 路径。
+struct ScopedWriteForceDeny {
+    ScopedWriteForceDeny() noexcept { SetMcpWriteForceDeny(true); }
+    ~ScopedWriteForceDeny() noexcept { SetMcpWriteForceDeny(false); }
+    ScopedWriteForceDeny(const ScopedWriteForceDeny&) = delete;
+    ScopedWriteForceDeny& operator=(const ScopedWriteForceDeny&) = delete;
+};
+
+} // namespace
+
 bool RunNovelMcpSelfCheck() {
+    ScopedWriteForceDeny denyGuard; // 自检期间写工具必须被拒，且不受 Settings/环境变量影响
     bool pass = true;
     auto fail = [&](std::string_view why) {
         log::Error("novel MCP 自检 FAIL：{}", why);
@@ -1206,16 +1273,34 @@ CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,actor
             fail("tools/list 缺 tools 数组");
         } else {
             std::size_t novelCount = 0;
+            std::size_t novelWithProps = 0;
+            bool getEntityOk = false;
             size_t i = 0, n = 0;
             yyjson_val* item = nullptr;
             yyjson_arr_foreach(tools, i, n, item) {
                 yyjson_val* name = yyjson_obj_get(item, "name");
-                if (name && yyjson_is_str(name)) {
-                    const std::string_view nm{yyjson_get_str(name)};
-                    if (nm.starts_with("novel_")) ++novelCount;
+                if (!(name && yyjson_is_str(name))) continue;
+                const std::string_view nm{yyjson_get_str(name)};
+                if (!nm.starts_with("novel_")) continue;
+                ++novelCount;
+                // G22 回归：inputSchema 曾因 key 悬空全部退化成 {"type":"object"}（properties 丢失）
+                yyjson_val* sch = yyjson_obj_get(item, "inputSchema");
+                yyjson_val* props = sch != nullptr ? yyjson_obj_get(sch, "properties") : nullptr;
+                if (props != nullptr && yyjson_is_obj(props) && yyjson_obj_size(props) > 0) {
+                    ++novelWithProps;
+                    if (nm == "novel_get_entity" && yyjson_obj_get(props, "name") != nullptr) {
+                        getEntityOk = true;
+                    }
                 }
             }
             if (novelCount < 16) fail(fmt::format("tools/list 中 novel_* 数量 {}", novelCount));
+            if (novelWithProps < 8) {
+                fail(fmt::format("novel_* 中 inputSchema 带 properties 的只有 {}（疑似 schema 退化）",
+                                 novelWithProps));
+            }
+            if (!getEntityOk) {
+                fail("novel_get_entity 的 inputSchema.properties 缺 name（schema 退化）");
+            }
         }
         yyjson_doc_free(ldoc);
     }

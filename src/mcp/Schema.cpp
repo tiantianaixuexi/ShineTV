@@ -13,13 +13,17 @@ namespace {
 void AddStrn(yyjson_mut_doc* doc, yyjson_mut_val* obj, std::string_view key,
              std::string_view value) {
     if (!doc || !obj || key.empty()) return;
-    // yyjson key 必须 NUL 结尾；value 用 strncpy 拷贝进 doc
-    const std::string k{key};
-    if (value.empty()) {
-        yyjson_mut_obj_add_strcpy(doc, obj, k.c_str(), "");
-        return;
-    }
-    yyjson_mut_obj_add_strncpy(doc, obj, k.c_str(), value.data(), value.size());
+    // ⚠️ 必须显式把 key/value 拷进 doc 再接管。
+    //    yyjson 的 yyjson_mut_obj_add_str*(doc, obj, key, val) 系列对 **key 只引用不拷贝**
+    //    （yyjson.c: `key->uni.str = _key;`），一旦传入局部 std::string 的 c_str()，
+    //    函数返回后 key 就悬空 → 序列化时读到垃圾字节 → 报 invalid utf-8 encoding，
+    //    整个 inputSchema 静默退化成 {"type":"object"}。
+    const char* kp = key.data() != nullptr ? key.data() : "";
+    const char* vp = value.data() != nullptr ? value.data() : "";
+    yyjson_mut_val* k = yyjson_mut_strncpy(doc, kp, key.size());
+    yyjson_mut_val* v = yyjson_mut_strncpy(doc, vp, value.size());
+    if (k == nullptr || v == nullptr) return;
+    (void)yyjson_mut_obj_add(obj, k, v);
 }
 
 void EnsureContainer(yyjson_mut_doc* doc, yyjson_mut_val* schema) {
@@ -123,10 +127,17 @@ void AddBoolean(yyjson_mut_doc* doc, yyjson_mut_val* schema, std::string_view na
 
 std::string ToJsonString(yyjson_mut_doc* doc, yyjson_mut_val* schema) {
     if (!doc || !schema) return R"({"type":"object"})";
+    // 关键：yyjson 的写出一律以 doc->root 为准，schema 必须先挂成 root。
+    // 之前只调 yyjson_mut_val_write(schema, ...) 而没 set_root —— schema 是游离 val，
+    // 写出会失败并静默退化成 {"type":"object"}，导致所有工具的 inputSchema 丢 properties。
+    yyjson_mut_doc_set_root(doc, schema);
     size_t len = 0;
-    char* s = yyjson_mut_val_write(schema, 0, &len);
-    if (!s) {
-        log::Warn("mcp schema 序列化失败，退化为 {{\"type\":\"object\"}}");
+    yyjson_write_err werr{};
+    char* s = yyjson_mut_write_opts(doc, 0, nullptr, &len, &werr);
+    if (s == nullptr) {
+        // 带 code/msg：上一次 G22 就是靠它把「结构问题」澄清成「invalid utf-8 encoding」
+        log::Warn("mcp schema 序列化失败（code={} msg={}），退化为 {{\"type\":\"object\"}}",
+                  static_cast<int>(werr.code), werr.msg != nullptr ? werr.msg : "unknown");
         return R"({"type":"object"})";
     }
     std::string out{s, len};
