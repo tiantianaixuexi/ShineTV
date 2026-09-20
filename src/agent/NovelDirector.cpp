@@ -192,8 +192,8 @@ std::string DefaultPrompt(std::string_view role) {
  "causal":[],"items":[],"locations":[],"plotlines":[],"mysteries":[],"knowledge":[],"timeline":[]}
 ⚠️ `kind` 取值必须是 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…），
    **不要把字段名当值**（写 kind:"kind" 是常见错误，会被契约校验直接挡下）。
-⚠️ `entity_id`/`item_id`/`location_id`/`from_id`/`to_id` 只能取自下方【库里已有实体 id 清单】；
-   清单里没有的实体，先用 `entities[]` 新建（给 temp_id），再在别处用该 temp_id 引用。
+⚠️ `entity_id`/`item_id`/`location_id`/`from_id`/`to_id` 只能用**库里已存在的 id** ——
+   **先用工具查出来**（`list_entities` / `get_entity`），不要凭印象编。
 【输出纪律（违反一条整份作废/整章提交失败）】
 1. 只输出 JSON 本体：不要 markdown 围栏、不要任何解释文字。
 2. **字符串内部禁止出现半角双引号**（对话、便签、标题请用「」或『』）——
@@ -204,9 +204,9 @@ std::string DefaultPrompt(std::string_view role) {
 5. `relations[]` 每条必须给全 from_id / to_id / rel_type（id 照抄下方清单），
    `items[]` 给全 op / item_id，`characters[]` 给全 entity_id —— 缺一个整章提交失败。
 6. **id 的用途必须匹配**（K03 会挡下整章）：`characters[].entity_id` /
-   `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用清单里 **[person]**
-   的 id；`items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
-   ⚠️ **清单里没有的（新物品 / 新人物 / 新地点）一律只放进 `entities[]`（用 temp_id 新建）**，
+   `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用 **[person]** 的 id；
+   `items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
+   ⚠️ **库里还没有的（新物品 / 新人物 / 新地点）一律只放进 `entities[]`（用 temp_id 新建）**，
    **不要**在上述数组里引用它们 —— 那些字段只收**已有** id，引用不到会整章提交失败。
 - summary: 本章 2–3 句摘要（字符串）
 - entities[]: {temp_id, kind, name, summary, status}
@@ -506,26 +506,13 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         Report(progressCb, Phase::Extract, 90,
                attempt == 0 ? std::string{"Extractor"}
                             : fmt::format("Extractor 重做（第 {} 次 · `06` §2.6 回产出阶段）", attempt));
-        // ★ S61：把**库里已有实体的 id 清单**附上 —— `characters[].entity_id` / `items[].item_id`
-        // / `participants[].entity_id` 要的都是**数据库 id**，而模型手里只有名字：不给清单它填不出来
-        //（真跑实测：它干脆不填 ⇒ K01 报 `characters[] 缺 entity_id`）。这属 `07` §2.2 ①
-        // 「基线由代码读」那一类 —— **事实给代码查，不靠模型猜**（也正因如此不需要给 Extractor
-        // 开工具循环）。同一批还有 `participants[].role` 的词表、`kind` 的 31 种。
-        std::string entityList;
-        if (auto all = g.ListEntities({}, {}, 400); all) {
-            for (const novelcore::EntityRow& e : *all) {
-                if (e.kind != novelcore::kind::person && e.kind != novelcore::kind::location &&
-                    e.kind != novelcore::kind::item) {
-                    continue;
-                }
-                entityList += fmt::format("- id={} [{}] {}\n", e.id, e.kind, e.name);
-                if (entityList.size() > 4000) break; // 长篇后实体很多，别把 prompt 撑爆
-            }
-        }
-        std::string exUser = fmt::format(
-            "【计划】\n{}\n\n【正文】\n{}\n\n【库里已有实体 id 清单 —— 引用它们时 id 必须照抄，"
-            "不要自己编】\n{}",
-            result.plan_json, body, entityList.empty() ? "（空）\n" : entityList);
+        // 🔴 S62：**这里一度把「库里已有实体的 id 清单」塞进 user —— 违背设计，已回退。**
+        // 正确分工（`00` §2 总纲 + S48 立的规矩）：**"有哪些实体、id 是多少"是事实 ⇒ 就该能查**；
+        // `characters[].entity_id` / `items[].item_id` / `participants[].entity_id` 要的都是库 id，
+        // 模型手里只有名字 —— 但解法**不是**把清单喂进去（那是"喂数据"，会随着实体变多而膨胀、
+        // 也会让模型不去查），而是**给它工具循环**（只读白名单 `list_entities` / `get_entity` / …），
+        // 让它自己按需查。诱因：正文链的 Extractor 原先走**单轮** `CallLlm`，没有工具循环才逼出歪路。
+        std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
         if (!parseFailHint.empty()) {
             exUser += parseFailHint;
         } else if (attempt > 0) {
