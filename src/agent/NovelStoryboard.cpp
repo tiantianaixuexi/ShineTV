@@ -47,6 +47,11 @@ constexpr std::string_view kStoryboardInstructions = R"(
   audio(object)       声音设计
 )" ;
 
+// S37：**按镜下发上游设计**的体积上限（字符）。超了就只发前几镜 + **明确记账**。
+// 为什么还留上限：prompt 太长会挤掉正文/场景信息、白烧 token。但关键是**超限本身可见**
+//（S36 的教训：静默截断会让 S34 的"阶段偏离"被误读成"没采纳"）。
+constexpr std::size_t kStageDesignMaxChars = 12000;
+
 // S36：参数收紧成 `const` —— `yyjson_val_write` 本身是**只读**的（它只是把 val 写成 JSON 文本），
 // 但 yyjson 的签名没带 `const`，所以这里 `const_cast` 掉（不是真的改它）。
 [[nodiscard]] std::string JsonText(const yyjson_val* v) {
@@ -226,6 +231,68 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     for (const novelcore::SceneRow& s : *scenes) {
         user += fmt::format("- scene_ord={} 《{}》\n", s.ord, s.title);
     }
+    // —— S37：**上游阶段产物的索引**（跑过 `--novel-stages` 才有；键 `(scene_ord, ord)`）——
+    // 一次读好 6 个阶段产物，供下面三处共用：① **按镜下发**（拼进 prompt，S37）
+    // ② **落库**（V2 → `shots.intent_json`，S36）③ **一致性比对**（S34）。
+    yyjson_doc* v2Doc = nullptr;
+    yyjson_doc* v3Doc = nullptr;
+    yyjson_doc* v4Doc = nullptr;
+    yyjson_doc* v5Doc = nullptr;
+    yyjson_doc* v6Doc = nullptr;
+    yyjson_doc* v7Doc = nullptr;
+    const auto stageItemDir = StoryboardDir(req.project_dir, ch->ord);
+    const auto v2Items = IndexStageItems(stageItemDir / "v02_director_intent.json", &v2Doc);
+    const auto v3Items = IndexStageItems(stageItemDir / "v03_performance.json", &v3Doc);
+    const auto v4Items = IndexStageItems(stageItemDir / "v04_spatial.json", &v4Doc);
+    const auto v5Items = IndexStageItems(stageItemDir / "v05_camera.json", &v5Doc);
+    const auto v6Items = IndexStageItems(stageItemDir / "v06_timeline.json", &v6Doc);
+    const auto v7Items = IndexStageItems(stageItemDir / "v07_audio.json", &v7Doc);
+    // —— S37：**按镜下发上游设计**（替代 S32 的"把整个产物文件截 3000 字"）——
+    // ⚠️ 起因（S36 记账的隐患）：按**文件**截断 ⇒ 镜一多，**靠后的镜根本没看到**上游设计 ⇒
+    //    S34 报的"阶段偏离"对它们**不是"没采纳"，而是"没看到"**（冤枉 LLM）。
+    // 现在改成**逐镜紧凑对齐**：每镜一小段、六个阶段并排 —— 每镜都能看到**属于自己的**设计。
+    // 结构上仍是**软约束**（LLM 仍可能偏离，S34 照样记账），但至少它**看到了**。
+    {
+        const std::pair<const char*, const std::map<std::pair<int, int>, const yyjson_val*>*> stages[] = {
+            {"V2 导演意图", &v2Items}, {"V3 表演", &v3Items}, {"V4 空间", &v4Items},
+            {"V5 镜头", &v5Items},   {"V6 时间轴", &v6Items}, {"V7 声音", &v7Items},
+        };
+        std::set<std::pair<int, int>> keys;
+        for (const auto& [label, mp] : stages) {
+            (void)label;
+            for (const auto& [k, v] : *mp) {
+                (void)v;
+                keys.insert(k);
+            }
+        }
+        std::string block;
+        int sent = 0;
+        bool cut = false;
+        for (const auto& k : keys) {
+            std::string one = fmt::format("- scene_ord={} ord={}\n", k.first, k.second);
+            for (const auto& [label, mp] : stages) {
+                if (const auto hit = mp->find(k); hit != mp->end()) {
+                    one += fmt::format("    {}: {}\n", label, JsonText(hit->second));
+                }
+            }
+            if (block.size() + one.size() > kStageDesignMaxChars) {
+                cut = true;
+                break;
+            }
+            block += one;
+            ++sent;
+        }
+        if (sent > 0) {
+            user += "\n【上游已定的**逐镜设计**】（按它来，**不要另起一套**）\n" + block;
+            out.warnings.push_back(fmt::format("已按镜下发 {} 镜的上游设计（V2–V7）", sent));
+            if (cut) {
+                out.warnings.push_back(fmt::format(
+                    "上游设计超 {} 字上限，只下发了前 {} 镜 —— 靠后的镜「阶段偏离」"
+                    "**不代表没采纳**（它没看到）",
+                    kStageDesignMaxChars, sent));
+            }
+        }
+    }
     // —— S31：**V1 的镜骨架**（跑过 `--novel-stages` 就有）——
     // "镜的切分"这一步已**提前到 V1**（`12` §2.2 的场分析里就该定"这场切几镜"）；这里把骨架
     // 下发进 prompt。⚠️ 是**软约束**：LLM 仍可能偏离，解析端按 `(scene_ord, ord)` 归位、
@@ -239,41 +306,9 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         }
         out.warnings.push_back(fmt::format("已下发 V1 镜骨架（{} 镜）", skeleton.size()));
     }
-    // —— S32：**V2–V7 的阶段产物**（跑过 `--novel-stages` 就有）——逐阶段下发（软约束）——
-    // 与 V1 的镜骨架同款做法：让"阶段化"真的**被消费**，而不是产出一堆没人读的中间文件。
-    {
-        const std::pair<const char*, const char*> hints[] = {
-            {"V2 DIRECTOR_INTENT", "v02_director_intent.json"},
-            {"V3 PERFORMANCE", "v03_performance.json"},
-            {"V4 SPATIAL", "v04_spatial.json"},
-            {"V5 CAMERA", "v05_camera.json"},
-            {"V6 TIMELINE", "v06_timeline.json"},
-            {"V7 AUDIO", "v07_audio.json"},
-        };
-        int hinted = 0;
-        for (const auto& [label, file] : hints) {
-            const auto path = std::filesystem::path{req.project_dir} / "work" /
-                              fmt::format("ch{:03}", ch->ord) / file;
-            const auto text = util::ReadFileBytes(path);
-            if (!text || text->empty()) {
-                continue;
-            }
-            const std::string t = text->size() > 3000 ? text->substr(0, 3000) + "…" : *text;
-            user += fmt::format("\n【{} 产物】（**按其设计**，不要另起一套）\n{}\n", label, t);
-            if (text->size() > 3000) {
-                // S36：**如实记账**（否则会冤了 LLM）——截断 ⇒ 靠后的镜可能**根本没看到**该阶段的
-                // 设计，此时 S34 报的"阶段偏离"对它们**不是"没采纳"，是"没看到"**。
-                out.warnings.push_back(
-                    fmt::format("{} 产物超 3000 字**已截断**（靠后的镜可能未看到该设计 → "
-                                "其「阶段偏离」未必是没采纳）",
-                                label));
-            }
-            ++hinted;
-        }
-        if (hinted > 0) {
-            out.warnings.push_back(fmt::format("已下发 {} 个阶段产物（V2–V7）", hinted));
-        }
-    }
+    // ⚠️ S37：这里原先是 S32 的"**按文件下发**（每个产物截 3000 字）" —— 已**删除**，改成
+    // 上面的"**按镜下发的紧凑化**"。原因（S36 记账的隐患）：按文件截断会让**靠后的镜根本没
+    // 看到**设计 ⇒ S34 报的"阶段偏离"对它们不是"没采纳"，而是"没看到"（冤枉 LLM）。
     user += "\n【任务】按上面的场景清单逐场产出 NarrativeShot[]。";
     if (!req.extra_hint.empty()) {
         user += "\n【额外要求】" + req.extra_hint;
@@ -343,20 +378,7 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     int skeletonExtra = 0;
     int skeletonDurationMismatch = 0;
 
-    // S34：V3–V7 阶段产物的索引（跑过 `--novel-stages` 才有；键同上 `(scene_ord, ord)`）
-    yyjson_doc* v2Doc = nullptr;
-    yyjson_doc* v3Doc = nullptr;
-    yyjson_doc* v4Doc = nullptr;
-    yyjson_doc* v5Doc = nullptr;
-    yyjson_doc* v7Doc = nullptr;
-    const auto stageItemDir = StoryboardDir(req.project_dir, ch->ord);
-    // S36：V2 `DIRECTOR_INTENT`（七问 + intensity）—— 它**不是** V9 的 LLM 输出（那是 V2 的
-    // 职责），所以唯一的来源是 V2 产物；按 `(scene_ord, ord)` 取出来落到 `shots.intent_json`。
-    const auto v2Items = IndexStageItems(stageItemDir / "v02_director_intent.json", &v2Doc);
-    const auto v3Items = IndexStageItems(stageItemDir / "v03_performance.json", &v3Doc);
-    const auto v4Items = IndexStageItems(stageItemDir / "v04_spatial.json", &v4Doc);
-    const auto v5Items = IndexStageItems(stageItemDir / "v05_camera.json", &v5Doc);
-    const auto v7Items = IndexStageItems(stageItemDir / "v07_audio.json", &v7Doc);
+    // 阶段产物的索引已在前面读好（S37 把索引提到 prompt 构造之前 —— 下发要用）
     int stageMismatch = 0;
     std::vector<std::string> stageMismatchDetail;
 
@@ -531,7 +553,7 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
                   out.skeleton_total);
     }
     // S34：阶段产物比对汇总 + 释放阶段性 doc
-    for (yyjson_doc* d : {v2Doc, v3Doc, v4Doc, v5Doc, v7Doc}) {
+    for (yyjson_doc* d : {v2Doc, v3Doc, v4Doc, v5Doc, v6Doc, v7Doc}) {
         if (d != nullptr) {
             yyjson_doc_free(d);
         }
@@ -623,9 +645,11 @@ bool RunStoryboardSelfCheck() {
         }
         yyjson_mut_doc_free(d);
     }
-    LlmCallFn mock = [&](LlmRole role, std::string_view, std::string_view)
+    std::string lastUser; // S37：捕获下发给 LLM 的 user 消息（验证"按镜下发"真的生效）
+    LlmCallFn mock = [&](LlmRole role, std::string_view, std::string_view user)
         -> std::expected<std::string, AgentError> {
         ++calls;
+        lastUser = std::string{user};
         expect(role == LlmRole::Planner, "视觉链走中档角色（Planner）");
         return wrapped;
     };
@@ -771,6 +795,16 @@ bool RunStoryboardSelfCheck() {
         expect(util::WriteFileBytes(sdir / "v02_director_intent.json", v2), "S36：写 V2 产物");
         const auto o = GenerateStoryboard(mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir});
         expect(o.has_value() && o->ok, "S36：带 V2 产物重跑应成功");
+        // S37：**按镜下发**（不是"把整个产物文件截 3000 字"）—— 每镜都要看到**属于自己的**设计
+        expect(lastUser.find("上游已定的**逐镜设计**") != std::string::npos,
+               "S37：应下发「逐镜设计」段（按镜组织，而非按文件）");
+        expect(lastUser.find("V2 导演意图: ") != std::string::npos &&
+                   lastUser.find("看到门") != std::string::npos,
+               "S37：V2 的设计必须**按镜**出现在 prompt 里（带镜的 scene_ord/ord）");
+        expect(lastUser.find("- scene_ord=1 ord=1") != std::string::npos,
+               "S37：逐镜设计应按 `scene_ord/ord` 分条");
+        expect(lastUser.find("【V3 PERFORMANCE 产物】") == std::string::npos,
+               "S37：旧的「按文件下发」形态必须**消失**（否则截断问题还在）");
         novelcore::NovelVisual visFor(mem);
         auto shots = visFor.ListShotsByChapter(ch.value_or(0));
         expect(shots.has_value() && !shots->empty(), "S36：应有镜可查");
