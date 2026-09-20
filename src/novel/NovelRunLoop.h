@@ -87,6 +87,10 @@ struct ChapterObservation {
     int missing_entity_refs = 0;   // `code=contract` 的缺失引用 → S9
     int field_def_count = 0;       // → S10
     bool disk_write_failed = false;         // → S11
+    // ★ S67：**本章状态根本没写回**（EXTRACT 解析/提交门禁反复失败 ⇒ `chapters.status` 停在 review）
+    // → 归到 S4（契约族）并**立即停**：继续往下写必然**漏章**（世界状态少一章，后面全部建立在错状态上）。
+    // 真跑实证：第 7 章就是这样被静默跳过，run 还报"完成 3"。
+    bool state_not_committed = false;
     bool state_conflict_unrecoverable = false; // → S8
     bool needs_user_decision = false;       // → S12
     std::string note;

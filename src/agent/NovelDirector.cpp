@@ -548,6 +548,38 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                 "   · 该实体库里**还没有**的，别硬塞 id —— 放进 `entities[]` 用 `temp_id` 新建。\n"
                 "   **不要**沿用上一版的数字，**不要**照抄上面示例里的占位符。\n",
                 commit.checks_describe);
+            // ★ S67：**按失败项给"具体动作"** —— 真跑实证：重做两轮都改不动的，往往是模型
+            // **不知道该往哪改**（只知道"这条没过"）。这里按 check_id 给出"改哪里、改成什么"。
+            // ⚠️ 只是提高重做命中率；**硬保证仍在门禁**（K03/K05/K17 会拒）。
+            std::string actions;
+            const auto failed = [&commit](std::string_view id) {
+                for (const std::string& s : commit.failed_check_ids) {
+                    if (s == id) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            if (failed("K03") || failed("K26") || failed("K14")) {
+                actions += "\n   · **id 的用途必须匹配库里的 kind**：`characters[].entity_id` 与 "
+                           "`events[].participants[].entity_id` 只收 **[person]**；`items[].item_id` 只收 "
+                           "**[item]**；`*_location_id` 只收 **[location]**。本章新建的实体用 `*_temp_id`"
+                           "（如 `\"entity_temp_id\":\"en:7\"`），**绝不把 temp_id 的序号当 id**。";
+            }
+            if (failed("K05")) {
+                actions += "\n   · `knowledge[].chapter_known` **不得晚于本章**（不许预告未来才知道的事）："
+                           "填 ≤ 本章的章号，或留 0（= 本章）。";
+            }
+            if (failed("K17")) {
+                actions += "\n   · `items[].op=lose` 只能用于**该物品此刻确实在该人手上**的持有关系；"
+                           "不在手上就别写 `lose`（先在库里核对 ownership）。`acquire` 同理不许重复。";
+            }
+            if (failed("K04")) {
+                actions += "\n   · `status` 是 `dead` / `destroyed` 的实体**不能**再当 `actor`。";
+            }
+            if (!actions.empty()) {
+                exUser += "\n【按失败项该怎么做（照这个改，别只改数字）】" + actions + "\n";
+            }
         }
         // ★ S62：**优先走工具循环** —— 让模型自己用 `list_entities` / `get_entity` 查
         // "库里有哪些实体、它们的 id 与 kind 是多少"，而不是由我把清单**喂进 prompt**
@@ -650,6 +682,10 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
             }
         }
         if (!hasDiff) {
+            // ★ S67：**解析失败必须记账** —— 原先这里一点不记 ⇒ "3 次 EXTRACT 全失败、本章状态不回写"
+            // 在**停止条件里完全看不见**（真跑实证：第 7 章就这么被静默跳过，run 还报"完成 3"）。
+            // 记进 `contract_failures`（`09` §2.4 的"含 1 次重试后仍失败"语义）⇒ S4 会看见。
+            ++result.contract_failures;
             // S55：**解析失败也重试**（原先直接 `break` ⇒ `max_validate_retries` 形同虚设）。
             // 实测：模型这一轮吐出**未转义的英文引号**（中文对话里直接写 `"`）⇒ `yyjson` 语法失败。
             // 模型有随机性，重试往往就过；而"不重试"的代价是**整章状态不回写** ⇒

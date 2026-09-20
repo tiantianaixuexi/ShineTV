@@ -521,10 +521,29 @@ struct Ref {
     if (c.chapter <= 0) {
         return Mk("K05", CheckOutcome::NotApplicable, "未给 chapter_id");
     }
-    const int know = CountSql1(*c.db, "SELECT COUNT(*) FROM character_knowledge WHERE knows=1 "
-                                      "AND chapter_known > ?1", c.chapter);
-    const int secret = CountSql1(*c.db, "SELECT COUNT(*) FROM secret_knowledge WHERE knows=1 "
-                                        "AND chapter_known > ?1", c.chapter);
+    // ★ S67：**口径必须区分"顺序写"与"补写更早的章"**（真跑实证：补写第 7 章时，库里由**第 8 章**
+    // 写下的 3 条 `chapter_known=8` 被当成"越界" ⇒ K05 必然误报、还连续触发 S1 停止）。
+    // ① 主判据 = **本章自己的 diff**：`knowledge[].chapter_known > 本章` = 自称"未来才知道" ⇒ 真越界
+    //    （知情只能随章产生，不能预告；`chapter_known=0` 表示"未指定"（提交时补本章）⇒ 不算）。
+    // ② 库扫描只在**没有更晚的已提交章**时才是有效证据 —— 否则那些行本来就该存在。
+    int diffOver = 0;
+    if (c.diff != nullptr) {
+        for (const KnowledgeDelta& k : c.diff->knowledge) {
+            if (k.chapter_known > c.chapter) {
+                ++diffOver;
+            }
+        }
+    }
+    const int laterDone = CountSql1(
+        *c.db, "SELECT COUNT(*) FROM chapters WHERE ord > ?1 AND status='done'", c.chapter);
+    int know = 0;
+    int secret = 0;
+    if (laterDone == 0) {
+        know = CountSql1(*c.db, "SELECT COUNT(*) FROM character_knowledge WHERE knows=1 "
+                                "AND chapter_known > ?1", c.chapter);
+        secret = CountSql1(*c.db, "SELECT COUNT(*) FROM secret_knowledge WHERE knows=1 "
+                                  "AND chapter_known > ?1", c.chapter);
+    }
     int conflict = 0;
     if (c.diff != nullptr) {
         NovelGraph graph(*c.db);
@@ -539,15 +558,20 @@ struct Ref {
             }
         }
     }
-    if (know + secret + conflict > 0) {
+    if (diffOver + know + secret + conflict > 0) {
         return Mk("K05", CheckOutcome::Fail,
-                  fmt::format("不变式 I2 时间序越界：character_knowledge {} 条 / secret_knowledge {} 条"
+                  fmt::format("不变式 I2 时间序越界：**本章 diff** 里 {} 条 knowledge 的 chapter_known "
+                              "晚于本章；character_knowledge {} 条 / secret_knowledge {} 条"
                               "的 chapter_known 晚于本章；StateDiff 与库冲突 {} 处"
                               "（正文侧 POV 实际用到的 fact 不可机器判定，需语义评审）",
-                              know, secret, conflict));
+                              diffOver, know, secret, conflict));
     }
     return Mk("K05", CheckOutcome::Pass,
-              fmt::format("第 {} 章的知情时间序自洽（正文侧不可判部分交语义评审）", c.chapter));
+              fmt::format("第 {} 章的知情时间序自洽（正文侧不可判部分交语义评审）{}", c.chapter,
+                          laterDone == 0
+                              ? std::string{}
+                              : fmt::format("；库里已有 {} 个更晚的已提交章 ⇒ 库扫描按「补写更早的章」跳过",
+                                            laterDone)));
 }
 
 // ———— K06 ————

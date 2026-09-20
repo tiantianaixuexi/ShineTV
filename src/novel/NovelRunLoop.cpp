@@ -208,6 +208,14 @@ std::optional<StopDecision> EvaluateStop(const StopConditionTracker& tracker,
                                              tracker.ConsecutiveSemanticOnlyFailChapters(),
                                              obs.chapter_id));
     }
+    // ★ S67：**本章状态没写回 ⇒ 立即停**（归 S4：它本来就是"契约族 + 含 1 次重试后仍失败"）。
+    // 为什么必须停而不是跳过：往下写时世界状态少这一章，后面全部建立在**错的**状态上，
+    // 而且 run 还会把这一章算进"完成"（真跑实证：第 7 章漏写状态，run 报"完成 3"）。
+    if (obs.state_not_committed) {
+        return make(StopCode::S4,
+                    fmt::format("chapter={} **状态未写回**（未提交、未跳过）⇒ 继续会漏章；现场：{}",
+                                obs.chapter_id, obs.note.empty() ? "（无附加信息）" : obs.note));
+    }
     // S4：契约校验失败（含 1 次重试后）>= 2
     if (tracker.ChapterContractFailures() >= 2) {
         return make(StopCode::S4, fmt::format("chapter={} 契约校验失败 {} 次", obs.chapter_id,
@@ -786,6 +794,8 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
             // S11：机器校验（`06` §2.3 K01–K29）的不通过项 —— `09` §2.2 S1 的唯一输入。
             // 语义：**重复条目 = 失败次数**（章内重试由产出阶段负责，见 `03` §2.6）。
             obs.failed_check_ids = info->failed_check_ids;
+            // ★ S67：状态**没提交也没跳过** ⇒ 这一章的状态没写回（`03` §2.7 的 `generated`）
+            obs.state_not_committed = !info->state_committed && !info->state_skipped;
             obs.note = info->note;
         } else {
             obs.llm_calls = 0;
