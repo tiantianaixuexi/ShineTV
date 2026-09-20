@@ -1300,6 +1300,50 @@ struct Ref {
     return Mk("K24", CheckOutcome::Pass, fmt::format("{} 面镜的 Beat 时间轴覆盖合规", withTimeline));
 }
 
+// K19–K21（`06` §2.3 的 `contract-input` 三类）：**从生成侧的盘上账回填** ——
+// V11（`src/novel/NovelGeneration.cpp`）跑完会写 `work/ch<NNN>/generation_checks.json`，
+// 键与 `GenerationCheckInput` **一一对应**（同一套命名，避免两边漂移）。
+// 读不到（没跑过 V11 / 没有工程目录）→ 全默认 ⇒ 这三条 `n/a`（空真：放行 + 记账，**不假装通过**）。
+[[nodiscard]] GenerationCheckInput LoadGenerationChecks(const std::filesystem::path& projectDir,
+                                                       int ord) {
+    GenerationCheckInput in;
+    if (projectDir.empty() || ord <= 0) {
+        return in;
+    }
+    const auto file = projectDir / "work" / fmt::format("ch{:03}", ord) / "generation_checks.json";
+    const auto text = util::ReadFileBytes(file);
+    if (!text) {
+        return in;
+    }
+    yyjson_doc* doc = yyjson_read(text->data(), text->size(), 0);
+    if (doc == nullptr) {
+        return in; // 坏文件按"没跑过"处理（与 K12 的宽容读取同款：不误报）
+    }
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    const auto getBool = [&](const char* key, bool fallback) {
+        const yyjson_val* v = yyjson_is_obj(root) ? yyjson_obj_get(root, key) : nullptr;
+        return yyjson_is_bool(v) ? yyjson_get_bool(v) : fallback;
+    };
+    const auto getInt = [&](const char* key, int fallback) {
+        const yyjson_val* v = yyjson_is_obj(root) ? yyjson_obj_get(root, key) : nullptr;
+        return yyjson_is_int(v) ? static_cast<int>(yyjson_get_sint(v)) : fallback;
+    };
+    const auto getStr = [&](const char* key) {
+        const yyjson_val* v = yyjson_is_obj(root) ? yyjson_obj_get(root, key) : nullptr;
+        return yyjson_is_str(v) ? std::string{yyjson_get_str(v)} : std::string{};
+    };
+    in.has_graph = getBool("has_graph", false);
+    in.graph_ok = getBool("graph_ok", false);
+    in.graph_detail = getStr("graph_detail");
+    in.has_sanitize = getBool("has_sanitize", false);
+    in.size_corrections = getInt("size_corrections", 0);
+    in.ref_truncations = getInt("ref_truncations", 0);
+    in.sanitize_detail = getStr("sanitize_detail");
+    in.degradations_recorded = getBool("degradations_recorded", false);
+    yyjson_doc_free(doc);
+    return in;
+}
+
 // K23 的库来源：本章最新的 PromptArtifact（`02` §2.10）。没有则返回空（= NotApplicable）。
 struct PromptHashSource {
     std::string hash;
@@ -2016,7 +2060,14 @@ ValidationReport RunChapterChecks(db::sqlite::Database& db, const CheckInputs& i
                                                : in.prompt_state_hash;
     c.chain = in.prompt_state_hash.empty() ? std::string_view{hashFromDb.chain} : in.prompt_chain;
     c.stage = in.prompt_state_hash.empty() ? std::string_view{hashFromDb.stage} : in.prompt_stage;
-    c.gen = &in.gen;
+    // S28（`13` §2.6 的 K19–K21）：生成侧结论**优先用调用方给的**（生成侧直传），没给就从盘上读
+    // V11 的账（`work/ch<NNN>/generation_checks.json`）—— 于是这三条从 `contract-input`
+    // 也有了**盘上数据源**：不显式传对象也能判（同 `shots` / `prompt_state_hash` 的模式）。
+    const GenerationCheckInput genFromDisk =
+        (in.gen.has_graph || in.gen.has_sanitize)
+            ? GenerationCheckInput{}
+            : LoadGenerationChecks(in.project_dir, c.ord);
+    c.gen = (in.gen.has_graph || in.gen.has_sanitize) ? &in.gen : &genFromDisk;
     c.orphanStaleSeconds = in.orphan_stale_seconds;
 
     // StateDiff：内存优先；没有就尝试读 `work/ch<NNN>/12_state_diff.json`（`03` 的阶段产物）
@@ -2249,6 +2300,35 @@ int RunChecksSelfCheck() {
 
         in.gen = GenerationCheckInput{};
         expect(probe("K19").outcome == CheckOutcome::NotApplicable, "K19 无图时空真");
+        // S28：K19–K21 的**盘上数据源** —— 写一份 `work/ch<NNN>/generation_checks.json`
+        //（V11 的落点），**不传 `gen`** 也应判出结论（而不是 `n/a`）。
+        {
+            std::error_code ec;
+            const auto tmpDir = std::filesystem::temp_directory_path() / "shine_checks_k19";
+            std::filesystem::remove_all(tmpDir, ec);
+            const auto dir = tmpDir / "work" / "ch001";
+            std::filesystem::create_directories(dir, ec);
+            const bool wrote = util::WriteFileBytes(
+                dir / "generation_checks.json",
+                R"({"stage":"V11","has_graph":true,"graph_ok":true,"has_sanitize":true,)"
+                R"("size_corrections":2,"ref_truncations":1})");
+            expect(wrote, "S28：写临时 generation_checks.json");
+            CheckInputs diskIn;
+            diskIn.chapter_id = 1;
+            diskIn.chapter_ord = 1;
+            diskIn.project_dir = tmpDir;
+            ValidationReport r2 = RunChapterChecks(mem, diskIn);
+            const CheckResult* k19 = Probe(r2, "K19");
+            const CheckResult* k20 = Probe(r2, "K20");
+            const CheckResult* k21 = Probe(r2, "K21");
+            expect(k19 != nullptr && k19->outcome == CheckOutcome::Pass,
+                   "S28：K19 从盘上读到 graph_ok=true → pass");
+            expect(k20 != nullptr && k20->outcome == CheckOutcome::Fail && k20->severity == "low",
+                   "S28：K20 从盘上读到 2 条纠正 → fail(low)");
+            expect(k21 != nullptr && k21->outcome == CheckOutcome::Fail && k21->severity == "high",
+                   "S28：K21 从盘上读到 1 条截断 → fail(high)");
+            std::filesystem::remove_all(tmpDir, ec);
+        }
         in.gen.has_graph = true;
         in.gen.graph_ok = false;
         in.gen.graph_detail = "object_info 未就绪";

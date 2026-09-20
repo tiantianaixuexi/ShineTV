@@ -7,6 +7,7 @@
 #include "core/Settings.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelInit.h"     // S21：初始化链门禁与骨架
+#include "novel/NovelChecks.h"
 #include "novel/NovelGeneration.h"
 #include "novel/NovelPromptGen.h" // S24：V10 提示词产物
 #include "util/Encoding.h"
@@ -116,7 +117,9 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantPrompt = Has(args, "--novel-prompt");
     // S27：V11 出图（`03` §2.2 的**可选下游动作**）—— 把 V10 的 PromptArtifact 交给出图队列
     const bool wantImages = Has(args, "--novel-generate-images");
-    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages) {
+    // S28：章级 K 校验（`06` §2.3 的 K01–K29）—— 命令行看结果
+    const bool wantChecks = Has(args, "--novel-checks");
+    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages && !wantChecks) {
         log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-storyboard <chapter_id>` / "
                    "`--novel-prompt <chapter_id>` / `--novel-generate <chapter_id>` / "
                    "`--novel-run <manual|semi|auto>`）");
@@ -179,6 +182,52 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         AppendCheckOut(gate.passed, gate.Describe());
         return gate.passed ? 0 : 1;
+    }
+
+    if (wantChecks) {
+        // S28：章级 K 校验（`06` §2.3 的 K01–K29）—— 命令行可看结果（此前只有提交路径内部跑）。
+        // 数据来源按条目自动分级（查库 / 读盘产物 / 调用方传对象）；**没数据的条目如实报 `n/a`**，
+        // 不假装通过。K19–K21 现在有**盘上数据源**（V11 落 `generation_checks.json`）。
+        std::int64_t cid = std::atoll(Opt(args, "--novel-checks", "").c_str());
+        if (cid <= 0) {
+            cid = PickChapter(db);
+        }
+        if (cid <= 0) {
+            log::Error("novel-cli：库里没有可用章节");
+            AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        novelcore::CheckInputs cin;
+        cin.chapter_id = cid;
+        cin.project_dir = projectDir;
+        const novelcore::ValidationReport rep = novelcore::RunChapterChecks(db, cin);
+        const bool showAll = Has(args, "--all");
+        int pass = 0;
+        int fail = 0;
+        int missing = 0;
+        int na = 0;
+        for (const novelcore::CheckResult& r : rep.checks) {
+            switch (r.outcome) {
+            case novelcore::CheckOutcome::Pass: ++pass; break;
+            case novelcore::CheckOutcome::Fail: ++fail; break;
+            case novelcore::CheckOutcome::Missing: ++missing; break;
+            case novelcore::CheckOutcome::NotApplicable: ++na; break;
+            }
+            if (r.outcome == novelcore::CheckOutcome::Fail ||
+                r.outcome == novelcore::CheckOutcome::Missing) {
+                log::Warn("{} [{}] {}", r.check_id, r.severity, r.detail);
+            } else if (showAll) {
+                // `--all`：把 `pass` / `n/a` 也打出来（验收时要看"哪几条真的有结论"，
+                // 只看失败会漏掉"从 n/a 变成 pass"这类**进步**）
+                log::Info("{} [{}] {}", r.check_id, novelcore::CheckOutcomeName(r.outcome), r.detail);
+            }
+        }
+        log::Info("novel-cli：K 校验完成：pass={} fail={} missing={} n/a={}（共 {} 条）", pass, fail,
+                  missing, na, rep.checks.size());
+        AppendCheckOut(fail == 0 && missing == 0,
+                       fmt::format("K checks pass={} fail={} missing={} na={}", pass, fail, missing,
+                                   na));
+        return (fail == 0 && missing == 0) ? 0 : 1;
     }
 
     if (wantImages) {

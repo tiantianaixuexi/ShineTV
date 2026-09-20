@@ -129,13 +129,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int nCmdSh
     //   `--novel-generate <chapter_id>` 生成一章（0 = 第一张未完成的章）
     //   `--novel-run <manual|semi|auto>` 连跑（`09` §2.1）
     // 与 UI 走**同一份** `NovelPipeline`（同一份 LLM 回调与前置判定）。
-    // ⚠️ **子命令必须登记在这张表里**：漏一个的后果不是"报错"，而是**照常进 GUI 建窗口**
-    // —— 表现为"命令卡住不退出"（S21 就漏了 `--novel-init`，实测踩到）。
-    for (const wchar_t* sub : {L"--novel-init", L"--novel-storyboard", L"--novel-prompt",
-                              L"--novel-generate", L"--novel-run"}) {
-        if (lpCmdLine != nullptr && wcsstr(lpCmdLine, sub) != nullptr) {
-            return shine::app::novel::RunNovelCli(lpCmdLine);
-        }
+    // S28：**不再逐个登记子命令** —— 任何 `--novel-*` 都交给 CLI。
+    // 缘由：原先是"白名单表"（`--novel-init` / `--novel-storyboard` / … 逐个列），而漏登记一个的
+    // 后果**不是报错**，而是**照常进 GUI 建窗口** → 表现为"命令卡住不退出"。
+    // 这张表已经被漏过三次：S21（`--novel-init`，注释里当时就记了）、S27（`--novel-generate-images`）、
+    // S28（`--novel-checks`）。前缀匹配一次根治，**以后加子命令不必再改本文件**。
+    if (lpCmdLine != nullptr && wcsstr(lpCmdLine, L"--novel-") != nullptr) {
+        return shine::app::novel::RunNovelCli(lpCmdLine);
     }
 
     // Alloc console for spdlog stdout sink

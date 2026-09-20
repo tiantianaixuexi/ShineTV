@@ -107,8 +107,10 @@ GenerationOutcome RunChapterGeneration(::shine::db::sqlite::Database& db, RowId 
     }
     // K20/K21 的账（`06` §2.3 的 `contract-input` 两类：**结论产生在生成侧**）—— 结束时落
     // `work/ch<NNN>/generation_checks.json`，给 K 校验当盘上数据源。
-    bool sizeAligned = true;
-    bool refLimitOk = true;
+    // 记**条数**（不是布尔）：与 `NovelChecks::GenerationCheckInput` 的 `size_corrections` /
+    // `ref_truncations` 对齐 —— 那样 K19–K21 从盘上读回时一一对应（S28）。
+    int sizeCorrections = 0; // K20 → low（放行但可见）
+    int refTruncations = 0;  // K21 → high
     int refsMax = 0;
     std::vector<std::string> issueIds;
 
@@ -158,10 +160,10 @@ GenerationOutcome RunChapterGeneration(::shine::db::sqlite::Database& db, RowId 
         }
         for (const video::GenCheckIssue& iss : bridge.issues) {
             if (iss.checkId == "K20") {
-                sizeAligned = false;
+                ++sizeCorrections;
             }
             if (iss.checkId == "K21") {
-                refLimitOk = false;
+                ++refTruncations;
             }
             issueIds.push_back(iss.checkId);
             out.warnings.push_back(
@@ -274,12 +276,15 @@ GenerationOutcome RunChapterGeneration(::shine::db::sqlite::Database& db, RowId 
                 }
                 ids += fmt::format("\"{}\"", id);
             }
+            // 键与 `NovelChecks::GenerationCheckInput` **一一对应**（`NovelChecks` 读的就是这些键
+            // —— S28 把 K19–K21 的盘上回填接上了；将来改键名要**两边一起改**）。
             const std::string j = fmt::format(
                 "{{\"stage\":\"V11\",\"chapter_id\":{},\"shots\":{},\"has_graph\":false,"
-                "\"graph_ok\":false,\"size_aligned\":{},\"ref_limit_ok\":{},\"refs_max\":{},"
-                "\"issue_count\":{},\"issue_ids\":[{}]}}",
-                chapter_id, out.shots_seen, sizeAligned ? "true" : "false",
-                refLimitOk ? "true" : "false", refsMax, issueIds.size(), ids);
+                "\"graph_ok\":false,\"graph_detail\":\"\",\"has_sanitize\":true,"
+                "\"size_corrections\":{},\"ref_truncations\":{},\"refs_max\":{},"
+                "\"sanitize_detail\":\"refs_max={}\",\"issue_count\":{},\"issue_ids\":[{}]}}",
+                chapter_id, out.shots_seen, sizeCorrections, refTruncations, refsMax, refsMax,
+                issueIds.size(), ids);
             if (util::WriteFileBytes(dir / "generation_checks.json", j)) {
                 out.checks_path = util::PathToUtf8(dir / "generation_checks.json");
             } else {
