@@ -13,6 +13,7 @@
 #include "novel/NovelGeneration.h"
 #include "novel/NovelPromptGen.h"     // S24：V10 提示词产物
 #include "openai/OpenAIProvider.h"    // S34：LLM 前置检查（ResolveActiveProfile / ProviderLabel）
+#include "util/File.h"                // S54：WriteFileBytes（导出正文）
 #include "util/Encoding.h"
 
 #include <atomic>
@@ -126,8 +127,10 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantCont = Has(args, "--novel-continuity");
     // S31：影视化链的**阶段化**实现（`03` §2.2）—— 目前有 V1 `SCENE_BREAKDOWN`
     const bool wantStages = Has(args, "--novel-stages");
+    // S54：`--novel-export` 也计入（否则会被下面的"未知子命令"拦掉）
+    const bool wantExport = Has(args, "--novel-export");
     if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages && !wantChecks &&
-        !wantCont && !wantStages) {
+        !wantCont && !wantStages && !wantExport) {
         log::Error("novel-cli：未知子命令。可用：`--novel-init` / `--novel-stages`(V1) / "
                    "`--novel-storyboard`(V9) / `--novel-prompt`(V10) / `--novel-generate-images`(V11) / "
                    "`--novel-continuity`(V8) / `--novel-checks`(K01–K29) / `--novel-generate` / "
@@ -471,6 +474,78 @@ int RunNovelCli(const wchar_t* cmdline) {
         log::Info("novel-cli：{}", out.Describe());
         AppendCheckOut(out.ok, out.Describe());
         return out.ok ? 0 : 1;
+    }
+
+    // S54：`--novel-export <dir>` —— 把**库里的正文**导出成可读文件。
+    // 🔴 起因：用户问"你生成的小说在哪"。回答是**只在 `novel.db` 的 `chapters.body` 里**
+    //    —— 盘上没有可读产物（工程根的 `chapter-01.md` 是**设定**、`chapters/ch01.md` 是**旧片段**）。
+    //    写完一本小说却"看不见"，这本身就是缺的功能：`01` §2 说"库是权威"，但**权威 ≠ 人只能查库**。
+    if (Has(args, "--novel-export")) {
+        const std::string outDir = Opt(args, "--novel-export", "");
+        if (outDir.empty()) {
+            log::Error("novel-cli：`--novel-export <目录>` 需要给输出目录");
+            return 2;
+        }
+        novelcore::NovelGraph g(db);
+        auto chs = g.ListChapters(100000);
+        if (!chs) {
+            log::Error("novel-cli：导出失败 —— 读章节列表：{}", chs.error().message);
+            return 1;
+        }
+        std::vector<novelcore::ChapterRow> done;
+        for (const auto& c : *chs) {
+            if (!c.body.empty()) {
+                done.push_back(c);
+            }
+        }
+        std::sort(done.begin(), done.end(),
+                  [](const novelcore::ChapterRow& a, const novelcore::ChapterRow& b) {
+                      return a.ord < b.ord;
+                  });
+        const auto dir = std::filesystem::path{outDir};
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        std::string merged;
+        int written = 0;
+        std::size_t total = 0;
+        for (const auto& c : done) {
+            // 文件名用 `ord` 保证排序稳定；标题里的非法字符（`/ \ : * ? " < > |`）换成 `_`
+            std::string safe = c.title.empty() ? std::string{"未命名"} : c.title;
+            for (char& ch : safe) {
+                if (std::string{"\\/:*?\"<>|"}.find(ch) != std::string::npos) {
+                    ch = '_';
+                }
+            }
+            // ⚠️ `chapters.body` **自己就带标题**（形如 `# 第一章 …`）—— 别再包一层，
+            // 否则导出的文件开头会出现两行一样的标题（真跑就撞上了）。
+            std::string text = c.body;
+            std::size_t p = 0; // 跳过前导空白，看首行是不是已经是 `# 标题`
+            while (p < text.size() &&
+                   (text[p] == '\n' || text[p] == '\r' || text[p] == ' ' || text[p] == '\t')) {
+                ++p;
+            }
+            if (text.compare(p, 2, "# ") != 0) {
+                text = fmt::format("# {}\n\n{}", safe, c.body);
+            }
+            text += "\n";
+            const auto path = dir / fmt::format("ch{:03}_{}.md", c.ord, safe);
+            (void)util::WriteFileBytes(path, text);
+            merged += text + "\n\n---\n\n";
+            ++written;
+            total += c.body.size();
+            log::Info("  [第 {} 章] {} · {} 字节 → {}", c.ord, safe, c.body.size(),
+                      util::PathToUtf8(path));
+        }
+        if (!merged.empty()) {
+            const auto all = dir / "novel.md"; // 合并本（一本连着读）
+            (void)util::WriteFileBytes(all, merged);
+            log::Info("novel-cli：合并本 → {}", util::PathToUtf8(all));
+        }
+        const std::string summary =
+            fmt::format("导出完成：{} 章 / 共 {} 字节 → {}", written, total, outDir);
+        log::Info("novel-cli：{}", summary);
+        AppendCheckOut(true, summary);
+        return written > 0 ? 0 : 1;
     }
 
     // `--novel-run`
