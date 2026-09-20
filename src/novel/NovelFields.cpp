@@ -11,6 +11,8 @@
 #include <cctype>
 #include <charconv>
 #include <cstdio>
+#include "util/Json.h" // S43：JsonQuote 的唯一来源
+
 #include <cstdlib>
 #include <cstring>
 
@@ -108,26 +110,10 @@ CREATE TABLE IF NOT EXISTS field_aliases(
 
 // JSON 字符串字面量（含引号）。`08` §2.5：手拼 JSON 不转义是确定性 bug ——
 // value_text / note 含 `"` 或换行会产出非法 JSON，直接喂给 Agent。
-[[nodiscard]] std::string JsonQuote(std::string_view s) {
-    yyjson_mut_doc* d = yyjson_mut_doc_new(nullptr);
-    if (d == nullptr) {
-        return "\"\"";
-    }
-    yyjson_mut_val* v = yyjson_mut_strncpy(d, s.data(), s.size());
-    if (v == nullptr) {
-        yyjson_mut_doc_free(d);
-        log::Warn("Fields：value 含非法 UTF-8，序列化退化为空串（len={}）", s.size());
-        return "\"\"";
-    }
-    yyjson_mut_doc_set_root(d, v); // 必须先挂 root，否则 write 失败（见 `mcp/Schema.cpp` 同款坑）
-    char* out = yyjson_mut_write(d, 0, nullptr);
-    std::string r = out != nullptr ? std::string{out} : std::string{"\"\""};
-    if (out != nullptr) {
-        std::free(out);
-    }
-    yyjson_mut_doc_free(d);
-    return r;
-}
+// S43：合并到 `util::json::JsonQuote`（**唯一来源**）。原先这里自己用 yyjson 写了一遍 ——
+// 功能正确，但属"同一件事多处实现"（连同 `NovelImageGen` 一起收口）。
+// ⚠️ 丢掉了原先"非法 UTF-8 时 `log::Warn`"那一条：util 版静默退化为空串（与 `NovelImageGen` 一致）。
+[[nodiscard]] std::string JsonQuote(std::string_view s) { return util::json::JsonQuote(s); }
 
 // value_json 原样嵌入，但必须先能解析；非法则退化为 null（不产出非法 JSON）
 [[nodiscard]] std::string JsonRawOrNull(std::string_view s) {
