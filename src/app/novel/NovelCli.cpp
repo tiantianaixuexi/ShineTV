@@ -207,24 +207,22 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         std::atomic<bool> cancel{false};
         auto call = MakeLlmCall(&cancel);
-        const auto sb = agent::RunSceneBreakdown(
-            db, call, {.chapter_id = cid, .project_dir = util::PathToUtf8(projectDir),
-                       .extra_hint = Opt(args, "--hint")});
+        // S32：**一次跑 V1 → V7**（各自哈希复用会自动跳过已跑过的；链式：上游变了下游必重算）
+        const auto sb =
+            agent::RunAllVisualStages(db, call, cid, util::PathToUtf8(projectDir), Opt(args, "--hint"));
         if (!sb) {
-            log::Error("novel-cli：V1 失败 {}", sb.error().message);
+            log::Error("novel-cli：阶段链失败 {}", sb.error().message);
             AppendCheckOut(false, sb.error().message);
             return 1;
         }
-        for (const std::string& w : sb->warnings) {
-            log::Warn("  {}", w);
-        }
+        log::Info("novel-cli：{}", sb->detail);
         if (!sb->ok) {
-            log::Error("novel-cli：V1 失败 {}", sb->error);
+            log::Error("novel-cli：阶段链中断 {}", sb->error);
             AppendCheckOut(false, sb->error);
             return 1;
         }
-        log::Info("novel-cli：V1 已产出：{} · {}", sb->Describe(), sb->artifact_path);
-        AppendCheckOut(true, fmt::format("V1 {}", sb->Describe()));
+        log::Info("novel-cli：V1–V7 完成：{}", sb->Describe());
+        AppendCheckOut(true, fmt::format("V1-V7 {}", sb->Describe()));
         return 0;
     }
 
