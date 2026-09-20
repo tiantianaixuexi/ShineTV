@@ -117,6 +117,70 @@ constexpr std::string_view kStoryboardInstructions = R"(
     return project_dir / "work" / fmt::format("ch{:03}", ord);
 }
 
+// —— S34：阶段产物的**字段级比对**（比骨架更细）——
+// 骨架只验"镜数/序号/时长"；这一层验"LLM 有没有真的采纳 V3–V5/V7 的设计"
+//（前景是谁 / 景别 / 表情 / 环境音）。键与骨架一致：`(scene_ord, ord)`。
+// ⚠️ 只挑**每阶段一个有代表性**的字段：全字段比对会被"措辞差异"淹没（LLM 会改写文案），
+//    我们要抓的是"**根本没采纳**"，不是"字面不同"。
+// ⚠️ `V2 DIRECTOR_INTENT` 仍**无法比对**：它的产物在 `NarrativeShot` 无承载字段（S33 已记账）。
+[[nodiscard]] std::map<std::pair<int, int>, const yyjson_val*>
+IndexStageItems(const std::filesystem::path& file, yyjson_doc** outDoc) {
+    std::map<std::pair<int, int>, const yyjson_val*> out;
+    *outDoc = nullptr;
+    const auto text = util::ReadFileBytes(file);
+    if (!text) {
+        return out;
+    }
+    yyjson_doc* d = yyjson_read(text->data(), text->size(), 0);
+    if (d == nullptr) {
+        return out;
+    }
+    *outDoc = d;
+    yyjson_val* root = yyjson_doc_get_root(d);
+    yyjson_val* items = yyjson_is_obj(root) ? yyjson_obj_get(root, "items") : nullptr;
+    if (!yyjson_is_arr(items)) {
+        return out;
+    }
+    std::size_t i = 0;
+    std::size_t max = 0;
+    yyjson_val* it = nullptr;
+    yyjson_arr_foreach(items, i, max, it) {
+        if (!yyjson_is_obj(it)) {
+            continue;
+        }
+        const yyjson_val* so = yyjson_obj_get(it, "scene_ord");
+        const yyjson_val* od = yyjson_obj_get(it, "ord");
+        const int sceneOrd = yyjson_is_int(so) ? static_cast<int>(yyjson_get_sint(so)) : 0;
+        const int ord = yyjson_is_int(od) ? static_cast<int>(yyjson_get_sint(od)) : 0;
+        if (sceneOrd > 0 && ord > 0) {
+            out[{sceneOrd, ord}] = it;
+        }
+    }
+    return out;
+}
+
+// `obj[key]`（顶层字符串；缺 → 空串）
+[[nodiscard]] std::string TopStr(const yyjson_val* obj, const char* key) {
+    if (obj == nullptr || !yyjson_is_obj(obj)) {
+        return {};
+    }
+    const yyjson_val* v = yyjson_obj_get(obj, key);
+    return yyjson_is_str(v) ? std::string{yyjson_get_str(v)} : std::string{};
+}
+
+// `obj[a][b]`（缺任一环 → 空串；不做类型强转）
+[[nodiscard]] std::string NestedStr(const yyjson_val* obj, const char* a, const char* b) {
+    if (obj == nullptr || !yyjson_is_obj(obj)) {
+        return {};
+    }
+    const yyjson_val* o = yyjson_obj_get(obj, a);
+    if (o == nullptr || !yyjson_is_obj(o)) {
+        return {};
+    }
+    const yyjson_val* v = yyjson_obj_get(o, b);
+    return yyjson_is_str(v) ? std::string{yyjson_get_str(v)} : std::string{};
+}
+
 } // namespace
 
 std::string StoryboardOutcome::Describe() const {
@@ -269,6 +333,19 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     int skeletonExtra = 0;
     int skeletonDurationMismatch = 0;
 
+    // S34：V3–V7 阶段产物的索引（跑过 `--novel-stages` 才有；键同上 `(scene_ord, ord)`）
+    yyjson_doc* v3Doc = nullptr;
+    yyjson_doc* v4Doc = nullptr;
+    yyjson_doc* v5Doc = nullptr;
+    yyjson_doc* v7Doc = nullptr;
+    const auto stageItemDir = StoryboardDir(req.project_dir, ch->ord);
+    const auto v3Items = IndexStageItems(stageItemDir / "v03_performance.json", &v3Doc);
+    const auto v4Items = IndexStageItems(stageItemDir / "v04_spatial.json", &v4Doc);
+    const auto v5Items = IndexStageItems(stageItemDir / "v05_camera.json", &v5Doc);
+    const auto v7Items = IndexStageItems(stageItemDir / "v07_audio.json", &v7Doc);
+    int stageMismatch = 0;
+    std::vector<std::string> stageMismatchDetail;
+
     std::set<std::int64_t> covered;
     std::size_t i = 0;
     std::size_t max = 0;
@@ -312,6 +389,43 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         row.end_state_json = yyjson_is_obj(endState) ? JsonText(endState) : "{}";
         row.timeline_json = TimelineJson(yyjson_obj_get(shot, "timeline"), duration);
         row.character_ids_json = CharacterIdsJson(startState);
+        // S34：**阶段产物的字段级比对**（比骨架更细）—— 每阶段挑**一个有代表性**的字段：
+        // V4 前景 / V5 景别 / V3 表情 / V7 环境音。抓的是"**根本没采纳**"，不是"措辞不同"
+        //（LLM 会改写文案，全字段比对会被噪音淹没）。
+        // ⚠️ 任一边为空**不判**（无法区分"没采纳"与"上游本来就没给"）；V2 仍无法比对（无承载字段）。
+        if (!v3Items.empty() || !v4Items.empty() || !v5Items.empty() || !v7Items.empty()) {
+            const auto k = std::make_pair(sceneOrd, ord);
+            const auto note = [&](const std::string& want, const std::string& got, const char* label,
+                                  const char* what) {
+                if (want.empty() || got.empty() || want == got) {
+                    return;
+                }
+                ++stageMismatch;
+                if (stageMismatchDetail.size() < 3) {
+                    stageMismatchDetail.push_back(
+                        fmt::format("scene_ord={} ord={} 的{}与上游 {} 不一致（上游「{}」/ V9 实际「{}」）",
+                                    sceneOrd, ord, what, label, want, got));
+                }
+            };
+            const yyjson_val* spObj = yyjson_obj_get(shot, "spatial");
+            const yyjson_val* camObj = yyjson_obj_get(shot, "camera");
+            const yyjson_val* perfObj = yyjson_obj_get(shot, "performance");
+            const yyjson_val* audObj = yyjson_obj_get(shot, "audio");
+            if (const auto it = v4Items.find(k); it != v4Items.end()) {
+                note(NestedStr(it->second, "layers", "foreground"), NestedStr(spObj, "layers", "foreground"),
+                     "V4 SPATIAL", "前景");
+            }
+            if (const auto it = v5Items.find(k); it != v5Items.end()) {
+                note(TopStr(it->second, "shot_size"), TopStr(camObj, "shot_size"), "V5 CAMERA", "景别");
+            }
+            if (const auto it = v3Items.find(k); it != v3Items.end()) {
+                note(TopStr(it->second, "expression"), TopStr(perfObj, "expression"), "V3 PERFORMANCE",
+                     "表情");
+            }
+            if (const auto it = v7Items.find(k); it != v7Items.end()) {
+                note(TopStr(it->second, "ambient"), TopStr(audObj, "ambient"), "V7 AUDIO", "环境音");
+            }
+        }
         // S33：逐镜与 V1 骨架比对（有骨架才查）
         if (!skeletonByKey.empty()) {
             const auto key = std::make_pair(sceneOrd, ord);
@@ -375,6 +489,24 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         log::Info("骨架一致性：下发 {} 镜 / 缺失 {} / 新增 {} / 时长偏离 {}", out.skeleton_total,
                   out.skeleton_missing, out.skeleton_extra, out.skeleton_duration_mismatch);
     }
+    // S34：阶段产物比对汇总 + 释放阶段性 doc
+    for (yyjson_doc* d : {v3Doc, v4Doc, v5Doc, v7Doc}) {
+        if (d != nullptr) {
+            yyjson_doc_free(d);
+        }
+    }
+    if (stageMismatch > 0) {
+        for (const std::string& dd : stageMismatchDetail) {
+            out.warnings.push_back("阶段偏离：" + dd);
+        }
+        out.warnings.push_back(fmt::format("V3–V7 产物与 V9 输出共 {} 处关键字段不一致（只列前 {} 条）",
+                                           stageMismatch, stageMismatchDetail.size()));
+        log::Warn("阶段产物一致性：{} 处未被采纳（V4 前景 / V5 景别 / V3 表情 / V7 环境音）",
+                  stageMismatch);
+    } else if (!v3Items.empty() || !v4Items.empty() || !v5Items.empty() || !v7Items.empty()) {
+        log::Info("阶段产物一致性：已下发阶段的关键字段**全部被采纳**");
+    }
+    out.stage_mismatch = stageMismatch;
     out.scenes_covered = static_cast<int>(covered.size());
     out.ok = out.shots_written > 0;
     if (!out.ok) {
@@ -540,6 +672,31 @@ bool RunStoryboardSelfCheck() {
             }
         }
         expect(reported, "S33：骨架缺失必须在 warnings 里可见（不静默）");
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    // S34：**阶段产物的字段级比对** —— 造一份 V3 产物（表情=平静），而 mock 输出该镜是「警惕」
+    // ⇒ 必须报"未被采纳"（`stage_mismatch > 0` 且进 warnings）。
+    {
+        const auto v1Dir = dir / "work" / "ch001";
+        std::filesystem::create_directories(v1Dir, ec);
+        const std::string v3 =
+            R"-({"stage":"V3","input_state_hash":"h3","items":[{"scene_ord":1,"ord":1,"expression":"平静"}]})-";
+        expect(util::WriteFileBytes(v1Dir / "v03_performance.json", v3), "写 V3 产物（表情=平静）");
+        const auto out3 =
+            GenerateStoryboard(mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir});
+        expect(out3.has_value() && out3->stage_mismatch > 0,
+               fmt::format("S34：V3 说表情「平静」而 V9 输出「警惕」⇒ 必须报 stage_mismatch>0（实际 {}）",
+                           out3.has_value() ? out3->stage_mismatch : -1));
+        bool reported = false;
+        if (out3) {
+            for (const std::string& w : out3->warnings) {
+                if (w.find("阶段偏离") != std::string::npos) {
+                    reported = true;
+                }
+            }
+        }
+        expect(reported, "S34：阶段偏离必须在 warnings 里可见（不静默）");
         std::filesystem::remove_all(dir, ec);
     }
 

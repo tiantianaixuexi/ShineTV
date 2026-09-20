@@ -11,7 +11,8 @@
 #include "novel/NovelChecks.h"
 #include "novel/NovelContinuity.h"
 #include "novel/NovelGeneration.h"
-#include "novel/NovelPromptGen.h" // S24：V10 提示词产物
+#include "novel/NovelPromptGen.h"     // S24：V10 提示词产物
+#include "openai/OpenAIProvider.h"    // S34：LLM 前置检查（ResolveActiveProfile / ProviderLabel）
 #include "util/Encoding.h"
 
 #include <atomic>
@@ -134,6 +135,22 @@ int RunNovelCli(const wchar_t* cmdline) {
         return 2;
     }
 
+    // ⚠️ S34：**LLM 前置检查** —— 需要 LLM 的子命令（V1–V7 / V9）在**发起调用之前**就说清"没配 Key"。
+    // 原先它们会真的去调一次 LLM 才报错：用户看到的现象是"生成不出来"，却要多等一轮才知道原因
+    //（真跑实测：`--novel-stages` → `阶段链中断 V1 失败：LLM 调用失败：未配置 OpenAI API 密钥`）。
+    // ⚠️ V10 `--novel-prompt` / V11 `--novel-generate-images` / V8 `--novel-continuity` / `--novel-checks`
+    // **不调 LLM**，不检查（V11 的缺 SD checkpoint 已有明确中文提示）。
+    const auto requireLlm = [](const char* cmd) {
+        const openai::LlmProfile prof = openai::ResolveActiveProfile();
+        if (prof.apiKey.empty()) {
+            log::Error("novel-cli：{} 需要 LLM，但**没有配置 API Key**（当前 provider={}）。"
+                       "请在「设置 → LLM」里填 Key（或设对应环境变量）后重跑 —— "
+                       "**这不是链路的 bug，是缺外部凭据**。",
+                       cmd, std::string{openai::ProviderLabel(prof.provider)});
+            return false;
+        }
+        return true;
+    };
     const std::string dbArg = Opt(args, "--db", Settings().mcpNovelDbPath);
     if (dbArg.empty()) {
         log::Error("novel-cli：没有库路径 —— 给 `--db <path>`，或在设置里填 `mcpNovelDbPath`");
@@ -207,6 +224,11 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         std::atomic<bool> cancel{false};
         auto call = MakeLlmCall(&cancel);
+        // S34：先查 Key（没配就别白跑一遍）
+        if (!requireLlm("--novel-stages")) {
+            AppendCheckOut(false, "未配置 LLM API Key");
+            return 2;
+        }
         // S32：**一次跑 V1 → V7**（各自哈希复用会自动跳过已跑过的；链式：上游变了下游必重算）
         const auto sb =
             agent::RunAllVisualStages(db, call, cid, util::PathToUtf8(projectDir), Opt(args, "--hint"));
@@ -374,6 +396,11 @@ int RunNovelCli(const wchar_t* cmdline) {
         if (cid <= 0) {
             log::Error("novel-cli：库里没有可用章节");
             AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        // S34：先查 Key（没配就别白跑一遍）
+        if (!requireLlm("--novel-storyboard")) {
+            AppendCheckOut(false, "未配置 LLM API Key");
             return 2;
         }
         auto sb = agent::GenerateStoryboard(
