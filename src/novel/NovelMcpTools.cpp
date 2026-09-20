@@ -108,6 +108,14 @@ bool g_writeForceDeny = false;
     return yyjson_is_true(v);
 }
 
+// S59：`writing_style` 的四个占比是浮点（dialogue/action/thought/env_ratio）—— 原先只有
+// `ArgI64`，会把 0.35 截成 0。
+[[nodiscard]] double ArgDbl(yyjson_val* args, const char* key, double def = 0.0) {
+    if (!args) return def;
+    yyjson_val* v = yyjson_obj_get(args, key);
+    return (v && yyjson_is_num(v)) ? yyjson_get_real(v) : def;
+}
+
 [[nodiscard]] std::string EmptySchema() {
     auto* doc = mcp::schema::NewDoc();
     auto* s = mcp::schema::Object(doc);
@@ -570,6 +578,262 @@ mcp::CallOutcome HUpsertChapter(yyjson_val* args) {
                fmt::format("ord={} title={} words={}", row.ord, row.title, row.words));
     return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"words":{},"status":"{}","canon":"PROPOSED"}})",
                                              *id, row.words, Esc(row.status)));
+}
+
+// ———— S59：题材类写工具（9 类设定的写入口）————
+// 起因：外部 Agent（走 MCP）原先只能写**实体 / 动态字段 / 字段定义 / 关系 / 因果 / 章节**，
+// 而**卷 / 主线 / 谜团 / 秘密 / 伏笔 / 人设 / 文风 / 作者规则 / 主题**这 9 类**全无写入口**
+// ⇒ "发一份大纲，让 AI 自己把设定灌进去"只能做一半；这 9 类恰好又是 `10` 初始化链的
+// I9–I14 与门禁 N5（人设三字段）/N7（主线）/N8（谜团）/N9（世界级秘密）/N11（伏笔）的受检对象。
+// 约定与 `HUpsertEntity` 一致：默认拒绝写 → `canon=PROPOSED` → 记 `audit_logs`。
+
+mcp::CallOutcome HUpsertVolume(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_volume");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    VolumeRow row;
+    row.id = ArgI64(args, "id");
+    row.title = ArgStr(args, "title");
+    row.ord = static_cast<int>(ArgI64(args, "ord"));
+    row.summary = ArgStr(args, "summary");
+    if (row.title.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 title");
+    }
+    auto id = g.UpsertVolume(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("volume", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_volume", "volume", *id,
+               fmt::format("ord={} title={}", row.ord, row.title));
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"canon":"PROPOSED"}})", *id));
+}
+
+mcp::CallOutcome HUpsertPlot(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_plot");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    PlotRow row;
+    row.id = ArgI64(args, "id");
+    row.kind = ArgStr(args, "kind");
+    if (row.kind.empty()) row.kind = "main";
+    row.title = ArgStr(args, "title");
+    row.status = ArgStr(args, "status");
+    if (row.status.empty()) row.status = "active";
+    row.intro_ch = ArgI64(args, "intro_ch");
+    row.target_ch = ArgI64(args, "target_ch");
+    row.note = ArgStr(args, "note");
+    if (row.title.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 title");
+    }
+    auto id = g.UpsertPlot(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("plot", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_plot", "plot", *id,
+               fmt::format("kind={} title={}", row.kind, row.title));
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"canon":"PROPOSED"}})", *id));
+}
+
+mcp::CallOutcome HUpsertMystery(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_mystery");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    MysteryRow row;
+    row.id = ArgI64(args, "id");
+    row.entity_id = ArgI64(args, "entity_id");
+    row.question = ArgStr(args, "question");
+    row.answer = ArgStr(args, "answer");
+    row.status = ArgStr(args, "status");
+    if (row.status.empty()) row.status = "open";
+    row.ask_ch = ArgI64(args, "ask_ch");
+    row.answer_ch = ArgI64(args, "answer_ch");
+    row.importance = static_cast<int>(ArgI64(args, "importance", 50));
+    if (row.question.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 question");
+    }
+    auto id = g.UpsertMystery(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("mystery", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_mystery", "mystery", *id, row.question);
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"canon":"PROPOSED"}})", *id));
+}
+
+mcp::CallOutcome HUpsertSecret(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_secret");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    SecretRow row;
+    row.id = ArgI64(args, "id");
+    row.content = ArgStr(args, "content");
+    row.truth = ArgStr(args, "truth");
+    row.reveal_ch = ArgI64(args, "reveal_ch");
+    row.reveal_condition = ArgStr(args, "reveal_condition");
+    row.entity_id = ArgI64(args, "entity_id");
+    row.scope = ArgStr(args, "scope");
+    if (row.scope.empty()) row.scope = "character";
+    if (row.content.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 content");
+    }
+    auto id = g.UpsertSecret(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("secret", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_secret", "secret", *id, fmt::format("scope={}", row.scope));
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"scope":"{}","canon":"PROPOSED"}})", *id,
+                                            Esc(row.scope)));
+}
+
+mcp::CallOutcome HUpsertForeshadow(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_foreshadow");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    ForeshadowRow row;
+    row.id = ArgI64(args, "id");
+    row.title = ArgStr(args, "title");
+    row.content = ArgStr(args, "content");
+    row.status = ArgStr(args, "status");
+    if (row.status.empty()) row.status = "PLANNED";
+    row.setup_ch = ArgI64(args, "setup_ch");
+    row.payoff_ch = ArgI64(args, "payoff_ch");
+    row.importance = static_cast<int>(ArgI64(args, "importance", 50));
+    row.truth = ArgStr(args, "truth");
+    row.entity_ids_json = ArgStr(args, "entity_ids_json");
+    if (row.entity_ids_json.empty()) row.entity_ids_json = "[]";
+    if (row.title.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 title");
+    }
+    auto id = g.UpsertForeshadow(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("foreshadowing", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_foreshadow", "foreshadowing", *id,
+               fmt::format("status={} {}→{}", row.status, row.setup_ch, row.payoff_ch));
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"canon":"PROPOSED"}})", *id));
+}
+
+// ⚠️ `entity_personas` 是**门禁 N5** 的受检对象（goal/desire/fear 不能空）—— 外部 Agent
+// 灌人设必须走这里，不能只写 `entities.summary`。
+mcp::CallOutcome HUpsertPersona(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_persona");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    PersonaRow row;
+    row.entity_id = ArgI64(args, "entity_id");
+    row.age = ArgStr(args, "age");
+    row.appearance = ArgStr(args, "appearance");
+    row.personality = ArgStr(args, "personality");
+    row.background = ArgStr(args, "background");
+    row.values = ArgStr(args, "values");
+    row.desire = ArgStr(args, "desire");
+    row.goal = ArgStr(args, "goal");
+    row.fear = ArgStr(args, "fear");
+    row.weakness = ArgStr(args, "weakness");
+    row.strength = ArgStr(args, "strength");
+    row.ability_note = ArgStr(args, "ability_note");
+    row.knowledge_note = ArgStr(args, "knowledge_note");
+    row.memory_note = ArgStr(args, "memory_note");
+    if (row.entity_id <= 0) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 entity_id");
+    }
+    if (auto r = g.UpsertPersona(row); !r) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, r.error().message);
+    }
+    (void)g.SetCanon("persona", row.entity_id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_persona", "persona", row.entity_id, row.goal);
+    return mcp::CallOutcome::Ok(
+        fmt::format(R"({{"entity_id":{},"canon":"PROPOSED"}})", row.entity_id));
+}
+
+// `writing_style` 是**全书单行**（id=1）—— `ContextBuilder` 已按 id=1 读。
+mcp::CallOutcome HUpsertWritingStyle(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_writing_style");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    WritingStyleRow row;
+    row.pov_mode = ArgStr(args, "pov_mode");
+    if (row.pov_mode.empty()) row.pov_mode = "third_limited";
+    row.sentence_len = ArgStr(args, "sentence_len");
+    if (row.sentence_len.empty()) row.sentence_len = "medium";
+    row.density = ArgStr(args, "density");
+    row.dialogue_ratio = ArgDbl(args, "dialogue_ratio", 0.3);
+    row.action_ratio = ArgDbl(args, "action_ratio", 0.3);
+    row.thought_ratio = ArgDbl(args, "thought_ratio", 0.2);
+    row.env_ratio = ArgDbl(args, "env_ratio", 0.2);
+    row.humor = static_cast<int>(ArgI64(args, "humor"));
+    row.serious = static_cast<int>(ArgI64(args, "serious", 50));
+    row.pacing = ArgStr(args, "pacing");
+    row.note = ArgStr(args, "note");
+    if (auto r = g.UpsertWritingStyle(row); !r) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, r.error().message);
+    }
+    (void)g.SetCanon("writing_style", 1, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_writing_style", "writing_style", 1, row.pov_mode);
+    return mcp::CallOutcome::Ok(R"({"id":1,"canon":"PROPOSED"})");
+}
+
+mcp::CallOutcome HUpsertAuthorRule(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_author_rule");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    AuthorRuleRow row;
+    row.rule = ArgStr(args, "rule");
+    row.severity = ArgStr(args, "severity");
+    if (row.severity.empty()) row.severity = "warn";
+    row.note = ArgStr(args, "note");
+    if (row.rule.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 rule");
+    }
+    auto id = g.UpsertAuthorRule(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("author_rule", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_author_rule", "author_rule", *id, row.severity);
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"canon":"PROPOSED"}})", *id));
+}
+
+mcp::CallOutcome HUpsertTheme(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_upsert_theme");
+
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    ThemeRow row;
+    row.id = ArgI64(args, "id");
+    row.title = ArgStr(args, "title");
+    row.statement = ArgStr(args, "statement");
+    row.linked_plot_id = ArgI64(args, "linked_plot_id");
+    if (row.title.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 title");
+    }
+    auto id = g.UpsertTheme(row);
+    if (!id) return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, id.error().message);
+    (void)g.SetCanon("theme", *id, "PROPOSED", "mcp");
+    AuditWrite(*db, "upsert_theme", "theme", *id, row.title);
+    return mcp::CallOutcome::Ok(fmt::format(R"({{"id":{},"canon":"PROPOSED"}})", *id));
+}
+
+// `world_meta` 是**世界级键值表**（`10` §2.3 N1 要 `book_title`；`active_universe` /
+// `universe_layers` / `world_rules_active` 也住这里）—— 原先也只剩"直接写库"一条路，
+// 外部 Agent 连"这本书叫什么"都设不了。写成功记 audit（它就是 `SetWorldMeta` 的键值 upsert）。
+mcp::CallOutcome HSetWorldMeta(yyjson_val* args) {
+    if (!McpWriteAllowed()) return WriteDenied("novel_set_world_meta");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    NovelGraph g(*db);
+    const std::string key = ArgStr(args, "key");
+    const std::string value = ArgStr(args, "value");
+    if (key.empty()) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::BadArguments, "需要 key");
+    }
+    if (auto r = g.SetWorldMeta(key, value); !r) {
+        return mcp::CallOutcome::Fail(mcp::CallStatus::InternalError, r.error().message);
+    }
+    AuditWrite(*db, "set_world_meta", "world_meta", 0, fmt::format("{}={}", key, value));
+    return mcp::CallOutcome::Ok(
+        fmt::format(R"({{"key":"{}","ok":true,"canon":"PROPOSED"}})", Esc(key)));
 }
 
 mcp::CallOutcome HLinkRelation(yyjson_val* args) {
@@ -1213,6 +1477,178 @@ void RegisterMcpTools(mcp::ToolRegistry& reg) {
         .handler = HLinkCausal,
     });
 
+    // ———— S59：题材类写工具（默认拒绝；`10` 初始化链 I9–I14 与门禁 N5/N7/N8/N9/N11 的写入口）————
+    regTool(mcp::Tool{
+        .name = "novel_upsert_volume",
+        .title = "写入卷（需允许写）",
+        .description = "分卷（volumes）。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的卷 id", false);
+            mcp::schema::AddString(d, s, "title", "卷名（新建必填）", true);
+            mcp::schema::AddInteger(d, s, "ord", "卷序", false);
+            mcp::schema::AddString(d, s, "summary", "本卷梗概", false);
+        }),
+        .handler = HUpsertVolume,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_plot",
+        .title = "写入剧情线（需允许写）",
+        .description = "主线/支线（plots）。kind 建议 main|sub|romance|revenge。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的 id", false);
+            mcp::schema::AddString(d, s, "kind", "main|sub|romance|…（默认 main）", false);
+            mcp::schema::AddString(d, s, "title", "线名（新建必填）", true);
+            mcp::schema::AddString(d, s, "status", "active|resolved|dropped", false);
+            mcp::schema::AddInteger(d, s, "intro_ch", "起始章", false);
+            mcp::schema::AddInteger(d, s, "target_ch", "目标收束章", false);
+            mcp::schema::AddString(d, s, "note", "备注", false);
+        }),
+        .handler = HUpsertPlot,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_mystery",
+        .title = "写入谜团（需允许写）",
+        .description = "读者侧谜团（mysteries），门禁 N8 的受检对象。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的 id", false);
+            mcp::schema::AddString(d, s, "question", "谜团问题（新建必填）", true);
+            mcp::schema::AddString(d, s, "answer", "答案（可留空，后续揭）", false);
+            mcp::schema::AddString(d, s, "status", "open|hinted|revealed|resolved", false);
+            mcp::schema::AddInteger(d, s, "ask_ch", "抛出章", false);
+            mcp::schema::AddInteger(d, s, "answer_ch", "计划解答章", false);
+            mcp::schema::AddInteger(d, s, "importance", "0–100（默认 50）", false);
+            mcp::schema::AddInteger(d, s, "entity_id", "关联实体（0=无）", false);
+        }),
+        .handler = HUpsertMystery,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_secret",
+        .title = "写入秘密（需允许写）",
+        .description = "秘密（secrets）。**门禁 N9 要求至少一条 scope=world**。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的 id", false);
+            mcp::schema::AddString(d, s, "content", "表层内容（新建必填）", true);
+            mcp::schema::AddString(d, s, "truth", "真相", false);
+            mcp::schema::AddInteger(d, s, "reveal_ch", "计划揭示章", false);
+            mcp::schema::AddString(d, s, "reveal_condition", "揭示条件", false);
+            mcp::schema::AddInteger(d, s, "entity_id", "归属实体（0=世界级）", false);
+            mcp::schema::AddString(d, s, "scope", "world|character|faction（默认 character）", false);
+        }),
+        .handler = HUpsertSecret,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_foreshadow",
+        .title = "写入伏笔（需允许写）",
+        .description = "伏笔账本（foreshadowings）。setup_ch/payoff_ch 参与 K10 超期判定。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的 id", false);
+            mcp::schema::AddString(d, s, "title", "伏笔名（新建必填）", true);
+            mcp::schema::AddString(d, s, "content", "埋设内容", false);
+            mcp::schema::AddString(d, s, "status", "PLANNED|PLANTED|DEVELOPING|REVEALED|RESOLVED", false);
+            mcp::schema::AddInteger(d, s, "setup_ch", "埋设章", false);
+            mcp::schema::AddInteger(d, s, "payoff_ch", "回收章", false);
+            mcp::schema::AddInteger(d, s, "importance", "0–100（默认 50；≥80 走长跨度阈值）", false);
+            mcp::schema::AddString(d, s, "truth", "真相", false);
+            mcp::schema::AddString(d, s, "entity_ids_json", "关联实体 id 数组（JSON）", false);
+        }),
+        .handler = HUpsertForeshadow,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_persona",
+        .title = "写入人设（需允许写）",
+        .description = "entity_personas。**门禁 N5 要求 goal/desire/fear 非空**；L3 上下文的主要材料。"
+                       "写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "entity_id", "人物实体 id", true);
+            mcp::schema::AddString(d, s, "goal", "目标（N5 必填）", false);
+            mcp::schema::AddString(d, s, "desire", "欲望（N5 必填）", false);
+            mcp::schema::AddString(d, s, "fear", "恐惧（N5 必填）", false);
+            mcp::schema::AddString(d, s, "age", "年龄", false);
+            mcp::schema::AddString(d, s, "appearance", "外貌", false);
+            mcp::schema::AddString(d, s, "personality", "性格", false);
+            mcp::schema::AddString(d, s, "background", "背景", false);
+            mcp::schema::AddString(d, s, "values", "价值观", false);
+            mcp::schema::AddString(d, s, "weakness", "弱点", false);
+            mcp::schema::AddString(d, s, "strength", "长处", false);
+            mcp::schema::AddString(d, s, "ability_note", "能力备注", false);
+            mcp::schema::AddString(d, s, "knowledge_note", "认知备注", false);
+            mcp::schema::AddString(d, s, "memory_note", "记忆备注", false);
+        }),
+        .handler = HUpsertPersona,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_writing_style",
+        .title = "写入全书文风（需允许写）",
+        .description = "writing_style 单行（id=1），门禁 N2 的受检对象。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddString(d, s, "pov_mode", "third_limited|first|third_omniscient", false);
+            mcp::schema::AddString(d, s, "sentence_len", "short|medium|long", false);
+            mcp::schema::AddString(d, s, "density", "用词密度倾向", false);
+            mcp::schema::AddNumber(d, s, "dialogue_ratio", "对白占比 0–1", false);
+            mcp::schema::AddNumber(d, s, "action_ratio", "动作占比 0–1", false);
+            mcp::schema::AddNumber(d, s, "thought_ratio", "心理占比 0–1", false);
+            mcp::schema::AddNumber(d, s, "env_ratio", "环境占比 0–1", false);
+            mcp::schema::AddInteger(d, s, "humor", "幽默 0–100", false);
+            mcp::schema::AddInteger(d, s, "serious", "严肃 0–100", false);
+            mcp::schema::AddString(d, s, "pacing", "slow|medium|fast", false);
+            mcp::schema::AddString(d, s, "note", "补充说明", false);
+        }),
+        .handler = HUpsertWritingStyle,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_author_rule",
+        .title = "写入作者规则（需允许写）",
+        .description = "author_rules。severity=error 的规则会进 `ContextBuilder` 的硬约束。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddString(d, s, "rule", "规则正文（必填）", true);
+            mcp::schema::AddString(d, s, "severity", "error|warn|info（默认 warn）", false);
+            mcp::schema::AddString(d, s, "note", "备注", false);
+        }),
+        .handler = HUpsertAuthorRule,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_upsert_theme",
+        .title = "写入主题（需允许写）",
+        .description = "themes；`04` L4 已读。写成功 canon=PROPOSED。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddInteger(d, s, "id", "更新时的 id", false);
+            mcp::schema::AddString(d, s, "title", "主题名（新建必填）", true);
+            mcp::schema::AddString(d, s, "statement", "主题陈述", false);
+            mcp::schema::AddInteger(d, s, "linked_plot_id", "关联剧情线 id", false);
+        }),
+        .handler = HUpsertTheme,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_set_world_meta",
+        .title = "写入世界级键值（需允许写）",
+        .description = "world_meta 键值。`book_title` 是门禁 N1 的受检对象；"
+                       "`active_universe`/`universe_layers`/`world_rules_active` 也住这里。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddString(d, s, "key", "键（如 book_title）", true);
+            mcp::schema::AddString(d, s, "value", "值", false);
+        }),
+        .handler = HSetWorldMeta,
+    });
+
     // S18：生成一章 —— **与 UI/CLI 同一条路**（装配层注入 `NovelPipeline`；见 McpBootstrap）。
     // ⚠️ 分钟级阻塞调用 + 会花 LLM 钱，所以是写工具（默认禁用），且要前端自己设超时。
     regTool(mcp::Tool{
@@ -1412,6 +1848,81 @@ bool RunNovelMcpSelfCheck() {
             } else if (ef.text.find("true_faction") == std::string::npos ||
                        ef.text.find("\"value_kind\":\"array\"") == std::string::npos) {
                 fail(fmt::format("动态字段应解析 array kind，got {}", ef.text));
+            }
+
+            // ★ S59：**题材类写工具**必须齐 —— 外部 Agent 全靠它们把"一份大纲"灌成设定。
+            // 光断言"注册上了"不够（历史上有过 schema 退化的假通过），逐个**真写一遍再读回**。
+            for (const char* t : {"novel_upsert_volume", "novel_upsert_plot", "novel_upsert_mystery",
+                                  "novel_upsert_secret", "novel_upsert_foreshadow",
+                                  "novel_upsert_persona", "novel_upsert_writing_style",
+                                  "novel_upsert_author_rule", "novel_upsert_theme",
+                                  "novel_set_world_meta"}) {
+                if (!has(t)) fail(fmt::format("缺少题材写工具 {}", t));
+            }
+            {
+                // ⚠️ 自检期间 `ScopedWriteForceDeny` **无条件**压着写开关（连 Settings 与环境变量
+                // 都盖过）⇒ 要测"真能写"必须先临时放开，测完立刻复位。
+                SetMcpWriteForceDeny(false);
+                const std::int64_t personId = pid.value_or(0);
+                const std::pair<const char*, std::string> calls[] = {
+                    {"novel_upsert_volume", R"({"title":"第一卷","ord":1,"summary":"开篇"})"},
+                    {"novel_upsert_plot",
+                     R"({"kind":"main","title":"主线","intro_ch":1,"target_ch":30})"},
+                    {"novel_upsert_mystery",
+                     R"({"question":"谁在旧塔广播","ask_ch":1,"answer_ch":12,"importance":60})"},
+                    {"novel_upsert_secret",
+                     R"({"content":"黑障是人为","truth":"灯桩网仍运作","scope":"world"})"},
+                    {"novel_upsert_foreshadow",
+                     R"({"title":"父亲与旧塔","setup_ch":1,"payoff_ch":5,"importance":80})"},
+                    {"novel_upsert_persona",
+                     fmt::format(
+                         R"({{"entity_id":{},"goal":"查清身世","desire":"离开港区","fear":"迷失"}})",
+                         personId)},
+                    {"novel_upsert_writing_style",
+                     R"({"pov_mode":"third_limited","dialogue_ratio":0.35})"},
+                    {"novel_upsert_author_rule",
+                     R"({"rule":"不写 POV 认知范围之外的信息","severity":"error"})"},
+                    {"novel_upsert_theme", R"({"title":"孤独与回应","statement":"被听见"})"},
+                    {"novel_set_world_meta", R"({"key":"book_title","value":"自检骨架书"})"},
+                };
+                for (const auto& [tool, argsJson] : calls) {
+                    auto r = callJson(tool, argsJson);
+                    if (!r.ok()) fail(fmt::format("{} 写入失败：{}", tool, r.text));
+                }
+                SetMcpWriteForceDeny(true);
+
+                auto one = [&](std::string_view sql) -> std::int64_t {
+                    auto st = mem.Prepare(sql);
+                    if (!st) return -1;
+                    auto s = st->Step();
+                    return (s && *s == db::sqlite::StepResult::Row) ? st->ColumnInt(0) : -1;
+                };
+                const std::int64_t rows =
+                    one("SELECT (SELECT COUNT(*) FROM volumes)+(SELECT COUNT(*) FROM plots)"
+                        "+(SELECT COUNT(*) FROM mysteries)+(SELECT COUNT(*) FROM secrets)"
+                        "+(SELECT COUNT(*) FROM foreshadowings)"
+                        "+(SELECT COUNT(*) FROM entity_personas)"
+                        "+(SELECT COUNT(*) FROM writing_style)"
+                        "+(SELECT COUNT(*) FROM author_rules)+(SELECT COUNT(*) FROM themes)");
+                if (rows < 9) {
+                    fail(fmt::format("题材写工具落库行数 {}（期望 ≥9：9 张表各 1 行）", rows));
+                }
+                // 只数行数会漏掉"写成空串" —— 人设三字段正是**门禁 N5** 的判据，单独断一次
+                const std::int64_t personaOk = one(fmt::format(
+                    "SELECT COUNT(*) FROM entity_personas WHERE entity_id={} AND goal<>'' "
+                    "AND desire<>'' AND fear<>''",
+                    personId));
+                if (personaOk < 1) {
+                    fail("novel_upsert_persona 未写全 goal/desire/fear（门禁 N5 会不通过）");
+                }
+                // 世界级秘密（**门禁 N9**）：scope 参数必须真的落到库里
+                if (one("SELECT COUNT(*) FROM secrets WHERE scope='world'") < 1) {
+                    fail("novel_upsert_secret 未写入 scope='world'（门禁 N9 会不通过）");
+                }
+                // 书名（**门禁 N1**）—— 外部 Agent 也必须能设，否则连"这本书叫什么"都填不了
+                if (one("SELECT COUNT(*) FROM world_meta WHERE key='book_title' AND value<>''") < 1) {
+                    fail("novel_set_world_meta 未写入 book_title（门禁 N1 会不通过）");
+                }
             }
 
             agent::AgentKit kit2(mem, false);
