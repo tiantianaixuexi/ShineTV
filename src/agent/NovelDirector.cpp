@@ -193,15 +193,19 @@ std::string_view ExtractSystemPrompt() noexcept {
 【形状示例（照这个填，字段名一个都不要改）】
 {"summary":"……","chapter_id":5,
  "entities":[{"temp_id":"en:1","kind":"item","name":"工号牌挂绳断头 092","summary":"……","status":"active"}],
- "characters":[{"entity_id":3,"location_id":4,"body_state":"……","mind_state":"……","goal":"……","reason":"……"}],
- "events":[{"temp_id":"ev:1","cause":"……","participants":[{"entity_id":3,"role":"actor"}],
-            "location_id":4,"time_label":"深夜","action":"……","result":"……"}],
+ "characters":[{"entity_id":<person id>,"location_id":<location id>,"body_state":"……","mind_state":"……","goal":"……","reason":"……"}],
+ "events":[{"temp_id":"ev:1","cause":"……","participants":[{"entity_id":<person id>,"role":"actor"}],
+            "location_id":<location id>,"time_label":"深夜","action":"……","result":"……"}],
  "foreshadows":[{"op":"new","title":"……","content":"……","status":"PLANTED","setup_ch":5,"payoff_ch":9,"importance":70}],
  "causal":[],"items":[],"locations":[],"plotlines":[],"mysteries":[],"knowledge":[],"timeline":[]}
+（引用**本章新建**实体的写法：`"participants":[{"entity_id":0,"entity_temp_id":"en:7","role":"actor"}]`）
 ⚠️ `kind` 取值必须是 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…），
    **不要把字段名当值**（写 kind:"kind" 是常见错误，会被契约校验直接挡下）。
-⚠️ `entity_id`/`item_id`/`location_id`/`from_id`/`to_id` 只能用**库里已存在的 id** ——
-   **先用工具查出来**（`list_entities` / `get_entity`），不要凭印象编。
+⚠️ `*_id` 字段（`entity_id`/`item_id`/`owner_id`/`location_id`/`from_id`/`to_id`）**两条路，别混**：
+   · **库里已存在** ⇒ 填 `list_entities` / `get_entity` **查出来的那个数字**（不凭印象编、不照抄示例）；
+   · **本章新建**（你在 `entities[]` 里给了 `temp_id`，如 `en:7`）⇒ 填**旁边的兄弟键 `*_temp_id`**，
+     如 `"participants":[{"entity_id":0,"entity_temp_id":"en:7","role":"actor"}]`、
+     `"location_temp_id":"en:10"`（`temp_id` 必须与 `entities[]` 里写的**逐字一致**，含 `en:` 前缀）。
 【输出纪律（违反一条整份作废/整章提交失败）】
 1. 只输出 JSON 本体：不要 markdown 围栏、不要任何解释文字。
 2. **字符串内部禁止出现半角双引号**（对话、便签、标题请用「」或『』）——
@@ -214,8 +218,18 @@ std::string_view ExtractSystemPrompt() noexcept {
 6. **id 的用途必须匹配**（K03 会挡下整章）：`characters[].entity_id` /
    `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用 **[person]** 的 id；
    `items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
-   ⚠️ **库里还没有的（新物品 / 新人物 / 新地点）一律只放进 `entities[]`（用 temp_id 新建）**，
-   **不要**在上述数组里引用它们 —— 那些字段只收**已有** id，引用不到会整章提交失败。
+   ⚠️ **库里还没有的（新物品 / 新人物 / 新地点）**：先在 `entities[]` 用 `temp_id` 新建；
+   **要在这里引用它，就用上面的 `*_temp_id` 兄弟键写法**（如 `"entity_temp_id":"en:7"`）——
+   这是"新人物在新地点卷入事件 / 新物品被谁持有"的**唯一合法表达**（原先没有这个写法，
+   模型才会把 `en:7` 的序号当 id 填，整章被 K03 挡下还改不动）。
+   🔴 **`temp_id` 的序号绝不是库 id**：`entities[].temp_id:"en:10"` 里的 **10 与库 id 毫无关系** ——
+   把 10 填进 `location_id` 会命中一个**完全无关**的实体（真跑实证：模型这么干，`location_id:10`
+   撞上了库里的 `event` ⇒ 整章被 K03 挡下，重做两次都改不动）。**要填 id 就只用
+   `list_entities` / `get_entity` 查出来的那个数字**。
+   ⚠️ 查不到（= 库里还没有）时，**正确做法是"整条 entry 不要写"**，**不是**把 id 写成 `0`
+   （真跑实证：模型把 `participants[].entity_id` 全填 0 ⇒ 门禁过、落库块 5 炸
+   `事件参与必须指定 event_id 与 entity_id` ⇒ 白跑一轮）。凡 `*_id` 字段：**要么填查得到的真实 id，
+   要么整条不写**；`0` 只在契约明确允许的地方用（如 `items[].location_id` 表示"无地点"）。
 - summary: 本章 2–3 句摘要（字符串）
 - entities[]: {temp_id, kind, name, summary, status}
     kind 必须命中 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…）
@@ -524,7 +538,15 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         } else if (attempt > 0) {
             exUser += fmt::format(
                 "\n\n【上一版 StateDiff 未通过机器校验（`06` §2.3），请**只修这些问题**后重新输出"
-                "完整 StateDiff】\n{}\n",
+                "完整 StateDiff】\n{}\n"
+                // S63：**重做时必须重新查 id** —— 真跑实证：重做的两轮**一次工具都没调**（`工具调用 0 次`），
+                // 直接照着上一版的数字改 ⇒ 同一个 K03（id 用途不匹配）连续 3 次挡下。
+                // ⚠️ 这条**不是**硬保证（K03 才是），只是把"该怎么修"说清楚：`entity_id` 这类字段只能
+                //    来自**库**，而库里的 id 必须**当场查**，不能靠上一版的数字、更不能照抄示例。
+                "\n⚠️ 上面这些问题里的 **id 一律要重新查**（`list_entities` / `get_entity`）后再填：\n"
+                "   · 只论用途对不上的，就换成查到的**同用途** id（如 `characters[].entity_id` 要 person 的 id）；\n"
+                "   · 该实体库里**还没有**的，别硬塞 id —— 放进 `entities[]` 用 `temp_id` 新建。\n"
+                "   **不要**沿用上一版的数字，**不要**照抄上面示例里的占位符。\n",
                 commit.checks_describe);
         }
         // ★ S62：**优先走工具循环** —— 让模型自己用 `list_entities` / `get_entity` 查
@@ -532,7 +554,14 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         //（`00` §2 总纲 + S48 立的规矩：**事实给工具查**）。只在 app 层注入了 `create_raw`
         // （= 有原始响应通道）时启用；否则退回单轮，行为与从前一致。
         // ⚠️ 仍统一产出 `er`，这样下面的宽容提取 / 错误处理一行都不用改。
-        std::expected<std::string, AgentError> er;
+        // ⚠️ **必须以错误态初始化**：`std::expected<T,E>` 的默认构造是**有值**（value-initialized
+        // `T` = 空串），不是"空错误"！原先写成 `std::expected<std::string, AgentError> er;` ⇒
+        // 工具循环一失败，`er` 就是**空串却被当成成功** ⇒ 下面的"退回单轮"成了**死代码**，
+        // 而且下游 `else if (!Trim(ej).empty())` 也不告警 ⇒ **静默**变成"本章不回写状态"
+        //（真跑实证：工具循环 3 次全拔光，日志里既没有回退的单轮调用、也没有任何解析告警，
+        //  第 5 章就这么静默地没提交）。这类"静默降级"是最难查的一种，别再犯。
+        std::expected<std::string, AgentError> er =
+            std::unexpected(AgentError{"extract_empty", "Extractor 未产出（工具循环与单轮都没给出文本）"});
         if (req.create_raw && req.extract_with_tools) {
             agent::AgentKit kit(*db_, /*allowWrite=*/false,
                                 req.project_dir.empty() ? std::string{} : req.project_dir);
@@ -594,6 +623,15 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
             if (novelcore::StateDiffFromJson(ej, diff)) {
                 if (diff.chapter_id <= 0) {
                     diff.chapter_id = req.chapter_id;
+                }
+                // ★ S65b：**宽容读兜底** —— 模型仍把 `en:11` 的"序号 11"填进 `from_id`（真跑三轮实证；
+                // 提示词里已明写 `*_temp_id` 写法，但它不用）。这里只在"按字面解释**必然错**"时改写
+                //（库里 #11 不存在或 kind 不符，而本章又声明了 `en:11`）⇒ 不改变任何本来合法的语义，
+                // 且**逐条告警**（偏离可见，绝不静默）。
+                if (const int fixed = novelcore::NormalizeNumericTempRefs(*db_, diff); fixed > 0) {
+                    log::Warn("EXTRACT：{} 处引用填的是**本章 temp_id 的序号**（不是库 id），已按 `*_temp_id` "
+                              "归一化 —— 提示词里已给正确写法，这里只是兜底",
+                              fixed);
                 }
                 hasDiff = true;
             } else if (!util::Trim(ej).empty()) {

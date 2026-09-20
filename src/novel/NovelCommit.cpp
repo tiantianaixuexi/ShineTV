@@ -106,6 +106,169 @@ WriteChapterSnapshot(std::string_view dir, const StateDiff& diff, std::string_vi
     return ref.entity_id;
 }
 
+// ★ S65：引用字段的**统一解析** —— `*_id` 优先（已存在的库 id），否则查本章 TempId 映射
+//（`entities[]` 在块 1 先落库并回填 `tempIds`，所以块 2–5 解析时映射已就绪）。
+[[nodiscard]] RowId ResolveRef(RowId id, const std::string& tempId,
+                               const std::map<std::string, RowId>& tempIds) {
+    if (id > 0) {
+        return id;
+    }
+    if (tempId.empty()) {
+        return 0;
+    }
+    const auto it = tempIds.find(tempId);
+    return it == tempIds.end() ? 0 : it->second;
+}
+
+// 本章声明过的 TempId 集合（`entities[]` + `events[]`）—— 门禁用它判"temp 引用是否合法"。
+[[nodiscard]] std::set<std::string> DeclaredTempIds(const StateDiff& diff) {
+    std::set<std::string> out;
+    for (const NewEntityDelta& e : diff.entities) {
+        if (!e.temp_id.empty()) {
+            out.insert(e.temp_id);
+        }
+    }
+    for (const EventDelta& e : diff.events) {
+        if (!e.temp_id.empty()) {
+            out.insert(e.temp_id);
+        }
+    }
+    return out;
+}
+
+// 校验一个引用字段：`*_id` 与 `*_temp_id` **二选一**。返回错误文案（空 = 通过）。
+// `required`：必填字段在"两个都没填"时必须报错（如 `participants[].entity_id`）。
+[[nodiscard]] std::string CheckRef(const char* where, RowId id, const std::string& tempId,
+                                   const std::set<std::string>& declared, bool required) {
+    if (id > 0) {
+        return {}; // 已存在的库 id：存在性与 kind 由 K02/K03 判（不在这里重复）
+    }
+    if (!tempId.empty()) {
+        return declared.count(tempId) > 0
+                   ? std::string{}
+                   : fmt::format("{} 引用的 temp_id「{}」没在本章 entities[] / events[] 里声明",
+                                 where, tempId);
+    }
+    return required ? fmt::format("{} 既没填已有实体 id，也没填本章 temp_id（二者必有一）", where)
+                    : std::string{};
+}
+
+// ★ S65：**宽容读** —— `*_id` 字段写成**字符串 TempId**（如 `"entity_id":"en:7"`）也认。
+// 为什么必须容忍两种写法：`util::reflect` 是**机械映射**（标量键 ↔ 标量字段），字符串读不进
+// `RowId` ⇒ 会**静默留 0**（引用凭空消失）。而模型很自然地会这么写 —— 它产出的
+// `entities[].temp_id` 本就是字符串 `"en:7"`，而我们又要求它**别把序号 7 当 id** ⇒ 两条路它都会试。
+// 于是：数字 → `*_id`（反射负责）；字符串 TempId → 这里回填到 `*_temp_id`。
+[[nodiscard]] bool IsTempIdLike(std::string_view s) {
+    const auto colon = s.find(':');
+    if (colon == std::string_view::npos || colon == 0 || colon + 1 >= s.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < colon; ++i) {
+        const char ch = s[i];
+        if (!(ch >= 'a' && ch <= 'z') && ch != '_') {
+            return false;
+        }
+    }
+    for (std::size_t i = colon + 1; i < s.size(); ++i) {
+        if (s[i] < '0' || s[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 取对象里某个键的**字符串 TempId**（不是字符串 / 不像 TempId → 空）
+[[nodiscard]] std::string TempIdStr(yyjson_val* obj, const char* key) {
+    yyjson_val* v = obj == nullptr ? nullptr : yyjson_obj_get(obj, key);
+    if (v == nullptr || !yyjson_is_str(v)) {
+        return {};
+    }
+    const std::string_view sv{yyjson_get_str(v), yyjson_get_len(v)};
+    return IsTempIdLike(sv) ? std::string{sv} : std::string{};
+}
+
+[[nodiscard]] yyjson_val* ArrOf(yyjson_val* root, const char* key) {
+    yyjson_val* v = yyjson_obj_get(root, key);
+    return (v != nullptr && yyjson_is_arr(v)) ? v : nullptr;
+}
+
+// ⚠️ **必须在 `util::reflect::FromJsonString` 之后调用** —— 它按**反射后的数组下标**对齐。
+void FillStringRefs(yyjson_val* root, StateDiff& out) {
+    if (root == nullptr || !yyjson_is_obj(root)) {
+        return;
+    }
+    const auto each = [](yyjson_val* arr, const auto& fn) {
+        if (arr == nullptr) {
+            return;
+        }
+        yyjson_arr_iter it = yyjson_arr_iter_with(arr);
+        std::size_t i = 0;
+        while (yyjson_val* o = yyjson_arr_iter_next(&it)) {
+            fn(o, i++);
+        }
+    };
+    each(ArrOf(root, "characters"), [&](yyjson_val* o, std::size_t i) {
+        if (i >= out.characters.size()) {
+            return;
+        }
+        if (out.characters[i].entity_temp_id.empty()) {
+            out.characters[i].entity_temp_id = TempIdStr(o, "entity_id");
+        }
+        if (out.characters[i].location_temp_id.empty()) {
+            out.characters[i].location_temp_id = TempIdStr(o, "location_id");
+        }
+    });
+    each(ArrOf(root, "relationships"), [&](yyjson_val* o, std::size_t i) {
+        if (i >= out.relationships.size()) {
+            return;
+        }
+        if (out.relationships[i].from_temp_id.empty()) {
+            out.relationships[i].from_temp_id = TempIdStr(o, "from_id");
+        }
+        if (out.relationships[i].to_temp_id.empty()) {
+            out.relationships[i].to_temp_id = TempIdStr(o, "to_id");
+        }
+    });
+    each(ArrOf(root, "items"), [&](yyjson_val* o, std::size_t i) {
+        if (i >= out.items.size()) {
+            return;
+        }
+        if (out.items[i].item_temp_id.empty()) {
+            out.items[i].item_temp_id = TempIdStr(o, "item_id");
+        }
+        if (out.items[i].owner_temp_id.empty()) {
+            out.items[i].owner_temp_id = TempIdStr(o, "owner_id");
+        }
+        if (out.items[i].location_temp_id.empty()) {
+            out.items[i].location_temp_id = TempIdStr(o, "location_id");
+        }
+    });
+    each(ArrOf(root, "knowledge"), [&](yyjson_val* o, std::size_t i) {
+        if (i >= out.knowledge.size()) {
+            return;
+        }
+        if (out.knowledge[i].entity_temp_id.empty()) {
+            out.knowledge[i].entity_temp_id = TempIdStr(o, "entity_id");
+        }
+    });
+    each(ArrOf(root, "events"), [&](yyjson_val* o, std::size_t i) {
+        if (i >= out.events.size()) {
+            return;
+        }
+        if (out.events[i].location_temp_id.empty()) {
+            out.events[i].location_temp_id = TempIdStr(o, "location_id");
+        }
+        each(ArrOf(o, "participants"), [&](yyjson_val* p, std::size_t j) {
+            if (j >= out.events[i].participants.size()) {
+                return;
+            }
+            if (out.events[i].participants[j].entity_temp_id.empty()) {
+                out.events[i].participants[j].entity_temp_id = TempIdStr(p, "entity_id");
+            }
+        });
+    });
+}
+
 } // namespace
 
 // ———— StateDiff 自身 ————
@@ -192,12 +355,16 @@ bool StateDiffFromJson(std::string_view text, StateDiff& out) {
                       nUnknown, unknown);
         }
     }
-    yyjson_doc_free(probe);
     if (!isObject) {
         log::Warn("StateDiffFromJson：JSON 能解析但**根不是对象**（StateDiff 必须是 `{{...}}`）");
+        yyjson_doc_free(probe);
         return false;
     }
     const int filled = util::reflect::FromJsonString(text, out);
+    // ★ S65：反射**之后**再补"字符串 TempId"那一路引用（要按反射后的数组下标对齐）。
+    // ⚠️ 顺序不能反：放在反射前的话，数组还是空的，什么都补不上。
+    FillStringRefs(yyjson_doc_get_root(probe), out);
+    yyjson_doc_free(probe);
     if (filled <= 0) {
         log::Warn("StateDiffFromJson：JSON 合法但**字段一个都没映射上**（{} 字）"
                   "—— 多半是键名/结构不符合 `02` §2.5 的契约（不是格式问题）",
@@ -243,9 +410,22 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
     }
 
     // 新实体还没写库 → character 只能引用**已存在**实体（D1）
+    // ★ S65：本章声明过的 TempId（`entities[]` + `events[]`）—— 下面所有引用字段共用
+    const std::set<std::string> declaredTemp = DeclaredTempIds(diff);
     for (const CharacterDelta& c : diff.characters) {
+        if (const std::string err = CheckRef("characters[].entity_id", c.entity_id, c.entity_temp_id,
+                                             declaredTemp, /*required=*/true);
+            !err.empty()) {
+            out.push_back({"contract", "high", err});
+            continue;
+        }
+        if (const std::string err = CheckRef("characters[].location_id", c.location_id,
+                                             c.location_temp_id, declaredTemp, /*required=*/false);
+            !err.empty()) {
+            out.push_back({"contract", "high", err});
+        }
+        // 后半段（存在性 / reason / D4）只对**已有实体**有意义：新建实体没有"上一版状态"可比
         if (c.entity_id <= 0) {
-            out.push_back({"contract", "high", "characters[] 缺 entity_id"});
             continue;
         }
         if (!graph.GetEntity(c.entity_id)) {
@@ -276,16 +456,168 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
         }
     }
 
-    // 事件参与者的 entity_id 必须存在
+    // 事件参与者的 entity_id 必须存在（S65：或引用本章新建实体的 temp_id）
     for (const EventDelta& ev : diff.events) {
+        if (const std::string err = CheckRef("events[].location_id", ev.location_id,
+                                             ev.location_temp_id, declaredTemp, /*required=*/false);
+            !err.empty()) {
+            out.push_back({"contract", "high", fmt::format("事件「{}」：{}", ev.temp_id, err)});
+        }
         for (const EventParticipantDelta& p : ev.participants) {
+            // 🔴 S64：**门禁必须与落库同口径** —— 原先只校 `p.entity_id > 0 && 不存在`，
+            // 于是 `entity_id = 0` **溜过门禁**，却在**块 5** 落库时炸
+            // （`块 5 参与者失败：事件参与必须指定 event_id 与 entity_id`）⇒ 那一轮 LLM 白跑。
+            // S65：改成"`entity_id` 与 `entity_temp_id` **二选一**" —— 后者用于**本章新建**的角色
+            //（原先没有这个写法，模型才会把 `en:7` 的序号 7 当 id 填）。
+            if (const std::string err =
+                    CheckRef("events[].participants[].entity_id", p.entity_id, p.entity_temp_id,
+                             declaredTemp, /*required=*/true);
+                !err.empty()) {
+                out.push_back({"contract", "high", fmt::format("事件「{}」：{}", ev.temp_id, err)});
+                continue;
+            }
             if (p.entity_id > 0 && !graph.GetEntity(p.entity_id)) {
                 out.push_back({"contract", "high",
                                fmt::format("D1：事件「{}」的参与者 entity_id={} 不存在", ev.temp_id, p.entity_id)});
             }
         }
     }
+
+    // S65：这几类引用**此前门禁完全没校**（只靠 K02/K03 的存在性/kind）——
+    // 补上"temp_id 是否在本章声明"，否则一个写错的 temp_id 会静默解析成 0（引用丢失）。
+    for (const RelationDelta& r : diff.relationships) {
+        const std::pair<const char*, std::pair<RowId, const std::string*>> fields[] = {
+            {"relationships[].from_id", {r.from_id, &r.from_temp_id}},
+            {"relationships[].to_id", {r.to_id, &r.to_temp_id}},
+        };
+        for (const auto& [where, v] : fields) {
+            if (const std::string err = CheckRef(where, v.first, *v.second, declaredTemp, true);
+                !err.empty()) {
+                out.push_back({"contract", "high", err});
+            }
+        }
+    }
+    for (const ItemDelta& it : diff.items) {
+        const std::pair<const char*, std::pair<RowId, const std::string*>> fields[] = {
+            {"items[].item_id", {it.item_id, &it.item_temp_id}},
+            {"items[].owner_id", {it.owner_id, &it.owner_temp_id}},
+            {"items[].location_id", {it.location_id, &it.location_temp_id}},
+        };
+        for (const auto& [where, v] : fields) {
+            const bool required = std::string_view{where} == "items[].item_id";
+            if (const std::string err = CheckRef(where, v.first, *v.second, declaredTemp, required);
+                !err.empty()) {
+                out.push_back({"contract", "high", err});
+            }
+        }
+    }
+    for (const KnowledgeDelta& k : diff.knowledge) {
+        if (const std::string err = CheckRef("knowledge[].entity_id", k.entity_id, k.entity_temp_id,
+                                             declaredTemp, /*required=*/true);
+            !err.empty()) {
+            out.push_back({"contract", "high", err});
+        }
+    }
     return out;
+}
+
+// ★ S65b：见头文件注释。判别力 = "按字面解释必然错"才改写。
+int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff) {
+    // 本章声明的 `en:N` / `ev:N` 按**序号**建索引（模型常把 N 当 id 填）
+    std::map<RowId, std::string> byOrd;
+    const auto addTemp = [&byOrd](const std::string& tid) {
+        const auto colon = tid.rfind(':');
+        if (colon == std::string::npos || colon + 1 >= tid.size()) {
+            return;
+        }
+        RowId n = 0;
+        for (std::size_t i = colon + 1; i < tid.size(); ++i) {
+            if (tid[i] < '0' || tid[i] > '9') {
+                return;
+            }
+            n = n * 10 + static_cast<RowId>(tid[i] - '0');
+            if (n > 100000000) {
+                return;
+            }
+        }
+        if (n > 0 && byOrd.find(n) == byOrd.end()) {
+            byOrd[n] = tid;
+        }
+    };
+    for (const NewEntityDelta& e : diff.entities) {
+        addTemp(e.temp_id);
+    }
+    for (const EventDelta& e : diff.events) {
+        addTemp(e.temp_id);
+    }
+    if (byOrd.empty()) {
+        return 0;
+    }
+    // 库里该 id 的 kind（不存在 → 空）。`item` 期望放宽到同类 kind —— **与 NovelChecks 的
+    // `IsItemKind` 同口径**（那处在 NovelChecks.cpp 的匿名命名空间里，取不到；两张表必须一致）。
+    const auto kindOf = [&db](RowId id) -> std::string {
+        auto st = db.Prepare("SELECT kind FROM entities WHERE id=?1");
+        if (!st) {
+            return {};
+        }
+        (void)st->BindInt(1, id);
+        if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+            return st->ColumnText(0);
+        }
+        return {};
+    };
+    const auto kindOk = [](std::string_view actual, std::string_view expected) {
+        if (expected == kind::item) {
+            return actual == kind::item || actual == kind::treasure || actual == kind::prop ||
+                   actual == kind::clothing || actual == kind::resource;
+        }
+        return actual == expected;
+    };
+    int n = 0;
+    // 逐字段处理：`*_id` 字面解释必错、且序号有对应 TempId ⇒ 改写
+    const auto fix = [&](const char* where, RowId& id, std::string& tempId,
+                         std::string_view expected) {
+        if (id <= 0 || !tempId.empty()) {
+            return;
+        }
+        const std::string k = kindOf(id);
+        if (kindOk(k, expected)) {
+            return; // 字面解释是对的 ⇒ 一个字都不动（不改语义）
+        }
+        const auto it = byOrd.find(id);
+        if (it == byOrd.end()) {
+            return;
+        }
+        log::Warn("StateDiff 归一化：{} 的 {} 字面解释不成立（库 #{} 的 kind='{}'，期望 {}）"
+                  "而本章声明了「{}」⇒ 按 TempId 解释（与 `02` §2.5 的 `*_temp_id` 等价）",
+                  where, id, id, k.empty() ? "不存在" : k, expected, it->second);
+        tempId = it->second;
+        id = 0;
+        ++n;
+    };
+    for (CharacterDelta& c : diff.characters) {
+        fix("characters[].entity_id", c.entity_id, c.entity_temp_id, kind::person);
+        fix("characters[].location_id", c.location_id, c.location_temp_id, kind::location);
+    }
+    for (RelationDelta& r : diff.relationships) {
+        fix("relationships[].from_id", r.from_id, r.from_temp_id, kind::person);
+        fix("relationships[].to_id", r.to_id, r.to_temp_id, kind::person);
+    }
+    for (ItemDelta& it : diff.items) {
+        fix("items[].item_id", it.item_id, it.item_temp_id, kind::item);
+        fix("items[].owner_id", it.owner_id, it.owner_temp_id, kind::person);
+        fix("items[].location_id", it.location_id, it.location_temp_id, kind::location);
+    }
+    for (EventDelta& ev : diff.events) {
+        fix("events[].location_id", ev.location_id, ev.location_temp_id, kind::location);
+        for (EventParticipantDelta& p : ev.participants) {
+            fix("events[].participants[].entity_id", p.entity_id, p.entity_temp_id, kind::person);
+        }
+    }
+    for (KnowledgeDelta& k : diff.knowledge) {
+        fix("knowledge[].entity_id", k.entity_id, k.entity_temp_id, kind::person);
+    }
+    return n;
 }
 
 std::string CommitGateReport::Describe() const {
@@ -517,18 +849,25 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // 块 2：character_status（I2：先删同 (entity_id, chapter_id) 再插，重复提交不叠加）
     for (const CharacterDelta& c : diff.characters) {
+        // S65：引用先解析（`*_temp_id` → 块 1 刚落库的真实 id）
+        const RowId cEid = ResolveRef(c.entity_id, c.entity_temp_id, tempIds);
+        const RowId cLid = ResolveRef(c.location_id, c.location_temp_id, tempIds);
+        if (cEid <= 0) {
+            return fail(fmt::format("块 2 角色引用解析不到真实 id（entity_id={} temp_id={}）", c.entity_id,
+                                    c.entity_temp_id));
+        }
         if (auto del = db.Prepare("DELETE FROM character_status WHERE entity_id=?1 AND chapter_id=?2");
             del) {
-            (void)del->BindInt(1, c.entity_id);
+            (void)del->BindInt(1, cEid);
             (void)del->BindInt(2, diff.chapter_id);
             if (auto s = del->Step(); !s) {
                 return fail(fmt::format("块 2 清理旧状态失败：{}", s.error().message));
             }
         }
         CharacterStatusRow row;
-        row.entity_id = c.entity_id;
+        row.entity_id = cEid;
         row.chapter_id = diff.chapter_id;
-        row.location_id = c.location_id;
+        row.location_id = cLid;
         row.body_state = c.body_state;
         row.mind_state = c.mind_state;
         row.emotion_json = c.emotion_json.empty() ? "{}" : c.emotion_json;
@@ -539,12 +878,19 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         if (auto id = graph.UpsertCharacterStatus(row); !id) {
             return fail(fmt::format("块 2 character_status 失败：{}", id.error().message));
         }
-        out.applied.push_back(fmt::format("character_status: 实体 #{} @ch{}", c.entity_id,
+        out.applied.push_back(fmt::format("character_status: 实体 #{} @ch{}", cEid,
                                           diff.chapter_id));
     }
 
     // 块 3：relations（upsert / close）
     for (const RelationDelta& r : diff.relationships) {
+        // S65：引用解析（`*_temp_id` → 本章新建实体的真实 id）
+        const RowId rFrom = ResolveRef(r.from_id, r.from_temp_id, tempIds);
+        const RowId rTo = ResolveRef(r.to_id, r.to_temp_id, tempIds);
+        if (rFrom <= 0 || rTo <= 0) {
+            return fail(fmt::format("块 3 关系端点解析不到真实 id（from={}/{} to={}/{}）", r.from_id,
+                                    r.from_temp_id, r.to_id, r.to_temp_id));
+        }
         if (r.op == "close") {
             auto st = db.Prepare(
                 "UPDATE relations SET to_chapter=?1 WHERE from_id=?2 AND to_id=?3 AND rel_type=?4 "
@@ -553,18 +899,18 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
                 return fail(fmt::format("块 3 close 准备失败：{}", st.error().message));
             }
             (void)st->BindInt(1, diff.chapter_id);
-            (void)st->BindInt(2, r.from_id);
-            (void)st->BindInt(3, r.to_id);
+            (void)st->BindInt(2, rFrom);
+            (void)st->BindInt(3, rTo);
             (void)st->BindText(4, r.rel_type);
             if (auto s = st->Step(); !s) {
                 return fail(fmt::format("块 3 close 失败：{}", s.error().message));
             }
-            out.applied.push_back(fmt::format("relations: close #{}→#{}", r.from_id, r.to_id));
+            out.applied.push_back(fmt::format("relations: close #{}→#{}", rFrom, rTo));
             continue;
         }
         RelationRow row;
-        row.from_id = r.from_id;
-        row.to_id = r.to_id;
+        row.from_id = rFrom;
+        row.to_id = rTo;
         row.rel_type = r.rel_type;
         row.strength = r.strength;
         row.from_chapter = diff.chapter_id;
@@ -572,11 +918,18 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         if (auto id = graph.UpsertRelation(row); !id) {
             return fail(fmt::format("块 3 relations 失败：{}", id.error().message));
         }
-        out.applied.push_back(fmt::format("relations: upsert #{}→#{}（{}）", r.from_id, r.to_id, r.rel_type));
+        out.applied.push_back(fmt::format("relations: upsert #{}→#{}（{}）", rFrom, rTo, r.rel_type));
     }
 
     // 块 4：entity_ownerships（acquire / lose）
     for (const ItemDelta& it : diff.items) {
+        // S65：引用解析（物品/持有者都可能是本章新建的）
+        const RowId iItem = ResolveRef(it.item_id, it.item_temp_id, tempIds);
+        const RowId iOwner = ResolveRef(it.owner_id, it.owner_temp_id, tempIds);
+        if (iItem <= 0) {
+            return fail(fmt::format("块 4 物品引用解析不到真实 id（item_id={} temp_id={}）", it.item_id,
+                                    it.item_temp_id));
+        }
         if (it.op == "lose") {
             auto st = db.Prepare(
                 "UPDATE entity_ownerships SET to_chapter=?1 WHERE owner_id=?2 AND item_id=?3 AND "
@@ -585,12 +938,12 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
                 return fail(fmt::format("块 4 lose 准备失败：{}", st.error().message));
             }
             (void)st->BindInt(1, diff.chapter_id);
-            (void)st->BindInt(2, it.owner_id);
-            (void)st->BindInt(3, it.item_id);
+            (void)st->BindInt(2, iOwner);
+            (void)st->BindInt(3, iItem);
             if (auto s = st->Step(); !s) {
                 return fail(fmt::format("块 4 lose 失败：{}", s.error().message));
             }
-            out.applied.push_back(fmt::format("ownerships: lose #{}↛#{}", it.owner_id, it.item_id));
+            out.applied.push_back(fmt::format("ownerships: lose #{}↛#{}", iOwner, iItem));
             continue;
         }
         if (it.op != "acquire") {
@@ -598,15 +951,15 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
             continue;
         }
         OwnershipRow row;
-        row.owner_id = it.owner_id;
-        row.item_id = it.item_id;
+        row.owner_id = iOwner;
+        row.item_id = iItem;
         row.from_chapter = diff.chapter_id;
         row.how = it.how;
         row.note = it.reason;
         if (auto id = graph.UpsertOwnership(row); !id) {
             return fail(fmt::format("块 4 ownerships 失败：{}", id.error().message));
         }
-        out.applied.push_back(fmt::format("ownerships: acquire #{}←#{}", it.item_id, it.owner_id));
+        out.applied.push_back(fmt::format("ownerships: acquire #{}←#{}", iItem, iOwner));
     }
 
     // 块 5：event_details + event_participants
@@ -618,7 +971,8 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         entity.created_chapter = diff.chapter_id;
         EventDetailRow detail;
         detail.time_label = ev.time_label;
-        detail.location_id = ev.location_id;
+        // S65：地点可以是本章新建的
+        detail.location_id = ResolveRef(ev.location_id, ev.location_temp_id, tempIds);
         detail.cause_note = ev.cause;
         detail.result_note = ev.result;
         auto id = graph.UpsertEvent(entity, detail);
@@ -629,7 +983,13 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
             tempIds[ev.temp_id] = *id;
         }
         for (const EventParticipantDelta& p : ev.participants) {
-            if (auto added = graph.UpsertEventParticipant({.event_id = *id, .entity_id = p.entity_id,
+            // S65：参与者可以是本章新建的角色
+            const RowId pEid = ResolveRef(p.entity_id, p.entity_temp_id, tempIds);
+            if (pEid <= 0) {
+                return fail(fmt::format("块 5 参与者引用解析不到真实 id（entity_id={} temp_id={}）",
+                                        p.entity_id, p.entity_temp_id));
+            }
+            if (auto added = graph.UpsertEventParticipant({.event_id = *id, .entity_id = pEid,
                                                           .role = p.role});
                 !added) {
                 return fail(fmt::format("块 5 参与者失败：{}", added.error().message));
@@ -747,7 +1107,13 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // 块 10：character_knowledge
     for (const KnowledgeDelta& k : diff.knowledge) {
-        if (auto id = graph.UpsertKnowledge({.entity_id = k.entity_id,
+        // S65：知情者可以是本章新建的角色
+        const RowId kEid = ResolveRef(k.entity_id, k.entity_temp_id, tempIds);
+        if (kEid <= 0) {
+            return fail(fmt::format("块 10 知情者引用解析不到真实 id（entity_id={} temp_id={}）",
+                                    k.entity_id, k.entity_temp_id));
+        }
+        if (auto id = graph.UpsertKnowledge({.entity_id = kEid,
                                             .fact_kind = k.fact_kind,
                                             .fact_id = k.fact_id,
                                             .fact_text = k.fact_text,

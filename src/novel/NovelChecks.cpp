@@ -413,11 +413,52 @@ struct Ref {
     return actual == expected;
 }
 
+// S64：**temp_id 的序号 ≠ 库 id** —— 把含糊的失败变成一句可执行的指令。
+// 真跑实证（第 5 章）：模型在 `entities[]` 建了 `en:10`（新地点），然后把**序号 10** 填进
+// `events[].location_id`；库 id=10 恰好是 `event` ⇒ K03 报「#10 是 event（期望 location）」。
+// 但**根因不是"选错 id"**（它给林澈填的 `entity_id:3` 是对的，说明查过库），而是**拿 temp_id 当 id**
+// ⇒ 重做两次都改不动（改不动的地方根本不是 id 选择，是这个类型混淆）。
+// 所以在这里点明"这个数字与本章哪个 temp_id 序号相同"。
+[[nodiscard]] std::map<RowId, std::string> TempSuffixIndex(const StateDiff* d) {
+    std::map<RowId, std::string> out;
+    if (d == nullptr) {
+        return out;
+    }
+    const auto add = [&out](const std::string& tid) {
+        const auto colon = tid.rfind(':');
+        if (colon == std::string::npos || colon + 1 >= tid.size()) {
+            return;
+        }
+        RowId n = 0;
+        for (std::size_t i = colon + 1; i < tid.size(); ++i) {
+            const char ch = tid[i];
+            if (ch < '0' || ch > '9') {
+                return; // 非纯数字（或溢出前先退出）→ 不当 temp_id 序号
+            }
+            n = n * 10 + static_cast<RowId>(ch - '0');
+            if (n > 100000000) {
+                return;
+            }
+        }
+        if (n > 0 && out.find(n) == out.end()) {
+            out[n] = tid;
+        }
+    };
+    for (const NewEntityDelta& e : d->entities) {
+        add(e.temp_id);
+    }
+    for (const EventDelta& e : d->events) {
+        add(e.temp_id);
+    }
+    return out;
+}
+
 [[nodiscard]] CheckResult CheckK03(const ReadCtx& c) {
     const std::vector<Ref> refs = CollectRefs(c);
     if (refs.empty()) {
         return Mk("K03", CheckOutcome::NotApplicable, "本章没有任何实体引用");
     }
+    const std::map<RowId, std::string> tempIdx = TempSuffixIndex(c.diff);
     std::string bad;
     int n = 0;
     for (const Ref& r : refs) {
@@ -428,8 +469,16 @@ struct Ref {
         if (!KindMatches(info.kind, r.expected)) {
             ++n;
             if (n <= 5) {
-                bad += fmt::format("{}{} #{} 是 {}（期望 {}）", bad.empty() ? "" : "；", r.where, r.id,
-                                   info.kind.empty() ? "?" : info.kind, r.expected);
+                const auto ti = tempIdx.find(r.id);
+                bad += fmt::format("{}{} #{} 是 {}（期望 {}）{}", bad.empty() ? "" : "；", r.where, r.id,
+                                   info.kind.empty() ? "?" : info.kind, r.expected,
+                                   ti == tempIdx.end()
+                                       ? std::string{}
+                                       : fmt::format(
+                                             "；⚠️ #{} 与本章 `temp_id`「{}」的**序号**相同 —— "
+                                             "temp_id 的序号**不是**库 id，新建实体只能留在 `entities[]`，"
+                                             "不要填进 *_id 字段（要填就用 list_entities 查到的数字）",
+                                             r.id, ti->second));
             }
         }
     }
@@ -1986,7 +2035,20 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         // `foreshadow_updates`）与 `StateDiff` 契约不是同一套 ⇒ 模型报的实体/伏笔被静默丢弃
         // ⇒ 世界状态几乎不增长。LLM 看到的东西变了 ⇒ 阶段产物（含 `12_state_diff.json`）
         // 必须重算，否则又变成"修了 bug 但旧产物被永久复用"（S25/S26/S37 的同款成因）。
-        canon += "prompt_rule_version=6\n";
+        // 6 → 7（S63）：**Extractor 提示词又动了两处**（都在"给 LLM 看的东西"里）——
+        //   ① 形状示例里的 `entity_id:3` / `location_id:4` 换成 `<person id>` / `<location id>` 占位符：
+        //      真跑实证模型**照抄了示例里的 4**（写出的 `location_id` 与示例完全一致），而 `entity_id`
+        //      填成了 `1`（库里是 `universe`）⇒ K03（id 用途不匹配）挡下整章。
+        //   ② 重做提示加了"**id 必须重新查**"的行动指令（重做两轮 `工具调用 0 次`，直接照抄上一版数字）。
+        // 规矩同 S61：改了 LLM 看到的东西 ⇒ 哈希变 ⇒ 旧阶段产物必须重算，否则"修了不生效"。
+        // 7 → 8（S64）：提示词又加了一条**类型澄清** —— "`temp_id` 的序号绝不是库 id"。
+        // 真跑实证：模型把 `entities[].en:10` 的序号 10 填进 `events[].location_id`，撞上库里的
+        // `event` 实体 ⇒ 整章被 K03 挡下、重做两次都改不动（它不是"选错 id"，是拿 temp_id 当 id）。
+        // 8 → 9（S64）：把上一条措辞的漏洞补全 —— "查不到就别填"被模型理解成"填 0"，而 0 会
+        // 溜过门禁、在落库块 5 炸。改成"**整条 entry 不要写**，不是填 0"。
+        // 9 → 10（S65）：**引用字段新增 `*_temp_id` 兄弟键**（`02` §2.5）—— "新人物/新地点/新物品
+        // 被本章使用"第一次有了合法表达（原先只能填已有 id，模型只好把 `en:7` 的序号当 id）。
+        canon += "prompt_rule_version=10\n";
         // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
         // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
         // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是

@@ -6,6 +6,7 @@
 #include "util/Encoding.h"
 
 #include <chrono>
+#include <thread>
 #include <utility>
 
 #include <fmt/format.h>
@@ -32,11 +33,27 @@ agent::LlmCreateRawFn MakeLlmCreateRaw() {
         // ★ S62：与 `MakeLlmCall` 同口径按**角色**选模型 —— extractor 走
         // `ResolveModel("extractor")`，不绕过 `09` §2.4 的分层路由。
         const std::string model = openai::ResolveModel(agent::LlmRoleName(agent::LlmRole::Extractor));
-        auto r = openai::LlmCreateRaw(ins, input, tools, model);
-        if (!r) {
-            return std::unexpected(std::string{r.error().message});
+        // ★ S62：**网络层退避重试**（与 `NovelVisualStages` 的 `create` 同款 —— S46 就在
+        // Agent 工具循环上踩过这个坑：`ssl handshake failed` 偶发，一次抖动会把**整轮**打掉）。
+        // ⚠️ 退避**要够长**：S46 实测 1.5s 的退避连续 3 次都过不去，现象是"同一分钟里第 6 次
+        //    请求开始被持续拒绝"（像是**服务端按新建连接数短时限流**）⇒ 按 4s / 10s / 20s 走。
+        //    2026-09-20 复核：MiniMax 端点在连发时单请求耗时从 0.15s 涨到 1.2-2.5s、复用连接只要
+        //    0.4s ⇒ 确实有"新建连接"维度的限流；而 libhv 用的是 **Windows Schannel**
+        //    （`WITH_OPENSSL OFF`），慢握手下会**立即**返回 `HSSL_ERROR(-1)`（不是超时）。
+        static constexpr int kBackoffMs[] = {4000, 10000, 20000};
+        std::string lastErr;
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            if (attempt > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt - 1]));
+            }
+            auto r = openai::LlmCreateRaw(ins, input, tools, model);
+            if (r) {
+                return *r;
+            }
+            lastErr = r.error().message;
+            log::Warn("LlmCreateRaw 失败（第 {} 次）：{}", attempt + 1, lastErr);
         }
-        return *r;
+        return std::unexpected(lastErr);
     };
 }
 

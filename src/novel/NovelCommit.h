@@ -37,9 +37,19 @@ struct NewEntityDelta {
     RowId created_chapter = 0;
 };
 
+// ★ S65：**引用字段一律"二选一"** —— `*_id` 填**已存在**的库 id；如果指向的是**本章
+// `entities[]` 新建**的实体，就填旁边的 `*_temp_id`（如 `en:7`），两者**互斥**。
+// 🔴 为什么必须补这个（真跑三次实证）：`02` §2.1 的 `TempId` 是**字符串**，而原先这些字段是纯 `Id`
+// ⇒ "新人物在新地点卷入事件、新物品被谁持有"**在契约里没有合法写法** ⇒ 模型只好把 `en:10` 的
+// **序号 10** 填进 `location_id`（库里 #10 恰好是 `event`）⇒ K03 挡下，重做三轮都改不动
+//（它不是"选错 id"，是**拿 temp_id 当 id**）。加了 `*_temp_id` 之后，"新建即使用"才第一次可表达。
+// ⚠️ 形状刻意做成**兄弟键**（不是把标量改成对象），因为 `StateDiffToJson` 走 `util::reflect`
+// 的机械映射：标量键 ↔ 标量字段。这样既不破坏既有契约标量，也不需要给反射加钩子。
 struct CharacterDelta { // → character_status（按章 append 一行）
     RowId entity_id = 0;
+    std::string entity_temp_id;   // S65：本章新建的角色（与 entity_id 互斥）
     RowId location_id = 0;
+    std::string location_temp_id; // S65：本章新建的地点
     std::string body_state;
     std::string mind_state;
     std::string emotion_json = "{}";
@@ -53,7 +63,9 @@ struct CharacterDelta { // → character_status（按章 append 一行）
 struct RelationDelta {
     std::string op = "upsert"; // upsert | close
     RowId from_id = 0;
+    std::string from_temp_id; // S65
     RowId to_id = 0;
+    std::string to_temp_id; // S65
     std::string rel_type;
     int strength = 50;
     std::string reason;
@@ -62,14 +74,18 @@ struct RelationDelta {
 struct ItemDelta {
     std::string op = "acquire"; // acquire | lose | move | change_state（与 ScenePlan.items[].op 同集合）
     RowId item_id = 0;
+    std::string item_temp_id; // S65
     RowId owner_id = 0;
+    std::string owner_temp_id; // S65
     RowId location_id = 0;
+    std::string location_temp_id; // S65
     std::string how;
     std::string reason;
 };
 
 struct EventParticipantDelta {
     RowId entity_id = 0;
+    std::string entity_temp_id; // S65：本章新建的参与者
     std::string role; // actor | victim | witness | beneficiary | faction_actor
 };
 
@@ -78,6 +94,7 @@ struct EventDelta {
     std::string cause;
     std::vector<EventParticipantDelta> participants;
     RowId location_id = 0;
+    std::string location_temp_id; // S65
     std::string time_label;
     std::string action;
     std::string result;
@@ -137,6 +154,7 @@ struct PlotDelta {
 
 struct KnowledgeDelta {
     RowId entity_id = 0;
+    std::string entity_temp_id; // S65
     std::string fact_kind;
     RowId fact_id = 0;
     std::string fact_text;
@@ -202,6 +220,14 @@ struct CommitIssue {
 // D7：`no_change_declared=true` 时所有子数组必须为空
 // D8：`NewEntity.kind` 必须在 31 种内（`01` §1.1.2）
 [[nodiscard]] std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const StateDiff& diff);
+
+// ★ S65b：**把"序号当 id"的引用归一化成 `*_temp_id`**（宽容读 + **偏离可见**）。
+// 判别力（保证**不改变任何本来合法的语义**）：只在"按字面解释**必然错**"时才改写 ——
+//   ① `*_id > 0`；② 库里该 id **不存在**，或它的 `kind` 与该字段**期望的 kind 不符**；
+//   ③ 本章 `entities[]` / `events[]` 里**声明过** `en:<该 id>`（按序号匹配）。
+// 判据 ② 正是 K02/K03 要挡的 ⇒ 字面解释一定会被门禁拒 ⇒ 改写只把"必错的"变成"作者真正想表达的"。
+// 返回命中条数（调用方负责 `log::Warn`：**偏离必须可见**）；本函数内部也逐条告警。
+[[nodiscard]] int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff);
 
 // ———— 门禁 G1–G5（`07` §2.3）————
 
