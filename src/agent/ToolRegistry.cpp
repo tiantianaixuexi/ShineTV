@@ -270,10 +270,17 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
             }
             if (adoc) yyjson_doc_free(adoc);
             // 追加到 history
+            // S45：**回填的这两个字段必须是「字符串」**（Responses 规范）——
+            // `function_call.arguments` 与 `function_call_output.output` 都是**JSON 文本字符串**，
+            // 不是 JSON 对象。真跑实测：传对象（`"arguments":{...}`）⇒ MiniMax 直接拒收
+            // （`input is neither string nor array of items`，报错位置正指向工具结果那一段 ——
+            //  而那段里能看到 `is_system`，说明**工具其实已经被成功调用了**，死在回填而非调用）。
+            // ⚠️ 转义交给 `util::json::JsonQuote`（S42 统一的唯一入口），别手写。
             const std::string item = fmt::format(
                 R"({{"type":"function_call","call_id":"{}","name":"{}","arguments":{}}})"
                 R"(,{{"type":"function_call_output","call_id":"{}","output":{}}})",
-                callId, name, argsStr.empty() ? "{}" : argsStr, callId, resultJson);
+                callId, name, util::json::JsonQuote(argsStr.empty() ? "{}" : argsStr), callId,
+                util::json::JsonQuote(resultJson));
             // history 是 [...]
             if (!history.empty() && history.back() == ']') {
                 history.pop_back();
