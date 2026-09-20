@@ -91,19 +91,23 @@ PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowI
 
     for (const ShotRow& shot : *shots) {
         ++out.shots_seen;
-        // 该镜的"主角色"（`character_ids_json` 的第一个）—— `Assemble` 靠 `character_id`
-        // 解析资产的 base 层与阶段外观（不传 → 拼不出角色外观，prompt 就只剩动作/镜头层）。
-        // ⚠️ 当前只拼第一个出场角色：多角色的合成规则（谁在前景、谁在背景）待补 —— 如实记账。
-        std::int64_t firstChar = 0;
+        // 该镜的**全部**出场角色（`contract 02` §2.7 的 `StateSnapshot.characters[]` 是数组）——
+        // `Assemble` 靠它们解析各自的资产 base 层与阶段外观（不传 → 拼不出角色外观，
+        // prompt 只剩动作/镜头层）。S25 起**所有**角色都拼，不再只拼第一个。
+        std::vector<RowId> shotChars;
         {
             yyjson_doc* d =
                 yyjson_read(shot.character_ids_json.data(), shot.character_ids_json.size(), 0);
             if (d != nullptr) {
                 yyjson_val* root = yyjson_doc_get_root(d);
-                if (yyjson_is_arr(root) && yyjson_arr_size(root) > 0) {
-                    yyjson_val* v = yyjson_arr_get(root, 0);
-                    if (yyjson_is_int(v)) {
-                        firstChar = yyjson_get_sint(v);
+                if (yyjson_is_arr(root)) {
+                    std::size_t i = 0;
+                    std::size_t max = 0;
+                    yyjson_val* v = nullptr;
+                    yyjson_arr_foreach(root, i, max, v) {
+                        if (yyjson_is_int(v) && yyjson_get_sint(v) > 0) {
+                            shotChars.push_back(yyjson_get_sint(v));
+                        }
                     }
                 }
                 yyjson_doc_free(d);
@@ -115,8 +119,9 @@ PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowI
                                .camera_id = shot.camera_id,
                                .composition_id = shot.composition_id,
                                .lighting_id = shot.lighting_id};
-        if (firstChar > 0) {
-            in.character_id = firstChar;
+        if (!shotChars.empty()) {
+            in.character_id = shotChars.front(); // 主角色（视为主视角/前景）
+            in.character_ids = shotChars;        // S25：**全部**出场角色，人人都要有外观
         }
         auto art = visual.Assemble(in);
         if (!art) {
@@ -216,10 +221,28 @@ bool RunPromptGenSelfCheck() {
                                  .canon_status = "CANON"});
         expect(st.has_value(), "建视觉阶段");
     }
+    // S25：**第二个角色**（多角色的证据）—— 一镜两人时，两人都必须有自己的外观
+    auto pov2 = g.UpsertEntity({.kind = std::string{kind::person}, .name = "自检配角"});
+    expect(pov2.has_value(), "建配角");
+    auto asset2 = v.UpsertAsset({.entity_id = pov2.value_or(0),
+                                 .kind = "character",
+                                 .name = "自检配角",
+                                 .base_desc = "a tall woman in a red cloak",
+                                 .sheet_rel_path = "visual/gen/selfcheck_sheet2.png",
+                                 .status = "READY"});
+    expect(asset2.has_value(), "建配角资产");
+    if (asset2) {
+        (void)v.UpsertState({.asset_id = *asset2,
+                             .stage_key = "S1",
+                             .from_chapter = 1,
+                             .appearance = "red cloak, hood up",
+                             .canon_status = "CANON"});
+    }
     auto shot = v.UpsertShot({.scene_id = sc.value_or(0),
                               .ord = 1,
                               .duration_note = "3.0s",
-                              .character_ids_json = fmt::format("[{}]", pov.value_or(0)),
+                              .character_ids_json = fmt::format("[{},{}]", pov.value_or(0),
+                                                                pov2.value_or(0)),
                               .prompt_text = "他按住伤口",
                               .start_state_json = R"({"lighting":"夜","environment":"库房"})",
                               .end_state_json = R"({"lighting":"夜","environment":"库房"})",
@@ -230,7 +253,7 @@ bool RunPromptGenSelfCheck() {
     const PromptGenOutcome first = GeneratePromptArtifacts(mem, ch.value_or(0));
     expect(first.ok, fmt::format("V10 应成功：{}", first.error));
     expect(first.artifacts_written == 1, "应写 1 条 V10 账");
-    expect(first.refs_resolved == 1, "参考图应从资产的 sheet_rel_path 解析出来");
+    expect(first.refs_resolved == 2, "参考图应从**两个**角色的 sheet_rel_path 解析出来");
     auto list = v.ListPromptArtifacts(ch.value_or(0));
     expect(list.has_value() && !list->empty(), "prompt_artifacts 应有行");
     if (list && !list->empty()) {
@@ -239,7 +262,12 @@ bool RunPromptGenSelfCheck() {
                "账的 chain/stage/shot_id 正确");
         expect(!r.input_state_hash.empty(), "PV1：必须带 input_state_hash");
         expect(!r.prompt.empty() && r.prompt.find("a wounded youth") != std::string::npos,
-               "prompt 来自九层组装（含 base 层文案）");
+               "prompt 来自九层组装（含主角色的 base 层文案）");
+        // S25（多角色）：**第二个角色也必须拼进去** —— 否则一镜两人时第 2 人隐形
+        expect(r.prompt.find("a tall woman in a red cloak") != std::string::npos,
+               "第二个出场角色的 base 层也在 prompt 里（S25 多角色）");
+        expect(r.prompt.find("red cloak, hood up") != std::string::npos,
+               "第二个角色的**阶段外观**（stage 层）也在 prompt 里");
         expect(r.references_json.find("selfcheck_sheet.png") != std::string::npos,
                "references_json 是该镜出场角色的资产 sheet");
     }

@@ -742,48 +742,73 @@ NovelVisual::Assemble(const AssemblePromptInput& in) const {
     RowId lightId = in.lighting_id > 0 ? in.lighting_id : shot.lighting_id;
     RowId compId = in.composition_id > 0 ? in.composition_id : shot.composition_id;
 
-    // 解析资产
-    if (assetId <= 0 && in.character_id) {
-        if (auto a = FindAssetByEntity(*in.character_id)) {
-            assetId = a->id;
-        }
-    }
+    // 解析资产：**只认调用方显式给的** `asset_id`。
+    // ⚠️ S25：这里原先还会用 `character_id` 预解析一次，把 `assetId` 填成"第一个角色"——
+    // 于是下面「按角色拼外观」的分支永远走不到，**第 2 个角色被静默丢掉**（自检撞出来的）。
+    // 角色的资产解析统一放在"角色外观"段里按 `character_id` + `character_ids` 逐个做。
     out.resolved_asset_id = assetId;
 
     std::string base, stage, scene, action, camera, composition, lighting, style, quality;
     std::string negative = std::string{kDefaultNegative};
 
-    // Base：asset.base_desc + layer
-    if (assetId > 0) {
-        if (auto a = GetAsset(assetId)) {
-            base = a->base_desc;
-            if (!a->materials_colors.empty()) {
-                base += (base.empty() ? "" : ", ") + a->materials_colors;
-            }
+    // —— 角色外观（base / stage 两层）——
+    // S25：**支持多角色**。一镜里可能有多个人（契约 `02` §2.7 的 `StateSnapshot.characters[]`
+    // 本就是数组）；原先只拼 `character_id` 一个 ⇒ 第 2 个人在 prompt 里完全"隐形"。
+    const auto appendText = [](std::string& dst, std::string_view part) {
+        if (!part.empty()) {
+            dst += (dst.empty() ? "" : ", ") + std::string{part};
+        }
+    };
+    // 单个资产的 base（外观基座）+ stage（按剧情章的阶段外观），追加进 base/stage
+    const auto appendAsset = [&](RowId oneAsset) {
+        if (oneAsset <= 0) {
+            return;
+        }
+        if (auto a = GetAsset(oneAsset)) {
+            appendText(base, a->base_desc);
+            appendText(base, a->materials_colors);
         }
         RowId lid = 0;
-        if (auto t = QueryLayer("asset", assetId, "base", &lid); !t.empty()) {
-            if (base.empty()) base = t;
-            else base += ", " + t;
+        if (auto t = QueryLayer("asset", oneAsset, "base", &lid); !t.empty()) {
+            appendText(base, t);
             out.used_layer_ids.push_back(lid);
         }
         // Stage（按剧情章）
-        if (auto st = ResolveVisualState(assetId, in.chapter_id)) {
-            out.resolved_state_id = st->id;
-            stage = st->appearance;
-            if (!st->materials_colors.empty()) {
-                stage += (stage.empty() ? "" : ", ") + st->materials_colors;
+        if (auto st = ResolveVisualState(oneAsset, in.chapter_id)) {
+            if (out.resolved_state_id == 0) {
+                out.resolved_state_id = st->id; // 记"第一个"（视为主角色）的阶段
             }
-            if (!st->effects.empty()) {
-                stage += (stage.empty() ? "" : ", ") + st->effects;
-            }
+            appendText(stage, st->appearance);
+            appendText(stage, st->materials_colors);
+            appendText(stage, st->effects);
             RowId sl = 0;
             if (auto t = QueryLayer("state", st->id, "stage", &sl); !t.empty()) {
-                stage += (stage.empty() ? "" : ", ") + t;
+                appendText(stage, t);
                 out.used_layer_ids.push_back(sl);
             }
-            if (!st->environment_hint.empty()) {
+            if (scene.empty() && !st->environment_hint.empty()) {
                 scene = st->environment_hint;
+            }
+        }
+    };
+    if (assetId > 0) {
+        appendAsset(assetId); // 显式给了 asset（既有语义）：只用它
+    } else {
+        std::vector<RowId> chars;
+        if (in.character_id.has_value() && *in.character_id > 0) {
+            chars.push_back(*in.character_id);
+        }
+        for (const RowId cid : in.character_ids) {
+            if (cid > 0 && std::find(chars.begin(), chars.end(), cid) == chars.end()) {
+                chars.push_back(cid);
+            }
+        }
+        for (const RowId cid : chars) {
+            if (auto a = FindAssetByEntity(cid)) {
+                if (out.resolved_asset_id == 0) {
+                    out.resolved_asset_id = a->id;
+                }
+                appendAsset(a->id);
             }
         }
     }

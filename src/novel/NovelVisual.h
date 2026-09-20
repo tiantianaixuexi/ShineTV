@@ -136,6 +136,10 @@ struct AssemblePromptInput {
     RowId chapter_id = 0;
     RowId scene_id = 0;
     std::optional<RowId> character_id;
+    // S25：**本镜的全部出场角色**（契约 `02` §2.7 的 `StateSnapshot.characters[]` 是数组）。
+    // 原先只有单个 `character_id` ⇒ 一镜两人时第 2 个人在 prompt 里完全隐形。
+    // 与 `character_id` 的关系：两者都会被拼，重复的按第一个出现算（顺序：`character_id` 优先）。
+    std::vector<RowId> character_ids;
     std::optional<RowId> asset_id;
     std::optional<RowId> shot_id;
     // 可选指定镜头/构图/光（0 = 用 shot 或默认）

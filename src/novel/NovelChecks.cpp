@@ -1930,6 +1930,12 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
     // 产物被误判为"可复用"（V10 的自检就是这么撞出来的）。所以 `chain == "visual"` 时
     // 额外纳入 `visual_assets` 与 `visual_states`。
     if (chain == "visual") {
+        // ⚠️ **`13` §2.7 PV7（S25 补）**：**组装规则版本**也参与哈希。
+        // 输入状态没变、但"怎么拼"的规则变了（如 S25 的多角色拼装），旧产物**必须失效** ——
+        // 否则"修了 bug 但真实工程里的旧 prompt 永远不更新"（S25 实测踩到：改完多角色，
+        // 对真实工程重跑 `--novel-prompt` 会全部"复用"，旧的残缺 prompt 一直留着）。
+        // 规则变了就把这个版本号 +1。
+        canon += "prompt_rule_version=2\n";
         appendRows("visual_assets",
                    "SELECT id,base_desc || '|' || sheet_rel_path || '|' || status FROM visual_assets "
                    "ORDER BY id",
