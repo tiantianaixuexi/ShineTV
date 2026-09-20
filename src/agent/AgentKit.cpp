@@ -401,6 +401,49 @@ public:
     }
 };
 
+// ── S51：本章世界级字段（`NovelFields::ListWorldFields`）──
+// 用途：**让模型自己查** —— 原先它是**预塞进 system prompt** 的（见 `BuildSystemPrompt`）。
+// ⚠️ 为什么该挪：按用户立的规矩「**事实就该能查**」—— 字段**定义**（`field_defs`）是**契约**，
+//    预塞合理；但"**当前世界级字段的值**"是**数据**，预塞就等于替模型决定它需要什么。
+class ListWorldFieldsTool final : public KitTool {
+public:
+    explicit ListWorldFieldsTool(std::shared_ptr<AgentKit> kit) : KitTool(std::move(kit)) {}
+    std::string_view Name() const override { return "list_world_fields"; }
+    std::string_view Description() const override {
+        return "读取本章的**世界级字段**（key/value/layer）：世界观设定、规则、当前世界状态。";
+    }
+    yyjson_mut_val* Schema(yyjson_mut_doc* doc) const override {
+        auto* o = ObjType(doc);
+        AddIntProp(doc, o, "chapter_id", "章 id（本章的章 id）");
+        return o;
+    }
+    std::expected<yyjson_doc*, ToolError> Execute(yyjson_val* args) override {
+        if (!kit_) {
+            return ErrDoc("state", "kit 未绑定");
+        }
+        const auto cid = ArgI64(args, "chapter_id");
+        if (cid <= 0) {
+            return ErrDoc("bad_args", "需要 chapter_id（本章的章 id）");
+        }
+        NovelFields fields(kit_->Db());
+        auto wf = fields.ListWorldFields(cid);
+        if (!wf) {
+            return ErrDoc("db", wf.error().message);
+        }
+        std::string arr = "[";
+        for (std::size_t i = 0; i < wf->size(); ++i) {
+            const auto& f = (*wf)[i];
+            if (i) {
+                arr += ",";
+            }
+            arr += fmt::format(R"({{"key":"{}","value":"{}","layer":"{}"}})", EscJson(f.field_key),
+                               EscJson(f.value_text), EscJson(f.layer));
+        }
+        arr += "]";
+        return OkDoc(arr);
+    }
+};
+
 // ── S48：本章镜骨架（阶段链的"合同"）────────────────────
 // 用途：让**阶段 Agent 自己查**"本章有哪些场、每场几镜、每镜多长" —— 而不是把骨架塞进 user。
 // ⚠️ 起因：S47 我把骨架**明写进 user**（理由是"模型不知道每场几镜会乱编，4/4/3/15/6/4 全不一样"），
@@ -471,16 +514,15 @@ public:
                     R"({{"source":"db","chapter_id":{},"scenes":{}}})", cid, scenes));
             }
         }
-        const auto path = std::filesystem::path{kit_->ProjectDir()} / "work" /
-                          fmt::format("ch{:03}", ch->ord) / "v01_scene_breakdown.json";
-        const auto text = util::ReadFileBytes(path);
-        if (!text) {
-            return ErrDoc("not_found",
-                          fmt::format("本章还没有 V1 骨架（{}）—— 先跑 `--novel-stages <ch> "
-                                      "--up-to V1`",
-                                      util::PathToUtf8(path)));
-        }
-        return OkDoc(std::string{*text});
+        // S51：**不再回退读盘**（用户要求把"库是唯一权威"贯彻到底）。
+        // ⚠️ 老工程（S49 落库之前跑过的）库里没有 V1 行 ⇒ 这里会明确报错并提示**重跑一次**。
+        //    这是**刻意**的：留着回退读盘，"唯一权威"就名存实亡 —— 出问题时你根本不知道
+        //    这次读的是库还是盘（两处数据来源，迟早分叉；见 S35 空间层那次的教训）。
+        return ErrDoc(
+            "not_found",
+            fmt::format("本章没有 V1 骨架落库（chapter_id={}，章 ord={}）—— 跑一次 "
+                        "`--novel-stages {} --up-to V1` 把它落进 `stage_artifacts` 即可",
+                        cid, ch->ord, cid));
     }
 };
 
@@ -849,18 +891,10 @@ std::expected<std::string, DbError> AgentKit::BuildSystemPrompt(std::string_view
         fieldList = arr;
     }
 
-    std::string worldFields = "[]";
-    if (auto wf = fields.ListWorldFields(chapterId); wf) {
-        std::string arr = "[";
-        for (std::size_t i = 0; i < wf->size(); ++i) {
-            const auto& f = (*wf)[i];
-            if (i) arr += ",";
-            arr += fmt::format(R"({{"key":"{}","value":"{}","layer":"{}"}})", f.field_key,
-                               f.value_text, f.layer);
-        }
-        arr += "]";
-        worldFields = arr;
-    }
+    // S51：**世界级字段不再预塞**（原先这里有 `worldFields` 字符串拼进 prompt）。
+    // ⚠️ 理由：**字段定义**（下面的 `fieldList`）是**契约**，预塞合理；但"本章世界级字段的**值**"
+    //    是**数据** ⇒ 按「事实就该能查」的规矩，改成让模型用工具 `list_world_fields` 自己取。
+    // ⚠️ 与本 Agent 的白名单无关：即使没给该工具，也只是"查不到"，不会错——**不预塞不会给它错误信息**。
 
     return fmt::format(
         "{}\n\n"
@@ -870,9 +904,9 @@ std::expected<std::string, DbError> AgentKit::BuildSystemPrompt(std::string_view
         "- 写库后其它 Agent / MCP 通过 list_entity_fields / list_field_defs 读取理解。\n"
         "- 可用工具（白名单）：{}\n"
         "- 动态字段定义：{}\n"
-        "- 当前世界级字段（章 {}）：{}\n"
+        "- **本章世界级字段**：用工具 `list_world_fields`（chapter_id={}）查，**别猜**。\n"
         "{}",
-        base, toolsHint, fieldList, chapterId, worldFields,
+        base, toolsHint, fieldList, chapterId,
         outHint.empty() ? "" : "\n## 期望输出\n" + outHint);
 }
 
@@ -920,6 +954,8 @@ void AgentKit::RegisterToolsFor(std::string_view agentId, ToolRegistry& reg) con
     if (agentId.size() > 2 && agentId[0] == 'v' && agentId[1] >= '2' && agentId[1] <= '7' &&
         agentId[2] == '_') {
         reg.Register(std::make_unique<GetChapterShotsTool>(self));
+        // S51：世界级字段也走工具（原先预塞在 system prompt 里 —— 那是"数据"不是"契约"）
+        reg.Register(std::make_unique<ListWorldFieldsTool>(self));
     }
     if (isField || isWorld) {
         if (allowWrite_) {
@@ -1250,8 +1286,8 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         r.system_prompt = std::string{StageSystemPrompt(st)};
         // S48：白名单加 `get_chapter_shots` —— 让阶段 Agent **自己查**要遵守的镜骨架
         //（有几镜、ord、时长）。⚠️ 这是"合同"，但拿到它的方式仍是**工具**，不是 user 里的明文。
-        r.tools_json =
-            R"(["get_chapter_shots","get_entity","list_entities","list_entity_fields","list_field_defs"])";
+        r.tools_json = R"(["get_chapter_shots","list_world_fields","get_entity","list_entities",)"
+                       R"("list_entity_fields","list_field_defs"])";
         r.output_hint = R"({"items":[{"scene_ord":…,"ord":…}]})";
         r.enabled = 1;
         r.is_builtin = 1;

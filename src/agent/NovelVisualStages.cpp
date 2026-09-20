@@ -130,6 +130,37 @@ RunSceneBreakdown(::shine::db::sqlite::Database& db, const LlmCallFn& call,
                             ++out.shots_planned; // 每场镜数（按 ord==1 记一场；近似但可见）
                         }
                     }
+                    // S51：**复用也落库**（同 V2–V7）—— V1 的形状是 `scenes[].shots[]`，
+                    // 用刚读回的 `sk` 补写（只在库里还没有 V1 行时才写）。
+                    if (!sk.empty()) {
+                        novelcore::NovelVisual vis(db);
+                        bool need = true;
+                        if (auto ex = vis.ListStageArtifacts(req.chapter_id, "V1"); ex) {
+                            need = ex->empty();
+                        }
+                        if (need) {
+                            std::vector<novelcore::StageArtifactRow> rows;
+                            rows.reserve(sk.size());
+                            for (const ShotSkeleton& s : sk) {
+                                novelcore::StageArtifactRow row;
+                                row.chapter_id = req.chapter_id;
+                                row.stage = "V1";
+                                row.scene_ord = s.scene_ord;
+                                row.shot_ord = s.ord;
+                                row.payload_json =
+                                    fmt::format(R"({{"ord":{},"duration":{:.2f}}})", s.ord,
+                                                s.duration);
+                                row.input_state_hash = hash;
+                                rows.push_back(std::move(row));
+                            }
+                            if (auto wr = vis.ReplaceStageArtifacts(req.chapter_id, "V1", rows);
+                                !wr) {
+                                out.warnings.push_back(fmt::format(
+                                    "V1 复用：回填 stage_artifacts 失败（不阻断）：{}",
+                                    wr.error().message));
+                            }
+                        }
+                    }
                     log::Info("V1 复用（{}）", path);
                     return out;
                 }
@@ -613,6 +644,62 @@ ShotSkeleton(const std::filesystem::path& project_dir, int chapter_ord) {
     return out;
 }
 
+// S51：**复用分支的落库补写**。复用（哈希命中、不重调 LLM）时原先**直接 return、跳过落库**
+// ⇒ **S49 之前跑过的老工程**库里永远没有该阶段的行（数据只在盘上）。
+// ⚠️ 只在"库里还没有该阶段的行"时才补：省一次读盘，也避免每次复用都把库重写一遍。
+// ⚠️ 形状：读盘上产物的 `items[]`（V2–V7 的形状；V1 是 `scenes[].shots[]`，由调用方单独处理）。
+[[nodiscard]] bool BackfillStageArtifacts(db::sqlite::Database& db, novelcore::RowId chapterId,
+                                          std::string_view stage, std::string_view hash,
+                                          const std::filesystem::path& artifact) {
+    novelcore::NovelVisual vis(db);
+    if (auto existing = vis.ListStageArtifacts(chapterId, stage);
+        existing && !existing->empty()) {
+        return true; // 已落过（正常路径），不必补
+    }
+    const auto text = util::ReadFileBytes(artifact);
+    if (!text) {
+        return false;
+    }
+    yyjson_doc* d = yyjson_read(text->data(), text->size(), 0);
+    if (d == nullptr) {
+        return false;
+    }
+    yyjson_val* root = yyjson_doc_get_root(d);
+    yyjson_val* items = yyjson_is_obj(root) ? yyjson_obj_get(root, "items") : nullptr;
+    std::vector<novelcore::StageArtifactRow> rows;
+    if (yyjson_is_arr(items)) {
+        std::size_t i = 0;
+        std::size_t n = 0;
+        yyjson_val* it = nullptr;
+        yyjson_arr_foreach(items, i, n, it) {
+            if (!yyjson_is_obj(it)) {
+                continue;
+            }
+            const yyjson_val* so = yyjson_obj_get(it, "scene_ord");
+            const yyjson_val* od = yyjson_obj_get(it, "ord");
+            const int sc = yyjson_is_int(so) ? static_cast<int>(yyjson_get_sint(so)) : 0;
+            const int ok = yyjson_is_int(od) ? static_cast<int>(yyjson_get_sint(od)) : 0;
+            if (sc <= 0 || ok <= 0) {
+                continue;
+            }
+            const char* raw = yyjson_val_write(it, 0, nullptr);
+            novelcore::StageArtifactRow r;
+            r.chapter_id = chapterId;
+            r.stage = std::string{stage};
+            r.scene_ord = sc;
+            r.shot_ord = ok;
+            r.payload_json = raw != nullptr ? std::string{raw} : "{}";
+            if (raw != nullptr) {
+                free(const_cast<char*>(raw));
+            }
+            r.input_state_hash = std::string{hash};
+            rows.push_back(std::move(r));
+        }
+    }
+    yyjson_doc_free(d);
+    return rows.empty() || vis.ReplaceStageArtifacts(chapterId, stage, rows).has_value();
+}
+
 std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
                                                        const LlmCallFn& call,
                                                        const StageRequest& req) {
@@ -670,6 +757,11 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
                     }
                     yyjson_doc_free(d);
                 }
+            }
+            // S51：**复用也落库**（补老工程的缺口）—— 原先复用分支**直接 return、跳过落库**，
+            // 于是 S49 之前跑过的工程库里永远没有该阶段的行（数据只在盘上）。
+            if (!BackfillStageArtifacts(db, req.chapter_id, code, hash, artifact)) {
+                log::Warn("{} 复用：回填 stage_artifacts 失败（不阻断 —— 盘上产物仍在）", code);
             }
             log::Info("{} 复用（{}）", code, out.artifact_path);
             return out;
@@ -1175,6 +1267,32 @@ bool RunStagesSelfCheck() {
                            forShot.has_value() && !forShot->empty() ? forShot->front().payload_json
                                                                     : "?",
                            forShot.has_value() ? "" : forShot.error().message));
+    }
+
+    // ⑦ S51：**复用分支的落库补写**（`BackfillStageArtifacts`）—— 老工程（S49 落库之前跑过的）
+    //    数据只在盘上，复用分支原先**直接 return、跳过落库** ⇒ 补写是必需的（且必须**幂等**）。
+    {
+        const auto cid2 = ch.value_or(0);
+        novelcore::NovelVisual vis(mem);
+        const auto artDir = std::filesystem::path{dir} / "work" / "ch001";
+        std::filesystem::create_directories(artDir, ec);
+        const std::string art =
+            R"-({"stage":"V6","items":[{"scene_ord":1,"ord":1,"duration":3.0}]})-";
+        expect(util::WriteFileBytes(artDir / "v06_timeline.json", art), "S51：写盘上产物");
+        expect(BackfillStageArtifacts(mem, cid2, "V6", "h6", artDir / "v06_timeline.json"),
+               "S51：**库空 + 盘上有产物 ⇒ 补写应成功**");
+        auto r1 = vis.ListStageArtifacts(cid2, "V6");
+        expect(r1.has_value() && r1->size() == 1 && r1->front().shot_ord == 1,
+               fmt::format("S51：补写后应能查到 1 行（实际 {}）", r1.has_value() ? r1->size() : 0));
+        // **幂等**：库里已有 ⇒ 直接返回 true、**不重写**（否则每次复用都白写一遍库）
+        expect(BackfillStageArtifacts(mem, cid2, "V6", "h6", artDir / "v06_timeline.json"),
+               "S51：第二次补写也应成功（幂等）");
+        auto r2 = vis.ListStageArtifacts(cid2, "V6");
+        expect(r2.has_value() && r2->size() == 1, "S51：补写幂等（不应重复写）");
+        // 库空 + 盘上**没有**产物 ⇒ 返回 false（**不瞎写**）
+        expect(!BackfillStageArtifacts(mem, cid2, "V7", "h7", artDir / "不存在.json"),
+               "S51：库空且盘上产物缺失 ⇒ 应返回 false（不瞎写空数据）");
+        std::filesystem::remove_all(dir, ec);
     }
 
     // ③ 没有 scenes 的章 → 明确报错（V1 的输入前提）
