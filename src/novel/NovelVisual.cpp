@@ -518,6 +518,112 @@ std::expected<ShotRow, DbError> NovelVisual::GetShot(RowId id) const {
     return r;
 }
 
+// S49（v12）：阶段产物——整阶段重写 / 读取（"一镜一行"，见 `NovelVisual.h` 的说明）
+std::expected<void, DbError> NovelVisual::ReplaceStageArtifacts(
+    RowId chapterId, std::string_view stage, const std::vector<StageArtifactRow>& rows) {
+    // ① **先删该 (章, 阶段) 的全部行** —— 阶段是**整体重算**的：增量 upsert 会在"镜数变少"时
+    //    留下残行，而残行会让"按镜查上游设计"读到**过期数据**（比没有更坏）。
+    {
+        auto del = db_->Prepare("DELETE FROM stage_artifacts WHERE chapter_id=?1 AND stage=?2");
+        if (!del) {
+            return std::unexpected(del.error());
+        }
+        (void)del->BindInt(1, static_cast<std::int64_t>(chapterId));
+        (void)del->BindText(2, std::string{stage});
+        if (auto s = del->Step(); !s) {
+            return std::unexpected(s.error());
+        }
+    }
+    // ② 再插入新的（`ON CONFLICT` 只是防同一批里有重复键；正常不会命中）
+    for (const StageArtifactRow& r : rows) {
+        auto st = db_->Prepare(
+            "INSERT INTO stage_artifacts(chapter_id,stage,scene_ord,shot_ord,payload_json,"
+            "input_state_hash,created) VALUES(?1,?2,?3,?4,?5,?6,?7)"
+            " ON CONFLICT(chapter_id,stage,scene_ord,shot_ord) DO UPDATE SET"
+            " payload_json=excluded.payload_json,input_state_hash=excluded.input_state_hash,"
+            " created=excluded.created");
+        if (!st) {
+            return std::unexpected(st.error());
+        }
+        (void)st->BindInt(1, static_cast<std::int64_t>(chapterId));
+        (void)st->BindText(2, std::string{stage});
+        (void)st->BindInt(3, r.scene_ord);
+        (void)st->BindInt(4, r.shot_ord);
+        (void)st->BindText(5, r.payload_json.empty() ? "{}" : r.payload_json);
+        (void)st->BindText(6, r.input_state_hash);
+        (void)st->BindInt(7, r.created != 0 ? r.created : NowSec());
+        if (auto s = st->Step(); !s) {
+            return std::unexpected(s.error());
+        }
+    }
+    return {};
+}
+
+namespace {
+// 读 `stage_artifacts` 的公共行映射（两条查询共用）
+[[nodiscard]] StageArtifactRow ReadStageArtifactRow(db::sqlite::Statement& st) {
+    StageArtifactRow r;
+    r.id = st.ColumnInt(0);
+    r.chapter_id = st.ColumnInt(1);
+    r.stage = st.ColumnText(2);
+    r.scene_ord = static_cast<int>(st.ColumnInt(3));
+    r.shot_ord = static_cast<int>(st.ColumnInt(4));
+    r.payload_json = st.ColumnText(5);
+    r.input_state_hash = st.ColumnText(6);
+    r.created = st.ColumnInt(7);
+    return r;
+}
+} // namespace
+
+std::expected<std::vector<StageArtifactRow>, DbError>
+NovelVisual::ListStageArtifacts(RowId chapterId, std::string_view stage) const {
+    auto st = db_->Prepare("SELECT id,chapter_id,stage,scene_ord,shot_ord,payload_json,"
+                           "input_state_hash,created FROM stage_artifacts "
+                           "WHERE chapter_id=?1 AND stage=?2 ORDER BY scene_ord,shot_ord");
+    if (!st) {
+        return std::unexpected(st.error());
+    }
+    (void)st->BindInt(1, static_cast<std::int64_t>(chapterId));
+    (void)st->BindText(2, std::string{stage});
+    std::vector<StageArtifactRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) {
+            return std::unexpected(s.error());
+        }
+        if (*s == db::sqlite::StepResult::Done) {
+            break;
+        }
+        out.push_back(ReadStageArtifactRow(*st));
+    }
+    return out;
+}
+
+std::expected<std::vector<StageArtifactRow>, DbError>
+NovelVisual::ListStageArtifactsForShot(RowId chapterId, int sceneOrd, int shotOrd) const {
+    auto st = db_->Prepare("SELECT id,chapter_id,stage,scene_ord,shot_ord,payload_json,"
+                           "input_state_hash,created FROM stage_artifacts "
+                           "WHERE chapter_id=?1 AND scene_ord=?2 AND shot_ord=?3 ORDER BY stage");
+    if (!st) {
+        return std::unexpected(st.error());
+    }
+    (void)st->BindInt(1, static_cast<std::int64_t>(chapterId));
+    (void)st->BindInt(2, sceneOrd);
+    (void)st->BindInt(3, shotOrd);
+    std::vector<StageArtifactRow> out;
+    for (;;) {
+        auto s = st->Step();
+        if (!s) {
+            return std::unexpected(s.error());
+        }
+        if (*s == db::sqlite::StepResult::Done) {
+            break;
+        }
+        out.push_back(ReadStageArtifactRow(*st));
+    }
+    return out;
+}
+
 std::expected<std::vector<ShotRow>, DbError> NovelVisual::ListShotsByChapter(RowId chapterId) const {
     std::vector<ShotRow> out;
     if (chapterId <= 0) return out;

@@ -16,7 +16,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 11;
+constexpr int kTargetSchemaVersion = 12;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -805,6 +805,11 @@ std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database&
         }
     }
     // 字段门禁三表（S2b）的唯一来源
+    // S49：v12 的 `stage_artifacts` **不在这批 DDL 常量里**（它用 `CREATE TABLE IF NOT EXISTS`，
+    // 与 `ALTER ADD COLUMN` 那种"靠失败被忽略"的幂等不同）⇒ 必须在这里显式建。
+    // ⚠️ 漏了它的后果是真跑才发现的：`stages` 自检整段失败（"no such table: stage_artifacts"），
+    //    因为该自检走的就是 `ApplyCanonicalSchema`。
+    EnsureStageArtifactsTable(db);
     return NovelFields::EnsureSchema(db);
 }
 
@@ -839,6 +844,31 @@ void NovelDb::AddShotStateColumns(db::sqlite::Database& db) {
     (void)db.Exec("ALTER TABLE shots ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '{}'");
 }
 
+void NovelDb::EnsureStageArtifactsTable(db::sqlite::Database& db) {
+    // v12（S49）：**阶段产物落库** —— 把 `work/ch<NNN>/vNN_*.json` 里"已经是世界状态"的那部分
+    // 收进库里（S37 记的那笔账：V3–V7 被 V9 消费、被 V10 读、被 S34 比对，**却只躺在盘上**
+    // ⇒ 想"按镜查上游设计"只能**扫盘再解析**，库里 `shots` 看不到）。
+    // ⚠️ 形状统一成"**一镜一行**"（`(chapter, stage, scene_ord, shot_ord)`）—— 这样 V1 骨架
+    //    （场/镜）与 V2–V7 的 `items[]` **同构**，查"某镜的六阶段设计"就是一句 `WHERE`。
+    // ⚠️ 为什么不给 `shots` 加 5 个列：阶段产物是"一镜 × 一阶段"的**二维**，加列会随 V8/V9
+    //    不断增加；一张表 + `stage` 字段天然可扩。
+    // ⚠️ 盘上文件**不废除**（它们是"LLM 原始回答的留底" + 阶段级哈希续跑的凭据）—— 但现在
+    //    **库是查询入口**，盘只是可重建的副本（`01` §2 的架构判断）。
+    // `CREATE TABLE IF NOT EXISTS` 天然幂等（不像 `ALTER ADD COLUMN` 要靠失败被忽略）。
+    (void)db.Exec("CREATE TABLE IF NOT EXISTS stage_artifacts("
+                  "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                  "chapter_id INTEGER NOT NULL,"
+                  "stage TEXT NOT NULL,"          // "V1"…"V7"
+                  "scene_ord INTEGER NOT NULL DEFAULT 0,"
+                  "shot_ord INTEGER NOT NULL DEFAULT 0,"
+                  "payload_json TEXT NOT NULL DEFAULT '{}',"
+                  "input_state_hash TEXT NOT NULL DEFAULT '',"
+                  "created INTEGER NOT NULL DEFAULT 0,"
+                  "UNIQUE(chapter_id,stage,scene_ord,shot_ord))");
+    (void)db.Exec("CREATE INDEX IF NOT EXISTS idx_stage_artifacts_chapter_stage "
+                  "ON stage_artifacts(chapter_id,stage)");
+}
+
 void NovelDb::AddShotIntentColumn(db::sqlite::Database& db) {
     // v11（S36）：`shots.intent_json` —— V2 `DIRECTOR_INTENT` 的承载列（`02` §2.7 的七问 +
     // 情绪强度）。S33 记账的那个洞：V2 的产物**没有承载字段**，V9 落库时只能丢掉 ⇒ 无从比对。
@@ -866,7 +896,8 @@ std::expected<void, DbError> NovelDb::EnsureSchemaUpToDate(db::sqlite::Database&
     // 旧库补列（幂等：列已存在时 ALTER 失败被忽略）
     AddShotStateColumns(db);
     AddPromptArtifactColumns(db);
-    AddShotIntentColumn(db); // v11（S36）
+    AddShotIntentColumn(db);         // v11（S36）
+    EnsureStageArtifactsTable(db);   // v12（S49）
     // 字段表：`ApplyCanonicalSchema` **不含**它（`08` §2.3 的唯一来源在 `NovelFields`）
     return NovelFields::EnsureSchema(db);
 }
@@ -900,6 +931,7 @@ std::expected<void, DbError> NovelDb::Migrate() {
     AddPromptArtifactColumns(db_);
     // v11（S36）：`shots` 补 `intent_json`（V2 `DIRECTOR_INTENT` 的承载列）
     AddShotIntentColumn(db_);
+    EnsureStageArtifactsTable(db_); // v12（S49）
     // —— v8（S2b）：字段门禁 ——
     // 字段表（field_defs / entity_fields / field_aliases）的 DDL **只保留在
     // `NovelFields::EnsureSchema` 一处**（规格 `08` §2.3）。原先这里自带一份建表，
@@ -1101,6 +1133,28 @@ bool NovelDb::RunSchemaSelfCheck() {
     // 复用同一个 `mem`（v9 段已建了**旧形状** shots）：与 v9 段同款，`ALTER` 必须**幂等**。
     NovelDb::AddShotIntentColumn(mem);
     NovelDb::AddShotIntentColumn(mem); // 幂等：列已存在也不应炸
+    // —— v12（S49）：`stage_artifacts`（阶段产物落库）——
+    // ⚠️ 自检的建表是**手写的一份**（上面 `CREATE TABLE IF NOT EXISTS shots(...)`），
+    //    **不含** v12 的表 ⇒ 必须在这里显式补，否则 `NovelVisualStages` 的自检会因
+    //    "no such table: stage_artifacts" 整段失败（真跑就是这么发现的）。
+    NovelDb::EnsureStageArtifactsTable(mem);
+    if (auto r = mem.Exec("INSERT INTO stage_artifacts(chapter_id,stage,scene_ord,shot_ord,"
+                          "payload_json) VALUES(7,'V1',1,1,'{\"ord\":1}')");
+        !r) {
+        log::Error("NovelDb 自检：v12 写 stage_artifacts 失败 {}", r.error().message);
+        return false;
+    }
+    {
+        auto st = mem.Prepare("SELECT payload_json FROM stage_artifacts WHERE chapter_id=7");
+        if (!st) {
+            log::Error("NovelDb 自检：v12 查 stage_artifacts 失败");
+            return false;
+        }
+        if (!st->Step() || st->ColumnText(0).find("ord") == std::string::npos) {
+            log::Error("NovelDb 自检：v12 的 stage_artifacts 读写不符");
+            return false;
+        }
+    }
     if (auto r = mem.Exec("INSERT INTO shots(scene_id,ord,intent_json) VALUES(9,1,"
                           "'{\"see\":\"看到门\",\"intensity\":80}')");
         !r) {

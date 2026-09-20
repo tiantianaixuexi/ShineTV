@@ -63,6 +63,11 @@ public:
     // **唯一来源**：`Migrate()` / `EnsureSchemaUpToDate()` / `RunSchemaSelfCheck` 都调它。
     static void AddShotIntentColumn(db::sqlite::Database& db);
 
+    // v12（S49）：`stage_artifacts` 表（阶段产物落库 —— "一镜一行"，见 cpp 注释）。
+    // **唯一来源**：`Migrate()` / `EnsureSchemaUpToDate()` / `RunSchemaSelfCheck` 都调它。
+    // `CREATE TABLE IF NOT EXISTS` 天然幂等（不像 `ALTER ADD COLUMN` 要靠失败被忽略）。
+    static void EnsureStageArtifactsTable(db::sqlite::Database& db);
+
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();
 
