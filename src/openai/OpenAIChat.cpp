@@ -241,16 +241,20 @@ ChatStream(std::string_view baseUrl, std::string_view apiKey, const ChatRequest&
 // ⚠️ 只走 Responses：Chat 那条路的 tools 形状不同，且实测输出上限卡 4096（多轮很容易撞上）。
 std::expected<std::string, ApiError> LlmCreateRaw(std::string_view instructions,
                                                   std::string_view inputJson,
-                                                  std::string_view toolsJson) {
+                                                  std::string_view toolsJson,
+                                                  std::string_view model) {
     const LlmProfile p = ResolveActiveProfile();
     if (p.apiKey.empty()) {
         return std::unexpected(MakeErr(
             0, "no_key",
             fmt::format("未配置 {} API 密钥（设置或环境变量）", ProviderLabel(p.provider))));
     }
-    Client c(p.baseUrl, p.apiKey, p.model);
+    // S62：`model` 空 = profile 默认；非空 = 按**角色**指定的模型（与 `LlmComplete` 同口径）——
+    // 否则正文链的 Extractor 走工具循环时会**绕过** `09` §2.4 的按角色路由。
+    const std::string mdl = model.empty() ? p.model : std::string{model};
+    Client c(p.baseUrl, p.apiKey, mdl);
     CreateRequest req;
-    req.model = p.model;
+    req.model = mdl;
     req.instructions = std::string{instructions};
     req.maxOutputTokens = 16384; // Responses 官方字段（Chat 端的 4096 拘束不适用）
     yyjson_doc* idoc = yyjson_read(inputJson.data(), inputJson.size(), 0);

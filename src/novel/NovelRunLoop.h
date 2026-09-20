@@ -177,6 +177,10 @@ struct RunRequest {
     int checkpoint_every = 10;         // `09` §2.5（0 = 关）
     bool resume = true;                // `09` §2.6
     bool auto_create_chapters = false; // 无非完成章时自动建下一章（`03` CHAPTER_GOAL 未实现前的替代）
+    // ★ S62：**原始响应**通道 —— 传给 `GenerateChapterRequest::create_raw`，让 EXTRACT 能走
+    // **工具循环**（模型自己 `list_entities` 查 id，而不是把清单喂进 prompt）。
+    // 由 app 层在一次调用里注入（UI 与 CLI 共用 `FillPreconditions`）；空 = 退回单轮。
+    agent::LlmCreateRawFn create_raw;
     std::function<void(const RunProgress&)> on_progress;
     std::function<bool()> cancel;      // true = 用户取消（保存进度，不算失败）
 };

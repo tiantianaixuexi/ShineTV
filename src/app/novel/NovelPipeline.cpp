@@ -26,6 +26,20 @@ agent::LlmCallFn MakeLlmCall(const std::atomic<bool>* cancel) {
     };
 }
 
+agent::LlmCreateRawFn MakeLlmCreateRaw() {
+    return [](std::string_view ins, std::string_view input,
+              std::string_view tools) -> std::expected<std::string, std::string> {
+        // ★ S62：与 `MakeLlmCall` 同口径按**角色**选模型 —— extractor 走
+        // `ResolveModel("extractor")`，不绕过 `09` §2.4 的分层路由。
+        const std::string model = openai::ResolveModel(agent::LlmRoleName(agent::LlmRole::Extractor));
+        auto r = openai::LlmCreateRaw(ins, input, tools, model);
+        if (!r) {
+            return std::unexpected(std::string{r.error().message});
+        }
+        return *r;
+    };
+}
+
 bool CrossReviewEffective() {
     return openai::ResolveModel("critic") != openai::ResolveModel("writer");
 }
@@ -102,6 +116,8 @@ void FillPreconditions(novelcore::RunRequest& req, std::int64_t max_total_llm_ca
     req.llm_ready = !openai::ResolveActiveProfile().apiKey.empty();
     req.cross_review_ok = CrossReviewEffective();
     req.max_total_llm_calls = max_total_llm_calls;
+    // S62：注入"原始响应"通道 → EXTRACT 走工具循环（UI 与 CLI 都从这里过，一处注入两处生效）
+    req.create_raw = MakeLlmCreateRaw();
 }
 
 novelcore::RunOutcome RunOnce(::shine::db::sqlite::Database& db, const novelcore::RunRequest& req,

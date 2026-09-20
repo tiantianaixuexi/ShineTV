@@ -20,6 +20,10 @@ namespace novelcore = ::shine::novelcore;
 // 真实 LLM 回调：按 `LlmRole` 解析模型（`09` §2.4 分层），`agent` 层只知道 role。
 [[nodiscard]] agent::LlmCallFn MakeLlmCall(const std::atomic<bool>* cancel);
 
+// ★ S62：**原始响应**通道（工具循环用）—— 与 `MakeLlmCall` 一样在这里做"按角色选模型"，
+// 免得让 `src/agent` 自己调 `openai::LlmCreateRaw` 而绕过 `ResolveModel(role)`（`09` §2.4）。
+[[nodiscard]] agent::LlmCreateRawFn MakeLlmCreateRaw();
+
 // `09` §2.4 验收判据：`critic ≠ writer`（判**解析后的生效模型**，不是「配置非空」）。
 [[nodiscard]] bool CrossReviewEffective();
 

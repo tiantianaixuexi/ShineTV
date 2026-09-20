@@ -31,6 +31,13 @@ enum class Phase {
 
 [[nodiscard]] std::string_view PhaseName(Phase p) noexcept;
 
+// ★ S62：Extractor 的 instructions **唯一来源**（单轮路径与工具循环路径共用；详见 .cpp 的注释）。
+[[nodiscard]] std::string_view ExtractSystemPrompt() noexcept;
+
+// S62：**原始响应**通道（工具循环专用）—— 签名与 `AgentKit::CreateFn` 一致。
+using LlmCreateRawFn = std::function<std::expected<std::string, std::string>(
+    std::string_view instructions, std::string_view inputJson, std::string_view toolsJson)>;
+
 struct GenerateChapterRequest {
     std::int64_t chapter_id = 0;
     std::string user_hint;
@@ -54,6 +61,16 @@ struct GenerateChapterRequest {
     int backoff_base_ms = 2000;
     int rate_limit_backoff_ms = 10000;
     int min_request_interval_ms = 200;
+    // ★ S62：**EXTRACT 走工具循环**（默认开；仅在 `create_raw` 非空时生效）。
+    // 为什么：`characters[].entity_id` / `items[].item_id` 要的是**库里的 id**，而模型手里只有名字 ——
+    // 但解法**不是**把 id 清单塞进 prompt（那是"喂数据"，违背 `00` §2 总纲与 S48 立的规矩），
+    // 而是**给它工具自己查**（`list_entities` / `get_entity` / …）。
+    bool extract_with_tools = true;
+    // 原始响应通道：工具循环要读 `output[].{type=="function_call"}` 的 call_id/arguments，而
+    // `LlmCallFn` 返回的是**提取过的文本**（工具信息全丢）。**必须由 app 层注入** ——
+    // `src/agent` 自己调 `openai::LlmCreateRaw` 会绕过 `ResolveModel(role)`，丢掉 `09` §2.4
+    // 的按角色路由。空 ⇒ 退回单轮（既有行为，自检与离线路径不受影响）。
+    LlmCreateRawFn create_raw;
 };
 
 // S9（`09` §2.4）：逐次 LLM 调用记录 —— 单章成本账（`cost_report.json`）的数据来源

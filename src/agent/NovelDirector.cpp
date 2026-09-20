@@ -1,5 +1,7 @@
 #include "agent/NovelDirector.h"
 
+#include "agent/AgentKit.h" // S62：EXTRACT 走工具循环（AgentKit::Run）+ Extractor 提示词唯一来源
+
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "novel/NovelChecks.h"    // S19：ComputeInputStateHash（`04` §2.5 哈希，唯一来源）
@@ -167,17 +169,23 @@ std::string DefaultPrompt(std::string_view role) {
             "\"description\":\"…\"}]}。无问题则 passed=true 且 issues 为空。";
     }
     if (role == "extractor") {
-        // ★ S61：**提示词必须与 `StateDiff` 契约同名同形**（`02` §2.5）。原先这里是 S8 期的
-        // 旧形状（`summary` / `new_entities` / `events` / `foreshadow_updates`），而解析端
-        // （`StateDiffFromJson`，靠反射逐字段填）只认 `entities/characters/relationships/items/
-        // locations/events/causal/plotlines/foreshadows/mysteries/knowledge/timeline` ——
-        // 于是**只有 `events` 因为同名落了库**：模型每章乖乖报的新人物/新伏笔全被**静默丢弃**。
-        // 真跑实测：四章 `12_state_diff.json` 全是 `entities=0 characters=0 foreshadows=0
-        // events=6`，库里 `person` 恒 1（世界状态根本没长）。
-        // ⚠️ `summary` 是**本模块自己的字段**（不在 StateDiff 契约里，由上面那段单独读）——
-        // 解析端的"契约外键"告警对它做了白名单，别删。
-        return R"-(
+        return std::string{ExtractSystemPrompt()};
+    }
+    return "你是小说助手。";
+}
+
+// ★ S62：**Extractor 的 instructions 唯一来源** —— 单轮路径（上面的 `InstructionsFor("extractor")`）
+// 与工具循环路径（`AgentKit::DefaultPromptFor("extract")`）都取这一份，**别抄第二份**（S35/S42 的教训）。
+// ⚠️ 契约要点：顶层键必须与 `StateDiff`（`02` §2.5）同名同形；旧版写的是 `new_entities` /
+// `foreshadow_updates`，而全仓无人读它们 ⇒ 模型报的实体/伏笔被**静默丢弃**（真跑实证：四章 diff
+// 全是 `entities=0 characters=0 foreshadows=0 events=6`，库里 `person` 恒 1）。
+// ⚠️ `summary` 是调用方自己的字段（不在 StateDiff 契约里，单独读取）—— 解析端的契约外键告警对它白名单。
+std::string_view ExtractSystemPrompt() noexcept {
+    return R"-(
 你是信息抽取器。读【计划】与【正文】，输出**一份 StateDiff JSON**（契约 02 §2.5）。
+需要知道"库里有哪些实体、它们的 id 与 kind"时，**用工具自己查**
+（list_entities / get_entity / list_entity_fields / list_field_defs / get_recent_chapters / get_foreshadows）
+—— 不要凭印象编 id，也不要凭印象说"库里没有"。
 顶层键只能是下列这些，**不要自造键名**（写成 new_entities / foreshadow_updates 之类会被直接忽略）：
   summary, contract_version, producer, input_state_hash, chapter_id, no_change_declared,
   entities, characters, relationships, items, locations, events, causal,
@@ -228,8 +236,6 @@ std::string DefaultPrompt(std::string_view role) {
 没有变化的数组给 []；**本章确实毫无变化**才置 no_change_declared: true（此时所有数组必须为空）。
 只输出 JSON 本体：不要 markdown 围栏、不要解释、字符串内不要出现未转义的引号。
 )-";
-    }
-    return "你是小说助手。";
 }
 
 NovelDirector::NovelDirector(db::sqlite::Database& db, LlmCallFn call, LlmStreamFn stream)
@@ -521,7 +527,51 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                 "完整 StateDiff】\n{}\n",
                 commit.checks_describe);
         }
-        auto er = CallLlm("extractor", exUser, "EXTRACT", req, result.calls);
+        // ★ S62：**优先走工具循环** —— 让模型自己用 `list_entities` / `get_entity` 查
+        // "库里有哪些实体、它们的 id 与 kind 是多少"，而不是由我把清单**喂进 prompt**
+        //（`00` §2 总纲 + S48 立的规矩：**事实给工具查**）。只在 app 层注入了 `create_raw`
+        // （= 有原始响应通道）时启用；否则退回单轮，行为与从前一致。
+        // ⚠️ 仍统一产出 `er`，这样下面的宽容提取 / 错误处理一行都不用改。
+        std::expected<std::string, AgentError> er;
+        if (req.create_raw && req.extract_with_tools) {
+            agent::AgentKit kit(*db_, /*allowWrite=*/false,
+                                req.project_dir.empty() ? std::string{} : req.project_dir);
+            if (auto seeded = kit.EnsureSchemaAndSeed(); !seeded) {
+                log::Warn("EXTRACT：AgentKit 初始化失败（{}）→ 退回单轮", seeded.error().message);
+            } else {
+                agent::AgentRunRequest areq;
+                areq.agent_id = "extract";
+                areq.chapter_id = req.chapter_id;
+                areq.user_text = exUser;
+                agent::ToolLoopStats stats;
+                const std::int64_t t0 = util::NowMillis();
+                auto rr = kit.Run(
+                    areq,
+                    [&req](std::string_view ins, std::string_view in, std::string_view tj) {
+                        return req.create_raw(ins, in, tj);
+                    },
+                    &stats);
+                LlmCallRecord rec;
+                rec.stage = "EXTRACT";
+                rec.role = "extractor";
+                rec.tier = "low";
+                rec.attempt = attempt + 1;
+                rec.ok = rr.has_value();
+                rec.ms = util::NowMillis() - t0;
+                result.calls.push_back(rec);
+                if (rr) {
+                    er = rr->output_text;
+                    log::Info("EXTRACT：工具循环完成（工具调用 {} 次 / 轮次 {}）", rr->tool_steps,
+                              stats.steps);
+                } else {
+                    log::Warn("EXTRACT：工具循环失败（{}）→ 退回单轮", rr.error().message);
+                }
+            }
+        }
+        if (!er.has_value()) {
+            // 未注入 `create_raw`（单轮路径）或工具循环失败 → 退回单轮（既有行为）。
+            er = CallLlm("extractor", exUser, "EXTRACT", req, result.calls);
+        }
         novelcore::StateDiff diff;
         hasDiff = false;
         if (er) {

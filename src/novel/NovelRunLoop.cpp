@@ -672,7 +672,8 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
     ChapterRunner runner = runner_;
     if (!runner) {
         const std::filesystem::path projectDir = req.project_dir;
-        runner = [this, projectDir](RowId chapter_id, const RunLimits& limits, RunMode mode,
+        runner = [this, projectDir, createRaw = req.create_raw](
+                     RowId chapter_id, const RunLimits& limits, RunMode mode,
                                     const std::function<void(
                                         const agent::GenerateChapterProgress&)>& onProgress)
             -> std::expected<ChapterRunInfo, agent::AgentError> {
@@ -686,6 +687,8 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
             // S19（`03` §2.7 P1/P5）：连跑是**续跑语义** —— 盘上产物哈希一致就跳过该阶段
             // （含 `chapters.body` 已落库时的 Writer 复用）；无产物时与全跑等价。
             chReq.resume = true;
+            // S62：把"原始响应"通道透给 EXTRACT（它据此走工具循环；空则退回单轮）
+            chReq.create_raw = createRaw;
             if (!projectDir.empty()) {
                 chReq.snapshot_dir = util::PathToUtf8(projectDir / "snapshots");
                 // S12：工程根显式下发（`work/ch<NNN>/12_state_diff.json` 按它落盘）

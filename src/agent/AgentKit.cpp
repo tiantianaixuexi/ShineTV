@@ -1,4 +1,5 @@
 #include "agent/AgentKit.h"
+#include "agent/NovelDirector.h" // S62：ExtractSystemPrompt 的唯一来源
 
 #include "agent/NovelVisualStages.h" // S42：V4 Agent 用阶段的 system 提示词（唯一来源）
 
@@ -1202,6 +1203,9 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         std::string_view tags;
         std::string_view tools;
         std::string_view outHint;
+        // S62：抬高它才会**覆盖老库**里同名的内置 Agent（seed 的规则：内置随代码 version 升级覆盖，
+        // 作者自建的不动）。改了 prompt / 白名单就必须 +1，否则老工程永远停在旧版。
+        int version = 1;
     };
     constexpr Spec kSpecs[] = {
         {"novel_writer", "写小说 Agent", "write,chapter",
@@ -1228,9 +1232,17 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         {"mystery", "伏笔秘密 Agent", "mystery,secret,foreshadow",
          R"(["get_entity","list_entities","upsert_entity","upsert_entity_field","list_entity_fields"])",
          "伏笔/秘密 + 知情 layer 字段"},
+        // S62：`extract` 的两处旧账一起修 ——
+        //   ① 白名单里带**写工具**（`upsert_entity`/`upsert_entity_field`）：抽取器**不该改库**
+        //      （写库是章节提交事务的事，`01` §2 的提案制）⇒ 改**只读**，改成"自己查库确认事实"。
+        //   ② `output_hint` 写的是 `new_entities / new_fields` —— 跟 `StateDiff` 契约不是一套
+        //      （同一缺陷的第三处）⇒ 改成契约形状。
+        // `version=2` ⇒ 老库里的同名内置 Agent 会被覆盖刷新（否则改动对既有工程不生效）。
         {"extract", "抽取 Agent", "extract",
-         R"(["list_entities","upsert_entity","upsert_entity_field","list_field_defs","list_entity_fields"])",
-         "JSON：new_entities / new_fields"},
+         R"(["list_entities","get_entity","list_entity_fields","list_field_defs","get_recent_chapters",)"
+         R"("get_foreshadows"])",
+         "完整 StateDiff JSON（契约 02 §2.5）：summary + entities/characters/relationships/items/"
+         "locations/events/causal/plotlines/foreshadows/mysteries/knowledge/timeline", 2},
         {"review", "审校 Agent", "review,critic",
          R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])",
          R"({"passed":bool,"issues":[…]})"},
@@ -1351,9 +1363,9 @@ std::string AgentKit::DefaultPromptFor(std::string_view agentId) {
             "本章宇宙是否正确、力量体系是否违背规则字段）。输出 issues JSON。";
     }
     if (agentId == "extract") {
-        return
-            "你是抽取 Agent。从正文抽取新实体与新字段建议，调用 upsert_entity / "
-            "upsert_field_def / upsert_entity_field 落库（PROPOSED 语义），输出抽取清单 JSON。";
+        // 唯一来源：NovelDirector::ExtractSystemPrompt()（S62 收口 —— 原先这里另有一份副本，
+        // 与单轮路径的指令构成「两处来源」，改一处另一处会悄悄过时）。
+        return std::string{ExtractSystemPrompt()};
     }
     if (agentId == "place") {
         return "你是地点 Agent。创建地点实体，地理/气候/特殊规则用动态字段。";

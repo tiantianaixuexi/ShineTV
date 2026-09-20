@@ -88,7 +88,8 @@ ChatComplete(std::string_view baseUrl, std::string_view apiKey, const ChatReques
 // **返回原始 JSON 响应体**（循环要读 `output[].type=="function_call"` 的 call_id/name/arguments）。
 // 与 `LlmComplete` 的区别：**不提取** `output_text` —— 一提就把工具调用信息丢了。
 [[nodiscard]] std::expected<std::string, ApiError>
-LlmCreateRaw(std::string_view instructions, std::string_view inputJson, std::string_view toolsJson);
+LlmCreateRaw(std::string_view instructions, std::string_view inputJson, std::string_view toolsJson,
+             std::string_view model = {});
 
 [[nodiscard]] std::expected<std::string, ApiError>
 LlmComplete(std::string_view instructions, std::string_view userText,
