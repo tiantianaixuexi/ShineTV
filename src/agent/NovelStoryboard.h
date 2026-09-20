@@ -41,6 +41,10 @@ struct StoryboardOutcome {
     int skeleton_missing = 0;           // 骨架里有、V9 输出里没有
     int skeleton_extra = 0;             // V9 输出里有、骨架里没有
     int skeleton_duration_mismatch = 0; // 同一 (scene_ord, ord) 的 duration 差 > 0.2s
+    // S34：V3–V7 的**关键字段未被采纳**的处数（V4 前景 / V5 景别 / V3 表情 / V7 环境音）。
+    // 比骨架更细一层：骨架验"镜数与时长"，这里验"**上游的设计有没有真的进分镜**"。
+    // ⚠️ 只挑每阶段一个有代表性的字段（全字段比对会被 LLM 的措辞差异淹没）；V2 仍无承载字段。
+    int stage_mismatch = 0;
     std::vector<std::string> warnings; // 落不了的字段 / 丢掉的镜 / 骨架偏离（**显式列出，不静默**）
     [[nodiscard]] std::string Describe() const;
 };
