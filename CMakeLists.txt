@@ -19,13 +19,36 @@ set(BUILD_STATIC ON CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_UNITTEST OFF CACHE BOOL "" FORCE)
 set(WITH_HTTP_SERVER ON CACHE BOOL "" FORCE)
-set(WITH_OPENSSL OFF CACHE BOOL "" FORCE)
+# S64：**libhv 的 TLS 后端改用 OpenSSL**（原为 OFF ⇒ Windows 上落到 wintls/Schannel）。
+# 为什么换（有对照实证，别再往"网络"上归因）：真跑时出现过**成串**的
+# `ssl handshake failed: -1 [HttpClient.cpp:270]`（一轮 PLAN 5/5 全失败、横跨 30 秒；下一轮 0 次），
+# 而**同期** `curl`（OpenSSL）与 .NET `SslStream`（Schannel）**都正常** ⇒ 网络、对端、机器 Schannel
+# 均无责，问题在 libhv 的 wintls 客户端路径（其失败码 `HSSL_ERROR=-1` 无更多信息，
+# 且每请求都要 `hssl_ctx_new`/释放一次凭据句柄）。
+# ⚠️ 静态链接：本工程 exe 目前**只依赖系统 DLL**（自包含）。若用 msys64 的导入库
+#    （`libssl.dll.a`）会引入 `libssl-3-x64.dll`/`libcrypto-3-x64.dll` 的部署依赖 ⇒ 用 `.a` 静态库。
+# 依赖来源：msys64 的 mingw64 前缀（与编译器同一个 toolchain，`libssl.a`/`libcrypto.a` 齐备）。
+set(WITH_OPENSSL ON CACHE BOOL "" FORCE)
+set(OPENSSL_USE_STATIC_LIBS TRUE CACHE BOOL "" FORCE)
+if(NOT DEFINED OPENSSL_ROOT_DIR OR OPENSSL_ROOT_DIR STREQUAL "")
+  set(OPENSSL_ROOT_DIR "$ENV{MSYSTEM_PREFIX}" CACHE PATH "OpenSSL 前缀（msys64 mingw64）")
+  if(NOT OPENSSL_ROOT_DIR)
+    set(OPENSSL_ROOT_DIR "C:/msys64/mingw64" CACHE PATH "OpenSSL 前缀（msys64 mingw64）" FORCE)
+  endif()
+endif()
 set(WITH_GNUTLS OFF CACHE BOOL "" FORCE)
 set(WITH_MBEDTLS OFF CACHE BOOL "" FORCE)
 set(WITH_LUA OFF CACHE BOOL "" FORCE)
 set(WITH_RPC OFF CACHE BOOL "" FORCE)
 set(SHINE_SKIP_LIBHV_RC ON)
 add_subdirectory(${THIRD}/libhv EXCLUDE_FROM_ALL)
+# ⚠️ 开了 OpenSSL 之后的**静态链接冲突**：OpenSSL 3.x 的 `libcrypto.a(pathtools)` 里也有一个
+# 非 static 的 `get_executable_path`，与 libhv `base/hbase.c` 的同名 ⇒
+#   `ld: multiple definition of 'get_executable_path'`
+# 两边都只在**各自的库内部**用它（libhv 给 `get_executable_dir`/`get_executable_file`；OpenSSL 给自己的
+# 路径探测），语义也一致（填可执行文件路径）。**所以我们这份工程一处都不调它** ⇒
+# 只把 libhv 那侧改个名即可，**不必改 `third/` 里的源文件**（工程规矩）。
+target_compile_definitions(hv_static PRIVATE get_executable_path=shine_hv_get_executable_path)
 
 # --- zlib + libpng：图片解码（P4.1 与图片库 G 线共用；不在 third/ 里改任何文件）---
 set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
