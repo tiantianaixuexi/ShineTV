@@ -1925,6 +1925,20 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
     }
     appendRows("author_rules",
                "SELECT id,severity FROM author_rules WHERE severity='error' ORDER BY id", 0);
+    // ⚠️ **补充（S24）**：`04` §2.5 的输入清单只列了**叙事侧**。但视觉产物（`PromptArtifact`）
+    // 的失效判定显然要包含**视觉输入** —— 否则改了角色的 `base_desc`/阶段外观，哈希不变、
+    // 产物被误判为"可复用"（V10 的自检就是这么撞出来的）。所以 `chain == "visual"` 时
+    // 额外纳入 `visual_assets` 与 `visual_states`。
+    if (chain == "visual") {
+        appendRows("visual_assets",
+                   "SELECT id,base_desc || '|' || sheet_rel_path || '|' || status FROM visual_assets "
+                   "ORDER BY id",
+                   0);
+        appendRows("visual_states",
+                   "SELECT id,appearance || '|' || environment_hint || '|' || canon_status "
+                   "FROM visual_states ORDER BY id",
+                   0);
+    }
     return Sha1Hex(canon);
 }
 
