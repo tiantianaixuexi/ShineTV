@@ -489,6 +489,28 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         log::Info("骨架一致性：下发 {} 镜 / 缺失 {} / 新增 {} / 时长偏离 {}", out.skeleton_total,
                   out.skeleton_missing, out.skeleton_extra, out.skeleton_duration_mismatch);
     }
+    // S35：**骨架硬校验**（`strict_skeleton`，默认关）—— 把 V1 的骨架从"下发给 LLM 的强建议"
+    // 变成"**合同**"：三类偏离任一 > 0 就**判失败**（此前只是 warnings）。
+    // ⚠️ 默认关是**刻意的**：真实工程常常没跑过 V1（没骨架可校），硬开会让 V9 全线失败。
+    if (req.strict_skeleton) {
+        if (skeletonByKey.empty()) {
+            return std::unexpected(AgentError{
+                "contract",
+                fmt::format("骨架硬校验失败（strict_skeleton）：该章没有 V1 骨架可校 —— "
+                            "先跑 `--novel-stages {} --up-to V1`", req.chapter_id)});
+        }
+        if (out.skeleton_missing > 0 || out.skeleton_extra > 0 ||
+            out.skeleton_duration_mismatch > 0) {
+            return std::unexpected(AgentError{
+                "contract",
+                fmt::format("骨架硬校验失败（strict_skeleton）：缺失 {} 镜 / 新增 {} 镜 / 时长偏离 {} 镜"
+                            " —— V9 必须严格按 V1 骨架出镜（合同，不是建议）",
+                            out.skeleton_missing, out.skeleton_extra,
+                            out.skeleton_duration_mismatch)});
+        }
+        log::Info("骨架硬校验通过（strict_skeleton）：{} 镜全落在 V1 骨架内且时长一致",
+                  out.skeleton_total);
+    }
     // S34：阶段产物比对汇总 + 释放阶段性 doc
     for (yyjson_doc* d : {v3Doc, v4Doc, v5Doc, v7Doc}) {
         if (d != nullptr) {
@@ -697,6 +719,26 @@ bool RunStoryboardSelfCheck() {
             }
         }
         expect(reported, "S34：阶段偏离必须在 warnings 里可见（不静默）");
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    // S35：**`strict_skeleton`** —— 骨架偏离必须**判失败**（把"强建议"变成"合同"）。
+    // 造 3 镜骨架而 mock 只出 2 镜 ⇒ 缺失 1 镜：严格模式失败、非严格模式只告警。
+    {
+        const auto sdir = dir / "work" / "ch001";
+        std::filesystem::create_directories(sdir, ec);
+        const std::string v1 =
+            R"-({"scenes":[{"scene_ord":1,"goal":"g","shots":[{"ord":1,"duration":3.0,"beat":"a"},{"ord":2,"duration":2.5,"beat":"b"},{"ord":3,"duration":1.0,"beat":"c"}]}]})-";
+        expect(util::WriteFileBytes(sdir / "v01_scene_breakdown.json", v1), "S35：写骨架（3 镜）");
+        const auto strict = GenerateStoryboard(
+            mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir, .strict_skeleton = true});
+        expect(!strict.has_value() && strict.error().code == "contract",
+               fmt::format("S35：strict_skeleton 下骨架缺失（3 镜骨架 vs 2 镜输出）必须判失败"
+                           "（实际 {}）",
+                           strict.has_value() ? "成功" : strict.error().code));
+        const auto loose = GenerateStoryboard(
+            mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir, .strict_skeleton = false});
+        expect(loose.has_value() && loose->ok, "S35：非严格模式下同样输入应成功（只告警）");
         std::filesystem::remove_all(dir, ec);
     }
 

@@ -70,8 +70,12 @@ LoadSpatialIndex(std::string_view projectDir, int chapterOrd) {
     if (projectDir.empty() || chapterOrd <= 0) {
         return out;
     }
+    // S35：**唯一来源 = V4 产物**（`work/ch<NNN>/v04_spatial.json`）。
+    // ⚠️ 原先读的是 `storyboard.json` 的 `spatial` —— 那是 V9 把 V4 的结果**又抄了一遍**：
+    //    同一个概念两条路（**V4 是产生方**、V9 的 storyboard 是消费方），**迟早分叉**。
+    //    现在直接读产生方的产物；V4 没跑过（没跑 `--novel-stages`）→ 该层为空，**不阻断**。
     const auto path = std::filesystem::path{std::string{projectDir}} / "work" /
-                      fmt::format("ch{:03}", chapterOrd) / "storyboard.json";
+                      fmt::format("ch{:03}", chapterOrd) / "v04_spatial.json";
     const auto text = util::ReadFileBytes(path);
     if (!text) {
         return out;
@@ -81,23 +85,25 @@ LoadSpatialIndex(std::string_view projectDir, int chapterOrd) {
         return out;
     }
     yyjson_val* root = yyjson_doc_get_root(doc);
-    yyjson_val* shots = yyjson_is_obj(root) ? yyjson_obj_get(root, "shots") : nullptr;
-    if (yyjson_is_arr(shots)) {
+    // V4 产物的形状与 V9 的 `shots[].spatial` **不同**：`items[]` 里每条**本身就是** spatial
+    //（`12` §2.5 的字段直接在 item 上），不需要再取一层 `spatial`。
+    yyjson_val* items = yyjson_is_obj(root) ? yyjson_obj_get(root, "items") : nullptr;
+    if (yyjson_is_arr(items)) {
         std::size_t i = 0;
         std::size_t max = 0;
-        yyjson_val* s = nullptr;
-        yyjson_arr_foreach(shots, i, max, s) {
-            if (!yyjson_is_obj(s)) {
+        yyjson_val* it = nullptr;
+        yyjson_arr_foreach(items, i, max, it) {
+            if (!yyjson_is_obj(it)) {
                 continue;
             }
-            const yyjson_val* so = yyjson_obj_get(s, "scene_ord");
-            const yyjson_val* od = yyjson_obj_get(s, "ord");
+            const yyjson_val* so = yyjson_obj_get(it, "scene_ord");
+            const yyjson_val* od = yyjson_obj_get(it, "ord");
             const int sceneOrd = yyjson_is_int(so) ? static_cast<int>(yyjson_get_sint(so)) : 0;
             const int ord = yyjson_is_int(od) ? static_cast<int>(yyjson_get_sint(od)) : 0;
             if (sceneOrd <= 0 || ord <= 0) {
                 continue;
             }
-            const std::string t = SpatialToText(yyjson_obj_get(s, "spatial"));
+            const std::string t = SpatialToText(it);
             if (!t.empty()) {
                 out[{sceneOrd, ord}] = t;
             }
@@ -457,12 +463,12 @@ bool RunPromptGenSelfCheck() {
         const auto sbDir = tmp / "work" / fmt::format("ch{:03}", chOrd);
         std::filesystem::create_directories(sbDir, ec);
         const std::string sb = fmt::format(
-            R"({{"shots":[{{"scene_ord":{},"ord":1,"duration":3.0,"spatial":{{"facing":"left",)"
+            R"({{"stage":"V4","items":[{{"scene_ord":{},"ord":1,"facing":"left",)"
             R"("distance_m":2.5,"occlusion":"前景人物半挡","layers":{{"foreground":"自检角色",)"
-            R"("midground":"","background":"自检配角"}}}}}}]}})",
+            R"("midground":"","background":"自检配角"}}}}]}})",
             scOrd);
-        expect(util::WriteFileBytes(sbDir / "storyboard.json", sb),
-               "S26：写临时 storyboard.json（V9 的落点格式）");
+        expect(util::WriteFileBytes(sbDir / "v04_spatial.json", sb),
+               "S35：写临时 v04_spatial.json（**V4 产物** —— 空间层的唯一来源）");
         // 再改一次资产文案：保证哈希与上一步不同 → 必然走到"新写"分支
         if (asset) {
             (void)v.UpsertAsset({.id = *asset,

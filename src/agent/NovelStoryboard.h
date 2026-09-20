@@ -25,6 +25,12 @@ struct StoryboardRequest {
     std::int64_t chapter_id = 0;
     std::filesystem::path project_dir; // 完整契约落 `work/ch<NNN>/storyboard.json`
     std::string extra_hint;            // 可选：追加给模型的导向（如"多用手持镜头"）
+    // S35：**骨架硬校验**（默认关）。骨架（V1 的"每场几镜 / 每镜时长"）此前只是**下发给 LLM 的
+    // 强建议**：它照做了就一致、没照做也只是进 `warnings`（软）。开了它，三类骨架偏离
+    // （缺失 / 新增 / `duration` 差 > 0.2s）**直接判失败** —— 把"强建议"变成"合同"。
+    // ⚠️ 默认关是**刻意的**：真实工程常没跑过 V1（没骨架可校），硬开会让 V9 全线失败。
+    // CLI：`--novel-storyboard <ch> --strict`。
+    bool strict_skeleton = false;
 };
 
 struct StoryboardOutcome {

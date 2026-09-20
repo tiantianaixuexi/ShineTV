@@ -1979,7 +1979,9 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         // 否则"修了 bug 但真实工程里的旧 prompt 永远不更新"（S25 实测踩到：改完多角色，
         // 对真实工程重跑 `--novel-prompt` 会全部"复用"，旧的残缺 prompt 一直留着）。
         // 规则变了就把这个版本号 +1。
-        canon += "prompt_rule_version=3\n";
+        // 3 → 4（S35）：空间层的**来源**变了（`storyboard.json` 的 `spatial` → **V4 产物**
+        // `v04_spatial.json`）—— 输入状态没变、但"从哪读"变了 ⇒ 旧产物必须失效重算。
+        canon += "prompt_rule_version=4\n";
         // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
         // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
         // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是

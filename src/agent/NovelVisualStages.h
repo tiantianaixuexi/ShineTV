@@ -18,6 +18,7 @@
 #include "novel/NovelTypes.h"
 
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -99,10 +100,16 @@ struct StagesOutcome {
 };
 
 // 一次跑 **V1 → V7**（各自哈希复用会自动跳过已跑过的）。`--novel-stages` 用的就是它。
+// `up_to`（S35）：**只跑到某阶段**就停 —— 调试用。比如只想验 V4 的 `layers` / 只想让 V10 有
+// 空间层可读，就没必要烧 V5–V7 的 LLM 调用（`--novel-stages 1 --up-to V4`）。默认 V7 = 跑全程。
 [[nodiscard]] std::expected<StagesOutcome, AgentError>
 RunAllVisualStages(::shine::db::sqlite::Database& db, const LlmCallFn& call,
                    novelcore::RowId chapter_id, std::string_view project_dir,
-                   std::string_view extra_hint = {});
+                   std::string_view extra_hint = {},
+                   VisualStageId up_to = VisualStageId::V7Audio);
+
+// `--up-to` 的解析（S35）：接受 `V1`…`V7` / `1`…`7`（大小写不敏感）。非法 → `nullopt`（调用方报错）。
+[[nodiscard]] std::optional<VisualStageId> ParseVisualStage(std::string_view text) noexcept;
 
 // V1 产物里的**镜骨架**（`(scene_ord, ord) → {duration, beat}`）。读不到 → 空。
 // `NovelStoryboard`（V9）用它把"镜的切分"接过来；也用来在 `storyboard.json` 缺 `duration` 时兜底。

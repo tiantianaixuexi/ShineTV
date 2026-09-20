@@ -224,14 +224,28 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         std::atomic<bool> cancel{false};
         auto call = MakeLlmCall(&cancel);
+        // S35 `--up-to`：只跑到某阶段（调试省 LLM 调用）。默认 V7 = 全程。
+        // ⚠️ 参数校验放在**查 Key 之前**：非法参数不必先有 Key 才知道（否则 `--up-to 乱写`
+        // 会被"没配 Key"挡住，看起来像参数没错）。
+        agent::VisualStageId upTo = agent::VisualStageId::V7Audio;
+        if (const std::string ut = Opt(args, "--up-to", ""); !ut.empty()) {
+            const auto parsed = agent::ParseVisualStage(ut);
+            if (!parsed) {
+                log::Error("novel-cli：`--up-to {}` 不合法（接受 V1…V7 或 1…7）", ut);
+                AppendCheckOut(false, "非法 --up-to");
+                return 2;
+            }
+            upTo = *parsed;
+        }
         // S34：先查 Key（没配就别白跑一遍）
         if (!requireLlm("--novel-stages")) {
             AppendCheckOut(false, "未配置 LLM API Key");
             return 2;
         }
+        log::Info("novel-cli：阶段链目标 V1–{}", agent::VisualStageCode(upTo));
         // S32：**一次跑 V1 → V7**（各自哈希复用会自动跳过已跑过的；链式：上游变了下游必重算）
-        const auto sb =
-            agent::RunAllVisualStages(db, call, cid, util::PathToUtf8(projectDir), Opt(args, "--hint"));
+        const auto sb = agent::RunAllVisualStages(db, call, cid, util::PathToUtf8(projectDir),
+                                                  Opt(args, "--hint"), upTo);
         if (!sb) {
             log::Error("novel-cli：阶段链失败 {}", sb.error().message);
             AppendCheckOut(false, sb.error().message);
@@ -403,9 +417,17 @@ int RunNovelCli(const wchar_t* cmdline) {
             AppendCheckOut(false, "未配置 LLM API Key");
             return 2;
         }
+        // S35 `--strict`：把 V1 骨架从"强建议"变成"**合同**"（三类偏离任一 > 0 即失败）
+        const bool strictSk = Has(args, "--strict");
+        if (strictSk) {
+            log::Info("novel-cli：**骨架硬校验开启**（V9 必须严格按 V1 骨架出镜）");
+        }
         auto sb = agent::GenerateStoryboard(
             db, MakeLlmCall(&cancel),
-            {.chapter_id = cid, .project_dir = projectDir, .extra_hint = Opt(args, "--hint")});
+            {.chapter_id = cid,
+             .project_dir = projectDir,
+             .extra_hint = Opt(args, "--hint"),
+             .strict_skeleton = strictSk});
         if (!sb) {
             log::Error("novel-cli：分镜产出失败 [{}] {}", sb.error().code, sb.error().message);
             AppendCheckOut(false, sb.error().message);
