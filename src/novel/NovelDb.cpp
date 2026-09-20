@@ -16,7 +16,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 10;
+constexpr int kTargetSchemaVersion = 11;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -154,6 +154,10 @@ CREATE TABLE IF NOT EXISTS shots(
   start_state_json TEXT NOT NULL DEFAULT '{}',
   end_state_json TEXT NOT NULL DEFAULT '{}',
   timeline_json TEXT NOT NULL DEFAULT '{}',
+  -- v11（S36）：`02` §2.7 的 V2 `DIRECTOR_INTENT`（七问：see/know/not_know/emotion/
+  -- emotion_shift/climax/pace + intensity）。原先是**无处可落**（S33 记账的洞：V2 的产物
+  -- 在 `NarrativeShot` 无承载字段 ⇒ 落库时丢掉 ⇒ 无从比对）。旧库走 `AddShotIntentColumn`。
+  intent_json TEXT NOT NULL DEFAULT '{}',
   canon_status TEXT NOT NULL DEFAULT 'PROPOSED');
 CREATE INDEX IF NOT EXISTS idx_shots_scene ON shots(scene_id);
 
@@ -835,6 +839,14 @@ void NovelDb::AddShotStateColumns(db::sqlite::Database& db) {
     (void)db.Exec("ALTER TABLE shots ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '{}'");
 }
 
+void NovelDb::AddShotIntentColumn(db::sqlite::Database& db) {
+    // v11（S36）：`shots.intent_json` —— V2 `DIRECTOR_INTENT` 的承载列（`02` §2.7 的七问 +
+    // 情绪强度）。S33 记账的那个洞：V2 的产物**没有承载字段**，V9 落库时只能丢掉 ⇒ 无从比对。
+    // SQLite 没有 `ADD COLUMN IF NOT EXISTS`，列已存在时 ALTER 失败 —— 忽略即可（与 v9/v10 同款）。
+    // **唯一来源**：`Migrate()` / `EnsureSchemaUpToDate()` / `RunSchemaSelfCheck` 都调它。
+    (void)db.Exec("ALTER TABLE shots ADD COLUMN intent_json TEXT NOT NULL DEFAULT '{}'");
+}
+
 void NovelDb::AddPromptArtifactColumns(db::sqlite::Database& db) {
     // v10（S26）：`prompt_artifacts` 的 `version` / `generation_ref`（`13` §2.7 PV3–PV5 的载体）。
     //  - `version`：PV2「哈希不一致重新生成 → `version + 1`」；PV3「同 `target_id` 的多个版本全部保留」。
@@ -854,6 +866,7 @@ std::expected<void, DbError> NovelDb::EnsureSchemaUpToDate(db::sqlite::Database&
     // 旧库补列（幂等：列已存在时 ALTER 失败被忽略）
     AddShotStateColumns(db);
     AddPromptArtifactColumns(db);
+    AddShotIntentColumn(db); // v11（S36）
     // 字段表：`ApplyCanonicalSchema` **不含**它（`08` §2.3 的唯一来源在 `NovelFields`）
     return NovelFields::EnsureSchema(db);
 }
@@ -885,6 +898,8 @@ std::expected<void, DbError> NovelDb::Migrate() {
     NovelDb::AddShotStateColumns(db_);
     // v10（S26）：`prompt_artifacts` 补 `version` / `generation_ref` 两列（列已存在则失败被忽略）
     AddPromptArtifactColumns(db_);
+    // v11（S36）：`shots` 补 `intent_json`（V2 `DIRECTOR_INTENT` 的承载列）
+    AddShotIntentColumn(db_);
     // —— v8（S2b）：字段门禁 ——
     // 字段表（field_defs / entity_fields / field_aliases）的 DDL **只保留在
     // `NovelFields::EnsureSchema` 一处**（规格 `08` §2.3）。原先这里自带一份建表，
@@ -1082,6 +1097,33 @@ bool NovelDb::RunSchemaSelfCheck() {
     }
     NovelDb::AddShotStateColumns(mem);
     NovelDb::AddShotStateColumns(mem); // 幂等：列已存在也不应炸（失败被忽略）
+    // —— v11（S36）：`shots.intent_json`（V2 `DIRECTOR_INTENT` 的承载列）——
+    // 复用同一个 `mem`（v9 段已建了**旧形状** shots）：与 v9 段同款，`ALTER` 必须**幂等**。
+    NovelDb::AddShotIntentColumn(mem);
+    NovelDb::AddShotIntentColumn(mem); // 幂等：列已存在也不应炸
+    if (auto r = mem.Exec("INSERT INTO shots(scene_id,ord,intent_json) VALUES(9,1,"
+                          "'{\"see\":\"看到门\",\"intensity\":80}')");
+        !r) {
+        log::Error("NovelDb 自检：v11 写 intent_json 失败 {}", r.error().message);
+        return false;
+    }
+    if (auto r = mem.Exec("INSERT INTO shots(scene_id,ord) VALUES(8,1)"); !r) {
+        log::Error("NovelDb 自检：v11 不写 intent_json 的插入失败 {}", r.error().message);
+        return false;
+    }
+    {
+        auto st = mem.Prepare("SELECT intent_json FROM shots WHERE scene_id=9");
+        auto st2 = mem.Prepare("SELECT intent_json FROM shots WHERE scene_id=8");
+        if (!st || !st2) {
+            log::Error("NovelDb 自检：v11 查 shots 失败");
+            return false;
+        }
+        if (!st->Step() || st->ColumnText(0).find("intensity") == std::string::npos ||
+            !st2->Step() || st2->ColumnText(0) != "{}") {
+            log::Error("NovelDb 自检：v11 的 intent_json 读写不符（期望含 intensity / 默认空 JSON）");
+            return false;
+        }
+    }
     // —— v10（S26）：`prompt_artifacts` 的 version / generation_ref ——
     // 用**独立内存库**测"旧库缺列 → `ALTER` 补上"这条路：不碰上面的 `mem`。
     // ⚠️ 第一版是在 `mem` 上 DROP + 重建旧形状表，结果**毒害**了后面的 v9 段

@@ -107,6 +107,10 @@ struct ShotRow {
     std::string start_state_json = "{}";
     std::string end_state_json = "{}";
     std::string timeline_json = "{}";
+    // v11（S36）：V2 `DIRECTOR_INTENT` 的承载（`02` §2.7 V2 的**七问** + `intensity`）。
+    // 此前**无处可落**（S33 记账：V2 的产物在 `NarrativeShot` 无承载字段 ⇒ V9 落库时丢掉 ⇒
+    // 无从比对）。来源 = V2 产物 `v02_director_intent.json`（V9 落库时按 `(scene_ord, ord)` 取）。
+    std::string intent_json = "{}";
     std::string canon_status = "PROPOSED";
 };
 

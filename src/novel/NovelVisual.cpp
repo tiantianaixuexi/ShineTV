@@ -416,7 +416,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
             "UPDATE shots SET scene_id=?1,ord=?2,duration_note=?3,camera_id=?4,character_ids_json=?5,"
             "action=?6,expression=?7,prop_ids_json=?8,lighting_id=?9,composition_id=?10,dialogue=?11,"
             "narration=?12,sfx=?13,mood=?14,prompt_text=?15,negative_text=?16,reference_json=?17,"
-            "start_state_json=?18,end_state_json=?19,timeline_json=?20,canon_status=?21 WHERE id=?22");
+            "start_state_json=?18,end_state_json=?19,timeline_json=?20,intent_json=?21,"
+            "canon_status=?22 WHERE id=?23");
         if (!up) return std::unexpected(up.error());
         (void)up->BindInt(1, row.scene_id);
         (void)up->BindInt(2, row.ord);
@@ -439,8 +440,9 @@ std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
         (void)up->BindText(18, row.start_state_json.empty() ? "{}" : row.start_state_json);
         (void)up->BindText(19, row.end_state_json.empty() ? "{}" : row.end_state_json);
         (void)up->BindText(20, row.timeline_json.empty() ? "{}" : row.timeline_json);
-        (void)up->BindText(21, row.canon_status);
-        (void)up->BindInt(22, row.id);
+        (void)up->BindText(21, row.intent_json.empty() ? "{}" : row.intent_json);
+        (void)up->BindText(22, row.canon_status);
+        (void)up->BindInt(23, row.id);
         if (auto s = up->Step(); !s) return std::unexpected(s.error());
         return row.id;
     }
@@ -448,8 +450,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
         "INSERT INTO shots(scene_id,ord,duration_note,camera_id,character_ids_json,action,"
         "expression,prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,"
         "prompt_text,negative_text,reference_json,start_state_json,end_state_json,timeline_json,"
-        "canon_status)"
-        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)");
+        "intent_json,canon_status)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, row.scene_id);
     (void)st->BindInt(2, row.ord);
@@ -472,7 +474,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertShot(const ShotRow& row) {
     (void)st->BindText(18, row.start_state_json.empty() ? "{}" : row.start_state_json);
     (void)st->BindText(19, row.end_state_json.empty() ? "{}" : row.end_state_json);
     (void)st->BindText(20, row.timeline_json.empty() ? "{}" : row.timeline_json);
-    (void)st->BindText(21, row.canon_status);
+    (void)st->BindText(21, row.intent_json.empty() ? "{}" : row.intent_json);
+    (void)st->BindText(22, row.canon_status);
     if (auto s = st->Step(); !s) return std::unexpected(s.error());
     return db_->LastInsertRowId();
 }
@@ -481,8 +484,8 @@ std::expected<ShotRow, DbError> NovelVisual::GetShot(RowId id) const {
     auto st = db_->Prepare(
         "SELECT id,scene_id,ord,duration_note,camera_id,character_ids_json,action,expression,"
         "prop_ids_json,lighting_id,composition_id,dialogue,narration,sfx,mood,prompt_text,"
-        "negative_text,reference_json,start_state_json,end_state_json,timeline_json,canon_status "
-        "FROM shots WHERE id=?1");
+        "negative_text,reference_json,start_state_json,end_state_json,timeline_json,intent_json,"
+        "canon_status FROM shots WHERE id=?1");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, id);
     auto s = st->Step();
@@ -510,7 +513,8 @@ std::expected<ShotRow, DbError> NovelVisual::GetShot(RowId id) const {
     r.start_state_json = st->ColumnText(18);
     r.end_state_json = st->ColumnText(19);
     r.timeline_json = st->ColumnText(20);
-    r.canon_status = st->ColumnText(21);
+    r.intent_json = st->ColumnText(21);
+    r.canon_status = st->ColumnText(22);
     return r;
 }
 
@@ -521,7 +525,7 @@ std::expected<std::vector<ShotRow>, DbError> NovelVisual::ListShotsByChapter(Row
         "SELECT s.id,s.scene_id,s.ord,s.duration_note,s.camera_id,s.character_ids_json,s.action,"
         "s.expression,s.prop_ids_json,s.lighting_id,s.composition_id,s.dialogue,s.narration,s.sfx,"
         "s.mood,s.prompt_text,s.negative_text,s.reference_json,s.start_state_json,s.end_state_json,"
-        "s.timeline_json,s.canon_status "
+        "s.timeline_json,s.intent_json,s.canon_status "
         "FROM shots s JOIN scenes sc ON sc.id=s.scene_id WHERE sc.chapter_id=?1 "
         "ORDER BY sc.ord,s.ord,s.id");
     if (!st) return std::unexpected(st.error());
@@ -552,7 +556,8 @@ std::expected<std::vector<ShotRow>, DbError> NovelVisual::ListShotsByChapter(Row
         r.start_state_json = st->ColumnText(18);
         r.end_state_json = st->ColumnText(19);
         r.timeline_json = st->ColumnText(20);
-        r.canon_status = st->ColumnText(21);
+        r.intent_json = st->ColumnText(21);
+        r.canon_status = st->ColumnText(22);
         out.push_back(std::move(r));
     }
     return out;

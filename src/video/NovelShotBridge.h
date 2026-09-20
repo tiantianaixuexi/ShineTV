@@ -30,6 +30,9 @@ struct NarrativeShotInput {
     // `11` §2.5 明确：prompt 必须来自 **PromptArtifact**，**不得**直接用叙事 `prompt_text`
     std::string prompt;
     std::string negativePrompt;                 // PromptArtifact.negative
+    std::string intentJson;  // S36：该镜的 V2 `DIRECTOR_INTENT`（`02` §2.7 七问 + intensity）。
+                             // **只承载、不参与计算**（本桥仍是纯函数：同输入同输出）；出图侧
+                             // 若要用"情绪强度"调采样参数，从这里读，别回头去查库。
     std::string firstFramePath;                 // 该镜的分镜图（未生成 → 空；相对 `mediaLibraryDir`）
     std::vector<std::string> referenceImages;   // PromptArtifact.references → `visual_assets.sheet_rel_path`
     std::vector<std::string> characterAssetPaths; // `start_state.characters` 对应的视觉资产
