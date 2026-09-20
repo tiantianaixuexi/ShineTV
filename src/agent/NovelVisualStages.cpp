@@ -5,6 +5,7 @@
 #include "novel/NovelGraph.h"
 #include "util/Encoding.h"
 #include "util/File.h"
+#include "util/Json.h" // S38：ExtractJsonObject（宽容提取 LLM 输出的 JSON 正文）
 #include "util/Strings.h"
 
 #include <yyjson.h>
@@ -150,9 +151,21 @@ RunSceneBreakdown(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         return out;
     }
     // —— 解析（宽容：缺字段只告警，不整段失败 —— 这些产物是**中间产物**，不是世界状态）——
-    yyjson_doc* doc = yyjson_read(r->data(), r->size(), 0);
+    // S38：**先宽容提取** —— LLM 的输出常带 markdown 围栏或前后说明文字，直接 `yyjson_read`
+    // 全文会当场判非法（真实跑就撞上了：MiniMax-M3 在 V6 上返回的不是纯 JSON，链断在 V6）。
+    const std::string json1 = util::json::ExtractJsonObject(*r);
+    yyjson_doc* doc = yyjson_read(json1.data(), json1.size(), 0);
     if (doc == nullptr) {
-        out.error = "V1 输出不是合法 JSON";
+        // S38：失败**留原始输出**（否则无从诊断"模型到底回了个什么"）
+        if (!req.project_dir.empty()) {
+            std::error_code ec;
+            const auto d = std::filesystem::path{req.project_dir} / "work" /
+                           fmt::format("ch{:03}", ch->ord);
+            std::filesystem::create_directories(d, ec);
+            (void)util::WriteFileBytes(d / "v01_raw_failed.txt", *r);
+        }
+        out.error = fmt::format("V1 输出不是合法 JSON（原始 {} 字，前 300 字：{}）", r->size(),
+                                r->substr(0, 300));
         return out;
     }
     yyjson_val* root = yyjson_doc_get_root(doc);
@@ -562,9 +575,21 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
         return out;
     }
     // —— 解析 `items[]`（中间产物：宽进严出 —— 结构不对就报错，字段缺只告警）——
-    yyjson_doc* doc = yyjson_read(r->data(), r->size(), 0);
+    // S38：**先宽容提取**（同 V1；真实跑 V6 就是被"模型输出带围栏/说明"卡死的）
+    const std::string jsonTxt = util::json::ExtractJsonObject(*r);
+    yyjson_doc* doc = yyjson_read(jsonTxt.data(), jsonTxt.size(), 0);
     if (doc == nullptr) {
-        out.error = fmt::format("{} 输出不是合法 JSON", code);
+        // S38：失败**留原始输出**到盘上（`vNN_raw_failed.txt`），并把前 300 字带进错误信息
+        // —— 真实跑最需要的就是"模型到底回了什么"，原先只有一句"不是合法 JSON"没法查。
+        if (!req.project_dir.empty()) {
+            std::error_code ec;
+            const auto d = std::filesystem::path{req.project_dir} / "work" /
+                           fmt::format("ch{:03}", ch->ord);
+            std::filesystem::create_directories(d, ec);
+            (void)util::WriteFileBytes(d / fmt::format("{}_raw_failed.txt", code), *r);
+        }
+        out.error = fmt::format("{} 输出不是合法 JSON（原始 {} 字，前 300 字：{}）", code, r->size(),
+                                r->substr(0, 300));
         return out;
     }
     yyjson_val* root = yyjson_doc_get_root(doc);

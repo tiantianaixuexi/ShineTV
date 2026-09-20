@@ -7,14 +7,19 @@
 #include "openai/OpenAIHttp.h"
 #include "openai/OpenAIProvider.h"
 #include "openai/OpenAIStream.h"
+#include "util/Encoding.h"
+#include "util/File.h"
 #include "util/Json.h"
 
 #include <fmt/format.h>
 
 #include <yyjson.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 
 namespace shine::openai {
 namespace {
@@ -84,6 +89,33 @@ std::string ExtractChatContent(std::string_view body) {
     return content;
 }
 
+// S38：**把"到底提交了什么"变得可见** —— 起因：用户问「我能在哪里看到到底提交了什么给 minimax」，
+// 而原先日志只有一行 `ChatComplete → URL model=x`，请求体**一个字都看不到**（连它多大都不知道）。
+// `SHINE_LLM_DUMP=<目录>` → 把**请求体**与**响应原文**逐个落盘（诊断 LLM 问题的唯一可靠手段）。
+// ⚠️ 请求体里**不含 apiKey**（它在 HTTP header 里）—— 所以 dump 出去是安全的；关闭时零开销。
+[[nodiscard]] std::string LlmDumpDir() {
+    const char* raw = std::getenv("SHINE_LLM_DUMP");
+    return (raw == nullptr || *raw == '\0') ? std::string{} : std::string{raw};
+}
+
+void DumpLlmText(const char* kind, std::string_view text) {
+    const std::string dir = LlmDumpDir();
+    if (dir.empty()) {
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    static std::atomic<int> seq{0};
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    const auto path = std::filesystem::path{dir} / fmt::format("{}_{}_{}.txt", ms, kind,
+                                                              seq.fetch_add(1));
+    if (!util::WriteFileBytes(path, text)) {
+        log::Warn("LLM dump 写入失败：{}", util::PathToUtf8(path));
+    }
+}
+
 std::string BuildChatBody(const ChatRequest& req) {
     if (req.model.empty()) return {};
     std::string body = "{\"model\":\"" + EscapeJson(req.model) + "\",\"messages\":[";
@@ -128,8 +160,18 @@ ChatComplete(std::string_view baseUrl, std::string_view apiKey, const ChatReques
     if (body.empty()) {
         return std::unexpected(MakeErr(0, "json", "构造 chat body 失败"));
     }
-    log::Info("ChatComplete → {} model={}", url, req.model);
+    // S38：**大小分解**（用户问"为什么会提交这么多字符"—— 先得看得见是哪部分撑大的）
+    const std::size_t sysChars = req.system.size();
+    std::size_t userChars = 0;
+    for (const auto& m : req.messages) {
+        userChars += m.content.size();
+    }
+    log::Info("ChatComplete → {} model={} · 请求 {} 字符（system {} / messages {}）", url, req.model,
+              body.size(), sysChars, userChars);
+    // S38：dump（`SHINE_LLM_DUMP` 开了才有动作）—— 请求体**不含 apiKey**（它在 header），可安全落盘
+    DumpLlmText("req", body);
     const HttpTransportResult http = PostJson(url, apiKey, body, timeout);
+    DumpLlmText("resp", fmt::format("status={} error={}\n\n{}", http.status, http.error, http.body));
     if (cancel && cancel->load()) {
         return std::unexpected(MakeErr(0, "cancelled", "已取消"));
     }

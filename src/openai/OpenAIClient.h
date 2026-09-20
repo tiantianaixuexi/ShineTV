@@ -57,6 +57,13 @@ struct ChatRequest {
     std::string system;
     std::vector<ChatMessage> messages;
     double temperature = 1.0;
+    // S38：**输出上限**。原先 4096 且 `LlmComplete` 从不覆盖它（这条没变）。
+    // 真实跑的教训（值得记）：V9 `--novel-storyboard` 要一次输出 8 镜的**完整契约**，4096 装不下
+    // ⇒ 响应在第二个场景中途被硬截断（实测 15545 字节处戛然而止、括号不配平 { 91 vs } 89）。
+    // ⚠️ 但**不能靠调大解决**：试过 8192 与 16384，MiniMax-M3 都**返回空内容**
+    //    （日志只有 "Storyboard 未返回内容"）—— 它的上限就是 4096。
+    // ✅ **正解是让模型少输出**：V2–V7 已定的五层（performance/spatial/camera/audio/timeline）
+    //    不必由 V9 重复输出（下游直接从那些产物读）—— 见 `kStoryboardInstructions` 的"精简铁律"。
     int maxCompletionTokens = 4096;
     bool stream = false;
     bool disableThinking = false; // MiniMax-M3
@@ -148,7 +155,12 @@ private:
     std::vector<std::string> messages_; // 每个元素是一条完整 message JSON
     bool disableThinking_ = false;
     bool jsonObject_ = false;
-    int maxTokens_ = 4096;
+    // S38：**输出上限**。原先是 4096 且**从未被 `SetMaxTokens` 覆盖过** —— 真实跑撞上：
+    // V9 `--novel-storyboard` 要一次输出 8 镜的**完整契约**（performance/spatial/camera/audio/
+    // timeline），4096 tokens 装不下 ⇒ 响应在第二个场景中途**被截断** ⇒ 解析当然失败
+    //（日志："Storyboard 输出不是合法 JSON（原始 15545 字）"，实测括号不配平 { 91 vs } 89）。
+    // V1–V7 输出短，所以只有 V9 撞上 —— 这也解释了"为什么自检全绿、真跑才炸"（mock 不产长输出）。
+    int maxTokens_ = 16384;
 };
 
 // 工具执行回调：name + argsJson → resultJson

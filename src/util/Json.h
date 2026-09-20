@@ -15,6 +15,31 @@
 
 namespace shine::util::json {
 
+// —— 宽容提取（S38）：LLM 的输出**常带 markdown 围栏或前后说明文字**（"好的，以下是 JSON："…）。
+// 直接 `yyjson_read` 全文会**当场判非法** —— 真实跑就撞上了（MiniMax-M3 在 V6 TIMELINE 上的输出
+// 不是纯 JSON，整条阶段链当场断在 V6）。本函数把"可能的 JSON 正文"抠出来：
+//   ① 去 markdown 围栏（```json … ``` / ``` … ```）② 取第一个 `{` 到最后一个 `}`。
+// ⚠️ **不做 JSON 语义修复**（不补尾逗号、不修中文引号）—— 那是模型的问题，替它修反而掩盖问题。
+// ⚠️ 抠不出来时**原样返回**（让 yyjson 去报错），不要假装成功。
+[[nodiscard]] inline std::string ExtractJsonObject(std::string_view raw) {
+    std::string s{raw};
+    if (const auto fence = s.find("```"); fence != std::string::npos) {
+        const std::size_t begin = s.find('\n', fence);
+        if (begin != std::string::npos) {
+            const std::size_t close = s.find("```", begin);
+            if (close != std::string::npos) {
+                s = s.substr(begin + 1, close - begin - 1);
+            }
+        }
+    }
+    const std::size_t b = s.find('{');
+    const std::size_t e = s.rfind('}');
+    if (b == std::string::npos || e == std::string::npos || e <= b) {
+        return s;
+    }
+    return s.substr(b, e - b + 1);
+}
+
 // 键对应的值节点；不存在返回 nullptr
 [[nodiscard]] inline yyjson_val* Get(yyjson_val* obj, std::string_view key) noexcept {
     if (!obj || !yyjson_is_obj(obj)) {

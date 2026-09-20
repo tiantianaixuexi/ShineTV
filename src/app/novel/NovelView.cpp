@@ -22,6 +22,7 @@
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
 #include "novel/NovelProjects.h"
+#include "novel/NovelVisual.h" // S38：链路面板要读 shots / prompt_artifacts（权威在库）
 #include "novel/NovelRunLoop.h" // S9：无人值守连跑（UI 入口）
 #include "openai/OpenAIClient.h"
 #include "openai/OpenAIConfig.h"
@@ -964,6 +965,116 @@ bool RunMvpSelfCheck() {
     return true;
 }
 
+// S38：**影视化链路面板** —— V1–V11 的阶段状态一眼可见。
+// 为什么该有：这些阶段此前**只能看日志、翻盘上的 JSON**（用户："没有前端页面给我看吗"）。
+// 链路的**可见性**本身就是质量要求（`11` §2.7 W2「偏离/降级必须可见」的同款精神）。
+// ⚠️ 本面板**只读**：不在这里发起 LLM（那需要 worker + 进度状态机，见 `StartChapterGeneration`）。
+//    要跑阶段链就用命令行（面板里给出确切命令，可复制）。
+void DrawPipelineCard() {
+    if (g_openProject.empty() || !biz::NovelDb::Instance().isOpen()) {
+        return;
+    }
+    auto& db = biz::NovelDb::Instance().raw();
+    std::int64_t chapterId = 0;
+    int chapterOrd = 0;
+    if (auto list = biz::NovelGraph(db).ListChapters(200); list && !list->empty()) {
+        chapterId = list->front().id; // TODO：章选择器（现在固定第一章，够用）
+        chapterOrd = static_cast<int>(list->front().ord);
+    }
+    if (chapterId <= 0) {
+        return;
+    }
+    const auto artDir = RootDir() / util::PathFromUtf8(g_openProject) / "work" /
+                        fmt::format("ch{:03}", chapterOrd);
+    app::ui::SectionText(fmt::format("影视化链路（第 {} 章）", chapterOrd));
+    ImGui::TextDisabled("盘上的阶段产物：%s", util::PathToUtf8(artDir).c_str());
+    ImGui::Dummy(ImVec2(0, 4));
+    if (ImGui::BeginTable("##pipeline", 3,
+                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("阶段", ImGuiTableColumnFlags_WidthStretch, 0.42f);
+        ImGui::TableSetupColumn("状态", ImGuiTableColumnFlags_WidthStretch, 0.22f);
+        ImGui::TableSetupColumn("规模", ImGuiTableColumnFlags_WidthStretch, 0.36f);
+        const std::pair<const char*, const char*> stages[] = {
+            {"V1 SCENE_BREAKDOWN", "v01_scene_breakdown.json"},
+            {"V2 DIRECTOR_INTENT", "v02_director_intent.json"},
+            {"V3 PERFORMANCE", "v03_performance.json"},
+            {"V4 SPATIAL", "v04_spatial.json"},
+            {"V5 CAMERA", "v05_camera.json"},
+            {"V6 TIMELINE", "v06_timeline.json"},
+            {"V7 AUDIO", "v07_audio.json"},
+            {"V8 CONTINUITY（机器校验）", "v08_continuity.json"},
+            {"V9 STORYBOARD", "storyboard.json"},
+        };
+        for (const auto& [label, file] : stages) {
+            std::error_code ec;
+            const auto sz = std::filesystem::file_size(artDir / file, ec);
+            const bool has = !ec && sz > 0;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(label);
+            ImGui::TableNextColumn();
+            if (has) {
+                ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "已产出");
+            } else {
+                ImGui::TextDisabled("未跑");
+            }
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", has ? fmt::format("{} B", sz).c_str() : "—");
+        }
+        // —— 库里的结果（V9/V10/V11 的账）——
+        // 分工：盘上文件是**保真/审计**（LLM 原话），**权威在库**（`01` 的架构判断）。
+        biz::NovelVisual vis(db);
+        auto shots = vis.ListShotsByChapter(chapterId);
+        const std::size_t nShots = shots ? shots->size() : 0;
+        std::size_t nIntent = 0;
+        if (shots) {
+            for (const auto& s : *shots) {
+                if (!s.intent_json.empty() && s.intent_json != "{}") {
+                    ++nIntent;
+                }
+            }
+        }
+        auto arts = vis.ListPromptArtifacts(chapterId);
+        const std::size_t nArts = arts ? arts->size() : 0;
+        std::size_t nRefs = 0;
+        if (arts) {
+            for (const auto& a : *arts) {
+                if (a.stage == "V10" && !a.generation_ref.empty()) {
+                    ++nRefs; // PV5：`generation_ref` 非空 = 这一镜**已经出过图**（双向可查）
+                }
+            }
+        }
+        const std::pair<const char*, std::string> libRows[] = {
+            {"V9 STORYBOARD → shots 表", fmt::format("{} 镜（其中 {} 镜有 V2 导演意图）", nShots, nIntent)},
+            {"V10 PROMPT_GEN → prompt_artifacts", fmt::format("{} 条", nArts)},
+            {"V11 GENERATE_IMAGES → 已回填 generation_ref", fmt::format("{} 条", nRefs)},
+        };
+        for (const auto& [label, val] : libRows) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(label);
+            ImGui::TableNextColumn();
+            ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s", val.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("库");
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextDisabled("跑链路（命令行，可复制）：");
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f),
+                       "  ShineTVStudio.exe --novel-stages %d        # V1–V7（真 LLM）", chapterOrd);
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f),
+                       "  ShineTVStudio.exe --novel-storyboard %d    # V9", chapterOrd);
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f),
+                       "  ShineTVStudio.exe --novel-continuity %d    # V8（不调 LLM）", chapterOrd);
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f),
+                       "  ShineTVStudio.exe --novel-prompt %d        # V10（不调 LLM）", chapterOrd);
+    ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f),
+                       "  ShineTVStudio.exe --novel-generate-images %d  # V11（需 SD checkpoint）", chapterOrd);
+    ImGui::Dummy(ImVec2(0, 8));
+}
+
 void DrawNovelWindow() {
     // 本页是 dock 页（宿主 `NoScrollbar|NoScrollWithMouse`）：**页级滚动恒为 0**，滚动只发生在
     // 内部子窗（`##novel_workspace` / 工程列表）。统一钉住的是 `DrawDockedPanels::beginDock`，
@@ -1053,6 +1164,8 @@ void DrawNovelWindow() {
         ImGui::BeginChild("##novel_workspace", ImVec2(0, h), ImGuiChildFlags_Borders,
                           ImGuiWindowFlags_None);
         DrawWorkspace();
+        ImGui::Dummy(ImVec2(0, 10));
+        DrawPipelineCard(); // S38：影视化链路面板（V1–V11 状态一眼可见）
         ImGui::EndChild();
     }
     ImGui::Dummy(ImVec2(0, 8));

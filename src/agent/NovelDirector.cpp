@@ -149,6 +149,16 @@ std::string ExtractOutputText(std::string_view responseJson) {
         }
     }
     yyjson_doc_free(doc);
+    // S38：**兜底** —— 走到这里说明它既不是 Responses API 的 `output_text` / `output[]` 结构，
+    // 也不是非法 JSON。那就是**别的协议**的合法 JSON（如 Chat Completions 那条路返回的
+    // `{"shots":[...]}` —— `ChatComplete` 早就提取过一层 content 了，这里是**双重提取**）。
+    // ⚠️ 原先这里**返回空** ⇒ 调用方只看到一句"未返回内容"，完全无从下手。
+    //    真实跑 V9 就是卡在这：日志说"Storyboard 未返回内容"，而 dump 出来的响应
+    //    明明是 `status=200 finish_reason=stop` + 一大段合法 JSON。**返回原文**，让上层去解析、
+    //    去报"缺 shots 数组"这种**有信息量**的错。
+    if (text.empty()) {
+        return std::string{responseJson};
+    }
     return text;
 }
 
