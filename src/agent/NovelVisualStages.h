@@ -116,6 +116,12 @@ RunAllVisualStages(::shine::db::sqlite::Database& db, const LlmCallFn& call,
 // 提示词 ⇒ 两处必须同步，迟早分叉。现在 `AgentKit` 直接取这里，改提示词只改一处。
 [[nodiscard]] std::string_view StageSystemPrompt(VisualStageId stage) noexcept;
 
+// S46：**阶段 → 阶段级 Agent 的 id**（`v2_director_intent` / `v3_performance` / `v4_spatial` …）。
+// ⚠️ 这个映射是 **`BuiltinAgents()`（注册）与 `RunVisualStage`（调用）共用的唯一来源** ——
+//    别在两处各写一份字符串字面量（写岔了就是"注册了 A、调用了 B"这种查不出来的 bug）。
+// V1 无 Agent（它是链路起点，拿的是章节正文、没有可查的上游；其余返回空串）。
+[[nodiscard]] std::string_view StageAgentId(VisualStageId stage) noexcept;
+
 // `--up-to` 的解析（S35）：接受 `V1`…`V7` / `1`…`7`（大小写不敏感）。非法 → `nullopt`（调用方报错）。
 [[nodiscard]] std::optional<VisualStageId> ParseVisualStage(std::string_view text) noexcept;
 

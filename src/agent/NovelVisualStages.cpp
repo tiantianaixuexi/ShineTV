@@ -1,6 +1,8 @@
 #include "agent/NovelVisualStages.h"
 
 #include "agent/AgentKit.h" // S41：V4 试点走 Agent 工具循环（多轮 + MCP 工具白名单）
+#include <chrono>           // S46：网络退避重试
+#include <thread>           // S46：网络退避重试
 #include "core/Log.h"
 #include "openai/OpenAIClient.h" // S41：LlmCreateRaw（返回原始响应体，供工具循环解析）
 #include "novel/NovelChecks.h" // ComputeInputStateHash（`04` §2.5 的唯一来源）
@@ -155,8 +157,21 @@ RunSceneBreakdown(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     // —— 解析（宽容：缺字段只告警，不整段失败 —— 这些产物是**中间产物**，不是世界状态）——
     // S38：**先宽容提取** —— LLM 的输出常带 markdown 围栏或前后说明文字，直接 `yyjson_read`
     // 全文会当场判非法（真实跑就撞上了：MiniMax-M3 在 V6 上返回的不是纯 JSON，链断在 V6）。
-    const std::string json1 = util::json::ExtractJsonObject(*r);
+    // S46：**再加一次重试**（与 V2–V7 对齐）—— 原先**只有 V1 没有重试**，真跑就撞上了：
+    // MiniMax 偶发返回带 ```json 围栏的输出，宽容提取也救不回来，而 V1 是链头 ⇒
+    // **整条链从第一步就断**（后面 6 个阶段的 Agent 全没机会上场）。
+    std::string json1 = util::json::ExtractJsonObject(*r);
     yyjson_doc* doc = yyjson_read(json1.data(), json1.size(), 0);
+    if (doc == nullptr) {
+        log::Warn("V1 输出不是合法 JSON → **重试一次**（模型偶发生成非法 JSON）");
+        auto r2 = call(LlmRole::Planner, std::string{kSceneBreakdownInstructions}, user);
+        if (r2) {
+            ++out.llm_calls;
+            *r = *r2;
+            json1 = util::json::ExtractJsonObject(*r);
+            doc = yyjson_read(json1.data(), json1.size(), 0);
+        }
+    }
     if (doc == nullptr) {
         // S38：失败**留原始输出**（否则无从诊断"模型到底回了个什么"）
         if (!req.project_dir.empty()) {
@@ -576,17 +591,20 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     if (!req.extra_hint.empty()) {
         user += "\n【额外要求】" + req.extra_hint;
     }
-    // —— 取 LLM 输出：默认**单轮**；V4 + `--agent-tools` → 走 **Agent 工具循环**（多轮）——
+    // —— 取 LLM 输出：默认**单轮**；`--agent-tools` → 走 **Agent 工具循环**（多轮）——
+    // S46：从"只 V4 试点"**放开到 V2–V7 全阶段**（每阶段一个 Agent，白名单统一只读四件套）。
+    // V1 没有 Agent（`StageAgentId` 返回空）⇒ 即使开了开关也走单轮。
     std::string rText;
-    if (req.use_agent_tools && req.stage == VisualStageId::V4Spatial) {
-        // S41 试点：让模型**自己用工具查库**（按需），而不是我们预先猜它要什么、塞满 prompt。
+    const std::string_view agentId = StageAgentId(req.stage);
+    if (req.use_agent_tools && !agentId.empty()) {
+        // S41 试点 / S46 推广：让模型**自己用工具查库**（按需），而不是我们预先猜它要什么、塞满 prompt。
         agent::AgentKit kit(db, /*allowWrite=*/false);
         if (auto seeded = kit.EnsureSchemaAndSeed(); !seeded) {
-            out.error = fmt::format("V4 Agent 初始化失败：{}", seeded.error().message);
+            out.error = fmt::format("{} Agent 初始化失败：{}", agentId, seeded.error().message);
             return out;
         }
         agent::AgentRunRequest areq;
-        areq.agent_id = "v4_spatial";
+        areq.agent_id = std::string{agentId}; // S46：与 `BuiltinAgents()` 同源（`StageAgentId`）
         areq.chapter_id = req.chapter_id;
         // S43：**精简 user** —— 走 Agent 就别再"把上游产物一股脑塞进来"。
         // 只给"本章 + 场景清单"（它必须知道的范围），**角色/位置/道具让它自己去查**
@@ -600,21 +618,36 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
                 }
             }
             lean += fmt::format("\n【任务】{}\n", spec.task);
-            lean += "\n【提示】这一场有哪些角色、他们的位置/朝向/道具 —— **用工具查，别猜**。\n";
+            lean += "\n【提示】这一场有哪些角色、他们的位置/朝向/道具/性格 —— **用工具查，别猜**。\n";
             areq.user_text = lean;
         }
         agent::ToolLoopStats stats;
         const auto create = [](std::string_view ins, std::string_view in, std::string_view tj)
             -> std::expected<std::string, std::string> {
-            auto rr = openai::LlmCreateRaw(ins, in, tj);
-            if (!rr) {
-                return std::unexpected(rr.error().message);
+            // S46：**网络层退避重试**。真跑实测：Agent 循环连发 5 轮都成功，第 6 轮 MiniMax
+            // 偶发 `ssl handshake failed`（**TLS 握手层**，不是请求形状的问题 —— 前 5 轮同样
+            // 的 body 都过了）。一次抖动就中断**整条阶段链**（V1→V7 会白跑）太脆，故重试 3 次。
+            // ⚠️ 退避**要够长**：真跑实测 1.5s 的退避连续 3 次都过不去 —— 现象是"同一分钟里
+            //    第 6 次请求开始被持续拒绝"（V2 的 1 次 + V3 的 5 次 ≈ 6），像是**服务端短时频率
+            //    限制**，而不是瞬时抖动。所以退避按 4s / 10s / 20s（总 ~34s）走。
+            static constexpr int kBackoffMs[] = {4000, 10000, 20000};
+            std::string lastErr;
+            for (int attempt = 0; attempt < 4; ++attempt) {
+                if (attempt > 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt - 1]));
+                }
+                auto rr = openai::LlmCreateRaw(ins, in, tj);
+                if (rr) {
+                    return *rr;
+                }
+                lastErr = rr.error().message;
+                log::Warn("LlmCreateRaw 失败（第 {} 次）：{}", attempt + 1, lastErr);
             }
-            return *rr;
+            return std::unexpected(lastErr);
         };
         auto run = kit.Run(areq, create, &stats);
         if (!run) {
-            out.error = fmt::format("V4 Agent 失败：{}", run.error().message);
+            out.error = fmt::format("{} Agent 失败：{}", agentId, run.error().message);
             return out;
         }
         std::string tools;
@@ -622,8 +655,9 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
             tools += (tools.empty() ? "" : ", ") + t;
         }
         out.llm_calls += stats.steps + 1; // 记账：多轮的**每一次**都算（`09` §2.4 的预算要看得见）
-        log::Info("V4 SPATIAL（**Agent 模式**）：工具 {} 次 / 轮次 {} → {}", stats.callLog.size(),
-                  run->tool_steps, tools.empty() ? "(没用工具)" : tools);
+        log::Info("{} {}（**Agent 模式**）：工具 {} 次 / 轮次 {} → {}", VisualStageCode(req.stage),
+                  VisualStageName(req.stage), stats.callLog.size(), run->tool_steps,
+                  tools.empty() ? "(没用工具)" : tools);
         rText = run->output_text;
     } else {
         ++out.llm_calls;
@@ -946,6 +980,20 @@ std::string_view StageSystemPrompt(VisualStageId stage) noexcept {
         return kV7Spec.instructions;
     }
     return {};
+}
+
+std::string_view StageAgentId(VisualStageId stage) noexcept {
+    // S46：与 `BuiltinAgents()` 注册的名字**必须一致**（同源，别再手写字符串）。
+    // V1 刻意不给 Agent：它是链路起点（输入是章节正文），没有"可查的上游事实"。
+    switch (stage) {
+    case VisualStageId::V2DirectorIntent: return "v2_director_intent";
+    case VisualStageId::V3Performance: return "v3_performance";
+    case VisualStageId::V4Spatial: return "v4_spatial";
+    case VisualStageId::V5Camera: return "v5_camera";
+    case VisualStageId::V6Timeline: return "v6_timeline";
+    case VisualStageId::V7Audio: return "v7_audio";
+    default: return {};
+    }
 }
 
 } // namespace shine::agent

@@ -554,8 +554,15 @@ std::expected<void, DbError> AgentKit::EnsureSchemaAndSeed() {
     for (const auto& a : BuiltinAgents()) {
         auto existing = GetAgentDef(a.agent_id);
         if (existing) {
-            // 库内已有则不覆盖作者修改的 prompt；仅保证 enabled 行存在
-            continue;
+            // S46：**内置 Agent 跟随代码升级** —— 代码里把 `version` 抬高了就覆盖
+            //（prompt / 工具白名单 / output_hint 一起跟上）；**作者自建的 Agent 不动**。
+            // ⚠️ 原先一律 `continue` ⇒ 代码里改了内置 prompt，**老库永远看不到**：
+            //    推广阶段 Agent 时就撞上了 —— 旧库的 `v4_spatial` 还是 S41 那份提示词，
+            //    而它本该等于 `kV4Spec.instructions`（同源），两边已经不一致了。
+            // 想要"自己改的版本"，把 agent 复制一份自建即可（`is_builtin=0` 不会被覆盖）。
+            if (!existing->is_builtin || existing->version >= a.version) {
+                continue;
+            }
         }
         if (auto r = UpsertAgentDef(a); !r) {
             return std::unexpected(r.error());
@@ -1102,11 +1109,8 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         {"memory", "记忆检索 Agent", "memory,retrieve",
          R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])",
          "相关实体与字段摘要"},
-        // S41：**阶段级 Agent（试点）** —— V4 `SPATIAL`。白名单只给"查实体/字段"的只读工具：
-        // 空间调度要的是"这一场有哪些角色、他们的位置/朝向从哪来"，**按需查库**比塞进 prompt 更准。
-        {"v4_spatial", "空间调度 Agent", "visual,spatial,stage",
-         R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])",
-         R"({"items":[{"scene_ord":…,"ord":…,"facing":…,"distance_m":…,"layers":{…}}]})"},
+        // ⚠️ S46：原来的 `v4_spatial` **试点**单条在这里，已**删除** —— 改成下面统一循环生成
+        // V2–V7 全量（含 V4），避免"一个阶段硬编码一条、别的阶段忘了加"。
         {"visual", "视觉 Agent", "visual,prompt",
          R"(["get_entity","list_entities","upsert_entity_field","list_entity_fields"])",
          "视觉阶段/分层 prompt 字段"},
@@ -1134,6 +1138,29 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         r.enabled = 1;
         r.is_builtin = 1;
         r.version = 1;
+        out.push_back(std::move(r));
+    }
+
+    // S46：**阶段级 Agent 全量**（V2–V7）—— 每个视觉阶段一个 Agent，都能**自己用工具查库**。
+    // ⚠️ 提示词**唯一来源** = 该阶段的 instructions（S42 的 `StageSystemPrompt`，也就是
+    //    `--novel-stages` 单轮模式用的那份）—— **绝不另抄一份**：否则"给 LLM 的指令"会有两处，
+    //    改一处另一处悄悄过时（S35「空间层两条来源」的同类错误，别重犯）。
+    // ⚠️ 白名单**统一是只读四件套**：这些阶段的职责是「**按需查库确认事实**」（谁在场 / 在哪 /
+    //    什么性格 / 有哪些字段），**不是写库** —— 写库是章节提交时的事（`01` §2 的提案制）。
+    // ⚠️ 每个阶段的"要查什么"差异靠 instructions 表达（已写在各 `kV*Spec` 里），不靠工具差异。
+    for (const VisualStageId st : {VisualStageId::V2DirectorIntent, VisualStageId::V3Performance,
+                                  VisualStageId::V4Spatial, VisualStageId::V5Camera,
+                                  VisualStageId::V6Timeline, VisualStageId::V7Audio}) {
+        AgentDefRow r;
+        r.agent_id = std::string{StageAgentId(st)}; // ← 与 `RunVisualStage` 同源
+        r.name = fmt::format("{} 阶段 Agent", VisualStageCode(st));
+        r.role_tags = fmt::format("visual,stage,{}", StageAgentId(st));
+        r.system_prompt = std::string{StageSystemPrompt(st)};
+        r.tools_json = R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])";
+        r.output_hint = R"({"items":[{"scene_ord":…,"ord":…}]})";
+        r.enabled = 1;
+        r.is_builtin = 1;
+        r.version = 2; // S46：>1 ⇒ 老库里的 `v4_spatial`（S41 建，version=1）会被**覆盖刷新**
         out.push_back(std::move(r));
     }
     return out;
