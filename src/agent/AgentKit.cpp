@@ -1114,6 +1114,11 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         {"memory", "记忆检索 Agent", "memory,retrieve",
          R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])",
          "相关实体与字段摘要"},
+        // S41：**阶段级 Agent（试点）** —— V4 `SPATIAL`。白名单只给"查实体/字段"的只读工具：
+        // 空间调度要的是"这一场有哪些角色、他们的位置/朝向从哪来"，**按需查库**比塞进 prompt 更准。
+        {"v4_spatial", "空间调度 Agent", "visual,spatial,stage",
+         R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])",
+         R"({"items":[{"scene_ord":…,"ord":…,"facing":…,"distance_m":…,"layers":{…}}]})"},
         {"visual", "视觉 Agent", "visual,prompt",
          R"(["get_entity","list_entities","upsert_entity_field","list_entity_fields"])",
          "视觉阶段/分层 prompt 字段"},
@@ -1222,6 +1227,23 @@ std::string AgentKit::DefaultPromptFor(std::string_view agentId) {
     }
     if (agentId == "memory") {
         return "你是记忆检索 Agent。按任务检索相关实体与动态字段，输出摘要供写作使用。";
+    }
+    if (agentId == "v4_spatial") {
+        // S41：**阶段级 Agent 的提示词**（内容与 `NovelVisualStages.cpp` 的 `kV4Spec.instructions`
+        // 一致，但**多了一段"先查库再写"**）—— 这正是"Agent + MCP"与"塞一大坨"的区别：
+        // 前者让模型**按需取数**，后者要我们预先猜它需要什么。
+        // ⚠️ 记账：两处需同步；将来应把提示词收到单一来源。
+        return
+            "你是空间调度。为**每一镜**给出站位层（`02` §2.7 的 Spatial）。\n"
+            "**先用工具查库**（get_entity / list_entities / list_entity_fields / list_field_defs）"
+            "确认这一场有哪些角色、他们的位置/朝向/道具 —— **别猜**，查到再写。\n"
+            "最后只输出 JSON：{\"items\":[ ... ]}，不要解释。\n"
+            "每条：scene_ord(int) ord(int) 以及：\n"
+            "  facing(string) 朝向    distance_m(number) 距离（米）\n"
+            "  height(string) 高度    movement_path(string) 运动路径（没有就写「无」）\n"
+            "  occlusion(string) 遮挡关系\n"
+            "  layers(object) {foreground, midground, background} —— **谁在前景/谁在中间/谁在背景**，\n"
+            "                 填角色名（本镜没有该层就写「无」）。这是「谁在前景」的唯一来源。";
     }
     if (agentId == "visual") {
         return

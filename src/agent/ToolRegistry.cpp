@@ -146,9 +146,26 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
                           [&] {
                               std::string c = "\"";
                               for (const char ch : userText) {
-                                  if (ch == '"' || ch == '\\') c += '\\';
-                                  else if (ch == '\n') c += "\\n";
-                                  else c += ch;
+                                  // S41：**手工拼 JSON 必须把所有控制字符转义** —— 原先只处理了
+                                  // `"` / `\` / `\n`，漏掉 `\r` / `\t` 等 ⇒ 一旦 user 文本里含
+                                  // `\r`（CRLF 环境拼出来的文本很容易有），JSON 就**非法**，
+                                  // 下游 `yyjson_read` 直接失败（真实跑：V4 Agent 报
+                                  // 「工具循环给的 input 不是合法 JSON」，卡在工具循环第一步）。
+                                  const unsigned char u = static_cast<unsigned char>(ch);
+                                  if (ch == '"' || ch == '\\') {
+                                      c += '\\';
+                                      c += ch;
+                                  } else if (ch == '\n') {
+                                      c += "\\n";
+                                  } else if (ch == '\r') {
+                                      c += "\\r";
+                                  } else if (ch == '\t') {
+                                      c += "\\t";
+                                  } else if (u < 0x20) {
+                                      c += fmt::format("\\u{:04x}", static_cast<unsigned>(u));
+                                  } else {
+                                      c += ch;
+                                  }
                               }
                               return c + "\"";
                           }());

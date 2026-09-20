@@ -244,8 +244,13 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         log::Info("novel-cli：阶段链目标 V1–{}", agent::VisualStageCode(upTo));
         // S32：**一次跑 V1 → V7**（各自哈希复用会自动跳过已跑过的；链式：上游变了下游必重算）
+        // S41 `--agent-tools`：**V4 走 Agent 工具循环**（多轮 + MCP 只读工具），而不是单轮塞满 prompt
+        const bool useAgentTools = Has(args, "--agent-tools");
+        if (useAgentTools) {
+            log::Info("novel-cli：**Agent 工具模式**开启（目前试点：V4 SPATIAL 自行查库）");
+        }
         const auto sb = agent::RunAllVisualStages(db, call, cid, util::PathToUtf8(projectDir),
-                                                  Opt(args, "--hint"), upTo);
+                                                  Opt(args, "--hint"), upTo, useAgentTools);
         if (!sb) {
             log::Error("novel-cli：阶段链失败 {}", sb.error().message);
             AppendCheckOut(false, sb.error().message);
