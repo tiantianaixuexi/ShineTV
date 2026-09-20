@@ -40,7 +40,9 @@ public:
     Generate(const ImageGenRequest& req) = 0;
 };
 
-// Settings().imageBackend：mock | openai_images | comfy（comfy 首期返回 unsupported）
+// Settings().imageBackend：mock | openai_images | comfy
+// （`comfy` 自 S29 起是**真实实现**：编 SD1.5 workflow → `POST /prompt` → 轮询 `/history` → `/view` 下载；
+//  此前是"将在 P9.2 接入"的 stub —— `13` §1.2 的 G13）
 [[nodiscard]] std::unique_ptr<ImageBackend> MakeImageBackend();
 
 // 工程内相对目录（Settings().imageOutputRelDir，默认 visual/gen）

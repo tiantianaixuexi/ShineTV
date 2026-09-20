@@ -34,7 +34,7 @@
 |---|---|---|
 | `MockBackend` | `:210-232` | 写 1×1 PNG 占位 |
 | `OpenAiImagesBackend` | `:235-343` | `POST /images/generations`（`:253`），支持 b64 与 URL（`:334 net::Download`） |
-| **`ComfyStubBackend`** | `:346-355` | **恒返回 `Err("unsupported", "ComfyUI 出图后端将在 P9.2 接入…")`** |
+| **`ComfyBackend`**（S29 起） | — | ✅ **真实实现**：`video::BuildSceneToImageWorkflow` 编 SD1.5 workflow（**唯一来源**，不重写规则）→ `POST /prompt` → 轮询 `GET /history/{id}`（500ms × 300s，**有界**）→ `GET /view` 下载 → 写盘。**同步短事务**：一次调用一提交，不依赖 GUI 的常驻 `ComfySession` ⇒ **headless CLI 也能用**；种子由 prompt/尺寸/steps 派生（`11` §2.5 的**禁纯随机**精神）；首版**不上传参考图**（走纯文生图 + 记降级）。<br>⚠️ 此前是 `ComfyStubBackend`（恒返回"将在 P9.2 接入"）—— G13 的 stub 至此替换 |
 | 工厂 | `:359-368` | `imageBackend`：`openai_images`/`openai` → OpenAI；`comfy` → **stub**；其余 → mock（默认 `mock`，`Settings.h:80`） |
 
 - 任务：`NovelImageStore.cpp:276-438 RunImageJob`（`RUNNING` → `PROPOSED`/`FAILED`）。
@@ -60,7 +60,7 @@
 | 入口 | 配置 | UI | 现状 |
 |---|---|---|---|
 | ① 通用 | `Settings.h:13 comfyBaseUrl` | `DrawSettingsWindow.cpp:72-89`「服务地址」+「保存并连接」→ `ComfySession::SetBaseUrl` | 可用 |
-| ② 小说出图 | `Settings.h:80 imageBackend` | `DrawSettingsWindow.cpp:318-334`「出图后端」下拉（`mock`/`openai_images`/`comfy`） | 选 `comfy` → **stub** |
+| ② 小说出图 | `Settings.h:80 imageBackend` | `DrawSettingsWindow.cpp:318-334`「出图后端」下拉（`mock`/`openai_images`/`comfy`） | ✅ **S29 起可用**（选 `comfy` → 真提交 Comfy 队列；缺 SD checkpoint 时给中文提示，不再走 stub） |
 
 **问题**：两个入口各自为政，用户以为「选了 comfy 就能出图」，实际走的是 stub。这是 G13 的核心。
 
