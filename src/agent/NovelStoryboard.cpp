@@ -105,6 +105,45 @@ constexpr std::size_t kStageDesignMaxChars = 40000;
     return out + "]";
 }
 
+// S56：**只保留 `kind=person` 的实体** —— `06` K03（`entity.kind_match`：location/person/item/
+// conflict）要求 `shots.character_ids_json` **只放人物**。
+// 🔴 起因（真跑确诊）：`start_state.characters` 来自**模型输出**，它会把无关实体塞进来
+//（实测 11 处是 `universe` 世界观测实体）⇒ 原样落库 ⇒ K03 失败 ⇒ **G2=0 ⇒ 提交门禁不过
+// ⇒ 状态从不回写 ⇒ auto 前置①永远不满足**（`--novel-run auto` 永远被拒）。
+// 取舍：**过滤而不是拒绝**（中间产物宽容），但**必须记账**（剔除数进 warnings，不静默）。
+[[nodiscard]] std::pair<std::string, int> PersonIdsOnly(db::sqlite::Database& db,
+                                                        const std::string& idsJson) {
+    yyjson_doc* d = yyjson_read(idsJson.data(), idsJson.size(), 0);
+    if (d == nullptr) {
+        return {idsJson, 0};
+    }
+    novelcore::NovelGraph g(db);
+    std::string out = "[";
+    bool first = true;
+    int dropped = 0;
+    std::size_t i = 0;
+    std::size_t max = 0;
+    yyjson_val* v = nullptr;
+    yyjson_val* arr = yyjson_doc_get_root(d);
+    if (yyjson_is_arr(arr)) {
+        yyjson_arr_foreach(arr, i, max, v) {
+            if (!yyjson_is_int(v)) {
+                continue;
+            }
+            const std::int64_t id = yyjson_get_sint(v);
+            auto e = g.GetEntity(id);
+            if (!e || e->kind != "person") {
+                ++dropped;
+                continue;
+            }
+            out += fmt::format("{}{}", first ? "" : ",", id);
+            first = false;
+        }
+    }
+    yyjson_doc_free(d);
+    return {out + "]", dropped};
+}
+
 // `timeline` 数组 → `{"duration_s":N,"beats":[{begin_s,end_s}]}`（`02` §2.9，K24 的读法）
 [[nodiscard]] std::string TimelineJson(yyjson_val* timeline, double duration) {
     if (!yyjson_is_arr(timeline)) {
@@ -469,7 +508,17 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         if (const auto it = v2Items.find({sceneOrd, ord}); it != v2Items.end()) {
             row.intent_json = JsonText(it->second);
         }
-        row.character_ids_json = CharacterIdsJson(startState);
+        {
+            // S56：落库前**只留 person**（K03 的期望）；剔除了谁要记账（不静默改数据）
+            const auto [ids, dropped] = PersonIdsOnly(db, CharacterIdsJson(startState));
+            row.character_ids_json = ids;
+            if (dropped > 0) {
+                out.warnings.push_back(
+                    fmt::format("scene_ord={} ord={}：`start_state.characters` 含 {} 个**非 person** "
+                                "实体（`06` K03 要求这里只放人物），已剔除",
+                                sceneOrd, ord, dropped));
+            }
+        }
         // S34：**阶段产物的字段级比对**（比骨架更细）—— 每阶段挑**一个有代表性**的字段：
         // V4 前景 / V5 景别 / V3 表情 / V7 环境音。抓的是"**根本没采纳**"，不是"措辞不同"
         //（LLM 会改写文案，全字段比对会被噪音淹没）。
