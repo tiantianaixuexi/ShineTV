@@ -255,6 +255,19 @@ InitReport CheckInitGate(db::sqlite::Database& db) {
     return rep;
 }
 
+void EnsureProjectSeeds(db::sqlite::Database& db) {
+    if (!db.isOpen()) return;
+    // N12：`field_defs` 的系统种子
+    if (auto r = NovelFields::EnsureSchema(db); !r) {
+        log::Warn("工程种子：field_defs 失败 {}", r.error().message);
+    }
+    // N13：内置 Agent（幂等；代码 version 抬高会覆盖内置的 prompt / 白名单，作者自建的不动）
+    agent::AgentKit kit(db, false);
+    if (auto r = kit.EnsureSchemaAndSeed(); !r) {
+        log::Warn("工程种子：内置 Agent 失败 {}", r.error().message);
+    }
+}
+
 InitSkeletonResult RunInitSkeleton(db::sqlite::Database& db, const std::filesystem::path& project_dir,
                                    std::string_view book_title, int target_chapters) {
     InitSkeletonResult out;
@@ -270,14 +283,9 @@ InitSkeletonResult RunInitSkeleton(db::sqlite::Database& db, const std::filesyst
     }
     NovelGraph g(db);
 
-    // N12 / N13 的种子（打开工程时本就会跑；这里显式跑一次，让"新建工程"也能直接过门禁）
-    agent::AgentKit kit(db, false);
-    if (auto r = kit.EnsureSchemaAndSeed(); !r) {
-        log::Warn("初始化骨架：Agent 种子失败 {}", r.error().message);
-    } else {
-        out.created.push_back("agent_defs#builtin");
-    }
-    (void)NovelFields::EnsureSchema(db);
+    // N12 / N13 的种子（唯一来源：`EnsureProjectSeeds`）
+    EnsureProjectSeeds(db);
+    out.created.push_back("field_defs#system+agent_defs#builtin");
 
     auto meta = g.SetWorldMeta("book_title", book_title.empty() ? std::string{"未命名小说"} : book_title);
     if (!meta) {

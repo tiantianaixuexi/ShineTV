@@ -6,6 +6,7 @@
 #include "mcp/McpBootstrap.h"
 #include "mcp/McpSse.h"
 #include "novel/NovelDb.h"
+#include "novel/NovelInit.h" // S60：挂新库时补 N12/N13 的种子
 #include "novel/NovelMcpTools.h"
 #include "novel/NovelProjects.h"
 #include "util/Encoding.h"
@@ -401,6 +402,9 @@ int RunStdioServerMain() {
             !r) {
             log::Error("stdio MCP 打开 novel.db 失败：{}", r.error().message);
         } else {
+            // S60：挂一个**新库**时要补 N12/N13 的种子（`field_defs` + 内置 Agent）——
+            // `NovelDb::Open` 只建表不种，Agent 光靠 MCP 灌设定会卡在门禁 N12/N13。
+            novelcore::EnsureProjectSeeds(novelcore::NovelDb::Instance().raw());
             log::Info("stdio MCP 已挂库 {}", Settings().mcpNovelDbPath);
         }
     } else {

@@ -13,6 +13,7 @@
 #include "core/Settings.h"
 #include "db/sqlite/SqliteDb.h"
 #include "novel/NovelDb.h"
+#include "novel/NovelInit.h" // S60：新建工程要补 N12/N13 的种子（EnsureProjectSeeds）
 #include "util/Encoding.h"
 #include "util/File.h"
 
@@ -98,6 +99,9 @@ std::string CreateProject(std::string_view name) {
     if (auto r = NovelDb::Instance().Open(dir / "novel.db"); !r) {
         return fmt::format("初始化 novel.db 失败: {}", r.error().message);
     }
+    // S60：`field_defs` + 内置 Agent 的种子（门禁 N12/N13）—— `NovelDb::Open` **不种**，
+    // 原先「新建工程」出来的是一个 N12/N13 都不过的库（门禁提示"打开工程会自动跑"是错的）。
+    EnsureProjectSeeds(NovelDb::Instance().raw());
     NovelDb::Instance().Close();
     Refresh();
     log::Info("novel project created: {}", util::PathToUtf8(dir));

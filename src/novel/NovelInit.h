@@ -65,4 +65,12 @@ struct InitSkeletonResult {
 // 离线自检（N1–N14 逐条构造触发 + 骨架后的报告）
 [[nodiscard]] bool RunInitSelfCheck();
 
+// `10` §2.3 的 **N12 / N13 种子**：`field_defs`（11 条系统定义）+ 15 个内置 Agent。
+// 幂等、best-effort（失败只告警）—— 它就是"建库/挂库"这一步该做的事，单独拎出来是因为
+// ⚠️ **门禁的修法提示写着"打开工程时会自动跑"，实际上 `NovelDb::Open` → `Migrate()` 并不跑**：
+// 于是 GUI「新建工程」（只 Open）与 `--mcp-stdio` 挂一个新库这两条路，`--novel-init --gate-only`
+// 会报 N12/N13 不过（2026-09-20 实测：MCP 线上灌完设定后门禁只剩这两条）。
+// ⇒ 凡"从零建/挂一个工程库"的入口，都要调它一次。
+void EnsureProjectSeeds(db::sqlite::Database& db);
+
 } // namespace shine::novelcore
