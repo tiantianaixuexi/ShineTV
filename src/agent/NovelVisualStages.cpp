@@ -17,6 +17,7 @@
 #include <fmt/format.h>
 
 #include <filesystem>
+#include <set>      // S47：期望镜清单的键集合（与 V1 骨架对账）
 #include <utility>
 
 namespace shine::agent {
@@ -519,6 +520,71 @@ std::string StageOutcome::Describe() const {
                                                           warnings.front()));
 }
 
+// S47：**期望的镜清单**（来自 V1 骨架 —— 阶段链里"镜"的**权威定义**）。
+// ⚠️ 起因（真跑诊断）：Agent 模式把 user 精简成"本章 + 场景清单"后，**模型不知道每场几镜**，
+//    于是每个阶段各编自己的镜数 —— 实测 V1 骨架是"场1=5 镜 / 场2=5 镜（共 10）"，而同一轮
+//    跑出来的是 V2=4 / V3=4 / V4=3 / V5=15 / V6=6 / V7=4，**全都不一样**。
+//    这种错**单阶段看不出来**（每个阶段内部都自洽），**只有跨阶段对账**才暴露 —— 所以两头都要做：
+//    ① 把骨架（场/镜 ord + 时长）**明写进 user**；② 解析端按它**对账**（缺失/多余都告警）。
+// ⚠️ 时长一起给：V6 的 beats 必须对着 duration 排。
+[[nodiscard]] std::pair<std::string, std::set<std::pair<int, int>>>
+ShotSkeleton(const std::filesystem::path& project_dir, int chapter_ord) {
+    std::pair<std::string, std::set<std::pair<int, int>>> out;
+    const auto path =
+        project_dir / "work" / fmt::format("ch{:03}", chapter_ord) / "v01_scene_breakdown.json";
+    const auto text = util::ReadFileBytes(path);
+    if (!text) {
+        return out; // 没跑过 V1（没骨架）→ 空；调用方**不阻断**（同上游缺失的既有策略）
+    }
+    yyjson_doc* d = yyjson_read(text->data(), text->size(), 0);
+    if (d == nullptr) {
+        return out;
+    }
+    yyjson_val* root = yyjson_doc_get_root(d);
+    yyjson_val* scenes = yyjson_is_obj(root) ? yyjson_obj_get(root, "scenes") : nullptr;
+    if (yyjson_is_arr(scenes)) {
+        std::size_t si = 0;
+        std::size_t sn = 0;
+        yyjson_val* s = nullptr;
+        yyjson_arr_foreach(scenes, si, sn, s) {
+            if (!yyjson_is_obj(s)) {
+                continue;
+            }
+            const yyjson_val* so = yyjson_obj_get(s, "scene_ord");
+            const int sceneOrd = yyjson_is_int(so) ? static_cast<int>(yyjson_get_sint(so)) : 0;
+            if (sceneOrd <= 0) {
+                continue;
+            }
+            const yyjson_val* ti = yyjson_obj_get(s, "title");
+            const std::string title = yyjson_is_str(ti) ? std::string{yyjson_get_str(ti)} : "";
+            out.first += fmt::format("- scene_ord={} 《{}》\n", sceneOrd, title);
+            yyjson_val* shots = yyjson_obj_get(s, "shots");
+            if (!yyjson_is_arr(shots)) {
+                continue;
+            }
+            std::size_t ji = 0;
+            std::size_t jn = 0;
+            yyjson_val* j = nullptr;
+            yyjson_arr_foreach(shots, ji, jn, j) {
+                if (!yyjson_is_obj(j)) {
+                    continue;
+                }
+                const yyjson_val* od = yyjson_obj_get(j, "ord");
+                const int ord = yyjson_is_int(od) ? static_cast<int>(yyjson_get_sint(od)) : 0;
+                if (ord <= 0) {
+                    continue;
+                }
+                const yyjson_val* du = yyjson_obj_get(j, "duration");
+                const double dur = yyjson_is_num(du) ? yyjson_get_num(du) : 0.0;
+                out.first += fmt::format("    ord={} (duration={:.1f}s)\n", ord, dur);
+                out.second.insert({sceneOrd, ord});
+            }
+        }
+    }
+    yyjson_doc_free(d);
+    return out;
+}
+
 std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
                                                        const LlmCallFn& call,
                                                        const StageRequest& req) {
@@ -595,6 +661,9 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     // S46：从"只 V4 试点"**放开到 V2–V7 全阶段**（每阶段一个 Agent，白名单统一只读四件套）。
     // V1 没有 Agent（`StageAgentId` 返回空）⇒ 即使开了开关也走单轮。
     std::string rText;
+    // S47：**期望镜清单**（V1 骨架，函数级 —— 下发与对账两头都要用）。没跑过 V1 ⇒ 空，不阻断。
+    const auto [skelText, skelKeys] =
+        ShotSkeleton(std::filesystem::path{req.project_dir}, ch->ord);
     const std::string_view agentId = StageAgentId(req.stage);
     if (req.use_agent_tools && !agentId.empty()) {
         // S41 试点 / S46 推广：让模型**自己用工具查库**（按需），而不是我们预先猜它要什么、塞满 prompt。
@@ -616,6 +685,14 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
                 for (const novelcore::SceneRow& s : *sc2) {
                     lean += fmt::format("- scene_ord={} 《{}》\n", s.ord, s.title);
                 }
+            }
+            // S47：**把 V1 骨架明写进来**（否则模型不知道每场几镜，各阶段就各编一套 —— 见
+            // `ShotSkeleton` 的注释）。⚠️ 这与"让模型自己查库"**不冲突**：工具查的是
+            // "这些镜里谁在场 / 在哪 / 什么性格"，而**有几镜是既定事实**，不该让它猜。
+            if (!skelText.empty()) {
+                lean += "\n【场景与镜】**必须严格按这个来**（你输出的 `scene_ord`/`ord` 就是下面"
+                        "这些，**不得增删**；`duration` 也要与之一致）\n";
+                lean += skelText;
             }
             lean += fmt::format("\n【任务】{}\n", spec.task);
             lean += "\n【提示】这一场有哪些角色、他们的位置/朝向/道具/性格 —— **用工具查，别猜**。\n";
@@ -676,11 +753,27 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     // 字符串里写了**裸引号**（`"肩部随对方指向"关门"牌"`）⇒ 整份作废。模型有随机性，
     // 重试往往就过了；两次都不行才报错（**不静默**，且落盘原文供诊断）。
     // ⚠️ Agent 模式不在此重试（重跑一次工具循环的成本高，且要重复那套组装代码）—— 记账。
-    if (doc == nullptr && !(req.use_agent_tools && req.stage == VisualStageId::V4Spatial)) {
+    // S47 修正：这里的判断**原先写死在 V4**（`stage == V4Spatial`），S46 推广到全阶段后**过时**了
+    // —— 不改就会出现"V5 的 Agent 失败后又用单轮重试一次"这种错配（重试的形态跟原调用不一致）。
+    if (doc == nullptr && !(req.use_agent_tools && !agentId.empty())) {
         log::Warn("{} 输出不是合法 JSON → **重试一次**（模型偶发生成非法 JSON）", code);
         ++out.llm_calls;
         if (auto r2 = call(LlmRole::Planner, std::string{spec.instructions}, user); r2) {
             rText = *r2;
+            jsonTxt = util::json::ExtractJsonObject(rText);
+            doc = yyjson_read(jsonTxt.data(), jsonTxt.size(), 0);
+        }
+    }
+    // S47：**Agent 模式也要有重试**（哪怕退化成单轮）。⚠️ 原先刻意"Agent 不重试"，理由是
+    // "重跑一次工具循环成本高" —— 但真跑实测把这个取舍证伪了：V2 在 Agent 模式下输出 8738 字
+    // 时 JSON **被损坏**（很可能撞 `max_tokens` 截断）⇒ **一次就断掉整条链**（后面 5 个阶段
+    // 全没机会上场），比"多跑一次"贵得多。这里退化成**单轮重试**（复用已经拼好的完整 `user`，
+    // 不为省钱再跑一遍工具循环）；能救回链就是赚。
+    if (doc == nullptr && req.use_agent_tools && !agentId.empty()) {
+        log::Warn("{}（Agent 模式）输出不是合法 JSON → **退化成单轮重试一次**", code);
+        ++out.llm_calls;
+        if (auto r3 = call(LlmRole::Planner, std::string{spec.instructions}, user); r3) {
+            rText = *r3;
             jsonTxt = util::json::ExtractJsonObject(rText);
             doc = yyjson_read(jsonTxt.data(), jsonTxt.size(), 0);
         }
@@ -708,6 +801,7 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     }
     int missingOrd = 0;
     std::string itemsJson;
+    std::set<std::pair<int, int>> gotKeys; // S47：本阶段实际产出的键（与 V1 骨架对账用）
     std::size_t i = 0;
     std::size_t max = 0;
     yyjson_val* it = nullptr;
@@ -716,8 +810,13 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
             continue;
         }
         const yyjson_val* od = yyjson_obj_get(it, "ord");
-        if (!yyjson_is_int(od) || yyjson_get_sint(od) <= 0) {
+        const yyjson_val* so = yyjson_obj_get(it, "scene_ord");
+        const int ordV = yyjson_is_int(od) ? static_cast<int>(yyjson_get_sint(od)) : 0;
+        const int sceneV = yyjson_is_int(so) ? static_cast<int>(yyjson_get_sint(so)) : 0;
+        if (ordV <= 0) {
             ++missingOrd; // 缺 `ord` 就无法与镜对齐（下游按 `(scene_ord, ord)` 用）
+        } else if (sceneV > 0) {
+            gotKeys.insert({sceneV, ordV});
         }
         ++out.items;
         const char* raw = yyjson_val_write(it, 0, nullptr);
@@ -734,6 +833,31 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     }
     if (out.items == 0) {
         out.warnings.push_back("没有产出任何条目（`items` 为空）");
+    }
+    // S47：**与 V1 骨架对账**（跨阶段口径）。⚠️ 这是 S46 推广 Agent 模式后暴露的**真回归**：
+    // user 精简成"场景清单"后模型不知道每场几镜 ⇒ 每阶段各编一套（实测 4/4/3/15/6/4 而骨架是 10）。
+    // 单阶段内部自洽、**只有跨阶段对账**才看得出来 ⇒ 就地对账 + 告警（**不失败**：中间产物宽容）。
+    if (!skelKeys.empty() && !gotKeys.empty()) {
+        int lack = 0;
+        int extra = 0;
+        for (const auto& k : skelKeys) {
+            if (gotKeys.find(k) == gotKeys.end()) {
+                ++lack;
+            }
+        }
+        for (const auto& k : gotKeys) {
+            if (skelKeys.find(k) == skelKeys.end()) {
+                ++extra;
+            }
+        }
+        if (lack > 0 || extra > 0) {
+            out.warnings.push_back(fmt::format(
+                "与 V1 骨架**对不上**：缺 {} 镜 / 多 {} 镜（骨架 {} 镜 vs 本阶段 {} 镜）"
+                " —— 下游一律按 `(scene_ord, ord)` 取用，对不齐会错位",
+                lack, extra, skelKeys.size(), gotKeys.size()));
+            log::Warn("{} 与 V1 骨架对不上：缺 {} / 多 {}（骨架 {} vs 本阶段 {}）", code, lack,
+                      extra, skelKeys.size(), gotKeys.size());
+        }
     }
     // —— 落盘（带链式哈希）——
     const std::string json = fmt::format(
