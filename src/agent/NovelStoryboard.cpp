@@ -1,4 +1,5 @@
 #include "agent/NovelStoryboard.h"
+#include "agent/NovelVisualStages.h" // S31：读取 V1 的镜骨架
 
 #include "core/Log.h"
 #include "novel/NovelDb.h"
@@ -157,6 +158,19 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     std::string user = fmt::format("【本章】第 {} 章《{}》\n【场景清单】\n", ch->ord, ch->title);
     for (const novelcore::SceneRow& s : *scenes) {
         user += fmt::format("- scene_ord={} 《{}》\n", s.ord, s.title);
+    }
+    // —— S31：**V1 的镜骨架**（跑过 `--novel-stages` 就有）——
+    // "镜的切分"这一步已**提前到 V1**（`12` §2.2 的场分析里就该定"这场切几镜"）；这里把骨架
+    // 下发进 prompt。⚠️ 是**软约束**：LLM 仍可能偏离，解析端按 `(scene_ord, ord)` 归位、
+    // 偏离不报错，但在 `warnings` 里看得见（`11` §2.7 W2 的同款要求）。
+    const auto skeleton = LoadShotSkeleton(util::PathToUtf8(req.project_dir), ch->ord);
+    if (!skeleton.empty()) {
+        user += "\n【镜骨架（V1 `SCENE_BREAKDOWN` 已定）】按下面的场/镜产出，**不要改切分**：\n";
+        for (const ShotSkeleton& s : skeleton) {
+            user += fmt::format("- scene_ord={} ord={} duration≈{:.1f}s：{}\n", s.scene_ord, s.ord,
+                                s.duration, s.beat);
+        }
+        out.warnings.push_back(fmt::format("已下发 V1 镜骨架（{} 镜）", skeleton.size()));
     }
     user += "\n【任务】按上面的场景清单逐场产出 NarrativeShot[]。";
     if (!req.extra_hint.empty()) {

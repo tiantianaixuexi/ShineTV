@@ -41,6 +41,7 @@
 #include "agent/NovelStoryboard.h"
 #include "novel/NovelChecks.h"
 #include "novel/NovelInit.h"
+#include "agent/NovelVisualStages.h"
 #include "novel/NovelContinuity.h"
 #include "novel/NovelGeneration.h"
 #include "novel/NovelPromptGen.h"
@@ -280,24 +281,27 @@ bool Init() {
         const bool generationOk = ::shine::novelcore::RunGenerationSelfCheck();
         // S30：V8 `CONTINUITY`（`12` §2.7 的 C1–C12）
         const bool continuityOk = ::shine::novelcore::RunContinuitySelfCheck();
+        // S31：影视化链阶段化（V1 `SCENE_BREAKDOWN`）
+        const bool stagesOk = ::shine::agent::RunStagesSelfCheck();
         if (const char* p = std::getenv("SHINE_NOVEL_CHECK_OUT"); p && *p) {
             FILE* f = std::fopen(p, "ab");
             if (f) {
                 const std::string line = fmt::format(
-                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\nasset:{}\ncommit:{}\nrunloop:{}\nchecks:{}\ninit:{}\nstoryboard:{}\npromptgen:{}\ngeneration:{}\ncontinuity:{}\n",
+                    "chat:{}\nsess:{}\nanthropic:{}\nvisual:{}\nfields:{}\nagents:{}\njsonparse:{}\nnovelmcp:{}\nimagegen:{}\nasset:{}\ncommit:{}\nrunloop:{}\nchecks:{}\ninit:{}\nstoryboard:{}\npromptgen:{}\ngeneration:{}\ncontinuity:{}\nstages:{}\n",
                     chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
                     visOk ? "ok" : "fail", fieldsOk ? "ok" : "fail", agentsOk ? "ok" : "fail",
                     jsonOk ? "ok" : "fail", novelMcpOk ? "ok" : "fail",
                     imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail", commitOk ? "ok" : "fail",
                     runLoopOk ? "ok" : "fail", checksOk ? "ok" : "fail", initOk ? "ok" : "fail",
                     storyboardOk ? "ok" : "fail", promptGenOk ? "ok" : "fail",
-                    generationOk ? "ok" : "fail", continuityOk ? "ok" : "fail");
+                    generationOk ? "ok" : "fail", continuityOk ? "ok" : "fail",
+                    stagesOk ? "ok" : "fail");
                 std::fwrite(line.data(), 1, line.size(), f);
                 std::fclose(f);
             }
         }
         log::Info(
-            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={} asset={} commit={} runloop={} checks={} init={} storyboard={} promptgen={} generation={} continuity={}",
+            "SHINE_NOVEL_GRAPH_CHECK：schema={} graph={} context={} tools={} director={} mvp={} chat={} sess={} anth={} visual={} fields={} agents={} json={} novelmcp={} imagegen={} asset={} commit={} runloop={} checks={} init={} storyboard={} promptgen={} generation={} continuity={} stages={}",
             schemaOk ? "ok" : "fail", graphOk ? "ok" : "fail", ctxOk ? "ok" : "fail",
             toolsOk ? "ok" : "fail", dirOk ? "ok" : "fail", mvpOk ? "ok" : "fail",
             chatOk ? "ok" : "fail", sessOk ? "ok" : "fail", anthOk ? "ok" : "fail",
@@ -306,7 +310,8 @@ bool Init() {
             imgGenOk ? "ok" : "fail", assetOk ? "ok" : "fail", commitOk ? "ok" : "fail",
             runLoopOk ? "ok" : "fail", checksOk ? "ok" : "fail", initOk ? "ok" : "fail",
             storyboardOk ? "ok" : "fail", promptGenOk ? "ok" : "fail",
-            generationOk ? "ok" : "fail", continuityOk ? "ok" : "fail");
+            generationOk ? "ok" : "fail", continuityOk ? "ok" : "fail",
+            stagesOk ? "ok" : "fail");
         g_selfExitRequested = true;
     }
     // P7.1 自检：SHINE_MCP_CHECK=1 跑 MCP 注册表验收后自动退出（无网络）
