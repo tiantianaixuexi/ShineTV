@@ -25,7 +25,8 @@
 
 - `prompt_layers` 表（`NovelDb.cpp:118`）；`SetLayer`（`:277-296`，先 DELETE 同 `owner_kind/owner_id/layer` 再 INSERT）、`QueryLayer`（`:298-311`，`ORDER BY version DESC LIMIT 1`）。
 - `Assemble`**十层**（S26 起）：`base` → `stage` → `scene` → `action` → **`spatial`** → `camera` → `composition` → `lighting` → `style` → `quality`，另有 `negative` 单独输出。
-  - 第 5 层 `spatial` 是 S26 加的（`12` §2.5 / `02` §2.7 的 `Spatial`）：**谁在前景/谁在背景**（`layers{foreground,midground,background}`）+ `facing` / `distance_m` / `occlusion`。数据**在盘上**（`work/ch<NNN>/storyboard.json`，`spatial` 无专列），由调用方（V10）读好经 `AssemblePromptInput::spatial_text` 传进来 —— `Assemble` 是纯库操作，不自己翻文件。
+  - 第 5 层 `spatial` 是 S26 加的（`12` §2.5 / `02` §2.7 的 `Spatial`）：**谁在前景/谁在背景**（`layers{foreground,midground,background}`）+ `facing` / `distance_m` / `occlusion`。由调用方（V10）读好经 `AssemblePromptInput::spatial_text` 传进来 —— `Assemble` 是纯库操作，不自己翻文件。
+  - ⚠️ **数据来源 = V4 产物**（S35 起）：`work/ch<NNN>/v04_spatial.json`（**V4 是产生方**）。S26–S34 曾读 `storyboard.json` 的 `spatial` —— 那是 V9 把 V4 的结果**又抄了一遍**（同一个概念两条路，迟早分叉）。没跑 V4 → 该层空、**不阻断**；要它就跑 `--novel-stages <ch> --up-to V4`。⇒ `prompt_rule_version` **3 → 4**。
 - `SetVisualCanon`（`:510-521`）写 `visual_canon_logs`。
 
 ### 1.2 小说侧出图（`src/novel/NovelImageGen.cpp` / `NovelImageStore.cpp`）

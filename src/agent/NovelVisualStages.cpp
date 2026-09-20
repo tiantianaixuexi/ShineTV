@@ -304,6 +304,39 @@ std::string_view VisualStageName(VisualStageId stage) noexcept {
     return "SCENE_BREAKDOWN";
 }
 
+std::optional<VisualStageId> ParseVisualStage(std::string_view text) noexcept {
+    // S35：归一化 —— 去空白、转大写、去掉 `V` 前缀；只认 `V1`…`V7` / `1`…`7`（其余 → nullopt）
+    std::string t;
+    for (const char c : text) {
+        if (c == ' ' || c == '\t') {
+            continue;
+        }
+        t.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    }
+    if (!t.empty() && t.front() == 'V') {
+        t.erase(t.begin());
+    }
+    if (t.size() != 1 || t[0] < '1' || t[0] > '7') {
+        return std::nullopt;
+    }
+    switch (t[0]) {
+    case '1':
+        return VisualStageId::V1SceneBreakdown;
+    case '2':
+        return VisualStageId::V2DirectorIntent;
+    case '3':
+        return VisualStageId::V3Performance;
+    case '4':
+        return VisualStageId::V4Spatial;
+    case '5':
+        return VisualStageId::V5Camera;
+    case '6':
+        return VisualStageId::V6Timeline;
+    default:
+        return VisualStageId::V7Audio;
+    }
+}
+
 namespace {
 
 // 每阶段的规格：内置指令 + 上游产物 + 产物文件名。字段名严格对齐 `12`/`13` 各卷的契约。
@@ -603,13 +636,21 @@ std::expected<StagesOutcome, AgentError> RunAllVisualStages(db::sqlite::Database
                                                             const LlmCallFn& call,
                                                             novelcore::RowId chapter_id,
                                                             std::string_view project_dir,
-                                                            std::string_view extra_hint) {
+                                                            std::string_view extra_hint,
+                                                            VisualStageId up_to) {
     StagesOutcome out;
     const VisualStageId order[] = {VisualStageId::V1SceneBreakdown, VisualStageId::V2DirectorIntent,
                                    VisualStageId::V3Performance,   VisualStageId::V4Spatial,
                                    VisualStageId::V5Camera,        VisualStageId::V6Timeline,
                                    VisualStageId::V7Audio};
     for (const VisualStageId st : order) {
+        // S35 `--up-to`：到指定阶段为止（枚举按 V1→V7 顺序声明，可直接比大小）
+        if (static_cast<int>(st) > static_cast<int>(up_to)) {
+            out.detail += fmt::format("· （`--up-to {}` 到此为止，V{}–V7 未跑）\n",
+                                      VisualStageCode(up_to),
+                                      static_cast<int>(up_to) - static_cast<int>(VisualStageId::V1SceneBreakdown) + 1);
+            break;
+        }
         const std::string code{VisualStageCode(st)};
         if (st == VisualStageId::V1SceneBreakdown) {
             auto r = RunSceneBreakdown(
@@ -752,6 +793,24 @@ bool RunStagesSelfCheck() {
         expect(calls == callsBefore, "V2 复用**不得**再调 LLM");
         (void)v1Hash;
         // 上游缺失：直接跑 V3（没有 V2）—— 反例在下面单独造
+    }
+
+    // ⑤ S35：**`--up-to`**（调试用：只跑到某阶段，省 LLM 调用）
+    {
+        const auto up = RunAllVisualStages(mem, mock, ch.value_or(0), dir, "",
+                                           VisualStageId::V2DirectorIntent);
+        expect(up.has_value() && up->ok, "S35：`--up-to V2` 应成功");
+        if (up) {
+            expect(up->detail.find("--up-to V2") != std::string::npos &&
+                       up->detail.find("到此为止") != std::string::npos,
+                   "S35：应显式说明到 V2 为止（V3–V7 未跑）");
+            expect(up->stages_run == 2,
+                   fmt::format("S35：应只跑 2 个阶段（实际 {}）", up->stages_run));
+        }
+        const auto p4 = ParseVisualStage("v4");
+        expect(p4.has_value() && *p4 == VisualStageId::V4Spatial, "S35：`ParseVisualStage` 接受 v4");
+        expect(!ParseVisualStage("V9").has_value() && !ParseVisualStage("abc").has_value(),
+               "S35：非法 `--up-to` 应被拒（V9 / abc）");
     }
 
     // ③ 没有 scenes 的章 → 明确报错（V1 的输入前提）
