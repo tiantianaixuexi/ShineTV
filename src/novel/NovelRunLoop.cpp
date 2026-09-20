@@ -638,6 +638,32 @@ RunOutcome NovelRunLoop::Run(const RunRequest& req) {
     }
     std::sort(list.begin(), list.end(),
               [](const ChapterRow& a, const ChapterRow& b) { return a.ord < b.ord; });
+    // ★ 章节表**为空**时也要能起跑（新建一本小说的第一步）。原先只记一句 note 就结束 ⇒
+    // `auto_create_chapters` 形同虚设：它只在"跑完最后一章之后"补建（下面 ⑧ 的 `i + 1 >= list.size()`），
+    // **表为空时循环根本不执行** ⇒ 后果是「全新工程 0 章时 `--novel-run` 连一个字都写不出来」，
+    // 必须先手工建一章（GUI「新建空章节」/ 直接插库）。这里补上引导：
+    // 空表 + 显式 `auto_create_chapters` + 有章数上限 ⇒ 建第 1 章（ord=1，POV 取库里第一个 person）。
+    // ⚠️ 判据用 `chapters->empty()`（表真为空）而不是 `list.empty()` —— 后者在
+    //    `from_ord` 过滤掉全部章时也为真，那时再建 ord=1 会造出重号章。
+    if (list.empty() && chapters->empty() && req.auto_create_chapters && req.max_chapters > 0) {
+        RowId pov = 0;
+        if (auto people = graph.ListEntities(kind::person, {}, 1); people && !people->empty()) {
+            pov = people->front().id;
+        }
+        ChapterRow first;
+        first.ord = 1;
+        first.title = "第1章";
+        first.pov_entity_id = pov;
+        if (auto created = graph.UpsertChapter(first); created) {
+            if (auto row = graph.GetChapter(*created); row) {
+                list.push_back(*row);
+                out.mode_note += "；章节表为空 → 已建第 1 章";
+                log::Info("RunLoop：章节表为空 → 自动建第 1 章（id={} pov={}）", *created, pov);
+            }
+        } else {
+            log::Warn("RunLoop：空章节表自动建第 1 章失败：{}", created.error().message);
+        }
+    }
     if (list.empty()) {
         out.mode_note += "；没有可跑的章（章节表为空）";
     }
@@ -1328,6 +1354,41 @@ bool NovelRunLoop::RunSelfCheck() {
                        "S11：K01–K29 失败项 → 观测 → S1 触发（停止条件真的接上了）");
             } else {
                 expect(false, "S1 用例：内存库打开失败");
+            }
+        }
+        // ★ 空章节表引导（新建一本小说的第一步）：`auto_create_chapters` 原先只在"跑完最后一章
+        // 之后"补建 ⇒ 表为空时循环不执行 ⇒ 一个字都写不出来。判据 = 自动建出 ord=1 + POV 取到
+        // 库里第一个 person + runner 真被调用 1 次。
+        {
+            db::sqlite::Database bootDb;
+            if (auto r = bootDb.Open({.memory = true}); r) {
+                (void)NovelDb::ApplyCanonicalSchema(bootDb);
+                (void)NovelGraph(bootDb).UpsertEntity(
+                    {.kind = std::string{kind::person}, .name = "引导主角"});
+                NovelRunLoop bootLoop(bootDb, nullptr);
+                int bootCalls = 0;
+                bootLoop.SetChapterRunner(
+                    [&bootCalls](RowId, const RunLimits&, RunMode,
+                                 const std::function<void(const agent::GenerateChapterProgress&)>&)
+                        -> std::expected<ChapterRunInfo, agent::AgentError> {
+                        ++bootCalls;
+                        ChapterRunInfo info;
+                        info.ok = true;
+                        info.review_passed = true;
+                        return info;
+                    });
+                RunRequest bootReq;
+                bootReq.project_dir = dir / "boot";
+                bootReq.mode = RunMode::Manual; // manual 不查 auto 前置，专测"起跑"
+                bootReq.max_chapters = 1;
+                bootReq.auto_create_chapters = true;
+                const RunOutcome boot = bootLoop.Run(bootReq);
+                auto bootChs = NovelGraph(bootDb).ListChapters(10);
+                expect(bootCalls == 1 && bootChs && bootChs->size() == 1 &&
+                           (*bootChs)[0].ord == 1 && (*bootChs)[0].pov_entity_id > 0,
+                       "空章节表 + auto-create → 自动建第 1 章（ord=1、POV=首个 person）并跑完");
+            } else {
+                expect(false, "空表引导用例：内存库打开失败");
             }
         }
         // S14（`03` §2.7 P5）：**阶段 → 产物 + 指纹**（阶段级续跑的输入，不再是空列）
