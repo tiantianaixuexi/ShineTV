@@ -25,6 +25,10 @@ struct CreateRequest {
     yyjson_val* tools = nullptr;
     bool store = false;
     std::string previous_response_id;
+    // S38：**输出上限**（Responses 的官方字段名是 `max_output_tokens`，见 `responses-create` 文档）。
+    // 0 = 不写该字段（用服务端默认）；>0 才写。⚠️ Chat Completions 兼容端实测卡在 4096，
+    // 而 Responses 端没有这个限制 —— 这也是"让 MiniMax 走 Responses"的动机之一。
+    int maxOutputTokens = 0;
 };
 
 struct CreateResult {

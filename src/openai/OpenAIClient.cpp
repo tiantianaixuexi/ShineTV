@@ -4,13 +4,17 @@
 #include "openai/OpenAIConfig.h"
 #include "openai/OpenAIHttp.h"
 #include "openai/OpenAIStream.h"
+#include "util/File.h" // S38：dump 落盘
 #include "util/Json.h"
 
 #include <fmt/format.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <utility>
 
 namespace shine::openai {
@@ -114,6 +118,10 @@ std::string BuildCreateBody(const CreateRequest& req, bool stream) {
     }
     if (!req.previous_response_id.empty()) {
         body += ",\"previous_response_id\":" + JsonQuote(req.previous_response_id);
+    }
+    // S38：`max_output_tokens`（Responses 的官方字段；Chat 那条路的 4096 限制不适用这里）
+    if (req.maxOutputTokens > 0) {
+        body += ",\"max_output_tokens\":" + std::to_string(req.maxOutputTokens);
     }
     body += "}";
     return body;
@@ -254,6 +262,26 @@ std::string Client::EffectiveUrl() const {
     return ResponsesUrl(Settings().openaiBaseUrl);
 }
 
+namespace {
+// S38：`SHINE_LLM_DUMP=<dir>` → 请求/响应原文落盘（**Responses 这条路的版本**）。
+// `ChatComplete`（Chat Completions 那条）已有一份同款实现；两处分开是因为它们在不同翻译单元，
+// 共用就得新建头文件 —— 记账：将来合并到一个 `openai/LlmDump.h`。
+void DumpResponsesIo(const char* kind, std::string_view text) {
+    const char* raw = std::getenv("SHINE_LLM_DUMP");
+    if (raw == nullptr || *raw == '\0') {
+        return;
+    }
+    std::error_code ec;
+    const auto dir = std::filesystem::path{raw};
+    std::filesystem::create_directories(dir, ec);
+    static std::atomic<int> seq{0};
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    (void)util::WriteFileBytes(dir / fmt::format("{}_{}.txt", ms, kind), text);
+}
+} // namespace
+
 std::expected<CreateResult, ApiError> Client::Create(const CreateRequest& req,
                                                      std::chrono::seconds timeout) {
     const std::string key = EffectiveKey();
@@ -275,7 +303,10 @@ std::expected<CreateResult, ApiError> Client::Create(const CreateRequest& req,
     log::Info("OpenAI Create → {} model={}（密钥 {}）", url, r.model, MaskKey(key));
 
     auto attempt = [&](int tryNo) -> std::expected<CreateResult, ApiError> {
+        DumpResponsesIo("req", body);
         const HttpTransportResult http = PostJson(url, key, body, timeout);
+        DumpResponsesIo("resp", fmt::format("status={} error={}\n\n{}", http.status, http.error,
+                                            http.body));
         if (http.status == 0 && !http.error.empty() && http.body.empty()) {
             // 传输层失败
             const bool isTimeout = http.error.find("超时") != std::string::npos;

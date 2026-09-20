@@ -65,7 +65,11 @@ LlmProfile ResolveProfile(Provider p) {
     out.provider = p;
     switch (p) {
     case Provider::MiMo:
-        out.protocol = Protocol::ChatCompletions;
+        // S38：**协议由 `llmProtocol` 决定**。⚠️ 原先这里是**硬编码** `ChatCompletions` ⇒
+        // 用户在设置里把协议切到 `responses` / `anthropic` **完全不生效**（真跑撞出来的：
+        // 切了 responses 仍打到 `/chat/completions`）。MiMo 也支持 Anthropic 兼容端。
+        out.protocol = s.llmProtocol.empty() ? Protocol::ChatCompletions
+                                             : ParseProtocol(s.llmProtocol);
         // Token Plan：默认中国集群；用户可在设置里改 sgp/ams
         if (s.mimoTokenPlan) {
             out.baseUrl = s.mimoBaseUrl.empty() ||
@@ -81,7 +85,13 @@ LlmProfile ResolveProfile(Provider p) {
         out.model = s.mimoModel.empty() ? "mimo-v2.5-pro" : s.mimoModel;
         break;
     case Provider::MiniMax:
-        out.protocol = Protocol::ChatCompletions;
+        // S38：同上（原先硬编码 ⇒ 切协议不生效）。MiniMax 官方**两条路都支持**：
+        //   · `responses` → `/v1/responses`：响应带顶层 `output_text`（**天然对齐
+        //     `ExtractOutputText`**），且输出上限用 `max_output_tokens`（不受 Chat 端 4096 拘束）；
+        //   · `anthropic` → `/anthropic/v1/messages`：`max_tokens` 完全支持，M3 上下文窗口 1M；
+        //   · 空 / 其它   → Chat Completions（`/v1/chat/completions`，该兼容端实测卡 4096）。
+        out.protocol = s.llmProtocol.empty() ? Protocol::ChatCompletions
+                                             : ParseProtocol(s.llmProtocol);
         out.baseUrl = s.minimaxBaseUrl.empty() ? "https://api.minimax.cn/v1" : s.minimaxBaseUrl;
         out.apiKey = EnvOr("MINIMAX_API_KEY", s.minimaxApiKey);
         out.model = s.minimaxModel.empty() ? "MiniMax-M3" : s.minimaxModel;
