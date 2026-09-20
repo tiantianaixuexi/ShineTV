@@ -7,6 +7,7 @@
 #include "core/Settings.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelInit.h"     // S21：初始化链门禁与骨架
+#include "novel/NovelGeneration.h"
 #include "novel/NovelPromptGen.h" // S24：V10 提示词产物
 #include "util/Encoding.h"
 
@@ -113,7 +114,9 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantInit = Has(args, "--novel-init");
     const bool wantSb = Has(args, "--novel-storyboard");
     const bool wantPrompt = Has(args, "--novel-prompt");
-    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt) {
+    // S27：V11 出图（`03` §2.2 的**可选下游动作**）—— 把 V10 的 PromptArtifact 交给出图队列
+    const bool wantImages = Has(args, "--novel-generate-images");
+    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages) {
         log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-storyboard <chapter_id>` / "
                    "`--novel-prompt <chapter_id>` / `--novel-generate <chapter_id>` / "
                    "`--novel-run <manual|semi|auto>`）");
@@ -140,6 +143,13 @@ int RunNovelCli(const wchar_t* cmdline) {
     if (auto r = novelcore::NovelDb::EnsureSchemaUpToDate(db); !r) {
         log::Error("novel-cli：schema 升级失败 {}", r.error().message);
         return 2;
+    }
+    // `--image-backend <mock|openai_images|comfy>`：**只覆盖本次进程**的出图后端（**不写**
+    // `settings.json`）。用途：设置里选的是 `comfy`、而 Comfy 出图后端还是 stub 时
+    // （`13` §1.2 的 G13），仍能把 V11 的**全链路**（提交 → 账 → 回填 `generation_ref`）跑出来。
+    if (const std::string ib = Opt(args, "--image-backend", ""); !ib.empty()) {
+        Settings().imageBackend = ib;
+        log::Info("novel-cli：本次出图后端覆盖为 {}（不写设置）", ib);
     }
     log::Info("novel-cli：库 {} · 工程 {}", dbArg, util::PathToUtf8(projectDir));
 
@@ -169,6 +179,36 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         AppendCheckOut(gate.passed, gate.Describe());
         return gate.passed ? 0 : 1;
+    }
+
+    if (wantImages) {
+        // S27：V11 `GENERATION`（`03` §2.2 的**可选下游动作**）—— **不调 LLM、不做评审**，
+        // 只有"单镜失败不阻断"的隔离（`09` §2.2）。产出：`generated_images` 任务 +
+        // `visual_artifacts`（shot 层，`prompt_artifact_id` 从此不空）+ 回填
+        // `prompt_artifacts.generation_ref`（PV5 双向可查）。`--force` = 已出图的镜也重出。
+        std::int64_t cid = std::atoll(Opt(args, "--novel-generate-images", "").c_str());
+        if (cid <= 0) {
+            cid = PickChapter(db);
+        }
+        if (cid <= 0) {
+            log::Error("novel-cli：库里没有可用章节");
+            AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        const novelcore::GenerationOutcome gg =
+            novelcore::RunChapterGeneration(db, cid, util::PathToUtf8(projectDir),
+                                            Has(args, "--force"));
+        for (const std::string& w : gg.warnings) {
+            log::Warn("  {}", w);
+        }
+        if (!gg.ok) {
+            log::Error("novel-cli：V11 失败 {}", gg.error);
+            AppendCheckOut(false, gg.error);
+            return 1;
+        }
+        log::Info("novel-cli：V11 已产出：{} · 校验账 {}", gg.Describe(), gg.checks_path);
+        AppendCheckOut(true, fmt::format("V11 {}", gg.Describe()));
+        return 0;
     }
 
     if (wantPrompt) {

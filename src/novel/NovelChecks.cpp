@@ -1936,6 +1936,14 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         // 对真实工程重跑 `--novel-prompt` 会全部"复用"，旧的残缺 prompt 一直留着）。
         // 规则变了就把这个版本号 +1。
         canon += "prompt_rule_version=3\n";
+        // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
+        // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
+        // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是
+        // S25/S26 那类事故的**第 4 次**：改了东西 → 哈希不变 → 旧产物被永久复用（"修了不生效"）。
+        // 这也正是 PV4 说的"两侧版本同步"的落地方式：layers 升版 → 哈希变 → Prompt `version + 1`。
+        appendRows("prompt_layers",
+                   "SELECT id,owner_kind,owner_id,layer,text,version FROM prompt_layers ORDER BY id",
+                   0);
         appendRows("visual_assets",
                    "SELECT id,base_desc || '|' || sheet_rel_path || '|' || status FROM visual_assets "
                    "ORDER BY id",

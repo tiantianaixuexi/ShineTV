@@ -195,8 +195,8 @@ Start → Motion → Transformation → End
 | PV1 | 每次生成 `PromptArtifact` 必须带 `input_state_hash`（`04` §2.5） |
 | PV2 | 哈希不一致 → **不得复用**（不变式 I9）；必须重新生成并 `version + 1` |
 | PV3 | 同 `target_id` 的多个版本全部保留（用于对比与回滚）。✅ **v10/S26 已落地**：`prompt_artifacts.version` 列 + V10 改为**新写一行、`version + 1`**（不再覆盖同 id） |
-| PV4 | `prompt_layers` 的 `version` 与 `PromptArtifact.version` 必须同步（`QueryLayer` 取 `version DESC LIMIT 1`） |
-| PV5 | 生成结果与 Prompt 的关联通过 `PromptArtifact.generation_ref`（`02` §2.10）建立，双向可查。✅ **列已落地（v10/S26）**；⚠️ **值仍为空** —— 要等 **V11 出图接线**产出 `visual_artifacts` / 出图任务才有对象可指（不写假引用） |
+| PV4 | `prompt_layers` 的 `version` 与 `PromptArtifact.version` 必须同步（`QueryLayer` 取 `version DESC LIMIT 1`）。✅ **S27 已落地**：① `prompt_layers` 进哈希清单（`04` §2.5）→ 改层文本 ⇒ 哈希变 ⇒ 必重算；② `SetLayer` 重复写同 owner/layer 时 **`version` 递增**（原先恒 1）。两侧合起来 = "lays 升版 → Prompt `version + 1`" |
+| PV5 | 生成结果与 Prompt 的关联通过 `PromptArtifact.generation_ref`（`02` §2.10）建立，双向可查。✅ **已完全落地（S27，V11 接线）**：V11 回填两种前缀 —— `va:<visual_artifacts.id>`（该镜有 shot 层产物 → 可反查 `prompt_artifact_id`，**双向**）或 `img:<generated_images.id>`（该镜**没有可挂资产**时的直连；`visual_artifacts` 硬要求 `asset_id>0`）。两者都指向"生成结果"（`02` §2.11），且**幂等判据就是它非空** |
 | PV6 | **Prompt 不得作为世界状态的一部分被长期依赖**：删掉 Prompt 不影响世界状态的可重建性 |
 | PV7 | **组装规则版本参与哈希**（S25）：`ComputeInputStateHash` 的 `chain=visual` 分支含 `prompt_rule_version`（`04` §2.5）。**拼装规则变了就 +1** → 旧产物全部失效重算。不加这条会出现"修了拼装 bug、但旧 prompt 永远被复用"（S25 实测踩到） |
 
