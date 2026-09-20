@@ -441,7 +441,7 @@ struct StageSpec {
 constexpr StageSpec kV2Spec{
     VisualStageId::V2DirectorIntent,
     R"-(你是导演。为**每一镜**做「导演意图」分析，并给出该镜的情绪强度。
-只输出 JSON：{"items":[ ... ]}，不要解释。
+只输出 JSON（**从 `{` 开始、到 `}` 结束；不要 markdown 代码块、不要 ```json 围栏、不要任何解释**）：{"items":[ ... ]}
 每条对应一镜，字段（名字必须一致）：
   scene_ord(int) ord(int)   用上面给的场/镜
   see(string)          观众应该看到什么
@@ -461,7 +461,7 @@ constexpr StageSpec kV2Spec{
 constexpr StageSpec kV3Spec{
     VisualStageId::V3Performance,
     R"-(你是表演指导。为**每一镜**给出表演层（`02` §2.7 的 12 项）。
-只输出 JSON：{"items":[ ... ]}，不要解释。
+只输出 JSON（**从 `{` 开始、到 `}` 结束；不要 markdown 代码块、不要 ```json 围栏、不要任何解释**）：{"items":[ ... ]}
 每条：scene_ord(int) ord(int) 以及这 12 个**字符串**字段（都要有内容，不要留空）：
   expression(表情) eyes(眼神) breathing(呼吸) posture(姿态) body_movement(身体动作)
   hand_movement(手部) head_movement(头部) weight_shift(重心) walking(走) stopping(停)
@@ -475,7 +475,7 @@ constexpr StageSpec kV4Spec{
     VisualStageId::V4Spatial,
     R"-(你是空间调度。为**每一镜**给出站位层（`02` §2.7 的 Spatial）。
 **若你有工具可用**：先用它查库确认这一场有哪些角色、他们的位置/朝向/道具 —— **别猜**。
-只输出 JSON：{"items":[ ... ]}，不要解释。
+只输出 JSON（**从 `{` 开始、到 `}` 结束；不要 markdown 代码块、不要 ```json 围栏、不要任何解释**）：{"items":[ ... ]}
 每条：scene_ord(int) ord(int) 以及：
   facing(string) 朝向    distance_m(number) 距离（米）
   height(string) 高度    movement_path(string) 运动路径（没有就写「无」）
@@ -490,7 +490,7 @@ constexpr StageSpec kV4Spec{
 constexpr StageSpec kV5Spec{
     VisualStageId::V5Camera,
     R"-(你是摄影指导。为**每一镜**给出镜头层（`02` §2.7 的 Camera，10 项）。
-只输出 JSON：{"items":[ ... ]}，不要解释。
+只输出 JSON（**从 `{` 开始、到 `}` 结束；不要 markdown 代码块、不要 ```json 围栏、不要任何解释**）：{"items":[ ... ]}
 每条：scene_ord(int) ord(int) 以及：
   shot_size(string) 从 extreme_wide|wide|full|medium|medium_close|close_up|extreme_close_up 里选
   position(string) height(string) angle(string) lens_mm(number)
@@ -504,7 +504,7 @@ constexpr StageSpec kV5Spec{
 constexpr StageSpec kV6Spec{
     VisualStageId::V6Timeline,
     R"-(你是剪辑。为**每一镜**给出时间轴（`02` §2.9 的 Beat，0.1s 精度）。
-只输出 JSON：{"items":[ ... ]}，不要解释。
+只输出 JSON（**从 `{` 开始、到 `}` 结束；不要 markdown 代码块、不要 ```json 围栏、不要任何解释**）：{"items":[ ... ]}
 每条：scene_ord(int) ord(int) duration(number，秒) beats(array of {begin_s(number), end_s(number)})
 规则：首 beat.begin_s = 0；末 beat.end_s = duration；同镜内 beats **不得重叠**。)-",
     "逐镜给出 Beat 时间轴。",
@@ -517,7 +517,7 @@ constexpr StageSpec kV6Spec{
 constexpr StageSpec kV7Spec{
     VisualStageId::V7Audio,
     R"-(你是声音设计。为**每一镜**给出音频设计（`13` §2.4 的五层）。
-只输出 JSON：{"items":[ ... ]}，不要解释。
+只输出 JSON（**从 `{` 开始、到 `}` 结束；不要 markdown 代码块、不要 ```json 围栏、不要任何解释**）：{"items":[ ... ]}
 每条：scene_ord(int) ord(int) 以及：
   dialogue(array) [{speaker_id(int), text(string), emotion(string)}]（没有就空数组）
   sfx(array)      按事件：Footsteps / Door / Weapon / Clothing / Breathing / Impact / Rain / Glass / Fire

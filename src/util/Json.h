@@ -68,15 +68,37 @@ namespace shine::util::json {
             const std::size_t close = s.find("```", begin);
             if (close != std::string::npos) {
                 s = s.substr(begin + 1, close - begin - 1);
+            } else {
+                // S52：**围栏只开不闭**（模型被 `max_output_tokens` 截断时很常见）——
+                // 原先这里整段跳过、把 ```json 那一行也留在 `s` 里。截掉它，让下面的
+                // "第一个 `{` .. 最后一个 `}`" 至少有干净的起点（尾部残缺只能靠重试）。
+                s = s.substr(begin + 1);
             }
         }
     }
-    const std::size_t b = s.find('{');
-    const std::size_t e = s.rfind('}');
-    if (b == std::string::npos || e == std::string::npos || e <= b) {
+    // S52：起点 = **第一个 `{` 或 `[`（谁在前）**。⚠️ 原先只找 `{` ⇒ 顶层是数组的输出
+    //（`[{...}]`）会被整体漏掉（模型偶尔直接回数组，我们确实碰得到）。
+    const std::size_t lb = s.find('[');
+    const std::size_t cb = s.find('{');
+    std::size_t b = cb;
+    if (lb != std::string::npos && (cb == std::string::npos || lb < cb)) {
+        b = lb;
+    }
+    if (b == std::string::npos) {
         return s;
     }
-    return s.substr(b, e - b + 1);
+    // 终点 = **最后一个 `}` / `]` 中更靠后的那个**。⚠️ 取向说明：偏后只是多带一点尾巴
+    //（`yyjson_read` 会明确判非法 ⇒ 由调用方**重试**，代价可控）；**偏前才是灾难** ——
+    // 那会把一份合法 JSON 截断成非法，而且看起来像"模型输出有问题"。
+    std::size_t end = s.rfind('}');
+    if (const std::size_t la = s.rfind(']');
+        la != std::string::npos && (end == std::string::npos || la > end)) {
+        end = la;
+    }
+    if (end == std::string::npos || end <= b) {
+        return s;
+    }
+    return s.substr(b, end - b + 1);
 }
 
 // 键对应的值节点；不存在返回 nullptr
