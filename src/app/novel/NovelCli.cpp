@@ -135,6 +135,12 @@ int RunNovelCli(const wchar_t* cmdline) {
         log::Error("novel-cli：打开库失败 {}（{}）", r.error().message, dbArg);
         return 2;
     }
+    // ⚠️ S26：CLI **自己开库**、不走 `NovelDb` 单例 → 原先**从不做 schema 迁移**，于是新加的列
+    // 在旧库上永远补不出来（实测：CLI 跑 V10 报 `no column named version`，同一库用 GUI 打开却是好的）。
+    if (auto r = novelcore::NovelDb::EnsureSchemaUpToDate(db); !r) {
+        log::Error("novel-cli：schema 升级失败 {}", r.error().message);
+        return 2;
+    }
     log::Info("novel-cli：库 {} · 工程 {}", dbArg, util::PathToUtf8(projectDir));
 
     std::atomic<bool> cancel{false};
@@ -177,7 +183,9 @@ int RunNovelCli(const wchar_t* cmdline) {
             AppendCheckOut(false, "没有可用章节");
             return 2;
         }
-        const novelcore::PromptGenOutcome pg = novelcore::GeneratePromptArtifacts(db, cid);
+        // S26：把工程目录传下去 —— V10 从 `work/ch<NNN>/storyboard.json` 读空间层（`12` §2.5）
+        const novelcore::PromptGenOutcome pg =
+            novelcore::GeneratePromptArtifacts(db, cid, util::PathToUtf8(projectDir));
         if (!pg.ok) {
             log::Error("novel-cli：V10 失败 {}", pg.error);
             for (const std::string& w : pg.warnings) {

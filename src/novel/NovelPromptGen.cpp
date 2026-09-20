@@ -5,6 +5,8 @@
 #include "novel/NovelDb.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelVisual.h"
+#include "util/Encoding.h" // PathToUtf8（自检里传临时工程目录）
+#include "util/File.h"     // S26：读盘上的 `work/ch<NNN>/storyboard.json`（spatial 层）
 #include "util/Json.h"
 #include "util/Strings.h"
 
@@ -12,10 +14,98 @@
 
 #include <fmt/format.h>
 
+#include <filesystem>
 #include <map>
 
 namespace shine::novelcore {
 namespace {
+
+// —— S26：空间层（`12` §2.5 / `02` §2.7 的 `Spatial`）——
+// **谁在前景/谁在背景**本来就在契约里（`layers{foreground,midground,background}` +
+// `facing` / `distance_m` / `occlusion`），但 V9 落地时这些"无专列"的字段**只存盘**
+//（`work/ch<NNN>/storyboard.json`）—— `11` §2.2 明确"V10 产生成 Prompt 时从那读"。
+// 本函数把 `spatial` 摊成一段 prompt 文本（走 `Assemble` 的第 10 层）。
+[[nodiscard]] std::string SpatialToText(const yyjson_val* sp) {
+    if (sp == nullptr || !yyjson_is_obj(sp)) {
+        return {};
+    }
+    std::vector<std::string> parts;
+    if (const yyjson_val* layers = yyjson_obj_get(sp, "layers");
+        layers != nullptr && yyjson_is_obj(layers)) {
+        for (const char* key : {"foreground", "midground", "background"}) {
+            const yyjson_val* v = yyjson_obj_get(layers, key);
+            if (v != nullptr && yyjson_is_str(v)) {
+                const std::string s = yyjson_get_str(v);
+                if (!util::Trim(s).empty()) {
+                    parts.push_back(fmt::format("{}: {}", key, s));
+                }
+            }
+        }
+    }
+    for (const char* key : {"facing", "occlusion", "height", "movement_path"}) {
+        const yyjson_val* v = yyjson_obj_get(sp, key);
+        if (v != nullptr && yyjson_is_str(v)) {
+            const std::string s = yyjson_get_str(v);
+            if (!util::Trim(s).empty()) {
+                parts.push_back(fmt::format("{}: {}", key, s));
+            }
+        }
+    }
+    if (const yyjson_val* d = yyjson_obj_get(sp, "distance_m");
+        d != nullptr && yyjson_is_num(d)) {
+        parts.push_back(fmt::format("distance_m: {:.1f}", yyjson_get_num(d)));
+    }
+    std::string out;
+    for (const std::string& p : parts) {
+        out += (out.empty() ? "" : ", ") + p;
+    }
+    return out;
+}
+
+// 一次读盘 + 建索引：`(scene_ord, ord)` → 空间层文本（V9 落库用的就是这两个键）。
+// 读不到（没跑过 V9 的盘 / 老数据 / 没传 `project_dir`）→ 空表，**不阻断** V10。
+[[nodiscard]] std::map<std::pair<int, int>, std::string>
+LoadSpatialIndex(std::string_view projectDir, int chapterOrd) {
+    std::map<std::pair<int, int>, std::string> out;
+    if (projectDir.empty() || chapterOrd <= 0) {
+        return out;
+    }
+    const auto path = std::filesystem::path{std::string{projectDir}} / "work" /
+                      fmt::format("ch{:03}", chapterOrd) / "storyboard.json";
+    const auto text = util::ReadFileBytes(path);
+    if (!text) {
+        return out;
+    }
+    yyjson_doc* doc = yyjson_read(text->data(), text->size(), 0);
+    if (doc == nullptr) {
+        return out;
+    }
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    yyjson_val* shots = yyjson_is_obj(root) ? yyjson_obj_get(root, "shots") : nullptr;
+    if (yyjson_is_arr(shots)) {
+        std::size_t i = 0;
+        std::size_t max = 0;
+        yyjson_val* s = nullptr;
+        yyjson_arr_foreach(shots, i, max, s) {
+            if (!yyjson_is_obj(s)) {
+                continue;
+            }
+            const yyjson_val* so = yyjson_obj_get(s, "scene_ord");
+            const yyjson_val* od = yyjson_obj_get(s, "ord");
+            const int sceneOrd = yyjson_is_int(so) ? static_cast<int>(yyjson_get_sint(so)) : 0;
+            const int ord = yyjson_is_int(od) ? static_cast<int>(yyjson_get_sint(od)) : 0;
+            if (sceneOrd <= 0 || ord <= 0) {
+                continue;
+            }
+            const std::string t = SpatialToText(yyjson_obj_get(s, "spatial"));
+            if (!t.empty()) {
+                out[{sceneOrd, ord}] = t;
+            }
+        }
+    }
+    yyjson_doc_free(doc);
+    return out;
+}
 
 // 该镜出场角色（`character_ids_json`）的参考图：`visual_assets.sheet_rel_path`（`11` §2.5 的
 // `references`）—— 桥的注释说"这类解析由小说侧做完再传进来"，这里就是那个"小说侧"。
@@ -61,7 +151,8 @@ std::string PromptGenOutcome::Describe() const {
                        warnings.empty() ? std::string{} : fmt::format("；{} 条提示", warnings.size()));
 }
 
-PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowId chapter_id) {
+PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowId chapter_id,
+                                         std::string_view project_dir) {
     PromptGenOutcome out;
     if (!db.isOpen()) {
         out.error = "数据库未打开";
@@ -79,15 +170,39 @@ PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowI
     }
     // PV1：本轮的输入状态指纹（chain=visual / stage=V10）
     const std::string hash = ComputeInputStateHash(db, chapter_id, "visual", "V10");
-    // 已有的 V10 账（按 shot_id 索引）：用来判"复用"与"覆盖"
+    // 已有的 V10 账（按 shot_id 索引）：用来判"复用"与新版本号。
+    // ⚠️ v10 起同镜会有**多行**（PV3 多版本保留），`ListPromptArtifacts` 按 `updated DESC,id DESC`
+    // 返回 → **第一条才是最新版**；所以只记第一条（后到的旧版本不许覆盖它）。
     std::map<RowId, PromptArtifactRow> existing;
     if (auto list = visual.ListPromptArtifacts(chapter_id); list) {
         for (const PromptArtifactRow& r : *list) {
-            if (r.stage == "V10" && r.chain == "visual" && r.shot_id > 0) {
+            if (r.stage == "V10" && r.chain == "visual" && r.shot_id > 0 &&
+                existing.find(r.shot_id) == existing.end()) {
                 existing[r.shot_id] = r;
             }
         }
     }
+    // 空间层的索引（`12` §2.5）：`work/ch<NNN>/storyboard.json` 用**章序号**做目录名、
+    // 用 `(scene_ord, ord)` 标识镜 —— 这里把库里的 `scene_id` 映射回 `scene_ord`。
+    int chapterOrd = 0;
+    if (auto st = db.Prepare("SELECT ord FROM chapters WHERE id=?1"); st) {
+        (void)st->BindInt(1, chapter_id);
+        if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+            chapterOrd = static_cast<int>(st->ColumnInt(0));
+        }
+    }
+    std::map<RowId, int> sceneOrdById;
+    if (auto st = db.Prepare("SELECT id,ord FROM scenes WHERE chapter_id=?1"); st) {
+        (void)st->BindInt(1, chapter_id);
+        while (true) {
+            auto s = st->Step();
+            if (!s || *s == db::sqlite::StepResult::Done) {
+                break;
+            }
+            sceneOrdById[st->ColumnInt(0)] = static_cast<int>(st->ColumnInt(1));
+        }
+    }
+    const auto spatialIndex = LoadSpatialIndex(project_dir, chapterOrd);
 
     for (const ShotRow& shot : *shots) {
         ++out.shots_seen;
@@ -123,6 +238,13 @@ PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowI
             in.character_id = shotChars.front(); // 主角色（视为主视角/前景）
             in.character_ids = shotChars;        // S25：**全部**出场角色，人人都要有外观
         }
+        // S26：空间层（第 10 层）—— 谁在前景/谁在背景 + 朝向/距离/遮挡
+        if (const auto ordIt = sceneOrdById.find(shot.scene_id); ordIt != sceneOrdById.end()) {
+            if (const auto si = spatialIndex.find({ordIt->second, shot.ord});
+                si != spatialIndex.end()) {
+                in.spatial_text = si->second;
+            }
+        }
         auto art = visual.Assemble(in);
         if (!art) {
             out.warnings.push_back(fmt::format("镜 #{} 组装失败：{}", shot.id, art.error().message));
@@ -141,9 +263,9 @@ PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowI
             continue;
         }
         PromptArtifactRow row;
-        if (it != existing.end()) {
-            row.id = it->second.id; // 覆盖同镜的上一版（表无 version 列 → 版本记在 model_hint）
-        }
+        // `13` §2.7 PV2/PV3（v10 起有专列）：**不覆盖上一版** —— 新写一行、`version + 1`，
+        // 旧版本**全部保留**（用于对比与回滚）。取"最新版"的读法按 `updated DESC,id DESC`。
+        row.version = it != existing.end() ? it->second.version + 1 : 1;
         row.chapter_id = chapter_id;
         row.scene_id = shot.scene_id;
         row.shot_id = shot.id;
@@ -155,8 +277,11 @@ PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db, RowI
         row.prompt = art->final_prompt;
         row.negative = art->negative_prompt;
         row.references_json = ResolveReferences(visual, shot.character_ids_json, &out.refs_resolved);
-        row.model_hint = fmt::format("v={} layers={}", it != existing.end() ? 2 : 1,
-                                     art->used_layer_ids.size());
+        // 版本已在 `version` 专列（v10）；这里只记"这条 prompt 由几层拼成"（诊断用）
+        row.model_hint = fmt::format("layers={}", art->used_layer_ids.size());
+        // PV5：生成结果关联**留空** —— 要等 **V11 出图接线**产出 `visual_artifacts` / 出图任务
+        // 才有值（现在没有对象可指，不写假引用）
+        row.generation_ref.clear();
         if (auto w = visual.UpsertPromptArtifact(row); !w) {
             out.warnings.push_back(fmt::format("镜 #{} 写账失败：{}", shot.id, w.error().message));
             continue;
@@ -292,6 +417,79 @@ bool RunPromptGenSelfCheck() {
     const PromptGenOutcome third = GeneratePromptArtifacts(mem, ch.value_or(0));
     expect(third.ok && third.artifacts_written == 1 && third.reused == 0,
            "输入状态变了 → 哈希不一致 → 重新生成（I9：不得复用）");
+    // ③b PV2/PV3（v10 的 `version` 列）：**新版写新行、旧版全部保留**（可对比/可回滚）
+    {
+        auto list3 = v.ListPromptArtifacts(ch.value_or(0));
+        expect(list3.has_value() && list3->size() == 2, "PV3：重新生成应**新增**一行（不是覆盖）");
+        if (list3 && list3->size() == 2) {
+            expect(list3->front().version == 2 && list3->back().version == 1,
+                   fmt::format("PV2/PV3：新版 version=2、旧版仍在（实际 {}/{}）",
+                               list3->front().version, list3->back().version));
+            expect(list3->front().input_state_hash != list3->back().input_state_hash,
+                   "两版的 input_state_hash 应不同（哈希变了才重生成）");
+            expect(list3->front().generation_ref.empty(),
+                   "PV5：generation_ref 留空（要等 V11 出图接线才有对象可指）");
+        }
+    }
+
+    // ③c S26：**空间层**（`12` §2.5）—— 谁在前景/谁在背景 → prompt 的第 10 层。
+    // V9 把 `spatial` 只存盘，所以这里造一份**盘上产物**（`work/ch<NNN>/storyboard.json`）验证真读到了。
+    {
+        std::error_code ec;
+        const auto tmp = std::filesystem::temp_directory_path() / "shine_v10_selfcheck";
+        std::filesystem::remove_all(tmp, ec);
+        int chOrd = 0;
+        int scOrd = 0;
+        {
+            auto st = mem.Prepare("SELECT ord FROM chapters WHERE id=?1");
+            auto st2 = mem.Prepare("SELECT ord FROM scenes WHERE id=?1");
+            if (st && st2) {
+                (void)st->BindInt(1, ch.value_or(0));
+                (void)st2->BindInt(1, sc.value_or(0));
+                if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    chOrd = static_cast<int>(st->ColumnInt(0));
+                }
+                if (auto s = st2->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    scOrd = static_cast<int>(st2->ColumnInt(0));
+                }
+            }
+        }
+        const auto sbDir = tmp / "work" / fmt::format("ch{:03}", chOrd);
+        std::filesystem::create_directories(sbDir, ec);
+        const std::string sb = fmt::format(
+            R"({{"shots":[{{"scene_ord":{},"ord":1,"duration":3.0,"spatial":{{"facing":"left",)"
+            R"("distance_m":2.5,"occlusion":"前景人物半挡","layers":{{"foreground":"自检角色",)"
+            R"("midground":"","background":"自检配角"}}}}}}]}})",
+            scOrd);
+        expect(util::WriteFileBytes(sbDir / "storyboard.json", sb),
+               "S26：写临时 storyboard.json（V9 的落点格式）");
+        // 再改一次资产文案：保证哈希与上一步不同 → 必然走到"新写"分支
+        if (asset) {
+            (void)v.UpsertAsset({.id = *asset,
+                                 .entity_id = pov.value_or(0),
+                                 .kind = "character",
+                                 .name = "自检角色",
+                                 .base_desc = "a limping youth in dark coat",
+                                 .sheet_rel_path = "visual/gen/selfcheck_sheet.png",
+                                 .status = "READY"});
+        }
+        const PromptGenOutcome fourth =
+            GeneratePromptArtifacts(mem, ch.value_or(0), util::PathToUtf8(tmp));
+        expect(fourth.ok && fourth.artifacts_written == 1 && fourth.reused == 0,
+               "S26：带 project_dir 重跑应新写一条");
+        auto list4 = v.ListPromptArtifacts(ch.value_or(0));
+        if (list4 && !list4->empty()) {
+            const std::string& p = list4->front().prompt;
+            expect(p.find("foreground: 自检角色") != std::string::npos,
+                   "S26：**前景**角色进了 prompt（空间层 = 第 10 层）");
+            expect(p.find("background: 自检配角") != std::string::npos,
+                   "S26：**背景**角色也进了 prompt");
+            expect(p.find("distance_m: 2.5") != std::string::npos, "S26：距离也进了 prompt");
+        } else {
+            expect(false, "S26：应有 V10 账可查");
+        }
+        std::filesystem::remove_all(tmp, ec);
+    }
 
     // ④ 没有 shots 的章 → 明确报错（V10 的输入前提）
     auto ch2 = g.UpsertChapter({.ord = 2, .title = "第二章"});

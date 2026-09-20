@@ -24,7 +24,8 @@
 ### 1.1 小说侧提示层（`src/novel/NovelVisual.cpp`）
 
 - `prompt_layers` 表（`NovelDb.cpp:118`）；`SetLayer`（`:277-296`，先 DELETE 同 `owner_kind/owner_id/layer` 再 INSERT）、`QueryLayer`（`:298-311`，`ORDER BY version DESC LIMIT 1`）。
-- `Assemble`（`:324-467`）**九层**：`base` → `stage` → `scene` → `action` → `camera` → `composition` → `lighting` → `style` → `quality`（`:456-464`），另有 `negative` 单独输出（`:465`）。
+- `Assemble`**十层**（S26 起）：`base` → `stage` → `scene` → `action` → **`spatial`** → `camera` → `composition` → `lighting` → `style` → `quality`，另有 `negative` 单独输出。
+  - 第 5 层 `spatial` 是 S26 加的（`12` §2.5 / `02` §2.7 的 `Spatial`）：**谁在前景/谁在背景**（`layers{foreground,midground,background}`）+ `facing` / `distance_m` / `occlusion`。数据**在盘上**（`work/ch<NNN>/storyboard.json`，`spatial` 无专列），由调用方（V10）读好经 `AssemblePromptInput::spatial_text` 传进来 —— `Assemble` 是纯库操作，不自己翻文件。
 - `SetVisualCanon`（`:510-521`）写 `visual_canon_logs`。
 
 ### 1.2 小说侧出图（`src/novel/NovelImageGen.cpp` / `NovelImageStore.cpp`）
@@ -193,9 +194,9 @@ Start → Motion → Transformation → End
 |---|---|
 | PV1 | 每次生成 `PromptArtifact` 必须带 `input_state_hash`（`04` §2.5） |
 | PV2 | 哈希不一致 → **不得复用**（不变式 I9）；必须重新生成并 `version + 1` |
-| PV3 | 同 `target_id` 的多个版本全部保留（用于对比与回滚） |
+| PV3 | 同 `target_id` 的多个版本全部保留（用于对比与回滚）。✅ **v10/S26 已落地**：`prompt_artifacts.version` 列 + V10 改为**新写一行、`version + 1`**（不再覆盖同 id） |
 | PV4 | `prompt_layers` 的 `version` 与 `PromptArtifact.version` 必须同步（`QueryLayer` 取 `version DESC LIMIT 1`） |
-| PV5 | 生成结果与 Prompt 的关联通过 `PromptArtifact.generation_ref`（`02` §2.10）建立，双向可查 |
+| PV5 | 生成结果与 Prompt 的关联通过 `PromptArtifact.generation_ref`（`02` §2.10）建立，双向可查。✅ **列已落地（v10/S26）**；⚠️ **值仍为空** —— 要等 **V11 出图接线**产出 `visual_artifacts` / 出图任务才有对象可指（不写假引用） |
 | PV6 | **Prompt 不得作为世界状态的一部分被长期依赖**：删掉 Prompt 不影响世界状态的可重建性 |
 | PV7 | **组装规则版本参与哈希**（S25）：`ComputeInputStateHash` 的 `chain=visual` 分支含 `prompt_rule_version`（`04` §2.5）。**拼装规则变了就 +1** → 旧产物全部失效重算。不加这条会出现"修了拼装 bug、但旧 prompt 永远被复用"（S25 实测踩到） |
 

@@ -16,7 +16,7 @@
 namespace shine::novelcore {
 namespace {
 
-constexpr int kTargetSchemaVersion = 9;
+constexpr int kTargetSchemaVersion = 10;
 
 // v5：多 Agent + 动态字段（不写死小说体系）
 constexpr std::string_view kSchemaV5Agents = R"SQL(
@@ -240,7 +240,10 @@ CREATE TABLE IF NOT EXISTS prompt_artifacts(
   references_json TEXT NOT NULL DEFAULT '[]',
   canon_status TEXT NOT NULL DEFAULT 'DRAFT',
   created INTEGER NOT NULL DEFAULT 0,
-  updated INTEGER NOT NULL DEFAULT 0);
+  updated INTEGER NOT NULL DEFAULT 0,
+  -- v10（S26）：PV3 多版本保留 / PV5 结果关联（`13` §2.7）。旧库走 `AddPromptArtifactColumns`。
+  version INTEGER NOT NULL DEFAULT 1,
+  generation_ref TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_partifact_chapter ON prompt_artifacts(chapter_id);
 CREATE INDEX IF NOT EXISTS idx_partifact_shot ON prompt_artifacts(shot_id);
 )SQL";
@@ -832,6 +835,29 @@ void NovelDb::AddShotStateColumns(db::sqlite::Database& db) {
     (void)db.Exec("ALTER TABLE shots ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '{}'");
 }
 
+void NovelDb::AddPromptArtifactColumns(db::sqlite::Database& db) {
+    // v10（S26）：`prompt_artifacts` 的 `version` / `generation_ref`（`13` §2.7 PV3–PV5 的载体）。
+    //  - `version`：PV2「哈希不一致重新生成 → `version + 1`」；PV3「同 `target_id` 的多个版本全部保留」。
+    //  - `generation_ref`：PV5「生成结果与 Prompt 的关联」（`02` §2.10），双向可查。
+    // SQLite 没有 `ADD COLUMN IF NOT EXISTS`，列已存在时 ALTER 失败 —— 忽略即可（与 v9 的 shots 同款）。
+    // **唯一来源**：`Migrate()` 与 `RunSchemaSelfCheck` 都调它，别再各抄一遍 ALTER。
+    (void)db.Exec("ALTER TABLE prompt_artifacts ADD COLUMN version INTEGER NOT NULL DEFAULT 1");
+    (void)db.Exec(
+        "ALTER TABLE prompt_artifacts ADD COLUMN generation_ref TEXT NOT NULL DEFAULT ''");
+}
+
+std::expected<void, DbError> NovelDb::EnsureSchemaUpToDate(db::sqlite::Database& db) {
+    // 建表：规范 DDL 的唯一来源就是那批 `kSchema*` 常量（`ApplyCanonicalSchema` 即为此而存在）
+    if (auto r = ApplyCanonicalSchema(db); !r) {
+        return r;
+    }
+    // 旧库补列（幂等：列已存在时 ALTER 失败被忽略）
+    AddShotStateColumns(db);
+    AddPromptArtifactColumns(db);
+    // 字段表：`ApplyCanonicalSchema` **不含**它（`08` §2.3 的唯一来源在 `NovelFields`）
+    return NovelFields::EnsureSchema(db);
+}
+
 std::expected<void, DbError> NovelDb::Migrate() {
     if (auto r = ExecAll(kSchemaV3); !r) {
         return r;
@@ -857,6 +883,8 @@ std::expected<void, DbError> NovelDb::Migrate() {
     (void)db_.Exec("ALTER TABLE visual_assets ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'");
     // v9（S13）：旧库的 `shots` 补三列（新库由 `kSchemaV4Visual` 的建表直接带）
     NovelDb::AddShotStateColumns(db_);
+    // v10（S26）：`prompt_artifacts` 补 `version` / `generation_ref` 两列（列已存在则失败被忽略）
+    AddPromptArtifactColumns(db_);
     // —— v8（S2b）：字段门禁 ——
     // 字段表（field_defs / entity_fields / field_aliases）的 DDL **只保留在
     // `NovelFields::EnsureSchema` 一处**（规格 `08` §2.3）。原先这里自带一份建表，
@@ -1054,6 +1082,54 @@ bool NovelDb::RunSchemaSelfCheck() {
     }
     NovelDb::AddShotStateColumns(mem);
     NovelDb::AddShotStateColumns(mem); // 幂等：列已存在也不应炸（失败被忽略）
+    // —— v10（S26）：`prompt_artifacts` 的 version / generation_ref ——
+    // 用**独立内存库**测"旧库缺列 → `ALTER` 补上"这条路：不碰上面的 `mem`。
+    // ⚠️ 第一版是在 `mem` 上 DROP + 重建旧形状表，结果**毒害**了后面的 v9 段
+    //（`kSchemaV9PromptArtifacts` 里的 `CREATE INDEX ... ON prompt_artifacts(shot_id)` 建不出来
+    // → "no such column: shot_id"）。换个库就零耦合了。函数本身必须**幂等**。
+    {
+        db::sqlite::Database old;
+        if (auto r = old.Open({.memory = true}); !r) {
+            log::Error("NovelDb 自检：v10 打开独立内存库失败 {}", r.error().message);
+            return false;
+        }
+        if (auto r = old.Exec("CREATE TABLE prompt_artifacts("
+                              "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                              "chapter_id INTEGER NOT NULL DEFAULT 0,"
+                              "input_state_hash TEXT NOT NULL DEFAULT '',"
+                              "prompt TEXT NOT NULL DEFAULT '')");
+            !r) {
+            log::Error("NovelDb 自检：v10 建旧形状 prompt_artifacts 失败 {}", r.error().message);
+            return false;
+        }
+        AddPromptArtifactColumns(old);
+        AddPromptArtifactColumns(old); // 幂等：列已存在时 ALTER 失败被忽略
+        if (auto r = old.Exec("INSERT INTO prompt_artifacts(chapter_id,input_state_hash,prompt,"
+                              "version,generation_ref) VALUES(1,'h1','p1',3,'gen:42')");
+            !r) {
+            log::Error("NovelDb 自检：v10 写 prompt_artifacts 失败 {}", r.error().message);
+            return false;
+        }
+        if (auto r = old.Exec("INSERT INTO prompt_artifacts(chapter_id,input_state_hash,prompt) "
+                              "VALUES(2,'h2','p2')");
+            !r) {
+            log::Error("NovelDb 自检：v10 不写 version 的插入失败 {}", r.error().message);
+            return false;
+        }
+        auto st = old.Prepare("SELECT version,generation_ref FROM prompt_artifacts WHERE chapter_id=1");
+        auto st2 =
+            old.Prepare("SELECT version,generation_ref FROM prompt_artifacts WHERE chapter_id=2");
+        if (!st || !st2) {
+            log::Error("NovelDb 自检：v10 查 prompt_artifacts 失败");
+            return false;
+        }
+        if (!st->Step() || st->ColumnInt(0) != 3 || st->ColumnText(1) != "gen:42" || !st2->Step() ||
+            st2->ColumnInt(0) != 1 || !st2->ColumnText(1).empty()) {
+            log::Error("NovelDb 自检：v10 的 version/generation_ref 读写不符（期望 3/\"gen:42\" 与 1/空）");
+            return false;
+        }
+        old.Close();
+    }
     {
         auto st = mem.Prepare(
             "SELECT start_state_json,end_state_json,timeline_json FROM shots LIMIT 1");
