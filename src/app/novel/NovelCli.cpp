@@ -8,6 +8,7 @@
 #include "novel/NovelGraph.h"
 #include "novel/NovelInit.h"     // S21：初始化链门禁与骨架
 #include "novel/NovelChecks.h"
+#include "novel/NovelContinuity.h"
 #include "novel/NovelGeneration.h"
 #include "novel/NovelPromptGen.h" // S24：V10 提示词产物
 #include "util/Encoding.h"
@@ -119,7 +120,10 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantImages = Has(args, "--novel-generate-images");
     // S28：章级 K 校验（`06` §2.3 的 K01–K29）—— 命令行看结果
     const bool wantChecks = Has(args, "--novel-checks");
-    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages && !wantChecks) {
+    // S30：V8 `CONTINUITY`（`12` §2.7 的 C1–C12；**纯机器校验，不调 LLM**）
+    const bool wantCont = Has(args, "--novel-continuity");
+    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages && !wantChecks &&
+        !wantCont) {
         log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-storyboard <chapter_id>` / "
                    "`--novel-prompt <chapter_id>` / `--novel-generate <chapter_id>` / "
                    "`--novel-run <manual|semi|auto>`）");
@@ -182,6 +186,37 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         AppendCheckOut(gate.passed, gate.Describe());
         return gate.passed ? 0 : 1;
+    }
+
+    if (wantCont) {
+        // S30：V8 `CONTINUITY`（`03` §2.2 的影视化阶段）—— **纯机器校验、不调 LLM**。
+        // 判相邻镜的「本镜 end_state → 下一镜 start_state」（`12` §2.7 的 C1–C12），
+        // 报告落 `work/ch<NNN>/v08_continuity.json`（`12` §3 的 12-6 就是"此前没有它"）。
+        std::int64_t cid = std::atoll(Opt(args, "--novel-continuity", "").c_str());
+        if (cid <= 0) {
+            cid = PickChapter(db);
+        }
+        if (cid <= 0) {
+            log::Error("novel-cli：库里没有可用章节");
+            AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        const novelcore::ContinuityOutcome co =
+            novelcore::RunContinuityChecks(db, cid, util::PathToUtf8(projectDir));
+        for (const std::string& n : co.notes) {
+            log::Warn("  {}", n); // unverified 的原因：**显式列出，不静默**
+        }
+        for (const novelcore::ContinuityIssue& is : co.issues) {
+            log::Warn("{} [{}] {}", is.code, is.severity, is.detail);
+        }
+        if (!co.ok) {
+            log::Error("novel-cli：V8 失败 {}", co.error);
+            AppendCheckOut(false, co.error);
+            return 1;
+        }
+        log::Info("novel-cli：V8 连续性：{} · 报告 {}", co.Describe(), co.report_path);
+        AppendCheckOut(co.failed == 0, fmt::format("V8 {}", co.Describe()));
+        return co.failed == 0 ? 0 : 1;
     }
 
     if (wantChecks) {
