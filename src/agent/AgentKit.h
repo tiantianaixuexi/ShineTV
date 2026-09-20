@@ -49,10 +49,18 @@ struct AgentRunResult {
 
 class AgentKit {
 public:
-    AgentKit(db::sqlite::Database& db, bool allowWrite = true);
+    // S48：`project_dir`（可选）—— 让工具能读到**盘上的阶段产物**（如 V1 骨架
+    // `work/ch<NNN>/v01_scene_breakdown.json`）。⚠️ 这是"历史偏差"的临时桥：V1 骨架目前
+    // **只在盘上**（`01` §2 记过：V3–V7 已是世界状态却只躺在盘上）；等它落库后，这个参数
+    // 就该退休、工具改读库。
+    AgentKit(db::sqlite::Database& db, bool allowWrite = true, std::string project_dir = {});
 
     // 迁移 agent_defs 并 seed 内置 Agent（幂等）
     [[nodiscard]] std::expected<void, novelcore::DbError> EnsureSchemaAndSeed();
+
+    // S48：给工具用的只读访问器（`get_chapter_shots` 要读 `project_dir` + 查章 ord）
+    [[nodiscard]] const std::string& ProjectDir() const noexcept { return project_dir_; }
+    [[nodiscard]] db::sqlite::Database& Db() const noexcept { return *db_; }
 
     // —— 定义 CRUD（agent_meta 用）——
     [[nodiscard]] std::expected<novelcore::RowId, novelcore::DbError>
@@ -117,9 +125,11 @@ public:
 
 private:
     db::sqlite::Database* db_;
+    std::string project_dir_; // S48：盘上产物的根（工具用它读 V1 骨架；见构造注释）
     bool allowWrite_ = true;
 
     [[nodiscard]] novelcore::NovelGraph& Graph() const; // 内部持有共享 graph — 见 cpp
+
     mutable std::shared_ptr<novelcore::NovelGraph> graph_;
 };
 
