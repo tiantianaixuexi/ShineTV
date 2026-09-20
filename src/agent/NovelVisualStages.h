@@ -70,7 +70,9 @@ struct StageRequest {
     VisualStageId stage = VisualStageId::V2DirectorIntent;
     std::string extra_hint;
     // S41：**走 Agent 工具循环**（多轮 + MCP 工具）而不是"单轮把上下文塞满"。
-    // 目前只在 **V4 `SPATIAL`** 上试点（`kSpecs` 里的 `v4_spatial`，白名单只给只读查询工具）。
+    // S46 起已从"只 V4 试点"**放开到 V2–V7 全阶段**（`StageAgentId` 非空即可；V1 无 Agent）。
+    // ⚠️ **默认 `false` = 仍走单轮**（把上游产物整份塞进 prompt）—— 要 Agent 必须显式
+    //    加 CLI 开关 `--agent-tools`。**这点别记错**：默认不是 Agent 模式。
     bool use_agent_tools = false;
 };
 
