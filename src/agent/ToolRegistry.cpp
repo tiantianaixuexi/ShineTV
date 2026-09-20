@@ -142,33 +142,10 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
 
     // 对话历史：input 数组（Responses API input items）
     std::string history; // JSON 数组字符串，手工维护
-    history = fmt::format(R"([{{"role":"user","content":{}}}])",
-                          [&] {
-                              std::string c = "\"";
-                              for (const char ch : userText) {
-                                  // S41：**手工拼 JSON 必须把所有控制字符转义** —— 原先只处理了
-                                  // `"` / `\` / `\n`，漏掉 `\r` / `\t` 等 ⇒ 一旦 user 文本里含
-                                  // `\r`（CRLF 环境拼出来的文本很容易有），JSON 就**非法**，
-                                  // 下游 `yyjson_read` 直接失败（真实跑：V4 Agent 报
-                                  // 「工具循环给的 input 不是合法 JSON」，卡在工具循环第一步）。
-                                  const unsigned char u = static_cast<unsigned char>(ch);
-                                  if (ch == '"' || ch == '\\') {
-                                      c += '\\';
-                                      c += ch;
-                                  } else if (ch == '\n') {
-                                      c += "\\n";
-                                  } else if (ch == '\r') {
-                                      c += "\\r";
-                                  } else if (ch == '\t') {
-                                      c += "\\t";
-                                  } else if (u < 0x20) {
-                                      c += fmt::format("\\u{:04x}", static_cast<unsigned>(u));
-                                  } else {
-                                      c += ch;
-                                  }
-                              }
-                              return c + "\"";
-                          }());
+    // S42：**不要手写 JSON 转义** —— 交给 `util::json::JsonQuote`（yyjson 实现，永远正确）。
+    // S41 我在这里手写补过一次 `\r`/`\t`，但那是**打补丁**：项目里还有 6 处同款手写实现，
+    // 各自漏的字符还不一样（`AgentKit` 连 `\t` 都漏）。统一走这一个入口。
+    history = fmt::format(R"([{{"role":"user","content":{}}}])", util::json::JsonQuote(userText));
 
     // tools 导出
     yyjson_mut_doc* tdoc = yyjson_mut_doc_new(nullptr);

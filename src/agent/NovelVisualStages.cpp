@@ -399,6 +399,7 @@ constexpr StageSpec kV3Spec{
 constexpr StageSpec kV4Spec{
     VisualStageId::V4Spatial,
     R"-(你是空间调度。为**每一镜**给出站位层（`02` §2.7 的 Spatial）。
+**若你有工具可用**：先用它查库确认这一场有哪些角色、他们的位置/朝向/道具 —— **别猜**。
 只输出 JSON：{"items":[ ... ]}，不要解释。
 每条：scene_ord(int) ord(int) 以及：
   facing(string) 朝向    distance_m(number) 距离（米）
@@ -436,6 +437,8 @@ constexpr StageSpec kV6Spec{
     "v06_timeline.json",
 };
 
+// S42：见 `StageSystemPrompt`（放在所有 `kV*Spec` 之后 —— 它要引用它们）。
+
 constexpr StageSpec kV7Spec{
     VisualStageId::V7Audio,
     R"-(你是声音设计。为**每一镜**给出音频设计（`13` §2.4 的五层）。
@@ -450,6 +453,9 @@ constexpr StageSpec kV7Spec{
     "v06_timeline.json",
     "v07_audio.json",
 };
+
+// S42：`StageSystemPrompt` 的定义放在本文件末尾（匿名 namespace **之外**，
+// 否则内部链接 ⇒ `AgentKit.cpp` 链接不到）。
 
 [[nodiscard]] const StageSpec& SpecOf(VisualStageId stage) noexcept {
     switch (stage) {
@@ -889,6 +895,30 @@ bool RunStagesSelfCheck() {
         log::Info("V1 场分析自检通过（七要素 + 镜骨架落盘 + 哈希复用 + 无冲突告警）");
     }
     return fails == 0;
+}
+
+// S42：**阶段 system 提示词的唯一来源**（放在匿名 namespace **之外** —— 上面的 `kV*Spec` 都是
+// 内部链接，但本函数要给 `AgentKit.cpp` 用，所以必须外部链接）。
+// 起因：V4 走 Agent 时在 `AgentKit::DefaultPromptFor` 里**又抄了一份**提示词 ⇒ 两处必须同步、
+// 迟早分叉。现在只此一处，`AgentKit` 直接取。
+std::string_view StageSystemPrompt(VisualStageId stage) noexcept {
+    switch (stage) {
+    case VisualStageId::V1SceneBreakdown:
+        return kSceneBreakdownInstructions;
+    case VisualStageId::V2DirectorIntent:
+        return kV2Spec.instructions;
+    case VisualStageId::V3Performance:
+        return kV3Spec.instructions;
+    case VisualStageId::V4Spatial:
+        return kV4Spec.instructions;
+    case VisualStageId::V5Camera:
+        return kV5Spec.instructions;
+    case VisualStageId::V6Timeline:
+        return kV6Spec.instructions;
+    case VisualStageId::V7Audio:
+        return kV7Spec.instructions;
+    }
+    return {};
 }
 
 } // namespace shine::agent

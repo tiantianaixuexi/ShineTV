@@ -42,25 +42,8 @@ std::string_view LlmRoleName(LlmRole role) noexcept {
 
 namespace {
 
-[[nodiscard]] std::string EscapeJson(std::string_view s) {
-    std::string o;
-    o.reserve(s.size() + 8);
-    for (const char c : s) {
-        if (c == '"' || c == '\\') {
-            o += '\\';
-            o += c;
-        } else if (c == '\n') {
-            o += "\\n";
-        } else if (c == '\r') {
-            o += "\\r";
-        } else if (c == '\t') {
-            o += "\\t";
-        } else {
-            o += c;
-        }
-    }
-    return o;
-}
+// S42：委托给 `util::json::JsonEscape`（**唯一来源**）—— 原先手写且漏了 `<0x20` 的控制字符。
+[[nodiscard]] std::string EscapeJson(std::string_view s) { return util::json::JsonEscape(s); }
 
 void Report(const std::function<void(const GenerateChapterProgress&)>& cb, Phase p, int pct,
             std::string_view note = {}) {

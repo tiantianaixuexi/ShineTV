@@ -111,6 +111,11 @@ RunAllVisualStages(::shine::db::sqlite::Database& db, const LlmCallFn& call,
                    std::string_view extra_hint = {},
                    VisualStageId up_to = VisualStageId::V7Audio, bool use_agent_tools = false);
 
+// 该阶段的 **system 提示词**（S42：**唯一来源**）。
+// 为什么要有它：V4 走 Agent（`AgentKit::DefaultPromptFor("v4_spatial")`）时，原先**又抄了一份**
+// 提示词 ⇒ 两处必须同步，迟早分叉。现在 `AgentKit` 直接取这里，改提示词只改一处。
+[[nodiscard]] std::string_view StageSystemPrompt(VisualStageId stage) noexcept;
+
 // `--up-to` 的解析（S35）：接受 `V1`…`V7` / `1`…`7`（大小写不敏感）。非法 → `nullopt`（调用方报错）。
 [[nodiscard]] std::optional<VisualStageId> ParseVisualStage(std::string_view text) noexcept;
 

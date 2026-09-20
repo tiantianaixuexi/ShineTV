@@ -15,6 +15,45 @@
 
 namespace shine::util::json {
 
+// —— JSON 字符串序列化（S42：**唯一来源**）——
+// 起因：项目里曾有 **7 处**各自实现"把文本变成 JSON 字符串"（4 处手写 + 2 处 yyjson + 1 处内联），
+// 手写的那几处**都漏了 `<0x20` 的控制字符**（`AgentKit` 连 `\t` 都漏）—— 只要漏一个，生成的
+// JSON 就**非法**。真实跑撞过：工具循环第一步 `yyjson_read` 直接失败（报"input 不是合法 JSON"）。
+// 结论：**别再手写**。交给 yyjson，这个类别的 bug 就永远不会有（正确性优先于那点性能）。
+//
+// ⚠️ 只读侧（`yyjson_val`）用 `yyjson_val_write`；这里补的是**写入侧**（从 `std::string_view` 出发）。
+[[nodiscard]] inline std::string JsonQuote(std::string_view text) {
+    yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
+    if (doc == nullptr) {
+        return "\"\"";
+    }
+    yyjson_mut_val* v = yyjson_mut_strncpy(doc, text.data(), text.size());
+    if (v == nullptr) { // 非法 UTF-8 → 退化为空串（与 `NovelFields` 的既有策略一致）
+        yyjson_mut_doc_free(doc);
+        return "\"\"";
+    }
+    yyjson_mut_doc_set_root(doc, v); // ⚠️ 必须先挂 root，否则 `yyjson_mut_write` 失败
+    std::size_t len = 0;
+    char* s = yyjson_mut_val_write(v, 0, &len); // flg=0：中文**原样输出**（不转成 \uXXXX）
+    std::string out = "\"\"";
+    if (s != nullptr) {
+        out.assign(s, len);
+        std::free(s);
+    }
+    yyjson_mut_doc_free(doc);
+    return out;
+}
+
+// **不含**两侧引号的转义（= `JsonQuote` 去掉首尾引号）—— 兼容"调用方自己写引号"的历史用法。
+[[nodiscard]] inline std::string JsonEscape(std::string_view text) {
+    std::string q = JsonQuote(text);
+    if (q.size() >= 2) {
+        q.erase(q.size() - 1);
+        q.erase(0, 1);
+    }
+    return q;
+}
+
 // —— 宽容提取（S38）：LLM 的输出**常带 markdown 围栏或前后说明文字**（"好的，以下是 JSON："…）。
 // 直接 `yyjson_read` 全文会**当场判非法** —— 真实跑就撞上了（MiniMax-M3 在 V6 TIMELINE 上的输出
 // 不是纯 JSON，整条阶段链当场断在 V6）。本函数把"可能的 JSON 正文"抠出来：
