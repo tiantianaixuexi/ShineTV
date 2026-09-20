@@ -667,7 +667,8 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     const std::string_view agentId = StageAgentId(req.stage);
     if (req.use_agent_tools && !agentId.empty()) {
         // S41 试点 / S46 推广：让模型**自己用工具查库**（按需），而不是我们预先猜它要什么、塞满 prompt。
-        agent::AgentKit kit(db, /*allowWrite=*/false);
+        // S48：把 `project_dir` 交给 kit —— 工具 `get_chapter_shots` 要读盘上的 V1 骨架
+        agent::AgentKit kit(db, /*allowWrite=*/false, req.project_dir);
         if (auto seeded = kit.EnsureSchemaAndSeed(); !seeded) {
             out.error = fmt::format("{} Agent 初始化失败：{}", agentId, seeded.error().message);
             return out;
@@ -686,13 +687,17 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
                     lean += fmt::format("- scene_ord={} 《{}》\n", s.ord, s.title);
                 }
             }
-            // S47：**把 V1 骨架明写进来**（否则模型不知道每场几镜，各阶段就各编一套 —— 见
-            // `ShotSkeleton` 的注释）。⚠️ 这与"让模型自己查库"**不冲突**：工具查的是
-            // "这些镜里谁在场 / 在哪 / 什么性格"，而**有几镜是既定事实**，不该让它猜。
+            // S48 修正（S47 的做法是权宜）：**骨架不再明写进 user** —— 那正是 S43 想砍掉的
+            // 「喂数据」。改成让模型**自己查**（工具 `get_chapter_shots`）：user 里只保留
+            // "**必须按骨架来**"这条**要求** + 告诉它**去哪拿**。
+            // ⚠️ 分工：**有哪几镜是事实 ⇒ 能查**；它是**合同 ⇒ 靠对账**（下面的骨架比对）保证，
+            //    **不靠 prompt**。模型万一不查，产出会与骨架对不上 ⇒ **对账会报出来**（可见，不静默）。
             if (!skelText.empty()) {
-                lean += "\n【场景与镜】**必须严格按这个来**（你输出的 `scene_ord`/`ord` 就是下面"
-                        "这些，**不得增删**；`duration` 也要与之一致）\n";
-                lean += skelText;
+                lean += fmt::format(
+                    "\n【必须遵守的合同】本章的场/镜骨架（每场几镜、每镜的 ord 与 duration）"
+                    "**不得增删或改动** —— 先用工具 `get_chapter_shots`（chapter_id={}）把它"
+                    "**查出来**，再逐镜按它输出。\n",
+                    req.chapter_id);
             }
             lean += fmt::format("\n【任务】{}\n", spec.task);
             lean += "\n【提示】这一场有哪些角色、他们的位置/朝向/道具/性格 —— **用工具查，别猜**。\n";

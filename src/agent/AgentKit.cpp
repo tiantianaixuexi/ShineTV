@@ -5,6 +5,8 @@
 #include "core/Log.h"
 #include "mcp/ToolRegistry.h"
 #include "novel/NovelFields.h"
+#include "util/Encoding.h" // S48：PathToUtf8（工具读盘上报路径）
+#include "util/File.h"     // S48：ReadFileBytes（读盘上的 V1 骨架）
 #include "util/Json.h"
 #include "util/Time.h"
 
@@ -398,6 +400,56 @@ public:
     }
 };
 
+// ── S48：本章镜骨架（阶段链的"合同"）────────────────────
+// 用途：让**阶段 Agent 自己查**"本章有哪些场、每场几镜、每镜多长" —— 而不是把骨架塞进 user。
+// ⚠️ 起因：S47 我把骨架**明写进 user**（理由是"模型不知道每场几镜会乱编，4/4/3/15/6/4 全不一样"），
+//    但那**正是 S43 想砍掉的「喂数据」**。正确的分工是：**有几镜是事实 ⇒ 就该能查**；
+//    它是**合同** ⇒ 就靠**对账**保证（`RunVisualStage` 的骨架比对），**不是靠 prompt**。
+// ⚠️ 数据源是**盘上**的 `v01_scene_breakdown.json`（V1 骨架尚未落库 —— `01` §2 记的"历史偏差"；
+//    等它落库后本工具改读库、`project_dir` 这个参数就能退休）。
+// ⚠️ 直接回**骨架原文**（不重排）：模型的判断基于原文最忠实，也省得我们在这里"再解释一遍"。
+class GetChapterShotsTool final : public KitTool {
+public:
+    explicit GetChapterShotsTool(std::shared_ptr<AgentKit> kit) : KitTool(std::move(kit)) {}
+    std::string_view Name() const override { return "get_chapter_shots"; }
+    std::string_view Description() const override {
+        return "读取本章的场/镜骨架（每场几镜、每镜 ord 与时长）。**这是必须遵守的合同** —— "
+               "你的输出必须逐镜与它对齐（同 scene_ord/ord，不得增删，duration 一致）。";
+    }
+    yyjson_mut_val* Schema(yyjson_mut_doc* doc) const override {
+        auto* o = ObjType(doc);
+        AddIntProp(doc, o, "chapter_id", "章 id（你正在处理的本章 id）");
+        return o;
+    }
+    std::expected<yyjson_doc*, ToolError> Execute(yyjson_val* args) override {
+        if (!kit_) {
+            return ErrDoc("state", "kit 未绑定");
+        }
+        const auto cid = ArgI64(args, "chapter_id");
+        if (cid <= 0) {
+            return ErrDoc("bad_args", "需要 chapter_id（本章的章 id）");
+        }
+        if (kit_->ProjectDir().empty()) {
+            return ErrDoc("state", "没有 project_dir ⇒ 读不到盘上的骨架");
+        }
+        novelcore::NovelGraph g(kit_->Db());
+        auto ch = g.GetChapter(cid);
+        if (!ch) {
+            return ErrDoc("not_found", ch.error().message);
+        }
+        const auto path = std::filesystem::path{kit_->ProjectDir()} / "work" /
+                          fmt::format("ch{:03}", ch->ord) / "v01_scene_breakdown.json";
+        const auto text = util::ReadFileBytes(path);
+        if (!text) {
+            return ErrDoc("not_found",
+                          fmt::format("本章还没有 V1 骨架（{}）—— 先跑 `--novel-stages <ch> "
+                                      "--up-to V1`",
+                                      util::PathToUtf8(path)));
+        }
+        return OkDoc(std::string{*text});
+    }
+};
+
 // ── Agent 元工具（agent_meta）────────────────────────────
 class ListAgentsTool final : public KitTool {
 public:
@@ -523,8 +575,8 @@ public:
 
 // ── AgentKit ─────────────────────────────────────────────
 
-AgentKit::AgentKit(db::sqlite::Database& db, bool allowWrite)
-    : db_(&db), allowWrite_(allowWrite) {
+AgentKit::AgentKit(db::sqlite::Database& db, bool allowWrite, std::string project_dir)
+    : db_(&db), allowWrite_(allowWrite), project_dir_(std::move(project_dir)) {
     graph_ = std::make_shared<novelcore::NovelGraph>(db);
 }
 
@@ -829,6 +881,12 @@ void AgentKit::RegisterToolsFor(std::string_view agentId, ToolRegistry& reg) con
     }
 
     addShared();
+    // S48：**阶段级 Agent 额外给"查本章镜骨架"的工具**（`v2_…`–`v7_…`）——
+    // 骨架是它们必须逐镜对齐的**合同**，但**让它自己查**（而不是我们塞进 user）。
+    if (agentId.size() > 2 && agentId[0] == 'v' && agentId[1] >= '2' && agentId[1] <= '7' &&
+        agentId[2] == '_') {
+        reg.Register(std::make_unique<GetChapterShotsTool>(self));
+    }
     if (isField || isWorld) {
         if (allowWrite_) {
             reg.Register(std::make_unique<UpsertFieldDefTool>(fields, g));
@@ -1156,7 +1214,10 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         r.name = fmt::format("{} 阶段 Agent", VisualStageCode(st));
         r.role_tags = fmt::format("visual,stage,{}", StageAgentId(st));
         r.system_prompt = std::string{StageSystemPrompt(st)};
-        r.tools_json = R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])";
+        // S48：白名单加 `get_chapter_shots` —— 让阶段 Agent **自己查**要遵守的镜骨架
+        //（有几镜、ord、时长）。⚠️ 这是"合同"，但拿到它的方式仍是**工具**，不是 user 里的明文。
+        r.tools_json =
+            R"(["get_chapter_shots","get_entity","list_entities","list_entity_fields","list_field_defs"])";
         r.output_hint = R"({"items":[{"scene_ord":…,"ord":…}]})";
         r.enabled = 1;
         r.is_builtin = 1;
