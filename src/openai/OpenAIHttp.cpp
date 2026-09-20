@@ -157,6 +157,14 @@ HttpTransportResult PostJson(std::string_view url, std::string_view bearer, std:
     req.headers["Content-Type"] = "application/json";
     req.headers["Authorization"] = "Bearer " + std::string{bearer};
     req.headers["Accept"] = "application/json";
+    // S50：**必须显式关闭连接** —— `http_client_send` 走 libhv 的**进程级全局连接池**
+    //（keep-alive 复用），复用到一个已被对端关掉的连接时，握手阶段就炸：
+    // `ssl handshake failed: -1 [HttpClient.cpp:270:http_client_connect]`。
+    // 🔴 排查真相（别再归到"网络问题"）：同一个 19KB 真实请求体，`curl.exe`（每次新建连接）
+    //    **连续 6 次全 200**，而我们的全局池**第 6 次就 TLS 失败** —— 与 MiniMax 限流无关
+    //   （M3 充值档 200 RPM / 1000 万 TPM，我们那点量远远够不到；也无并发，Agent 循环是串行的）。
+    // 同文件里 `PostSse` 一直是 `http_client_new` + `Connection: close`，**从没出过这个错** —— 即对照。
+    req.headers["Connection"] = "close";
 
     auto resp = std::make_shared<HvResponse>();
     const int ret = http_client_send(&req, resp.get());
@@ -189,6 +197,7 @@ PostJsonHeaders(std::string_view url, const std::vector<std::pair<std::string, s
     req.body = std::string{jsonBody};
     req.headers["Content-Type"] = "application/json";
     req.headers["Accept"] = "application/json";
+    req.headers["Connection"] = "close"; // S50：同 `PostJson` —— 别走全局连接池的 keep-alive 复用
     for (const auto& [k, v] : headers) {
         req.headers[k] = v;
     }
