@@ -303,6 +303,7 @@ add_executable(ShineTVStudio WIN32
   src/novel/NovelChecks.cpp
   src/novel/NovelStageLedger.cpp
   src/novel/NovelInit.cpp
+  src/novel/NovelContinuity.cpp
   src/novel/NovelGeneration.cpp
   src/novel/NovelPromptGen.cpp
   src/agent/ContextBuilder.cpp
