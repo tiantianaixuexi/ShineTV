@@ -524,6 +524,13 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         // S9：`auto` 模式（门禁 G1–G5 全满足才写 CANON）；manual 默认写 PROPOSED
         cctx.canon_mode = req.canon_mode.empty() ? "manual" : req.canon_mode;
         cctx.chapter_summary = summary;
+        // 🔴 S57：**必须把正文带进提交**。第 11 块只在 `ctx.chapter_body` 非空时才写
+        // `chapters.status='done'`（`NovelCommit.cpp:740`），而正文是 SAVE 阶段落的盘、
+        // 那时只把 status 写成 'review'（本文件 `Phase::Save`）。漏带正文的后果**不是报错**：
+        // 提交日志照样打"状态回写提交成功"，但状态永远停在 'review' ⇒ `09` §2.1 的 `auto`
+        // 前置①（最近一章 `status='done'` 且有正文）**永远不满足** ⇒ `auto` 永远被拒启动。
+        // 正文此刻就在手里（`body`），原样带过去即可；第 11 块会顺带写 body/words/summary。
+        cctx.chapter_body = body;
         cctx.snapshot_dir = req.snapshot_dir;
         // S12：工程根优先用调用方给的（`NovelRunLoop` 知道它）；否则退回 novel.db 的父目录
         std::filesystem::path projectRoot;
@@ -759,7 +766,10 @@ bool NovelDirector::RunSelfCheck() {
         std::find(phases.begin(), phases.end(), Phase::Write) != phases.end() &&
         std::find(phases.begin(), phases.end(), Phase::Done) != phases.end();
     auto saved = g.GetChapter(*ch);
-    const bool savedOk = saved && saved->body.find("雪原") != std::string::npos;
+    // 🔴 S57：**状态也要断**。原先只断正文非空 ⇒ "提交成功但 `status` 没回写为 done" 这个缺陷
+    // 一路躲过全部自检（真跑才暴露：`auto` 前置① 永远不满足）。判据：提交成功后必须是 done。
+    const bool savedOk =
+        saved && saved->body.find("雪原") != std::string::npos && saved->status == "done";
     auto summaries = novelcore::NovelMemory(mem).RecentChapterSummaries(1);
     const bool memOk = summaries && !summaries->empty();
     // S8：**生成一章后世界状态确有变化**（本 S 的判据）—— 端到端经 GenerateChapter 走一遍
