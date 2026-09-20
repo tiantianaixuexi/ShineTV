@@ -33,7 +33,15 @@ struct StoryboardOutcome {
     int shots_written = 0;
     int scenes_covered = 0;
     int llm_calls = 0;
-    std::vector<std::string> warnings; // 落不了的字段 / 丢掉的镜（**显式列出，不静默**）
+    // S33：**V1 骨架一致性**（把"软约束"变成"**可检测的**软约束"）。
+    // `skeleton_total == 0` = 没跑过 `--novel-stages`（没骨架可下、无从比对）。
+    // ⚠️ 偏离**只记账、不 fail** —— LLM 合并/拆镜有时是合理的（`03` §2.2 本就允许合并），
+    //    但必须**看得见**（`11` §2.7 W2：不确定/偏离也要可见）。
+    int skeleton_total = 0;             // 下发的骨架镜数
+    int skeleton_missing = 0;           // 骨架里有、V9 输出里没有
+    int skeleton_extra = 0;             // V9 输出里有、骨架里没有
+    int skeleton_duration_mismatch = 0; // 同一 (scene_ord, ord) 的 duration 差 > 0.2s
+    std::vector<std::string> warnings; // 落不了的字段 / 丢掉的镜 / 骨架偏离（**显式列出，不静默**）
     [[nodiscard]] std::string Describe() const;
 };
 
