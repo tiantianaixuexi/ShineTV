@@ -7,6 +7,7 @@
 #include "novel/NovelVisual.h"
 #include "util/Encoding.h"
 #include "util/File.h"
+#include "util/Json.h" // S38：ExtractJsonObject（宽容提取 LLM 输出的 JSON 正文）
 #include "util/Strings.h"
 
 #include <yyjson.h>
@@ -45,6 +46,13 @@ constexpr std::string_view kStoryboardInstructions = R"(
   spatial(object)     站位层（movement_path 等）
   camera(object)      镜头层（景别/机位/运动）
   audio(object)       声音设计
+
+【**精简铁律**（S38；真实跑被硬截断后加的 —— 上限 4096 tokens，超了**整份 JSON 作废**）】
+  · `performance` / `spatial` / `camera` / `audio` / `timeline` 这五层，上面【逐镜设计】
+    **已经给全** ⇒ **一律不要再输出**（下游会直接从那些设计读，重复输出只会挤爆上限）。
+  · 你**只输出**它们没覆盖的部分：`scene_ord` / `ord` / `duration` / `start_state` / `end_state` /
+    `prompt_text` / `negative_text` / `dialogue` / `transition`。
+  · 文字能短则短（`prompt_text` 一句话）。
 )" ;
 
 // S37：**按镜下发上游设计**的体积上限（字符）。超了就只发前几镜 + **明确记账**。
@@ -337,9 +345,14 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     }
 
     // —— 解析 ——
-    yyjson_doc* doc = yyjson_read(text.data(), text.size(), 0);
+    // S38：**先宽容提取**（LLM 输出常带 markdown 围栏/前后说明 —— 真实跑 V6 就是被这个卡死的）
+    const std::string jsonText = util::json::ExtractJsonObject(text);
+    yyjson_doc* doc = yyjson_read(jsonText.data(), jsonText.size(), 0);
     if (doc == nullptr) {
-        return std::unexpected(AgentError{"contract", "Storyboard 输出不是合法 JSON"});
+        // 失败时原始输出**已经在盘上**（上面刚落 `storyboard.json`，保真不丢）+ 带前 300 字便于诊断
+        return std::unexpected(AgentError{
+            "contract", fmt::format("Storyboard 输出不是合法 JSON（原始 {} 字，前 300 字：{}）",
+                                    text.size(), text.substr(0, 300))});
     }
     yyjson_val* root = yyjson_doc_get_root(doc);
     yyjson_val* shots = yyjson_is_obj(root) ? yyjson_obj_get(root, "shots") : nullptr;

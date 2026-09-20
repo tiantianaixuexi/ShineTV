@@ -27,7 +27,8 @@ struct AnthropicRequest {
     std::string model;
     std::string system;
     std::vector<AnthropicMessage> messages;
-    int maxTokens = 4096;
+    // S38：同 `OpenAIClient`（4096 装不下 V9 的完整契约输出，实测被截断）；见那边的注释。
+    int maxTokens = 16384;
     double temperature = 1.0;
     std::vector<AnthropicTool> tools;
     bool disableThinking = true; // M3
