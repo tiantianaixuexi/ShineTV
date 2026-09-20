@@ -588,7 +588,21 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
         agent::AgentRunRequest areq;
         areq.agent_id = "v4_spatial";
         areq.chapter_id = req.chapter_id;
-        areq.user_text = user;
+        // S43：**精简 user** —— 走 Agent 就别再"把上游产物一股脑塞进来"。
+        // 只给"本章 + 场景清单"（它必须知道的范围），**角色/位置/道具让它自己去查**
+        //（`get_entity` / `list_entities`）。这才是"按需取数"：我们不再预先猜它要什么。
+        {
+            std::string lean =
+                fmt::format("【本章】第 {} 章《{}》\n【场景清单】\n", ch->ord, ch->title);
+            if (auto sc2 = novelcore::NovelGraph(db).ListScenes(req.chapter_id); sc2) {
+                for (const novelcore::SceneRow& s : *sc2) {
+                    lean += fmt::format("- scene_ord={} 《{}》\n", s.ord, s.title);
+                }
+            }
+            lean += fmt::format("\n【任务】{}\n", spec.task);
+            lean += "\n【提示】这一场有哪些角色、他们的位置/朝向/道具 —— **用工具查，别猜**。\n";
+            areq.user_text = lean;
+        }
         agent::ToolLoopStats stats;
         const auto create = [](std::string_view ins, std::string_view in, std::string_view tj)
             -> std::expected<std::string, std::string> {
@@ -622,8 +636,21 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     }
     // —— 解析 `items[]`（中间产物：宽进严出 —— 结构不对就报错，字段缺只告警）——
     // S38：**先宽容提取**（同 V1；真实跑 V6 就是被"模型输出带围栏/说明"卡死的）
-    const std::string jsonTxt = util::json::ExtractJsonObject(rText);
+    std::string jsonTxt = util::json::ExtractJsonObject(rText);
     yyjson_doc* doc = yyjson_read(jsonTxt.data(), jsonTxt.size(), 0);
+    // S43：**解析失败自动重试一次**（单轮模式）—— LLM 偶发生成**非法 JSON**：真实案例是
+    // 字符串里写了**裸引号**（`"肩部随对方指向"关门"牌"`）⇒ 整份作废。模型有随机性，
+    // 重试往往就过了；两次都不行才报错（**不静默**，且落盘原文供诊断）。
+    // ⚠️ Agent 模式不在此重试（重跑一次工具循环的成本高，且要重复那套组装代码）—— 记账。
+    if (doc == nullptr && !(req.use_agent_tools && req.stage == VisualStageId::V4Spatial)) {
+        log::Warn("{} 输出不是合法 JSON → **重试一次**（模型偶发生成非法 JSON）", code);
+        ++out.llm_calls;
+        if (auto r2 = call(LlmRole::Planner, std::string{spec.instructions}, user); r2) {
+            rText = *r2;
+            jsonTxt = util::json::ExtractJsonObject(rText);
+            doc = yyjson_read(jsonTxt.data(), jsonTxt.size(), 0);
+        }
+    }
     if (doc == nullptr) {
         // S38：失败**留原始输出**到盘上（`vNN_raw_failed.txt`），并把前 300 字带进错误信息
         // —— 真实跑最需要的就是"模型到底回了什么"，原先只有一句"不是合法 JSON"没法查。

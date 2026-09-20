@@ -20,6 +20,8 @@
 
 #include <yyjson.h>
 
+#include "util/Json.h" // S43：JsonQuote 的唯一来源
+
 namespace shine::novelcore {
 namespace {
 
@@ -35,26 +37,8 @@ constexpr unsigned char kTinyPng[] = {
     return ImageGenError{.http_status = status, .code = std::move(code), .message = std::move(message)};
 }
 
-[[nodiscard]] std::string JsonQuote(std::string_view s) {
-    yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
-    if (!doc) {
-        return "\"\"";
-    }
-    yyjson_mut_val* v = yyjson_mut_strncpy(doc, s.data(), s.size());
-    if (!v) {
-        yyjson_mut_doc_free(doc);
-        return "\"\"";
-    }
-    size_t len = 0;
-    char* text = yyjson_mut_val_write(v, 0, &len);
-    yyjson_mut_doc_free(doc);
-    if (!text) {
-        return "\"\"";
-    }
-    std::string out{text, len};
-    std::free(text);
-    return out;
-}
+// S43：合并到 `util::json::JsonQuote`（**唯一来源**）—— 原先这里自己用 yyjson 写了一遍。
+[[nodiscard]] std::string JsonQuote(std::string_view s) { return util::json::JsonQuote(s); }
 
 [[nodiscard]] std::string SizeString(int w, int h) {
     return fmt::format("{}x{}", w > 0 ? w : 1024, h > 0 ? h : 1024);
