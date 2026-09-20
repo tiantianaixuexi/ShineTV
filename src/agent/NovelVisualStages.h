@@ -69,6 +69,9 @@ struct StageRequest {
     std::string project_dir;
     VisualStageId stage = VisualStageId::V2DirectorIntent;
     std::string extra_hint;
+    // S41：**走 Agent 工具循环**（多轮 + MCP 工具）而不是"单轮把上下文塞满"。
+    // 目前只在 **V4 `SPATIAL`** 上试点（`kSpecs` 里的 `v4_spatial`，白名单只给只读查询工具）。
+    bool use_agent_tools = false;
 };
 
 struct StageOutcome {
@@ -106,7 +109,7 @@ struct StagesOutcome {
 RunAllVisualStages(::shine::db::sqlite::Database& db, const LlmCallFn& call,
                    novelcore::RowId chapter_id, std::string_view project_dir,
                    std::string_view extra_hint = {},
-                   VisualStageId up_to = VisualStageId::V7Audio);
+                   VisualStageId up_to = VisualStageId::V7Audio, bool use_agent_tools = false);
 
 // `--up-to` 的解析（S35）：接受 `V1`…`V7` / `1`…`7`（大小写不敏感）。非法 → `nullopt`（调用方报错）。
 [[nodiscard]] std::optional<VisualStageId> ParseVisualStage(std::string_view text) noexcept;

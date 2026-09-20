@@ -84,6 +84,12 @@ ChatComplete(std::string_view baseUrl, std::string_view apiKey, const ChatReques
 // 按当前 Settings 的 llmProvider 走通（解析 profile → ChatComplete 或 Responses）
 // S16（`09` §2.4 模型分层）：`model` 空 = 用 profile 的默认模型；非空 = 按**阶段**指定的模型
 // （`ResolveModel("planner"|"writer"|"critic")`）。
+// S41：给**工具循环**（`agent::RunToolLoop`）用的入口 —— 带 `tools` 发一次 Responses 请求，
+// **返回原始 JSON 响应体**（循环要读 `output[].type=="function_call"` 的 call_id/name/arguments）。
+// 与 `LlmComplete` 的区别：**不提取** `output_text` —— 一提就把工具调用信息丢了。
+[[nodiscard]] std::expected<std::string, ApiError>
+LlmCreateRaw(std::string_view instructions, std::string_view inputJson, std::string_view toolsJson);
+
 [[nodiscard]] std::expected<std::string, ApiError>
 LlmComplete(std::string_view instructions, std::string_view userText,
             std::chrono::seconds timeout = kDefaultTimeout,

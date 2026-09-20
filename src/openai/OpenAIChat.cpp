@@ -251,6 +251,63 @@ ChatStream(std::string_view baseUrl, std::string_view apiKey, const ChatRequest&
     return acc;
 }
 
+// S41：**给工具循环用的 LLM 入口** —— 发一次 Responses 请求（带 `tools`），**返回原始响应体**。
+// 为什么需要它：`RunToolLoop`（`ToolRegistry.cpp:132`）的约定是 *"create 返回**完整 JSON 响应体**"*
+//（它要读 `output[].type == "function_call"` 的 `call_id`/`name`/`arguments`），而现有 `LlmComplete`
+// 返回的是**提取过的 `output_text`** ⇒ 工具调用信息全丢 —— 这就是"Agent/MCP 接不上阶段链"的最后一环。
+// ⚠️ 只走 Responses：Chat 那条路的 tools 形状不同，且实测输出上限卡 4096（多轮很容易撞上）。
+std::expected<std::string, ApiError> LlmCreateRaw(std::string_view instructions,
+                                                  std::string_view inputJson,
+                                                  std::string_view toolsJson) {
+    const LlmProfile p = ResolveActiveProfile();
+    if (p.apiKey.empty()) {
+        return std::unexpected(MakeErr(
+            0, "no_key",
+            fmt::format("未配置 {} API 密钥（设置或环境变量）", ProviderLabel(p.provider))));
+    }
+    Client c(p.baseUrl, p.apiKey, p.model);
+    CreateRequest req;
+    req.model = p.model;
+    req.instructions = std::string{instructions};
+    req.maxOutputTokens = 16384; // Responses 官方字段（Chat 端的 4096 拘束不适用）
+    yyjson_doc* idoc = yyjson_read(inputJson.data(), inputJson.size(), 0);
+    if (idoc == nullptr) {
+        return std::unexpected(MakeErr(0, "json", "工具循环给的 input 不是合法 JSON"));
+    }
+    req.input = yyjson_doc_get_root(idoc);
+    yyjson_doc* tdoc = nullptr;
+    if (!toolsJson.empty() && toolsJson != "[]") {
+        tdoc = yyjson_read(toolsJson.data(), toolsJson.size(), 0);
+        if (tdoc != nullptr) {
+            req.tools = yyjson_doc_get_root(tdoc);
+        }
+    }
+    log::Info("LlmCreateRaw → {} model={} · instructions {} / input {} / tools {} 字符", p.baseUrl,
+              p.model, instructions.size(), inputJson.size(), toolsJson.size());
+    auto r = c.Create(req, std::chrono::seconds{180});
+    yyjson_doc_free(idoc);
+    if (tdoc != nullptr) {
+        yyjson_doc_free(tdoc);
+    }
+    if (!r) {
+        return std::unexpected(r.error());
+    }
+    if (r->raw != nullptr) {
+        std::size_t len = 0;
+        char* t = yyjson_write(r->raw, 0, &len);
+        std::string raw;
+        if (t != nullptr) {
+            raw.assign(t, len);
+            std::free(t);
+        }
+        yyjson_doc_free(r->raw);
+        if (!raw.empty()) {
+            return raw;
+        }
+    }
+    return r->output_text; // 兜底
+}
+
 std::expected<std::string, ApiError>
 LlmComplete(std::string_view instructions, std::string_view userText, std::chrono::seconds timeout,
             const std::atomic<bool>* cancel, std::string_view model) {
@@ -288,16 +345,13 @@ LlmComplete(std::string_view instructions, std::string_view userText, std::chron
         if (!r) {
             return std::unexpected(r.error());
         }
-        if (r->raw) {
-            size_t len = 0;
-            char* t = yyjson_write(r->raw, 0, &len);
-            std::string raw;
-            if (t) {
-                raw.assign(t, len);
-                std::free(t);
-            }
+        // S41：**这里要返回 `output_text`（提取后的文本）** —— `LlmComplete` 的语义是"给我一段文本"。
+        // ⚠️ 原先它**优先返回完整响应 JSON**（`raw`）⇒ 调用方再 `ExtractJsonObject` 时抠到的还是
+        // **外层响应**（`{"id":…,"output":[{...,"content":[{"text":"```json\n{…}"}]}]}`）⇒ **永远找不到
+        // 业务字段**。真实跑就是这个：V1 报「输出缺少 scenes 数组」，而 dump 里 `scenes` 明明在。
+        // 需要**原始响应**的调用方（工具循环）走 `LlmCreateRaw` ✓ 两者分工明确。
+        if (r->raw != nullptr) {
             yyjson_doc_free(r->raw);
-            return raw;
         }
         return r->output_text;
     }

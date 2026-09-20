@@ -1,6 +1,8 @@
 #include "agent/NovelVisualStages.h"
 
+#include "agent/AgentKit.h" // S41：V4 试点走 Agent 工具循环（多轮 + MCP 工具白名单）
 #include "core/Log.h"
+#include "openai/OpenAIClient.h" // S41：LlmCreateRaw（返回原始响应体，供工具循环解析）
 #include "novel/NovelChecks.h" // ComputeInputStateHash（`04` §2.5 的唯一来源）
 #include "novel/NovelGraph.h"
 #include "util/Encoding.h"
@@ -568,15 +570,53 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     if (!req.extra_hint.empty()) {
         user += "\n【额外要求】" + req.extra_hint;
     }
-    ++out.llm_calls;
-    auto r = call(LlmRole::Planner, std::string{spec.instructions}, user);
-    if (!r) {
-        out.error = fmt::format("LLM 调用失败：{}", r.error().message);
-        return out;
+    // —— 取 LLM 输出：默认**单轮**；V4 + `--agent-tools` → 走 **Agent 工具循环**（多轮）——
+    std::string rText;
+    if (req.use_agent_tools && req.stage == VisualStageId::V4Spatial) {
+        // S41 试点：让模型**自己用工具查库**（按需），而不是我们预先猜它要什么、塞满 prompt。
+        agent::AgentKit kit(db, /*allowWrite=*/false);
+        if (auto seeded = kit.EnsureSchemaAndSeed(); !seeded) {
+            out.error = fmt::format("V4 Agent 初始化失败：{}", seeded.error().message);
+            return out;
+        }
+        agent::AgentRunRequest areq;
+        areq.agent_id = "v4_spatial";
+        areq.chapter_id = req.chapter_id;
+        areq.user_text = user;
+        agent::ToolLoopStats stats;
+        const auto create = [](std::string_view ins, std::string_view in, std::string_view tj)
+            -> std::expected<std::string, std::string> {
+            auto rr = openai::LlmCreateRaw(ins, in, tj);
+            if (!rr) {
+                return std::unexpected(rr.error().message);
+            }
+            return *rr;
+        };
+        auto run = kit.Run(areq, create, &stats);
+        if (!run) {
+            out.error = fmt::format("V4 Agent 失败：{}", run.error().message);
+            return out;
+        }
+        std::string tools;
+        for (const std::string& t : run->used_tools) {
+            tools += (tools.empty() ? "" : ", ") + t;
+        }
+        out.llm_calls += stats.steps + 1; // 记账：多轮的**每一次**都算（`09` §2.4 的预算要看得见）
+        log::Info("V4 SPATIAL（**Agent 模式**）：工具 {} 次 / 轮次 {} → {}", stats.callLog.size(),
+                  run->tool_steps, tools.empty() ? "(没用工具)" : tools);
+        rText = run->output_text;
+    } else {
+        ++out.llm_calls;
+        auto r = call(LlmRole::Planner, std::string{spec.instructions}, user);
+        if (!r) {
+            out.error = fmt::format("LLM 调用失败：{}", r.error().message);
+            return out;
+        }
+        rText = *r;
     }
     // —— 解析 `items[]`（中间产物：宽进严出 —— 结构不对就报错，字段缺只告警）——
     // S38：**先宽容提取**（同 V1；真实跑 V6 就是被"模型输出带围栏/说明"卡死的）
-    const std::string jsonTxt = util::json::ExtractJsonObject(*r);
+    const std::string jsonTxt = util::json::ExtractJsonObject(rText);
     yyjson_doc* doc = yyjson_read(jsonTxt.data(), jsonTxt.size(), 0);
     if (doc == nullptr) {
         // S38：失败**留原始输出**到盘上（`vNN_raw_failed.txt`），并把前 300 字带进错误信息
@@ -586,10 +626,10 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
             const auto d = std::filesystem::path{req.project_dir} / "work" /
                            fmt::format("ch{:03}", ch->ord);
             std::filesystem::create_directories(d, ec);
-            (void)util::WriteFileBytes(d / fmt::format("{}_raw_failed.txt", code), *r);
+            (void)util::WriteFileBytes(d / fmt::format("{}_raw_failed.txt", code), rText);
         }
-        out.error = fmt::format("{} 输出不是合法 JSON（原始 {} 字，前 300 字：{}）", code, r->size(),
-                                r->substr(0, 300));
+        out.error = fmt::format("{} 输出不是合法 JSON（原始 {} 字，前 300 字：{}）", code,
+                                rText.size(), rText.substr(0, 300));
         return out;
     }
     yyjson_val* root = yyjson_doc_get_root(doc);
@@ -662,7 +702,7 @@ std::expected<StagesOutcome, AgentError> RunAllVisualStages(db::sqlite::Database
                                                             novelcore::RowId chapter_id,
                                                             std::string_view project_dir,
                                                             std::string_view extra_hint,
-                                                            VisualStageId up_to) {
+                                                            VisualStageId up_to, bool use_agent_tools) {
     StagesOutcome out;
     const VisualStageId order[] = {VisualStageId::V1SceneBreakdown, VisualStageId::V2DirectorIntent,
                                    VisualStageId::V3Performance,   VisualStageId::V4Spatial,
@@ -701,7 +741,8 @@ std::expected<StagesOutcome, AgentError> RunAllVisualStages(db::sqlite::Database
                                 {.chapter_id = chapter_id,
                                  .project_dir = std::string{project_dir},
                                  .stage = st,
-                                 .extra_hint = std::string{extra_hint}});
+                                 .extra_hint = std::string{extra_hint},
+                                 .use_agent_tools = use_agent_tools});
         if (!r) {
             out.error = fmt::format("{} 失败：{}", code, r.error().message);
             return out;
