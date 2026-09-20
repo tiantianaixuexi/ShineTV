@@ -6,7 +6,8 @@
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "novel/NovelGraph.h"
-#include "novel/NovelInit.h" // S21：初始化链门禁与骨架
+#include "novel/NovelInit.h"     // S21：初始化链门禁与骨架
+#include "novel/NovelPromptGen.h" // S24：V10 提示词产物
 #include "util/Encoding.h"
 
 #include <atomic>
@@ -111,9 +112,11 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantRun = Has(args, "--novel-run");
     const bool wantInit = Has(args, "--novel-init");
     const bool wantSb = Has(args, "--novel-storyboard");
-    if (!wantGen && !wantRun && !wantInit && !wantSb) {
+    const bool wantPrompt = Has(args, "--novel-prompt");
+    if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt) {
         log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-storyboard <chapter_id>` / "
-                   "`--novel-generate <chapter_id>` / `--novel-run <manual|semi|auto>`）");
+                   "`--novel-prompt <chapter_id>` / `--novel-generate <chapter_id>` / "
+                   "`--novel-run <manual|semi|auto>`）");
         return 2;
     }
 
@@ -160,6 +163,35 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         AppendCheckOut(gate.passed, gate.Describe());
         return gate.passed ? 0 : 1;
+    }
+
+    if (wantPrompt) {
+        // S24（`11` §2.2 的 V10）：提示词产物 —— 九层组装（`NovelVisual::Assemble`）→
+        // `prompt_artifacts` 账（K23 的受检对象 / V11 桥的 `references` 来源）。**不调 LLM**。
+        std::int64_t cid = std::atoll(Opt(args, "--novel-prompt", "").c_str());
+        if (cid <= 0) {
+            cid = PickChapter(db);
+        }
+        if (cid <= 0) {
+            log::Error("novel-cli：库里没有可用章节");
+            AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        const novelcore::PromptGenOutcome pg = novelcore::GeneratePromptArtifacts(db, cid);
+        if (!pg.ok) {
+            log::Error("novel-cli：V10 失败 {}", pg.error);
+            for (const std::string& w : pg.warnings) {
+                log::Warn("  {}", w);
+            }
+            AppendCheckOut(false, pg.error);
+            return 1;
+        }
+        log::Info("novel-cli：{}", pg.Describe());
+        for (const std::string& w : pg.warnings) {
+            log::Warn("  {}", w);
+        }
+        AppendCheckOut(true, pg.Describe());
+        return 0;
     }
 
     if (wantSb) {
