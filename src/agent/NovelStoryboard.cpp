@@ -172,6 +172,33 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         }
         out.warnings.push_back(fmt::format("已下发 V1 镜骨架（{} 镜）", skeleton.size()));
     }
+    // —— S32：**V2–V7 的阶段产物**（跑过 `--novel-stages` 就有）——逐阶段下发（软约束）——
+    // 与 V1 的镜骨架同款做法：让"阶段化"真的**被消费**，而不是产出一堆没人读的中间文件。
+    {
+        const std::pair<const char*, const char*> hints[] = {
+            {"V2 DIRECTOR_INTENT", "v02_director_intent.json"},
+            {"V3 PERFORMANCE", "v03_performance.json"},
+            {"V4 SPATIAL", "v04_spatial.json"},
+            {"V5 CAMERA", "v05_camera.json"},
+            {"V6 TIMELINE", "v06_timeline.json"},
+            {"V7 AUDIO", "v07_audio.json"},
+        };
+        int hinted = 0;
+        for (const auto& [label, file] : hints) {
+            const auto path = std::filesystem::path{req.project_dir} / "work" /
+                              fmt::format("ch{:03}", ch->ord) / file;
+            const auto text = util::ReadFileBytes(path);
+            if (!text || text->empty()) {
+                continue;
+            }
+            const std::string t = text->size() > 3000 ? text->substr(0, 3000) + "…" : *text;
+            user += fmt::format("\n【{} 产物】（**按其设计**，不要另起一套）\n{}\n", label, t);
+            ++hinted;
+        }
+        if (hinted > 0) {
+            out.warnings.push_back(fmt::format("已下发 {} 个阶段产物（V2–V7）", hinted));
+        }
+    }
     user += "\n【任务】按上面的场景清单逐场产出 NarrativeShot[]。";
     if (!req.extra_hint.empty()) {
         user += "\n【额外要求】" + req.extra_hint;
