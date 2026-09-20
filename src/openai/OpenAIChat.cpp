@@ -262,11 +262,18 @@ LlmComplete(std::string_view instructions, std::string_view userText, std::chron
         Settings().llmProtocol == "anthropic") {
         return AnthropicLlmComplete(instructions, userText, timeout, cancel, mdl);
     }
-    if (p.protocol == Protocol::Responses && p.provider == Provider::OpenAi) {
+    if (p.protocol == Protocol::Responses) {
+        // S38：**协议由用户显式选**（`llmProtocol=responses`）—— 不再限定 OpenAI。
+        // ⚠️ 原先写的是 `&& p.provider == Provider::OpenAi` ⇒ 把 MiniMax 挡在外面：用户在设置里
+        //    把协议切到 `responses` 也**走不到**这条路（真 bug）。而 MiniMax 官方**有** Responses
+        //    兼容端（`/v1/responses`，响应带顶层 `output_text` 与 `output[].content[].text`）——
+        //    那正是 `ExtractOutputText` 认的形状，协议**天然对齐**；且它用 `max_output_tokens`
+        //    （不像 Chat 兼容端卡在 4096）。
         Client c(p.baseUrl, p.apiKey, mdl);
         CreateRequest req;
         req.model = mdl;
         req.instructions = std::string{instructions};
+        req.maxOutputTokens = 16384; // S38：Responses 的官方字段（Chat 端 4096 的限制不适用）
         yyjson_doc* idoc = yyjson_read(userText.data(), userText.size(), 0);
         if (!idoc) {
             const std::string js = "\"" + EscapeJson(userText) + "\"";
