@@ -567,7 +567,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertPromptArtifact(const PromptArti
         auto st = db_->Prepare(
             "UPDATE prompt_artifacts SET chapter_id=?1,scene_id=?2,shot_id=?3,target_kind=?4,"
             "target_id=?5,chain=?6,stage=?7,input_state_hash=?8,model_hint=?9,prompt=?10,"
-            "negative=?11,references_json=?12,canon_status=?13,updated=?14 WHERE id=?15");
+            "negative=?11,references_json=?12,canon_status=?13,updated=?14,version=?16,"
+            "generation_ref=?17 WHERE id=?15");
         if (!st) return std::unexpected(st.error());
         (void)st->BindInt(1, row.chapter_id);
         (void)st->BindInt(2, row.scene_id);
@@ -584,13 +585,16 @@ std::expected<RowId, DbError> NovelVisual::UpsertPromptArtifact(const PromptArti
         (void)st->BindText(13, row.canon_status);
         (void)st->BindInt(14, now);
         (void)st->BindInt(15, row.id);
+        (void)st->BindInt(16, row.version);
+        (void)st->BindText(17, row.generation_ref);
         if (auto s = st->Step(); !s) return std::unexpected(s.error());
         return row.id;
     }
     auto st = db_->Prepare(
         "INSERT INTO prompt_artifacts(chapter_id,scene_id,shot_id,target_kind,target_id,chain,stage,"
-        "input_state_hash,model_hint,prompt,negative,references_json,canon_status,created,updated)"
-        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)");
+        "input_state_hash,model_hint,prompt,negative,references_json,canon_status,created,updated,"
+        "version,generation_ref)"
+        " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15,?16)");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, row.chapter_id);
     (void)st->BindInt(2, row.scene_id);
@@ -606,6 +610,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertPromptArtifact(const PromptArti
     (void)st->BindText(12, row.references_json.empty() ? "[]" : row.references_json);
     (void)st->BindText(13, row.canon_status);
     (void)st->BindInt(14, now);
+    (void)st->BindInt(15, row.version);
+    (void)st->BindText(16, row.generation_ref);
     if (auto s = st->Step(); !s) return std::unexpected(s.error());
     return db_->LastInsertRowId();
 }
@@ -613,8 +619,8 @@ std::expected<RowId, DbError> NovelVisual::UpsertPromptArtifact(const PromptArti
 std::expected<PromptArtifactRow, DbError> NovelVisual::GetPromptArtifact(RowId id) const {
     auto st = db_->Prepare(
         "SELECT id,chapter_id,scene_id,shot_id,target_kind,target_id,chain,stage,input_state_hash,"
-        "model_hint,prompt,negative,references_json,canon_status,created,updated "
-        "FROM prompt_artifacts WHERE id=?1");
+        "model_hint,prompt,negative,references_json,canon_status,created,updated,version,"
+        "generation_ref FROM prompt_artifacts WHERE id=?1");
     if (!st) return std::unexpected(st.error());
     (void)st->BindInt(1, id);
     auto s = st->Step();
@@ -637,6 +643,8 @@ std::expected<PromptArtifactRow, DbError> NovelVisual::GetPromptArtifact(RowId i
     r.canon_status = st->ColumnText(13);
     r.created = st->ColumnInt(14);
     r.updated = st->ColumnInt(15);
+    r.version = static_cast<int>(st->ColumnInt(16));
+    r.generation_ref = st->ColumnText(17);
     return r;
 }
 
@@ -647,7 +655,8 @@ NovelVisual::ListPromptArtifacts(RowId chapterId, RowId shotId, int limit) const
     const int lim = limit > 0 ? limit : 50;
     auto st = db_->Prepare(
         "SELECT id,chapter_id,scene_id,shot_id,target_kind,target_id,chain,stage,input_state_hash,"
-        "model_hint,prompt,negative,references_json,canon_status,created,updated "
+        "model_hint,prompt,negative,references_json,canon_status,created,updated,version,"
+        "generation_ref "
         "FROM prompt_artifacts WHERE chapter_id=?1 AND (?2=0 OR shot_id=?2) "
         "ORDER BY updated DESC,id DESC LIMIT ?3");
     if (!st) return std::unexpected(st.error());
@@ -675,6 +684,8 @@ NovelVisual::ListPromptArtifacts(RowId chapterId, RowId shotId, int limit) const
         r.canon_status = st->ColumnText(13);
         r.created = st->ColumnInt(14);
         r.updated = st->ColumnInt(15);
+        r.version = static_cast<int>(st->ColumnInt(16));
+        r.generation_ref = st->ColumnText(17);
         out.push_back(std::move(r));
     }
     return out;
@@ -881,6 +892,10 @@ NovelVisual::Assemble(const AssemblePromptInput& in) const {
     join(out.final_prompt, stage);
     join(out.final_prompt, scene);
     join(out.final_prompt, action);
+    // S26：**空间层**（第 10 层，`12` §2.5 / `02` §2.7 的 `Spatial`）—— 谁在前景/谁在背景、
+    // 朝向、距离、遮挡关系。数据在盘上（V9 的 `work/ch<NNN>/storyboard.json`），
+    // 由调用方（V10）读好传进来（见 `AssemblePromptInput::spatial_text`）。
+    join(out.final_prompt, in.spatial_text);
     join(out.final_prompt, camera);
     join(out.final_prompt, composition);
     join(out.final_prompt, lighting);

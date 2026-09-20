@@ -33,8 +33,11 @@ struct PromptGenOutcome {
 };
 
 // 为本章每一镜产出 `PromptArtifact`（`chain=visual` / `stage=V10` / `target_kind=shot`）。
+// `project_dir`：用来读该章的**空间层**（`work/ch<NNN>/storyboard.json` 的 `spatial`，`12` §2.5 ——
+// V9 只存盘、库里无专列）；**空则跳过空间层**（不阻断，向后兼容）。
 [[nodiscard]] PromptGenOutcome GeneratePromptArtifacts(::shine::db::sqlite::Database& db,
-                                                       RowId chapter_id);
+                                                       RowId chapter_id,
+                                                       std::string_view project_dir = {});
 
 // 离线自检：九层组装 → 账 + 参考图解析 + PV2 复用 + 空 prompt 的处理
 [[nodiscard]] bool RunPromptGenSelfCheck();

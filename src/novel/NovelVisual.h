@@ -130,6 +130,9 @@ struct PromptArtifactRow {
     std::string canon_status = "DRAFT";
     std::int64_t created = 0;
     std::int64_t updated = 0;
+    // v10（S26，`13` §2.7）：
+    int version = 1;            // PV2：哈希不一致重新生成 → `+1`；PV3：同 `target_id` 的版本**全部保留**
+    std::string generation_ref; // PV5：指向生成结果（`visual_artifacts` / 出图任务），双向可查
 };
 
 struct AssemblePromptInput {
@@ -145,6 +148,12 @@ struct AssemblePromptInput {
     // 可选指定镜头/构图/光（0 = 用 shot 或默认）
     RowId camera_id = 0;
     RowId composition_id = 0;
+    // S26（`12` §2.5 空间层 / `02` §2.7 `Spatial`）：九层之外新增的**第 10 层**，
+    // 插在 `action` 与 `camera` 之间 —— "谁在前景/谁在背景"本来就在这里
+    //（`layers{foreground,midground,background}` + `facing` / `distance_m` / `occlusion`）。
+    // 数据在**盘上**（V9 的 `work/ch<NNN>/storyboard.json`：`spatial` 无专列，只存盘），
+    // 所以由调用方（V10）读好传进来 —— `Assemble` 是纯库操作，不自己去翻文件。
+    std::string spatial_text;
     RowId lighting_id = 0;
 };
 

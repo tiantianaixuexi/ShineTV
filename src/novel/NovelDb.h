@@ -35,6 +35,13 @@ public:
     // （那是 `Migrate()` 的事）。
     [[nodiscard]] static std::expected<void, DbError> ApplyCanonicalSchema(db::sqlite::Database& db);
 
+    // 把**任意库**升到当前目标 schema：建规范表（`ApplyCanonicalSchema`）+ 补旧库缺列
+    // （`AddShotStateColumns` / `AddPromptArtifactColumns`）+ 字段表（`NovelFields::EnsureSchema`）。
+    // **用途**：不走 `NovelDb` 单例、**自己开库**的入口（CLI / 自检夹具）—— 它们原先从不迁移，
+    // 于是"新加的列"在旧库上永远补不出来（S26 实测：CLI 跑 V10 报
+    // `table prompt_artifacts has no column named version`，而同一个库用 GUI 打开却是好的）。
+    [[nodiscard]] static std::expected<void, DbError> EnsureSchemaUpToDate(db::sqlite::Database& db);
+
     // 只建 **agent 相关表**（`agent_defs`）：给 `AgentKit::EnsureSchemaAndSeed()` 这种**高频**入口用
     // （它在每次 MCP 工具分发前都会调一次，不能跑整套建表）。DDL 同样以 NovelDb.cpp 的常量为唯一来源。
     [[nodiscard]] static std::expected<void, DbError> EnsureAgentSchema(db::sqlite::Database& db);
@@ -44,6 +51,12 @@ public:
     // 新库由 `kSchemaV4Visual` 的建表直接带这三列，本函数只服务旧库；**列已存在即忽略**。
     // **唯一来源**：`Migrate()` 与 `RunSchemaSelfCheck` 都调它（别再各抄一遍 ALTER）。
     static void AddShotStateColumns(db::sqlite::Database& db);
+
+    // v10（S26）：给旧库的 `prompt_artifacts` 补 `version` / `generation_ref`
+    //（`13` §2.7 PV3–PV5 的载体：多版本保留、版本自增、生成结果关联）。
+    // 新库由 `kSchemaV9PromptArtifacts` 的建表直接带这两列；**列已存在即忽略**。
+    // **唯一来源**：`Migrate()` 与 `RunSchemaSelfCheck` 都调它。
+    static void AddPromptArtifactColumns(db::sqlite::Database& db);
 
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();

@@ -1935,7 +1935,7 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         // 否则"修了 bug 但真实工程里的旧 prompt 永远不更新"（S25 实测踩到：改完多角色，
         // 对真实工程重跑 `--novel-prompt` 会全部"复用"，旧的残缺 prompt 一直留着）。
         // 规则变了就把这个版本号 +1。
-        canon += "prompt_rule_version=2\n";
+        canon += "prompt_rule_version=3\n";
         appendRows("visual_assets",
                    "SELECT id,base_desc || '|' || sheet_rel_path || '|' || status FROM visual_assets "
                    "ORDER BY id",
