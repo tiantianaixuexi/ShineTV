@@ -13,6 +13,8 @@
 
 #include <yyjson.h>
 
+#include "core/Log.h" // S66：修复必须**可见**（告警就发在唯一入口，见 `RepairLlmJson`）
+
 namespace shine::util::json {
 
 // —— JSON 字符串序列化（S42：**唯一来源**）——
@@ -54,13 +56,106 @@ namespace shine::util::json {
     return q;
 }
 
+// —— S66：LLM 输出的 **JSON 语法修复**（唯一来源）——
+// 为什么必须有它（**不是 json 库的问题**，先把结论写清）：yyjson 按 RFC 8259 严格解析，
+// 而"字符串内部出现裸 `"`"**本身就是语法错误**，且对解析器**有歧义**（它无法区分"闭合引号"与
+// "字符串内的引号"）⇒ **任何** JSON 库都不可能有这种"宽容 flag"。只能在**进解析器之前**修。
+// 修三类**确定非法**的东西（因此对**合法** JSON 是**恒等**变换，不会改变语义）：
+//   ① 字符串内部的**裸半角引号** —— 真跑实证（第 7 章）：`"summary":"…含半个坐标与日期"7""`
+//      ⇒ `yyjson_read` 当场判非法 ⇒ **整章状态不回写**（`status` 停在 review）。
+//   ② 字符串内部的**裸控制字符**（换行 / 回车 / 制表）—— JSON 要求转义。
+//   ③ **尾逗号**（`[1,2,]` / `{"a":1,}`）。
+// ⚠️ 判据是**启发式**（裸引号靠"后面跟 `,` `}` `]` `:` 才算闭合"）⇒ 必须**把修复条数报出来**
+//    （偏离可见）；且**修复后仍解析失败时照实报错**，绝不假装成功。
+// ⚠️ 不处理的（会在下游照实报非法，可见）：全角引号当**分隔符**用、键名带裸引号、
+//    字符串里嵌 `": "` 这种"看起来像闭合"的形态（启发式会判错 ⇒ 仍解析失败 ⇒ 重试）。
+[[nodiscard]] inline std::string RepairLlmJson(std::string_view text, int* outFixes = nullptr) {
+    std::string out;
+    out.reserve(text.size() + 32);
+    int fixes = 0;
+    bool inStr = false;
+    // 该位置的 `"` 是否**闭合**引号：向后看第一个非空白字符是不是 `,` `}` `]` `:`（或已到末尾）
+    const auto isCloser = [text](std::size_t i) {
+        for (std::size_t j = i + 1; j < text.size(); ++j) {
+            const char c = text[j];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                continue;
+            }
+            return c == ',' || c == '}' || c == ']' || c == ':';
+        }
+        return true; // 末尾 ⇒ 交给解析器判（不在这里下结论）
+    };
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (!inStr) {
+            // ③ 尾逗号：`,` 后面（跳过空白）是 `}` / `]` ⇒ 直接丢掉这个逗号
+            if (c == ',') {
+                bool trailing = false;
+                for (std::size_t j = i + 1; j < text.size(); ++j) {
+                    const char d = text[j];
+                    if (d == ' ' || d == '\t' || d == '\n' || d == '\r') {
+                        continue;
+                    }
+                    trailing = (d == '}' || d == ']');
+                    break;
+                }
+                if (trailing) {
+                    ++fixes;
+                    continue;
+                }
+            }
+            if (c == '"') {
+                inStr = true;
+            }
+            out += c;
+            continue;
+        }
+        if (c == '\\') { // 转义序列原样带过（含 `\"` `\\` `\n` …）
+            out += c;
+            if (i + 1 < text.size()) {
+                out += text[i + 1];
+                ++i;
+            }
+            continue;
+        }
+        if (c == '"') {
+            if (isCloser(i)) {
+                inStr = false;
+                out += c;
+            } else {
+                out += "\\\""; // ① 裸引号 ⇒ 转义（仍在字符串内）
+                ++fixes;
+            }
+            continue;
+        }
+        if (c == '\n' || c == '\r' || c == '\t') { // ② 裸控制字符
+            out += (c == '\n') ? "\\n" : (c == '\r' ? "\\r" : "\\t");
+            ++fixes;
+            continue;
+        }
+        out += c;
+    }
+    if (outFixes != nullptr) {
+        *outFixes = fixes;
+    }
+    if (fixes > 0) {
+        // 偏离必须可见（S66）：**不是** json 库的问题 —— 是模型吐了非法 JSON，我们只是兜底。
+        // 频繁出现 ⇒ 该改提示词，而不是把这里当常态。
+        log::Warn("RepairLlmJson：修正了 {} 处非法 JSON 写法（裸引号 / 裸控制字符 / 尾逗号）—— "
+                  "模型输出不合规，这只是兜底",
+                  fixes);
+    }
+    return out;
+}
+
 // —— 宽容提取（S38）：LLM 的输出**常带 markdown 围栏或前后说明文字**（"好的，以下是 JSON："…）。
 // 直接 `yyjson_read` 全文会**当场判非法** —— 真实跑就撞上了（MiniMax-M3 在 V6 TIMELINE 上的输出
 // 不是纯 JSON，整条阶段链当场断在 V6）。本函数把"可能的 JSON 正文"抠出来：
-//   ① 去 markdown 围栏（```json … ``` / ``` … ```）② 取第一个 `{` 到最后一个 `}`。
-// ⚠️ **不做 JSON 语义修复**（不补尾逗号、不修中文引号）—— 那是模型的问题，替它修反而掩盖问题。
+//   ① 去 markdown 围栏（```json … ``` / ``` … ```）② 取第一个 `{` 到最后一个 `}`
+//   ③（S66）过一遍 `RepairLlmJson` 修"确定非法"的裸引号/裸控制字符/尾逗号。
+// ⚠️ `outQuoteFixes` 非空时会写回**修复条数** —— 调用方应据此告警（**偏离必须可见**）。
 // ⚠️ 抠不出来时**原样返回**（让 yyjson 去报错），不要假装成功。
-[[nodiscard]] inline std::string ExtractJsonObject(std::string_view raw) {
+[[nodiscard]] inline std::string ExtractJsonObject(std::string_view raw, int* outQuoteFixes = nullptr) {
     std::string s{raw};
     if (const auto fence = s.find("```"); fence != std::string::npos) {
         const std::size_t begin = s.find('\n', fence);
@@ -85,7 +180,7 @@ namespace shine::util::json {
         b = lb;
     }
     if (b == std::string::npos) {
-        return s;
+        return RepairLlmJson(s, outQuoteFixes);
     }
     // 终点 = **最后一个 `}` / `]` 中更靠后的那个**。⚠️ 取向说明：偏后只是多带一点尾巴
     //（`yyjson_read` 会明确判非法 ⇒ 由调用方**重试**，代价可控）；**偏前才是灾难** ——
@@ -95,10 +190,8 @@ namespace shine::util::json {
         la != std::string::npos && (end == std::string::npos || la > end)) {
         end = la;
     }
-    if (end == std::string::npos || end <= b) {
-        return s;
-    }
-    return s.substr(b, end - b + 1);
+    const std::string body = (end == std::string::npos || end <= b) ? s : s.substr(b, end - b + 1);
+    return RepairLlmJson(body, outQuoteFixes);
 }
 
 // 键对应的值节点；不存在返回 nullptr

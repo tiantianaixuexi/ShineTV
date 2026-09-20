@@ -889,6 +889,48 @@ bool RunJsonArrayParseSelfCheck() {
         return false;
     }
     log::Info("前端 JSON 数组解析自检通过");
+    // ★ S66：LLM 输出的三类"**确定非法**"必须被 `RepairLlmJson` 修好、且**合法 JSON 一字不改**。
+    // 真跑实证（第 7 章）：`"summary":"…含半个坐标与日期"7""` ⇒ 整章状态不回写。
+    {
+        const auto parses = [](const std::string& s) {
+            yyjson_doc* d = yyjson_read(s.data(), s.size(), 0);
+            if (d == nullptr) {
+                return false;
+            }
+            yyjson_doc_free(d);
+            return true;
+        };
+        // ① 字符串内部的裸引号（第 7 章那一例）
+        int fx = 0;
+        const std::string a = j::ExtractJsonObject(R"({"summary":"含半个坐标与日期"7"","n":1})", &fx);
+        if (fx != 2 || !parses(a)) {
+            log::Error("JSON 修复自检：裸引号未修好（fixes={} got={}）", fx, a);
+            return false;
+        }
+        // ② 裸控制字符（字符串里的真换行）
+        int fx2 = 0;
+        const std::string b = j::ExtractJsonObject("{\"a\":\"第一行\n第二行\"}", &fx2);
+        if (fx2 != 1 || !parses(b)) {
+            log::Error("JSON 修复自检：裸换行未修好（fixes={} got={}）", fx2, b);
+            return false;
+        }
+        // ③ 尾逗号
+        int fx3 = 0;
+        const std::string c = j::ExtractJsonObject(R"({"a":[1,2,],"b":1,})", &fx3);
+        if (fx3 != 2 || !parses(c)) {
+            log::Error("JSON 修复自检：尾逗号未修好（fixes={} got={}）", fx3, c);
+            return false;
+        }
+        // ④ **幂等**：合法 JSON（含全角引号、已转义引号、URL）必须**一字不改**
+        const char* good =
+            R"({"a":"他说“别开门”","b":"他说\"好\"","c":"http://x/y?a=1","d":[1,2]})";
+        int fx4 = 0;
+        const std::string d = j::ExtractJsonObject(good, &fx4);
+        if (fx4 != 0 || d != good) {
+            log::Error("JSON 修复自检：合法 JSON 被改动了（fixes={}）", fx4);
+            return false;
+        }
+    }
     if (const char* path = std::getenv("SHINE_NOVEL_CHECK_OUT"); path && *path) {
         if (FILE* f = std::fopen(path, "ab")) {
             const char* line = "jsonparse:ok\n";
