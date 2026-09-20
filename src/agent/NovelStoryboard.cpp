@@ -58,7 +58,11 @@ constexpr std::string_view kStoryboardInstructions = R"(
 // S37：**按镜下发上游设计**的体积上限（字符）。超了就只发前几镜 + **明确记账**。
 // 为什么还留上限：prompt 太长会挤掉正文/场景信息、白烧 token。但关键是**超限本身可见**
 //（S36 的教训：静默截断会让 S34 的"阶段偏离"被误读成"没采纳"）。
-constexpr std::size_t kStageDesignMaxChars = 12000;
+// S40：**12000 → 40000** —— 实测 12000 会让 8 镜的章只下发到第 4 镜（`keys` 按场序排，
+// 场 1 拼完就 `break`，**场 2 一镜都没下发**，而它们的"阶段偏离"因此不可信）。
+// 现在 MiniMax 走 **Responses 端**（`max_output_tokens`，无 Chat 兼容端那个 4096 拘束），
+// 输入也宽裕，所以放宽；仍留上限是因为"**超限必须可见**"这条要求没变。
+constexpr std::size_t kStageDesignMaxChars = 40000;
 
 // S36：参数收紧成 `const` —— `yyjson_val_write` 本身是**只读**的（它只是把 val 写成 JSON 文本），
 // 但 yyjson 的签名没带 `const`，所以这里 `const_cast` 掉（不是真的改它）。
@@ -255,6 +259,10 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     const auto v5Items = IndexStageItems(stageItemDir / "v05_camera.json", &v5Doc);
     const auto v6Items = IndexStageItems(stageItemDir / "v06_timeline.json", &v6Doc);
     const auto v7Items = IndexStageItems(stageItemDir / "v07_audio.json", &v7Doc);
+    // S40：下发统计（供 GUI 显示；块外声明，块内填）
+    int sentShots = 0;
+    int totalShots = 0;
+    std::size_t designChars = 0;
     // —— S37：**按镜下发上游设计**（替代 S32 的"把整个产物文件截 3000 字"）——
     // ⚠️ 起因（S36 记账的隐患）：按**文件**截断 ⇒ 镜一多，**靠后的镜根本没看到**上游设计 ⇒
     //    S34 报的"阶段偏离"对它们**不是"没采纳"，而是"没看到"**（冤枉 LLM）。
@@ -290,6 +298,9 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
             block += one;
             ++sent;
         }
+        sentShots = sent;
+        totalShots = static_cast<int>(keys.size());
+        designChars = block.size();
         if (sent > 0) {
             user += "\n【上游已定的**逐镜设计**】（按它来，**不要另起一套**）\n" + block;
             out.warnings.push_back(fmt::format("已按镜下发 {} 镜的上游设计（V2–V7）", sent));
@@ -320,6 +331,22 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     user += "\n【任务】按上面的场景清单逐场产出 NarrativeShot[]。";
     if (!req.extra_hint.empty()) {
         user += "\n【额外要求】" + req.extra_hint;
+    }
+
+    // S40：**下发统计落盘**（GUI 要显示"下发了 N/M 镜、多少字符、上限多少"）。
+    // 起因：用户问"GUI 显示每阶段的 prompt/时间戳/输出了什么"，而"下发了几镜"原先只在一行日志里。
+    // ⚠️ 真实踩过：`keys` 是 `std::set<pair<int,int>>`（**按场序排**），场 1 的 4 镜拼完就到
+    //    12000 上限 ⇒ `break` ⇒ **场 2 的设计一镜都没下发**（我一度误判成"产物有问题"）。
+    if (!req.project_dir.empty()) {
+        std::error_code ec;
+        const auto dd = StoryboardDir(req.project_dir, ch->ord);
+        std::filesystem::create_directories(dd, ec);
+        (void)util::WriteFileBytes(
+            dd / "v9_dispatch.json",
+            fmt::format(R"({{"sent":{},"total":{},"design_chars":{},"limit":{},)"
+                        R"("system_chars":{},"user_chars":{}}})",
+                        sentShots, totalShots, designChars, kStageDesignMaxChars,
+                        std::string{kStoryboardInstructions}.size(), user.size()));
     }
 
     // V1–V8 合并为一次推演：视觉链在 `09` §2.4 里是"中"档 → 这里用 `Planner` 角色（中档）

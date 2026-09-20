@@ -29,6 +29,7 @@
 #include "openai/OpenAIProvider.h"
 #include "theme/Theme.h"
 #include "util/Encoding.h"
+#include "util/File.h" // S40：链路面板要读产物 / dump（ReadFileBytes）
 #include "util/Json.h"
 
 namespace shine::app::novel {
@@ -965,6 +966,99 @@ bool RunMvpSelfCheck() {
     return true;
 }
 
+// —— S40：链路面板的取数小工具 ——
+namespace {
+
+// 文件修改时间 → "HH:MM:SS"（用户要的"时间戳"）
+[[nodiscard]] std::string FileTimeText(const std::filesystem::path& p) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(p, ec);
+    if (ec) {
+        return "—";
+    }
+    const auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        t - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+    const std::time_t tt = std::chrono::system_clock::to_time_t(sctp);
+    std::tm tmv{};
+#ifdef _WIN32
+    localtime_s(&tmv, &tt);
+#else
+    localtime_r(&tt, &tmv);
+#endif
+    return fmt::format("{:02}:{:02}:{:02}", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+}
+
+// 产物 → "输出了什么"（条目数摘要；兼容 `items[]` / `scenes[]` / `shots[]`）
+[[nodiscard]] std::string ArtifactSummary(const std::filesystem::path& p) {
+    const auto text = util::ReadFileBytes(p);
+    if (!text) {
+        return "（读不到）";
+    }
+    yyjson_doc* d = yyjson_read(text->data(), text->size(), 0);
+    if (d == nullptr) {
+        return fmt::format("（不是合法 JSON，{} 字符）", text->size());
+    }
+    yyjson_val* root = yyjson_doc_get_root(d);
+    std::string s;
+    if (yyjson_val* items = util::json::GetArr(root, "items")) {
+        s = fmt::format("{} 条 items", yyjson_arr_size(items));
+    } else if (yyjson_val* scenes = util::json::GetArr(root, "scenes")) {
+        std::size_t shots = 0;
+        std::size_t i = 0;
+        std::size_t n = 0;
+        yyjson_val* sc = nullptr;
+        yyjson_arr_foreach(scenes, i, n, sc) {
+            if (yyjson_val* sh = util::json::GetArr(sc, "shots")) {
+                shots += yyjson_arr_size(sh);
+            }
+        }
+        s = fmt::format("{} 场 / 规划 {} 镜", yyjson_arr_size(scenes), shots);
+    } else if (yyjson_val* shots = util::json::GetArr(root, "shots")) {
+        s = fmt::format("{} 镜", yyjson_arr_size(shots));
+    } else {
+        s = fmt::format("{} 字符", text->size());
+    }
+    yyjson_doc_free(d);
+    return s;
+}
+
+// 该阶段的 **system 提示词在代码里的位置**（要改提示词就从这儿找 —— 用户问"提示词在哪"）
+[[nodiscard]] const char* PromptSourceOf(const std::string& file) {
+    if (file.rfind("v01_", 0) == 0) return "NovelVisualStages.cpp:24  kSceneBreakdownInstructions";
+    if (file.rfind("v02_", 0) == 0) return "NovelVisualStages.cpp:364 kV2Spec.instructions";
+    if (file.rfind("v03_", 0) == 0) return "NovelVisualStages.cpp:384 kV3Spec.instructions";
+    if (file.rfind("v04_", 0) == 0) return "NovelVisualStages.cpp:397 kV4Spec.instructions";
+    if (file.rfind("v05_", 0) == 0) return "NovelVisualStages.cpp:412 kV5Spec.instructions";
+    if (file.rfind("v06_", 0) == 0) return "NovelVisualStages.cpp:426 kV6Spec.instructions";
+    if (file.rfind("v07_", 0) == 0) return "NovelVisualStages.cpp:437 kV7Spec.instructions";
+    if (file.rfind("storyboard", 0) == 0) return "NovelStoryboard.cpp:28  kStoryboardInstructions";
+    return "（机器阶段 / 不调 LLM）";
+}
+
+// 最近一次请求的**可读提示词**（`tools/show-llm-dump.ps1` 的产物）；没有 → 空
+[[nodiscard]] std::filesystem::path LatestReadableDump(const std::filesystem::path& workDir) {
+    const auto dir = workDir / "llm-dump";
+    std::error_code ec;
+    std::filesystem::path best;
+    std::filesystem::file_time_type bestT{};
+    for (const auto& e : std::filesystem::directory_iterator{dir, ec}) {
+        if (e.path().extension() != ".md") {
+            continue;
+        }
+        const auto t = std::filesystem::last_write_time(e.path(), ec);
+        if (ec) {
+            continue;
+        }
+        if (best.empty() || t > bestT) {
+            best = e.path();
+            bestT = t;
+        }
+    }
+    return best;
+}
+
+} // namespace
+
 // S38：**影视化链路面板** —— V1–V11 的阶段状态一眼可见。
 // 为什么该有：这些阶段此前**只能看日志、翻盘上的 JSON**（用户："没有前端页面给我看吗"）。
 // 链路的**可见性**本身就是质量要求（`11` §2.7 W2「偏离/降级必须可见」的同款精神）。
@@ -989,40 +1083,93 @@ void DrawPipelineCard() {
     app::ui::SectionText(fmt::format("影视化链路（第 {} 章）", chapterOrd));
     ImGui::TextDisabled("盘上的阶段产物：%s", util::PathToUtf8(artDir).c_str());
     ImGui::Dummy(ImVec2(0, 4));
-    if (ImGui::BeginTable("##pipeline", 3,
-                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
-        ImGui::TableSetupColumn("阶段", ImGuiTableColumnFlags_WidthStretch, 0.42f);
-        ImGui::TableSetupColumn("状态", ImGuiTableColumnFlags_WidthStretch, 0.22f);
-        ImGui::TableSetupColumn("规模", ImGuiTableColumnFlags_WidthStretch, 0.36f);
-        const std::pair<const char*, const char*> stages[] = {
-            {"V1 SCENE_BREAKDOWN", "v01_scene_breakdown.json"},
-            {"V2 DIRECTOR_INTENT", "v02_director_intent.json"},
-            {"V3 PERFORMANCE", "v03_performance.json"},
-            {"V4 SPATIAL", "v04_spatial.json"},
-            {"V5 CAMERA", "v05_camera.json"},
-            {"V6 TIMELINE", "v06_timeline.json"},
-            {"V7 AUDIO", "v07_audio.json"},
-            {"V8 CONTINUITY（机器校验）", "v08_continuity.json"},
-            {"V9 STORYBOARD", "storyboard.json"},
-        };
-        for (const auto& [label, file] : stages) {
-            std::error_code ec;
-            const auto sz = std::filesystem::file_size(artDir / file, ec);
-            const bool has = !ec && sz > 0;
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(label);
-            ImGui::TableNextColumn();
-            if (has) {
-                ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "已产出");
-            } else {
-                ImGui::TextDisabled("未跑");
-            }
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("%s", has ? fmt::format("{} B", sz).c_str() : "—");
+    // —— S40：每阶段一个**可展开**块（用户要：**prompt / 时间戳 / 输出了什么**）——
+    const std::pair<const char*, const char*> stages[] = {
+        {"V1 SCENE_BREAKDOWN", "v01_scene_breakdown.json"},
+        {"V2 DIRECTOR_INTENT", "v02_director_intent.json"},
+        {"V3 PERFORMANCE", "v03_performance.json"},
+        {"V4 SPATIAL", "v04_spatial.json"},
+        {"V5 CAMERA", "v05_camera.json"},
+        {"V6 TIMELINE", "v06_timeline.json"},
+        {"V7 AUDIO", "v07_audio.json"},
+        {"V8 CONTINUITY（机器校验）", "v08_continuity.json"},
+        {"V9 STORYBOARD", "storyboard.json"},
+    };
+    for (const auto& [label, file] : stages) {
+        const auto p = artDir / file;
+        std::error_code ec;
+        const auto sz = std::filesystem::file_size(p, ec);
+        const bool has = !ec && sz > 0;
+        const std::string head = fmt::format("{}   {}   {}", label, has ? "已产出" : "未跑",
+                                            has ? FileTimeText(p) : std::string{"—"});
+        if (!ImGui::CollapsingHeader(head.c_str())) {
+            continue;
         }
-        // —— 库里的结果（V9/V10/V11 的账）——
-        // 分工：盘上文件是**保真/审计**（LLM 原话），**权威在库**（`01` 的架构判断）。
+        ImGui::Indent(14.f);
+        if (!has) {
+            ImGui::TextDisabled("该阶段还没跑过（产物不存在）");
+        } else {
+            ImGui::TextDisabled("时间戳：%s", FileTimeText(p).c_str());
+            ImGui::SameLine(0, 20);
+            ImGui::TextDisabled("大小：%lld B", static_cast<long long>(sz));
+            ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.f, 1.f), "输出了什么：%s",
+                               ArtifactSummary(p).c_str());
+        }
+        ImGui::TextWrapped("system 提示词：%s", PromptSourceOf(file));
+        if (file == std::string{"storyboard.json"}) {
+            // V9 的**下发统计**（S40 落盘）—— 一眼看出"上游设计下发了几镜"
+            if (const auto t = util::ReadFileBytes(artDir / "v9_dispatch.json"); t) {
+                if (yyjson_doc* dd = yyjson_read(t->data(), t->size(), 0); dd != nullptr) {
+                    yyjson_val* r = yyjson_doc_get_root(dd);
+                    const int sent = util::json::GetInt(r, "sent");
+                    const int total = util::json::GetInt(r, "total");
+                    ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.35f, 1.f),
+                                       "上游设计下发：%d / %d 镜（设计 %d 字符，上限 %d）", sent, total,
+                                       util::json::GetInt(r, "design_chars"),
+                                       util::json::GetInt(r, "limit"));
+                    if (sent < total) {
+                        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.f),
+                                           "⚠️ 有 %d 镜没拿到上游设计 —— 它们报的阶段偏离不代表没采纳",
+                                           total - sent);
+                    }
+                    ImGui::TextDisabled("  本次请求：system %d / user %d 字符",
+                                        util::json::GetInt(r, "system_chars"),
+                                        util::json::GetInt(r, "user_chars"));
+                    yyjson_doc_free(dd);
+                }
+            }
+        }
+        ImGui::TextDisabled("文件：%s", util::PathToUtf8(p).c_str());
+        if (ImGui::SmallButton(fmt::format("复制路径##{}", label).c_str())) {
+            ImGui::SetClipboardText(util::PathToUtf8(p).c_str());
+        }
+        ImGui::Unindent(14.f);
+    }
+    // —— **实际发出的提示词**（`llm-dump` 的可读版；用户问"发给 AI 的提示词在哪"）——
+    ImGui::Dummy(ImVec2(0, 4));
+    if (const auto md = LatestReadableDump(artDir.parent_path()); md.empty()) {
+        ImGui::TextColored(ImVec4(0.95f, 0.78f, 0.35f, 1.f),
+                           "看不到实际发出的提示词 —— 设 SHINE_LLM_DUMP=<dir> 重跑一次，"
+                           "再跑 tools/show-llm-dump.ps1 渲染成可读 md");
+    } else if (ImGui::CollapsingHeader("实际发出的提示词（最近一次请求）")) {
+        ImGui::Indent(14.f);
+        ImGui::TextDisabled("文件：%s", util::PathToUtf8(md).c_str());
+        ImGui::TextDisabled("时间：%s", FileTimeText(md).c_str());
+        if (const auto t = util::ReadFileBytes(md); t) {
+            const std::string body = *t;
+            const std::size_t show = body.size() > 6000 ? 6000 : body.size();
+            ImGui::TextWrapped("%s", body.substr(0, show).c_str());
+            if (body.size() > show) {
+                ImGui::TextDisabled("…（共 %zu 字符，完整内容看上面那个文件）", body.size());
+            }
+        }
+        if (ImGui::SmallButton("复制路径##dump")) {
+            ImGui::SetClipboardText(util::PathToUtf8(md).c_str());
+        }
+        ImGui::Unindent(14.f);
+    }
+    // —— 库里的结果（**权威在库**；盘上文件是保真/审计，见 `01` 的架构判断）——
+    {
         biz::NovelVisual vis(db);
         auto shots = vis.ListShotsByChapter(chapterId);
         const std::size_t nShots = shots ? shots->size() : 0;
@@ -1044,21 +1191,11 @@ void DrawPipelineCard() {
                 }
             }
         }
-        const std::pair<const char*, std::string> libRows[] = {
-            {"V9 STORYBOARD → shots 表", fmt::format("{} 镜（其中 {} 镜有 V2 导演意图）", nShots, nIntent)},
-            {"V10 PROMPT_GEN → prompt_artifacts", fmt::format("{} 条", nArts)},
-            {"V11 GENERATE_IMAGES → 已回填 generation_ref", fmt::format("{} 条", nRefs)},
-        };
-        for (const auto& [label, val] : libRows) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(label);
-            ImGui::TableNextColumn();
-            ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.f), "%s", val.c_str());
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("库");
-        }
-        ImGui::EndTable();
+        ImGui::Dummy(ImVec2(0, 4));
+        ImGui::TextDisabled("库里（权威）：");
+        ImGui::BulletText("V9 → shots 表：%zu 镜（其中 %zu 镜有 V2 导演意图）", nShots, nIntent);
+        ImGui::BulletText("V10 → prompt_artifacts：%zu 条", nArts);
+        ImGui::BulletText("V11 → 已回填 generation_ref：%zu 条", nRefs);
     }
     ImGui::Dummy(ImVec2(0, 6));
     ImGui::TextDisabled("跑链路（命令行，可复制）：");
