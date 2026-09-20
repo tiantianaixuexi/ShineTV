@@ -685,12 +685,26 @@ std::expected<void, DbError> AgentKit::EnsureSchemaAndSeed() {
         if (existing) {
             // S46：**内置 Agent 跟随代码升级** —— 代码里把 `version` 抬高了就覆盖
             //（prompt / 工具白名单 / output_hint 一起跟上）；**作者自建的 Agent 不动**。
-            // ⚠️ 原先一律 `continue` ⇒ 代码里改了内置 prompt，**老库永远看不到**：
-            //    推广阶段 Agent 时就撞上了 —— 旧库的 `v4_spatial` 还是 S41 那份提示词，
-            //    而它本该等于 `kV4Spec.instructions`（同源），两边已经不一致了。
+            // ⚠️ 原先一律 `continue` ⇒ 代码里改了内置 prompt，**老库永远看不到**：推广阶段 Agent
+            //    时就撞上了 —— 旧库的 `v4_spatial` 还是 S41 那份提示词，而它本该等于
+            //    `kV4Spec.instructions`（同源），两边已经不一致了。
+            // 🔴 S65：**光靠"记得抬 version"不够** —— 真跑踩到：`BuildSystemPrompt` 里
+            //    `base = def->system_prompt.empty() ? DefaultPromptFor(id) : def->system_prompt;`
+            //    ⇒ **库里的快照优先**（只有为空才读代码）。于是 S64/S65 改了 `ExtractSystemPrompt`
+            //    却忘了抬 version ⇒ 模型拿到的还是旧提示词，新写的 `*_temp_id` 规则**一个字都没到**
+            //    （表现为"提示词改了但模型行为不变"，极难查）。
+            // ⇒ 改成**内容比对**：内置 Agent 的 prompt / 工具 / outHint 与代码当前值不同就刷新。
+            //    这样"改了内置 prompt 立刻对老工程生效"是**机制保证**，不再依赖记得抬版本号。
             // 想要"自己改的版本"，把 agent 复制一份自建即可（`is_builtin=0` 不会被覆盖）。
-            if (!existing->is_builtin || existing->version >= a.version) {
+            const bool versionNewer = existing->version < a.version;
+            const bool contentChanged = existing->system_prompt != a.system_prompt ||
+                                        existing->tools_json != a.tools_json ||
+                                        existing->output_hint != a.output_hint;
+            if (!existing->is_builtin || (!versionNewer && !contentChanged)) {
                 continue;
+            }
+            if (contentChanged && !versionNewer) {
+                log::Info("AgentKit：内置 Agent「{}」的 prompt/工具与代码不一致 → 按内容刷新", a.agent_id);
             }
         }
         if (auto r = UpsertAgentDef(a); !r) {
@@ -1277,7 +1291,12 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         r.output_hint = std::string{s.outHint};
         r.enabled = 1;
         r.is_builtin = 1;
-        r.version = 1;
+        // 🔴 S63：**必须用 spec 里的 `version`** —— 原先这里硬编码 `1`，而 `Spec` 里那个 `version`
+        // 字段**从来没被用上**（上面注释承诺的"抬高它才会覆盖老库"完全失效）。
+        // 真跑实证：`extract` 在老库里恒 `version=1`、`output_hint` 还是旧形状
+        // `JSON：new_entities / new_fields` ⇒ S62 改的契约形状/白名单/提示词**对既有工程永不生效**；
+        // 而 V2–V7 那批之所以能刷新，只是因为它们那条循环**另写了一遍** `r.version = 2`。
+        r.version = s.version;
         out.push_back(std::move(r));
     }
 

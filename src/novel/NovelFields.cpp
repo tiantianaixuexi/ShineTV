@@ -843,6 +843,32 @@ void NovelFields::SeedBuiltinFieldDefs(NovelFields& fields) {
         row.description = std::string{s.desc};
         row.created_by = "system";
         row.is_system = 1;
+        // ★ S63：**幂等必须落到"不写"** —— `UpsertFieldDef` 是**先删后插**且无条件把 `updated`
+        // 刷成 now（见本文件 `UpsertFieldDef` 的 `BindInt(10, now)`）。于是**每次**调用本函数，
+        // 11 条内置字段的 `updated` 全被刷新 —— 而 `field_defs.updated` **正是
+        // `ComputeInputStateHash`（`04` §2.5）的输入之一** ⇒ **章节中途调一次本函数，输入状态哈希
+        // 就漂移** ⇒ K23（不变式 I9 `prompt.state_hash_match`）**必然 fail** ⇒ 提交被挡。
+        // 🔴 真跑实证（第 5 章）：`CHAPTER_REVIEW` 产物记于 t=1789899034，而 field_defs 被整体改写到
+        //    t=1789899106（**72 秒后**）—— 那次写入正是 S62 工具循环里新加的 `EnsureSchemaAndSeed`。
+        // 判据：内容（title / value_type / enum / description / CANON / is_system）全一致 ⇒ **跳过**。
+        if (auto ex = fields.db_->Prepare("SELECT title,value_type,enum_json,description,status,is_system "
+                                          "FROM field_defs WHERE scope=?1 AND entity_kind=?2 AND "
+                                          "field_key=?3")) {
+            (void)ex->BindText(1, row.scope);
+            (void)ex->BindText(2, row.entity_kind);
+            (void)ex->BindText(3, row.field_key);
+            if (auto st = ex->Step(); st && *st == db::sqlite::StepResult::Row) {
+                const std::string wantEnum = row.enum_json.empty() ? "[]" : row.enum_json;
+                const bool identical = ex->ColumnText(0) == row.title &&
+                                       ex->ColumnText(1) == row.value_type &&
+                                       ex->ColumnText(2) == wantEnum &&
+                                       ex->ColumnText(3) == row.description &&
+                                       ex->ColumnText(4) == "CANON" && ex->ColumnInt(5) != 0;
+                if (identical) {
+                    continue; // 无变化 → 不写 → 不动 `updated`（保住哈希稳定性）
+                }
+            }
+        }
         // 种子失败必须可见：原先是 (void) 吞掉 —— 「field_defs 缺列 → 全部种子静默丢失 →
         // 之后写入一律 field_unregistered」是最难查的一类故障（S2b 已踩）。
         if (auto r = fields.UpsertFieldDef(row); !r) {
