@@ -7,6 +7,7 @@
 #include "core/Settings.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelInit.h"     // S21：初始化链门禁与骨架
+#include "agent/NovelVisualStages.h"
 #include "novel/NovelChecks.h"
 #include "novel/NovelContinuity.h"
 #include "novel/NovelGeneration.h"
@@ -122,11 +123,14 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantChecks = Has(args, "--novel-checks");
     // S30：V8 `CONTINUITY`（`12` §2.7 的 C1–C12；**纯机器校验，不调 LLM**）
     const bool wantCont = Has(args, "--novel-continuity");
+    // S31：影视化链的**阶段化**实现（`03` §2.2）—— 目前有 V1 `SCENE_BREAKDOWN`
+    const bool wantStages = Has(args, "--novel-stages");
     if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages && !wantChecks &&
-        !wantCont) {
-        log::Error("novel-cli：未知子命令（`--novel-init` / `--novel-storyboard <chapter_id>` / "
-                   "`--novel-prompt <chapter_id>` / `--novel-generate <chapter_id>` / "
-                   "`--novel-run <manual|semi|auto>`）");
+        !wantCont && !wantStages) {
+        log::Error("novel-cli：未知子命令。可用：`--novel-init` / `--novel-stages`(V1) / "
+                   "`--novel-storyboard`(V9) / `--novel-prompt`(V10) / `--novel-generate-images`(V11) / "
+                   "`--novel-continuity`(V8) / `--novel-checks`(K01–K29) / `--novel-generate` / "
+                   "`--novel-run`");
         return 2;
     }
 
@@ -186,6 +190,42 @@ int RunNovelCli(const wchar_t* cmdline) {
         }
         AppendCheckOut(gate.passed, gate.Describe());
         return gate.passed ? 0 : 1;
+    }
+
+    if (wantStages) {
+        // S31：影视化链的**阶段化**实现（`03` §2.2）—— 目前有 V1 `SCENE_BREAKDOWN`
+        //（V8 `CONTINUITY` 在 `--novel-continuity`）。产物落 `work/ch<NNN>/v01_scene_breakdown.json`，
+        // 会被 V9（`--novel-storyboard`）当**镜骨架**消费（"镜的切分"提前到 V1）。
+        std::int64_t cid = std::atoll(Opt(args, "--novel-stages", "").c_str());
+        if (cid <= 0) {
+            cid = PickChapter(db);
+        }
+        if (cid <= 0) {
+            log::Error("novel-cli：库里没有可用章节");
+            AppendCheckOut(false, "没有可用章节");
+            return 2;
+        }
+        std::atomic<bool> cancel{false};
+        auto call = MakeLlmCall(&cancel);
+        const auto sb = agent::RunSceneBreakdown(
+            db, call, {.chapter_id = cid, .project_dir = util::PathToUtf8(projectDir),
+                       .extra_hint = Opt(args, "--hint")});
+        if (!sb) {
+            log::Error("novel-cli：V1 失败 {}", sb.error().message);
+            AppendCheckOut(false, sb.error().message);
+            return 1;
+        }
+        for (const std::string& w : sb->warnings) {
+            log::Warn("  {}", w);
+        }
+        if (!sb->ok) {
+            log::Error("novel-cli：V1 失败 {}", sb->error);
+            AppendCheckOut(false, sb->error);
+            return 1;
+        }
+        log::Info("novel-cli：V1 已产出：{} · {}", sb->Describe(), sb->artifact_path);
+        AppendCheckOut(true, fmt::format("V1 {}", sb->Describe()));
+        return 0;
     }
 
     if (wantCont) {
