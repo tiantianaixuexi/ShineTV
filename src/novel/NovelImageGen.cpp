@@ -1,16 +1,20 @@
 #include "novel/NovelImageGen.h"
 
+#include "comfy/ComfyHttp.h"
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "net/HttpClient.h"
 #include "util/Encoding.h"
+#include "video/SceneToImageBuilder.h"
 
 #include <fmt/format.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <span>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -342,15 +346,220 @@ public:
     }
 };
 
-// —— Comfy 首期占位（P9.2 接队列 / workflow）——
-class ComfyStubBackend final : public ImageBackend {
+// —— Comfy 后端的几个纯工具（不发网络）——
+[[nodiscard]] std::string TruncForMsg(std::string_view s, std::size_t n) {
+    return s.size() <= n ? std::string{s} : std::string{s.substr(0, n)} + "…";
+}
+
+// `{"prompt_id":"abc"}` → "abc"（取不到 → 空）
+[[nodiscard]] std::string JsonTopStr(std::string_view json, const char* key) {
+    yyjson_doc* d = yyjson_read(json.data(), json.size(), 0);
+    if (d == nullptr) {
+        return {};
+    }
+    std::string out;
+    yyjson_val* root = yyjson_doc_get_root(d);
+    if (yyjson_is_obj(root)) {
+        const yyjson_val* v = yyjson_obj_get(root, key);
+        if (yyjson_is_str(v)) {
+            out = yyjson_get_str(v);
+        }
+    }
+    yyjson_doc_free(d);
+    return out;
+}
+
+// `/history/{id}` 里取**第一张**输出图：
+// `{"<prompt_id>":{"outputs":{"<node>":{"images":[{"filename","subfolder","type"}]}}}}`
+[[nodiscard]] bool ParseFirstHistoryImage(std::string_view json, std::string* filename,
+                                          std::string* subfolder, std::string* type) {
+    yyjson_doc* d = yyjson_read(json.data(), json.size(), 0);
+    if (d == nullptr) {
+        return false;
+    }
+    bool found = false;
+    yyjson_val* root = yyjson_doc_get_root(d);
+    if (yyjson_is_obj(root)) {
+        std::size_t i = 0;
+        std::size_t max = 0;
+        yyjson_val* key = nullptr;
+        yyjson_val* entry = nullptr;
+        yyjson_obj_foreach(root, i, max, key, entry) {
+            const yyjson_val* outputs = yyjson_obj_get(entry, "outputs");
+            if (!yyjson_is_obj(outputs)) {
+                continue;
+            }
+            std::size_t j = 0;
+            std::size_t jmax = 0;
+            yyjson_val* nkey = nullptr;
+            yyjson_val* node = nullptr;
+            yyjson_obj_foreach(outputs, j, jmax, nkey, node) {
+                const yyjson_val* images = yyjson_obj_get(node, "images");
+                if (!yyjson_is_arr(images) || yyjson_arr_size(images) == 0) {
+                    continue;
+                }
+                const yyjson_val* img = yyjson_arr_get(images, 0);
+                if (!yyjson_is_obj(img)) {
+                    continue;
+                }
+                const yyjson_val* fn = yyjson_obj_get(img, "filename");
+                if (!yyjson_is_str(fn)) {
+                    continue;
+                }
+                *filename = yyjson_get_str(fn);
+                const yyjson_val* sub = yyjson_obj_get(img, "subfolder");
+                *subfolder = yyjson_is_str(sub) ? yyjson_get_str(sub) : "";
+                const yyjson_val* tp = yyjson_obj_get(img, "type");
+                *type = yyjson_is_str(tp) ? yyjson_get_str(tp) : "output";
+                found = true;
+                break;
+            }
+            if (found) {
+                break;
+            }
+        }
+    }
+    yyjson_doc_free(d);
+    return found;
+}
+
+// URL 查询参数编码（Comfy 的文件名可能含中文 / 空格）
+[[nodiscard]] std::string UrlEncodeQuery(std::string_view s) {
+    static constexpr const char* kHex = "0123456789ABCDEF";
+    std::string out;
+    for (const char raw : s) {
+        const auto c = static_cast<unsigned char>(raw);
+        const bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (safe) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(kHex[c >> 4]);
+            out.push_back(kHex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+// 确定性种子（`11` §2.5 的精神：**禁纯随机**）—— 同 prompt/尺寸/steps 恒同种子，便于复现与对齐
+[[nodiscard]] std::int64_t StableSeedOf(const ImageGenRequest& req) {
+    std::uint64_t h = 1469598103934665603ULL; // FNV-1a 64
+    const auto mix = [&h](std::string_view s) {
+        for (const unsigned char c : s) {
+            h ^= c;
+            h *= 1099511628211ULL;
+        }
+    };
+    mix(req.prompt);
+    mix(req.negative);
+    mix(fmt::format("{}x{}x{}", req.width, req.height, req.steps));
+    return static_cast<std::int64_t>(h & 0x7FFFFFFFFFFFFFFFULL);
+}
+
+// —— Comfy（`13` §1.2 的 G13：**真实实现**，此前是"P9.2 接入"的 stub）——
+// 同步短事务（`Generate` 本就在 worker 线程阻塞跑，`comfy::ComfyHttp` 的同步 HTTP 正合）：
+//   ① 编 workflow —— `video::BuildSceneToImageWorkflow`（SD1.5 线的**唯一来源**，本层不重写规则）
+//   ② `POST /prompt` 提交 → `prompt_id`
+//   ③ 轮询 `GET /history/{id}` 直到出现输出（间隔 500ms、总超时 300s —— **有界**，不无限等）
+//   ④ `GET /view?...` 下载首图 → 写 `req.outputPath`
+// ⚠️ **不建常驻会话**（那是 GUI 用的 `ComfySession`）：本后端一次调用一提交，于是 **headless（CLI）
+//    也能用**，不依赖 GUI 事件循环。
+// ⚠️ 首版**不上传参考图**（走纯文生图；`BuildSceneToImageWorkflow` 会记"无颜色图"降级）——
+//    上传（`CollectSceneUploads` + `/upload/image`）留作下一步，账里如实说明。
+class ComfyBackend final : public ImageBackend {
 public:
     [[nodiscard]] std::string_view name() const noexcept override { return "comfy"; }
 
     [[nodiscard]] std::expected<ImageGenResult, ImageGenError>
-    Generate(const ImageGenRequest&) override {
-        return std::unexpected(
-            Err("unsupported", "ComfyUI 出图后端将在 P9.2 接入；当前请选 openai_images 或 mock"));
+    Generate(const ImageGenRequest& req) override {
+        if (req.outputPath.empty()) {
+            return std::unexpected(Err("io", "未指定输出路径"));
+        }
+        std::string base{Settings().comfyBaseUrl};
+        while (!base.empty() && base.back() == '/') {
+            base.pop_back();
+        }
+        if (base.empty()) {
+            return std::unexpected(
+                Err("unsupported", "未配置 ComfyUI 服务地址（设置 → Comfy → 服务地址）"));
+        }
+        // ① workflow（缺 checkpoint → 中文错误；宽高不对齐 → 内部纠正 + 记降级）
+        video::VideoProject proj = video::VideoProject::MakeDefault();
+        if (!req.negative.empty()) {
+            proj.sceneNegativePrompt = req.negative;
+        }
+        video::Shot shot;
+        shot.prompt = req.prompt;
+        shot.width = req.width;
+        shot.height = req.height;
+        shot.steps = req.steps > 0 ? req.steps : proj.sceneSteps;
+        shot.seed = StableSeedOf(req);
+        video::SceneToImageOptions opt;
+        opt.shot = shot;
+        opt.project = proj;
+        const video::SceneToImageResult wf = video::BuildSceneToImageWorkflow(opt);
+        if (!wf.ok) {
+            return std::unexpected(Err("unsupported", wf.error));
+        }
+        for (const video::H3BuildWarning& w : wf.warnings) {
+            log::Warn("Comfy 出图降级：{}", w.text);
+        }
+        // ② 提交（`/prompt` 的 body = {"prompt": <graph>}）
+        const auto post = comfy::HttpPostJson(base + "/prompt",
+                                              fmt::format("{{\"prompt\":{}}}", wf.apiJson),
+                                              std::chrono::seconds{60});
+        if (!post.ok) {
+            return std::unexpected(Err(
+                "network",
+                fmt::format("提交 Comfy 任务失败（HTTP {}）：{}", post.status,
+                            post.error.empty() ? TruncForMsg(post.body, 200) : post.error),
+                post.status));
+        }
+        const std::string promptId = JsonTopStr(post.body, "prompt_id");
+        if (promptId.empty()) {
+            return std::unexpected(Err(
+                "json", fmt::format("Comfy 未返回 prompt_id：{}", TruncForMsg(post.body, 200))));
+        }
+        // ③ 轮询（有界）
+        std::string filename;
+        std::string subfolder;
+        std::string type = "output";
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{300};
+        while (std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{500});
+            const auto hist = comfy::HttpGet(base + "/history/" + promptId);
+            if (!hist.ok) {
+                continue; // 轮询中的瞬时错误不立即判死，下一轮再试
+            }
+            if (ParseFirstHistoryImage(hist.body, &filename, &subfolder, &type)) {
+                break;
+            }
+        }
+        if (filename.empty()) {
+            return std::unexpected(Err(
+                "network", fmt::format("Comfy 任务 {} 在 300s 内未产出图片（已提交，可在 Comfy 队列里查看）",
+                                       promptId)));
+        }
+        // ④ 下载
+        const std::string url =
+            fmt::format("{}/view?filename={}&subfolder={}&type={}", base, UrlEncodeQuery(filename),
+                        UrlEncodeQuery(subfolder), UrlEncodeQuery(type));
+        auto bytes = comfy::HttpDownloadBinary(url, std::chrono::seconds{120});
+        if (!bytes) {
+            return std::unexpected(Err("network",
+                                       fmt::format("下载 Comfy 图片失败：{}", bytes.error().message),
+                                       bytes.error().status));
+        }
+        if (auto w = WriteFileBinary(req.outputPath, *bytes); !w) {
+            return std::unexpected(w.error());
+        }
+        ImageGenResult out;
+        out.path = req.outputPath;
+        out.raw_meta = fmt::format(
+            "{{\"backend\":\"comfy\",\"prompt_id\":{},\"file\":{},\"w\":{},\"h\":{},\"seed\":{}}}",
+            JsonQuote(promptId), JsonQuote(filename), wf.width, wf.height, shot.seed);
+        return out;
     }
 };
 
@@ -362,7 +571,7 @@ std::unique_ptr<ImageBackend> MakeImageBackend() {
         return std::make_unique<OpenAiImagesBackend>();
     }
     if (kind == "comfy") {
-        return std::make_unique<ComfyStubBackend>();
+        return std::make_unique<ComfyBackend>();
     }
     return std::make_unique<MockBackend>();
 }
