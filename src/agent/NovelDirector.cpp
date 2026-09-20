@@ -167,11 +167,67 @@ std::string DefaultPrompt(std::string_view role) {
             "\"description\":\"…\"}]}。无问题则 passed=true 且 issues 为空。";
     }
     if (role == "extractor") {
-        return
-            "你是信息抽取器。从正文与计划中抽取摘要，输出 JSON：\n"
-            "{\"summary\":\"本章 2–3 句摘要\",\"new_entities\":[{\"kind\":\"person|location|item\",\"name\":\"…\"}],"
-            "\"events\":[{\"title\":\"…\"}],\"foreshadow_updates\":[{\"title\":\"…\",\"status\":\"PLANTED|DEVELOPING|REVEALED\"}]}\n"
-            "没有则空数组。";
+        // ★ S61：**提示词必须与 `StateDiff` 契约同名同形**（`02` §2.5）。原先这里是 S8 期的
+        // 旧形状（`summary` / `new_entities` / `events` / `foreshadow_updates`），而解析端
+        // （`StateDiffFromJson`，靠反射逐字段填）只认 `entities/characters/relationships/items/
+        // locations/events/causal/plotlines/foreshadows/mysteries/knowledge/timeline` ——
+        // 于是**只有 `events` 因为同名落了库**：模型每章乖乖报的新人物/新伏笔全被**静默丢弃**。
+        // 真跑实测：四章 `12_state_diff.json` 全是 `entities=0 characters=0 foreshadows=0
+        // events=6`，库里 `person` 恒 1（世界状态根本没长）。
+        // ⚠️ `summary` 是**本模块自己的字段**（不在 StateDiff 契约里，由上面那段单独读）——
+        // 解析端的"契约外键"告警对它做了白名单，别删。
+        return R"-(
+你是信息抽取器。读【计划】与【正文】，输出**一份 StateDiff JSON**（契约 02 §2.5）。
+顶层键只能是下列这些，**不要自造键名**（写成 new_entities / foreshadow_updates 之类会被直接忽略）：
+  summary, contract_version, producer, input_state_hash, chapter_id, no_change_declared,
+  entities, characters, relationships, items, locations, events, causal,
+  plotlines, foreshadows, mysteries, knowledge, timeline
+【形状示例（照这个填，字段名一个都不要改）】
+{"summary":"……","chapter_id":5,
+ "entities":[{"temp_id":"en:1","kind":"item","name":"工号牌挂绳断头 092","summary":"……","status":"active"}],
+ "characters":[{"entity_id":3,"location_id":4,"body_state":"……","mind_state":"……","goal":"……","reason":"……"}],
+ "events":[{"temp_id":"ev:1","cause":"……","participants":[{"entity_id":3,"role":"actor"}],
+            "location_id":4,"time_label":"深夜","action":"……","result":"……"}],
+ "foreshadows":[{"op":"new","title":"……","content":"……","status":"PLANTED","setup_ch":5,"payoff_ch":9,"importance":70}],
+ "causal":[],"items":[],"locations":[],"plotlines":[],"mysteries":[],"knowledge":[],"timeline":[]}
+⚠️ `kind` 取值必须是 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…），
+   **不要把字段名当值**（写 kind:"kind" 是常见错误，会被契约校验直接挡下）。
+⚠️ `entity_id`/`item_id`/`location_id`/`from_id`/`to_id` 只能取自下方【库里已有实体 id 清单】；
+   清单里没有的实体，先用 `entities[]` 新建（给 temp_id），再在别处用该 temp_id 引用。
+【输出纪律（违反一条整份作废/整章提交失败）】
+1. 只输出 JSON 本体：不要 markdown 围栏、不要任何解释文字。
+2. **字符串内部禁止出现半角双引号**（对话、便签、标题请用「」或『』）——
+   一个未转义的 " 就会让整份 JSON 解析失败，本章状态白跑。
+3. **字段尽量短**：summary ≤ 40 字，每条条目的 summary/note 同样 ≤ 40 字；**不要复述正文**。
+   （整份输出越短越可靠；实测 2 万字输出必然出错。）
+4. 只填**真正发生变化**的条目；没有变化的数组一律写 []。
+5. `relations[]` 每条必须给全 from_id / to_id / rel_type（id 照抄下方清单），
+   `items[]` 给全 op / item_id，`characters[]` 给全 entity_id —— 缺一个整章提交失败。
+6. **id 的用途必须匹配**（K03 会挡下整章）：`characters[].entity_id` /
+   `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用清单里 **[person]**
+   的 id；`items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
+   ⚠️ **清单里没有的（新物品 / 新人物 / 新地点）一律只放进 `entities[]`（用 temp_id 新建）**，
+   **不要**在上述数组里引用它们 —— 那些字段只收**已有** id，引用不到会整章提交失败。
+- summary: 本章 2–3 句摘要（字符串）
+- entities[]: {temp_id, kind, name, summary, status}
+    kind 必须命中 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…）
+- characters[]: {entity_id, location_id, body_state, mind_state, goal, reason}
+    entity_id 必须是**已存在的**人物实体 id；状态有变化必须写 reason
+- relationships[]: {op:upsert|close, from_id, to_id, rel_type, strength, reason}
+- items[]: {op:acquire|lose|move|change_state, item_id, owner_id, location_id, how, reason}
+- locations[]: {location_id, field, value, reason}
+- events[]: {temp_id, cause, participants:[{entity_id, role}], location_id, time_label, action, result}
+    role ∈ actor|victim|witness|beneficiary|faction_actor
+- causal[]: {cause:{temp_id|entity_id}, effect:{temp_id|entity_id}, link_type:causes|enables|prevents|escalates|reveals, note}
+- plotlines[]: {plot_id, kind, title, status, beat:{beat_type, title, summary}}
+- foreshadows[]: {op:new|progress|reinforce|payoff, foreshadow_id, title, content, truth,
+                  status:PLANNED|PLANTED|DEVELOPING|REVEALED, setup_ch, payoff_ch, importance}
+- mysteries[]: {mystery_id, question, answer, status, beat:{beat_type, content, target_entity_id}}
+- knowledge[]: {entity_id, fact_kind, fact_id, fact_text, knows, chapter_known}
+- timeline[]: {event_id, time_label, location_id, cause_note, result_note}
+没有变化的数组给 []；**本章确实毫无变化**才置 no_change_declared: true（此时所有数组必须为空）。
+只输出 JSON 本体：不要 markdown 围栏、不要解释、字符串内不要出现未转义的引号。
+)-";
     }
     return "你是小说助手。";
 }
@@ -450,7 +506,26 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         Report(progressCb, Phase::Extract, 90,
                attempt == 0 ? std::string{"Extractor"}
                             : fmt::format("Extractor 重做（第 {} 次 · `06` §2.6 回产出阶段）", attempt));
-        std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
+        // ★ S61：把**库里已有实体的 id 清单**附上 —— `characters[].entity_id` / `items[].item_id`
+        // / `participants[].entity_id` 要的都是**数据库 id**，而模型手里只有名字：不给清单它填不出来
+        //（真跑实测：它干脆不填 ⇒ K01 报 `characters[] 缺 entity_id`）。这属 `07` §2.2 ①
+        // 「基线由代码读」那一类 —— **事实给代码查，不靠模型猜**（也正因如此不需要给 Extractor
+        // 开工具循环）。同一批还有 `participants[].role` 的词表、`kind` 的 31 种。
+        std::string entityList;
+        if (auto all = g.ListEntities({}, {}, 400); all) {
+            for (const novelcore::EntityRow& e : *all) {
+                if (e.kind != novelcore::kind::person && e.kind != novelcore::kind::location &&
+                    e.kind != novelcore::kind::item) {
+                    continue;
+                }
+                entityList += fmt::format("- id={} [{}] {}\n", e.id, e.kind, e.name);
+                if (entityList.size() > 4000) break; // 长篇后实体很多，别把 prompt 撑爆
+            }
+        }
+        std::string exUser = fmt::format(
+            "【计划】\n{}\n\n【正文】\n{}\n\n【库里已有实体 id 清单 —— 引用它们时 id 必须照抄，"
+            "不要自己编】\n{}",
+            result.plan_json, body, entityList.empty() ? "（空）\n" : entityList);
         if (!parseFailHint.empty()) {
             exUser += parseFailHint;
         } else if (attempt > 0) {

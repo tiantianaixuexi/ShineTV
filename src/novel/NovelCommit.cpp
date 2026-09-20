@@ -157,6 +157,41 @@ bool StateDiffFromJson(std::string_view text, StateDiff& out) {
         return false;
     }
     const bool isObject = yyjson_is_obj(yyjson_doc_get_root(probe));
+    // ★ S61：**契约外的顶层键必须可见**。宽容读取（缺键走默认）是刻意的，但它会把
+    // "键名根本不属于这套契约"也一并吞掉：实测 Extractor 的提示词写的是
+    // `new_entities` / `foreshadow_updates`（契约里是 `entities` / `foreshadows`）⇒ 模型报的
+    // 新人物/新伏笔被**静默丢弃**，只有同名的 `events` 落了库（四章 diff 全是 events=6、
+    // 其余 0，库里 person 恒 1）。⇒ 契约外的键一律告警，键名一错第一次跑就看得见。
+    // `summary` 是 `NovelDirector` 自己的字段（不在 StateDiff 契约内，单独读取）→ 白名单。
+    if (isObject) {
+        constexpr auto kKnown = util::reflect::FieldNames<StateDiff>();
+        std::string unknown;
+        std::size_t nUnknown = 0;
+        yyjson_obj_iter it = yyjson_obj_iter_with(yyjson_doc_get_root(probe));
+        for (yyjson_val* k = yyjson_obj_iter_next(&it); k != nullptr; k = yyjson_obj_iter_next(&it)) {
+            const std::string_view key{yyjson_get_str(k), yyjson_get_len(k)};
+            if (key == "summary") continue; // 见上：本模块自用字段
+            bool known = false;
+            for (const std::string_view n : kKnown) {
+                if (n == key) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                ++nUnknown;
+                if (nUnknown <= 6) {
+                    unknown += (unknown.empty() ? "" : ", ") + std::string{key};
+                }
+            }
+        }
+        if (nUnknown > 0) {
+            log::Warn("StateDiffFromJson：{} 个**契约外的顶层键**会被忽略（{}）—— 键名须与 "
+                      "`02` §2.5 一致（entities/characters/relationships/…），否则模型报的 "
+                      "delta 会静默丢失；请核对**提示词里的形状**与契约是否同一套",
+                      nUnknown, unknown);
+        }
+    }
     yyjson_doc_free(probe);
     if (!isObject) {
         log::Warn("StateDiffFromJson：JSON 能解析但**根不是对象**（StateDiff 必须是 `{{...}}`）");

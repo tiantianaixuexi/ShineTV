@@ -1982,7 +1982,11 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         // 4 → 5（S37）：**下发给 V9 的上游设计形态变了**（"整文件截 3000 字" → "逐镜下发的
         // 紧凑化"）—— 输入状态没变、但 LLM 看到的东西变了 ⇒ V9 的产物必须重算（否则新旧分镜
         // 混在一起，一个按"没看到设计"、一个按"看到了"，没法比）。
-        canon += "prompt_rule_version=5\n";
+        // 5 → 6（S61）：**Extractor 的提示词形状改了** —— 旧形状（`new_entities` /
+        // `foreshadow_updates`）与 `StateDiff` 契约不是同一套 ⇒ 模型报的实体/伏笔被静默丢弃
+        // ⇒ 世界状态几乎不增长。LLM 看到的东西变了 ⇒ 阶段产物（含 `12_state_diff.json`）
+        // 必须重算，否则又变成"修了 bug 但旧产物被永久复用"（S25/S26/S37 的同款成因）。
+        canon += "prompt_rule_version=6\n";
         // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
         // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
         // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是
