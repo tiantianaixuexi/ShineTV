@@ -18,7 +18,15 @@ namespace shine::openai {
 [[nodiscard]] inline std::string ResolveModel(std::string_view role) {
     const AppSettings& s = Settings();
     const Provider p = ParseProvider(s.llmProvider);
+    // 🔴 S53 修：原先 MiniMax / MiMo **直接 `return ResolveActiveProfile().model;`（无视 `role`）**
+    // ⇒ 后果不是"少个功能"，而是**死锁**：`06` §2.7 M5 的 auto 前置⑤要求
+    // 「`critic` 模型 ≠ `writer` 模型」，而这里两者永远同值 ⇒ **MiniMax 用户永远被拒启动
+    // `--novel-run auto`**（真跑实测：改了 `openaiModelCritic=MiniMax-M2.7` 也无效，
+    //  `cross_review_ok` 仍为 false）。**按角色的模型配置对所有 provider 都该生效。**
     if (p == Provider::MiMo || p == Provider::MiniMax) {
+        if (role == "planner" && !s.openaiModelPlanner.empty()) return s.openaiModelPlanner;
+        if (role == "writer" && !s.openaiModelWriter.empty()) return s.openaiModelWriter;
+        if (role == "critic" && !s.openaiModelCritic.empty()) return s.openaiModelCritic;
         return ResolveActiveProfile().model;
     }
     if (role == "planner" && !s.openaiModelPlanner.empty()) return s.openaiModelPlanner;

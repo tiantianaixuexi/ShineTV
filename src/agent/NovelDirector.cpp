@@ -458,7 +458,13 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         novelcore::StateDiff diff;
         hasDiff = false;
         if (er) {
-            const auto ej = ExtractOutputText(*er);
+            // S53：**先做宽容提取**（与阶段链 `ExtractJsonObject` 同款）—— Extractor 同样会吐
+            // ` ```json ` 围栏，而它直接决定"**状态回写**"：回写不了 ⇒ `canon_logs` 空 ⇒
+            // **auto 前置①（G1–G5）永远过不了** ⇒ `--novel-run auto` 永远被拒。
+            // 真跑实测：`Extractor 输出不是合法的 StateDiff JSON（本章不回写状态）：```json`。
+            // ⚠️ 下面 `yyjson_read(ej...)` 与 `StateDiffFromJson(ej, ...)` **共用同一个 `ej`** ——
+            //    在这里统一净化，两处一起受益。
+            const std::string ej = util::json::ExtractJsonObject(ExtractOutputText(*er));
             yyjson_doc* doc = yyjson_read(ej.data(), ej.size(), 0);
             if (doc) {
                 yyjson_val* root = yyjson_doc_get_root(doc);
