@@ -149,6 +149,8 @@ GenerationOutcome RunChapterGeneration(::shine::db::sqlite::Database& db, RowId 
         shotIn.negativePrompt = art.negative;
         shotIn.referenceImages = refs;
         shotIn.characterAssetPaths = refs; // `11` §2.5：角色资产 → 生成侧的角色图（同源）
+        // S36：V2 `DIRECTOR_INTENT` 随输入带过去（只承载、不参与计算 —— 桥仍是纯函数）
+        shotIn.intentJson = shot->intent_json;
         sceneIn.shots.push_back(shotIn);
         const video::ToGenShotResult bridge =
             video::ToGenShot(video::VideoProject::MakeDefault(), sceneIn, {});

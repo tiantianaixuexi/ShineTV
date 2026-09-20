@@ -58,6 +58,11 @@ public:
     // **唯一来源**：`Migrate()` 与 `RunSchemaSelfCheck` 都调它。
     static void AddPromptArtifactColumns(db::sqlite::Database& db);
 
+    // v11（S36）：给旧库的 `shots` 补 `intent_json` —— V2 `DIRECTOR_INTENT` 的承载列
+    //（`02` §2.7 七问 + intensity；S33 记账的"V2 无处可落"在此闭合）。**列已存在即忽略**。
+    // **唯一来源**：`Migrate()` / `EnsureSchemaUpToDate()` / `RunSchemaSelfCheck` 都调它。
+    static void AddShotIntentColumn(db::sqlite::Database& db);
+
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();
 

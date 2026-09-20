@@ -47,11 +47,13 @@ constexpr std::string_view kStoryboardInstructions = R"(
   audio(object)       声音设计
 )" ;
 
-[[nodiscard]] std::string JsonText(yyjson_val* v) {
+// S36：参数收紧成 `const` —— `yyjson_val_write` 本身是**只读**的（它只是把 val 写成 JSON 文本），
+// 但 yyjson 的签名没带 `const`，所以这里 `const_cast` 掉（不是真的改它）。
+[[nodiscard]] std::string JsonText(const yyjson_val* v) {
     if (v == nullptr) {
         return {};
     }
-    const char* t = yyjson_val_write(v, 0, nullptr);
+    const char* t = yyjson_val_write(const_cast<yyjson_val*>(v), 0, nullptr);
     if (t == nullptr) {
         return {};
     }
@@ -258,6 +260,14 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
             }
             const std::string t = text->size() > 3000 ? text->substr(0, 3000) + "…" : *text;
             user += fmt::format("\n【{} 产物】（**按其设计**，不要另起一套）\n{}\n", label, t);
+            if (text->size() > 3000) {
+                // S36：**如实记账**（否则会冤了 LLM）——截断 ⇒ 靠后的镜可能**根本没看到**该阶段的
+                // 设计，此时 S34 报的"阶段偏离"对它们**不是"没采纳"，是"没看到"**。
+                out.warnings.push_back(
+                    fmt::format("{} 产物超 3000 字**已截断**（靠后的镜可能未看到该设计 → "
+                                "其「阶段偏离」未必是没采纳）",
+                                label));
+            }
             ++hinted;
         }
         if (hinted > 0) {
@@ -334,11 +344,15 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     int skeletonDurationMismatch = 0;
 
     // S34：V3–V7 阶段产物的索引（跑过 `--novel-stages` 才有；键同上 `(scene_ord, ord)`）
+    yyjson_doc* v2Doc = nullptr;
     yyjson_doc* v3Doc = nullptr;
     yyjson_doc* v4Doc = nullptr;
     yyjson_doc* v5Doc = nullptr;
     yyjson_doc* v7Doc = nullptr;
     const auto stageItemDir = StoryboardDir(req.project_dir, ch->ord);
+    // S36：V2 `DIRECTOR_INTENT`（七问 + intensity）—— 它**不是** V9 的 LLM 输出（那是 V2 的
+    // 职责），所以唯一的来源是 V2 产物；按 `(scene_ord, ord)` 取出来落到 `shots.intent_json`。
+    const auto v2Items = IndexStageItems(stageItemDir / "v02_director_intent.json", &v2Doc);
     const auto v3Items = IndexStageItems(stageItemDir / "v03_performance.json", &v3Doc);
     const auto v4Items = IndexStageItems(stageItemDir / "v04_spatial.json", &v4Doc);
     const auto v5Items = IndexStageItems(stageItemDir / "v05_camera.json", &v5Doc);
@@ -388,6 +402,11 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         row.start_state_json = yyjson_is_obj(startState) ? JsonText(startState) : "{}";
         row.end_state_json = yyjson_is_obj(endState) ? JsonText(endState) : "{}";
         row.timeline_json = TimelineJson(yyjson_obj_get(shot, "timeline"), duration);
+        // S36：V2 `DIRECTOR_INTENT`（七问 + `intensity`）→ `shots.intent_json`。
+        // **唯一来源是 V2 产物**（七问是 V2 的职责，不在 V9 的 LLM 输出里）；没跑 V2 → 留 `{}`。
+        if (const auto it = v2Items.find({sceneOrd, ord}); it != v2Items.end()) {
+            row.intent_json = JsonText(it->second);
+        }
         row.character_ids_json = CharacterIdsJson(startState);
         // S34：**阶段产物的字段级比对**（比骨架更细）—— 每阶段挑**一个有代表性**的字段：
         // V4 前景 / V5 景别 / V3 表情 / V7 环境音。抓的是"**根本没采纳**"，不是"措辞不同"
@@ -512,7 +531,7 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
                   out.skeleton_total);
     }
     // S34：阶段产物比对汇总 + 释放阶段性 doc
-    for (yyjson_doc* d : {v3Doc, v4Doc, v5Doc, v7Doc}) {
+    for (yyjson_doc* d : {v2Doc, v3Doc, v4Doc, v5Doc, v7Doc}) {
         if (d != nullptr) {
             yyjson_doc_free(d);
         }
@@ -739,6 +758,28 @@ bool RunStoryboardSelfCheck() {
         const auto loose = GenerateStoryboard(
             mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir, .strict_skeleton = false});
         expect(loose.has_value() && loose->ok, "S35：非严格模式下同样输入应成功（只告警）");
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    // S36：**V2 `DIRECTOR_INTENT` 的承载**（S33 记的"无处可落"在此闭合）——
+    // 造一份 V2 产物 → 断言七问真的进了 `shots.intent_json`（不再落库即丢）。
+    {
+        const auto sdir = dir / "work" / "ch001";
+        std::filesystem::create_directories(sdir, ec);
+        const std::string v2 =
+            R"-({"stage":"V2","items":[{"scene_ord":1,"ord":1,"see":"看到门","know":"知道有人","not_know":"不知是谁","emotion":"警惕","emotion_shift":"松到紧","climax":"非高潮","pace":"渐紧","intensity":80}]})-";
+        expect(util::WriteFileBytes(sdir / "v02_director_intent.json", v2), "S36：写 V2 产物");
+        const auto o = GenerateStoryboard(mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir});
+        expect(o.has_value() && o->ok, "S36：带 V2 产物重跑应成功");
+        novelcore::NovelVisual visFor(mem);
+        auto shots = visFor.ListShotsByChapter(ch.value_or(0));
+        expect(shots.has_value() && !shots->empty(), "S36：应有镜可查");
+        if (shots && !shots->empty()) {
+            expect(shots->front().intent_json.find("intensity") != std::string::npos &&
+                       shots->front().intent_json.find("看到门") != std::string::npos,
+                   fmt::format("S36：V2 的七问必须落进 `shots.intent_json`（实际「{}」）",
+                               shots->front().intent_json));
+        }
         std::filesystem::remove_all(dir, ec);
     }
 
