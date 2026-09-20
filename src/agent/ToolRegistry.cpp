@@ -92,6 +92,24 @@ yyjson_mut_val* ToolRegistry::ExportOpenAiTools(yyjson_mut_doc* doc) const {
     return arr;
 }
 
+// S44：**Responses 形状的 tools**（顶层扁平）—— 见头文件注释。真跑踩到：拿 Chat 形状发给
+// MiniMax 的 `/v1/responses`，它回显 `"tools":[{"type":"function","name":"","parameters":null}]`
+//（**名字都没解析出来**）⇒ 工具等于没注册 ⇒ "工具 0 次"。
+yyjson_mut_val* ToolRegistry::ExportResponsesTools(yyjson_mut_doc* doc) const {
+    yyjson_mut_val* arr = yyjson_mut_arr(doc);
+    for (const auto& t : tools_) {
+        yyjson_mut_val* fn = yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc, fn, "type", "function");
+        yyjson_mut_obj_add_strcpy(doc, fn, "name", std::string{t->Name()}.c_str());
+        yyjson_mut_obj_add_strcpy(doc, fn, "description", std::string{t->Description()}.c_str());
+        if (yyjson_mut_val* params = t->Schema(doc)) {
+            yyjson_mut_obj_add_val(doc, fn, "parameters", params);
+        }
+        yyjson_mut_arr_add_val(arr, fn);
+    }
+    return arr;
+}
+
 std::expected<yyjson_doc*, ToolError> ToolRegistry::Execute(std::string_view name,
                                                             yyjson_val* args) {
     for (auto& t : tools_) {
@@ -143,13 +161,21 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
     // 对话历史：input 数组（Responses API input items）
     std::string history; // JSON 数组字符串，手工维护
     // S42：**不要手写 JSON 转义** —— 交给 `util::json::JsonQuote`（yyjson 实现，永远正确）。
-    // S41 我在这里手写补过一次 `\r`/`\t`，但那是**打补丁**：项目里还有 6 处同款手写实现，
-    // 各自漏的字符还不一样（`AgentKit` 连 `\t` 都漏）。统一走这一个入口。
-    history = fmt::format(R"([{{"role":"user","content":{}}}])", util::json::JsonQuote(userText));
+    // S44：**item 形状也要对** —— Responses 的 input item 是**结构化**的
+    //（`{type:"message",role,content:[{type:"input_text",text}]}`），不是 Chat 那种
+    // `{role,content:"字符串"}`。真跑：MiniMax 直接拒收 ——
+    // `Invalid request: input is neither string nor array of items`。
+    history = fmt::format(
+        R"([{{"type":"message","role":"user","content":[{{"type":"input_text","text":{}}}]}}])",
+        util::json::JsonQuote(userText));
 
     // tools 导出
+    // S44：**必须用 Responses 形状**（顶层扁平）—— 本循环的 `create` 只对接 Responses
+    //（`LlmCreateRaw`）。原先用 `ExportOpenAiTools`（Chat 形状，嵌一层 `function`）⇒
+    // MiniMax 的 `/v1/responses` 回显 `"name":"","parameters":null`（**名字都没解析出来**）
+    // ⇒ 工具等于没注册。
     yyjson_mut_doc* tdoc = yyjson_mut_doc_new(nullptr);
-    yyjson_mut_val* tools = reg.ExportOpenAiTools(tdoc);
+    yyjson_mut_val* tools = reg.ExportResponsesTools(tdoc);
     size_t tlen = 0;
     char* tjson = yyjson_mut_val_write(tools, 0, &tlen);
     const std::string toolsJson = tjson ? std::string{tjson, tlen} : "[]";
@@ -177,7 +203,11 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
             yyjson_val* item = nullptr;
             yyjson_arr_foreach(output, i, n, item) {
                 if (!yyjson_is_obj(item)) continue;
-                if (util::json::GetStr(item, "type") != "function_call") continue;
+                // S44：**兼容两种事件名** —— OpenAI Responses 用 `function_call`，MiniMax 的
+                // Responses 兼容端用 **`function`**（真跑实测）。只认前者会**静默忽略**掉所有
+                // 工具调用（现象：模型说"让我用工具查库"，而循环报"工具 0 次"）。
+                const std::string itype = util::json::GetStrCopy(item, "type");
+                if (itype != "function_call" && itype != "function") continue;
                 hasCall = true;
                 const std::string callId = util::json::GetStrCopy(item, "call_id");
                 const std::string name = util::json::GetStrCopy(item, "name");

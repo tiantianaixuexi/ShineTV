@@ -36,6 +36,12 @@ public:
     void Clear() noexcept;
 
     [[nodiscard]] yyjson_mut_val* ExportOpenAiTools(yyjson_mut_doc* doc) const;
+
+    // S44：**Responses 形状的 tools**（顶层扁平：`{type,name,description,parameters}`）。
+    // 与 `ExportOpenAiTools`（Chat 形状：`{type,function:{name,description,parameters}}`）不同 ——
+    // 用错格式时服务端会**静默忽略**工具定义（真跑：MiniMax 回显 `name:""`、工具 0 次）。
+    // `RunToolLoop` 的 `create` 对接 Responses，所以用它。
+    [[nodiscard]] yyjson_mut_val* ExportResponsesTools(yyjson_mut_doc* doc) const;
     [[nodiscard]] std::expected<yyjson_doc*, ToolError>
     Execute(std::string_view name, yyjson_val* args);
     [[nodiscard]] std::size_t size() const noexcept { return tools_.size(); }
