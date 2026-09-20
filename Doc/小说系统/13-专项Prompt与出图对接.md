@@ -197,6 +197,7 @@ Start → Motion → Transformation → End
 | PV4 | `prompt_layers` 的 `version` 与 `PromptArtifact.version` 必须同步（`QueryLayer` 取 `version DESC LIMIT 1`） |
 | PV5 | 生成结果与 Prompt 的关联通过 `PromptArtifact.generation_ref`（`02` §2.10）建立，双向可查 |
 | PV6 | **Prompt 不得作为世界状态的一部分被长期依赖**：删掉 Prompt 不影响世界状态的可重建性 |
+| PV7 | **组装规则版本参与哈希**（S25）：`ComputeInputStateHash` 的 `chain=visual` 分支含 `prompt_rule_version`（`04` §2.5）。**拼装规则变了就 +1** → 旧产物全部失效重算。不加这条会出现"修了拼装 bug、但旧 prompt 永远被复用"（S25 实测踩到） |
 
 ## 3. 差距（逐条：现状 → 缺口 → 影响）
 
