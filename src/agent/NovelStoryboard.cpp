@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <cmath>
 #include <utility>
 
 namespace shine::agent {
@@ -252,6 +253,22 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         }
     }
 
+    // —— S33：**骨架一致性检查**（把"软约束"变成"**可检测的**软约束"）——
+    // 下发骨架/阶段产物只是**建议**（LLM 可能不遵守）。这里逐镜比对，把偏离变成**可见的账**：
+    // 骨架外新增 / 骨架内缺失 / `duration` 偏差过大。
+    // ⚠️ **不急判 fail**（LLM 合并或拆镜有时是合理的，`03` §2.2 本就允许合并），
+    //    但必须**看得见**（`11` §2.7 W2 的同款要求：不确定/偏离也要可见）。
+    // ⚠️ V2 `DIRECTOR_INTENT` **无法这样查**：它的产物（七问 + `intensity`）在 `NarrativeShot`
+    //    契约里**没有承载字段**（V3→`performance`、V4→`spatial`、V5→`camera`、V6→`timeline`、
+    //    V7→`audio` 都有）。所以 V2 只能"影响判断"，落不了地也查不了 —— **如实记账**。
+    std::map<std::pair<int, int>, double> skeletonByKey; // (scene_ord, ord) → duration
+    for (const ShotSkeleton& s : skeleton) {
+        skeletonByKey[{s.scene_ord, s.ord}] = s.duration;
+    }
+    std::set<std::pair<int, int>> skeletonSeen;
+    int skeletonExtra = 0;
+    int skeletonDurationMismatch = 0;
+
     std::set<std::int64_t> covered;
     std::size_t i = 0;
     std::size_t max = 0;
@@ -295,6 +312,23 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         row.end_state_json = yyjson_is_obj(endState) ? JsonText(endState) : "{}";
         row.timeline_json = TimelineJson(yyjson_obj_get(shot, "timeline"), duration);
         row.character_ids_json = CharacterIdsJson(startState);
+        // S33：逐镜与 V1 骨架比对（有骨架才查）
+        if (!skeletonByKey.empty()) {
+            const auto key = std::make_pair(sceneOrd, ord);
+            const auto sk = skeletonByKey.find(key);
+            if (sk == skeletonByKey.end()) {
+                ++skeletonExtra;
+            } else {
+                skeletonSeen.insert(key);
+                if (sk->second > 0.0 && std::abs(sk->second - duration) > 0.2) {
+                    ++skeletonDurationMismatch;
+                    out.warnings.push_back(
+                        fmt::format("骨架偏离：scene_ord={} ord={} 的 duration={:.1f}s 与 V1 骨架的 "
+                                    "{:.1f}s 差 > 0.2s",
+                                    sceneOrd, ord, duration, sk->second));
+                }
+            }
+        }
         yyjson_val* pt = yyjson_obj_get(shot, "prompt_text");
         if (yyjson_is_str(pt)) {
             row.prompt_text = yyjson_get_str(pt);
@@ -322,6 +356,25 @@ GenerateStoryboard(::shine::db::sqlite::Database& db, const LlmCallFn& call,
     out.warnings.push_back(
         "transition/performance/spatial/camera/audio 无对应列 → 只存 work/ch<NNN>/storyboard.json"
         "（V10 产 Prompt 时从那读）");
+    // S33：骨架比对汇总（**三类偏离全部进 warnings**，不静默）
+    if (!skeletonByKey.empty()) {
+        const int missing =
+            static_cast<int>(skeletonByKey.size()) - static_cast<int>(skeletonSeen.size());
+        if (missing > 0) {
+            out.warnings.push_back(
+                fmt::format("V1 骨架里的 {} 镜**没有**出现在 V9 输出里（骨架内缺失）", missing));
+        }
+        if (skeletonExtra > 0) {
+            out.warnings.push_back(
+                fmt::format("V9 输出了 {} 镜**不在** V1 骨架里（骨架外新增）", skeletonExtra));
+        }
+        out.skeleton_total = static_cast<int>(skeletonByKey.size());
+        out.skeleton_missing = missing;
+        out.skeleton_extra = skeletonExtra;
+        out.skeleton_duration_mismatch = skeletonDurationMismatch;
+        log::Info("骨架一致性：下发 {} 镜 / 缺失 {} / 新增 {} / 时长偏离 {}", out.skeleton_total,
+                  out.skeleton_missing, out.skeleton_extra, out.skeleton_duration_mismatch);
+    }
     out.scenes_covered = static_cast<int>(covered.size());
     out.ok = out.shots_written > 0;
     if (!out.ok) {
@@ -404,6 +457,14 @@ bool RunStoryboardSelfCheck() {
         return wrapped;
     };
 
+    // S33：**先放一份 V1 骨架**（与 mock 的两镜一致：3.0 / 2.5）—— 验证"一致时三类偏离为 0"
+    {
+        const auto v1Dir = dir / "work" / "ch001";
+        std::filesystem::create_directories(v1Dir, ec);
+        const std::string sk =
+            R"-({"stage":"V1","input_state_hash":"h1","scenes":[{"scene_ord":1,"shots":[{"ord":1,"duration":3.0,"beat":"a"},{"ord":2,"duration":2.5,"beat":"b"}]}]})-";
+        expect(util::WriteFileBytes(v1Dir / "v01_scene_breakdown.json", sk), "写 V1 骨架");
+    }
     auto out = GenerateStoryboard(
         mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir, .extra_hint = "多用手持"});
     expect(out.has_value(), fmt::format("分镜应产出成功：{}", out.has_value() ? "" : out.error().message));
@@ -411,6 +472,14 @@ bool RunStoryboardSelfCheck() {
         expect(out->shots_written == 2, "两镜都应落库");
         expect(out->scenes_covered == 1, "覆盖 1 场");
         expect(!out->warnings.empty(), "无专列字段要显式给出提示（不静默丢）");
+    }
+    // S33：骨架与输出**一致** → 三类偏离全 0（"软约束"的**可检测**化）
+    if (out) {
+        expect(out->skeleton_total == 2 && out->skeleton_missing == 0 && out->skeleton_extra == 0 &&
+                   out->skeleton_duration_mismatch == 0,
+               fmt::format("S33：骨架一致时偏离应为 0（实际 total={} miss={} extra={} dur={}）",
+                           out->skeleton_total, out->skeleton_missing, out->skeleton_extra,
+                           out->skeleton_duration_mismatch));
     }
     novelcore::NovelVisual visual(mem);
     auto list = visual.ListShotsByChapter(ch.value_or(0));
@@ -450,6 +519,30 @@ bool RunStoryboardSelfCheck() {
     if (fails == 0) {
         log::Info("分镜自检通过（V9：契约解析 + shots 落库 + K22/K24 数据源 + 幂等 + 完整契约落盘）");
     }
+    // S33：**骨架不一致必须被发现** —— 这就是"LLM 会不会乱来"的答案：**不靠猜，靠查**。
+    // 骨架 3 镜、mock 只产 2 镜 ⇒ 必须报 `skeleton_missing = 1` 且**进 warnings 可见**。
+    {
+        const auto v1Dir = dir / "work" / "ch001";
+        std::filesystem::create_directories(v1Dir, ec);
+        const std::string sk =
+            R"-({"stage":"V1","input_state_hash":"h2","scenes":[{"scene_ord":1,"shots":[{"ord":1,"duration":3.0,"beat":"a"},{"ord":2,"duration":2.5,"beat":"b"},{"ord":3,"duration":2.0,"beat":"c"}]}]})-";
+        expect(util::WriteFileBytes(v1Dir / "v01_scene_breakdown.json", sk), "写骨架（3 镜）");
+        const auto out2 =
+            GenerateStoryboard(mem, mock, {.chapter_id = ch.value_or(0), .project_dir = dir});
+        expect(out2.has_value() && out2->skeleton_total == 3 && out2->skeleton_missing == 1,
+               "S33：骨架 3 镜而输出 2 镜 → 必须报 skeleton_missing=1");
+        bool reported = false;
+        if (out2) {
+            for (const std::string& w : out2->warnings) {
+                if (w.find("骨架内缺失") != std::string::npos) {
+                    reported = true;
+                }
+            }
+        }
+        expect(reported, "S33：骨架缺失必须在 warnings 里可见（不静默）");
+        std::filesystem::remove_all(dir, ec);
+    }
+
     return fails == 0;
 }
 
