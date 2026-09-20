@@ -694,6 +694,23 @@ NovelVisual::ListPromptArtifacts(RowId chapterId, RowId shotId, int limit) const
 std::expected<RowId, DbError>
 NovelVisual::SetLayer(std::string_view ownerKind, RowId ownerId, std::string_view layer,
                       std::string_view text) {
+    // PV4（`13` §2.7"两侧版本同步"，S27）：同 owner/layer 重复写 → **version 递增**（原先恒 1）。
+    // 于是"改了一层文案"在 `prompt_layers` 里**看得见**（`QueryLayer` 取 `version DESC`），
+    // 而 S27 起哈希清单含 `prompt_layers` → 依赖它的 `PromptArtifact` 必然重算、`version + 1`。
+    int nextVersion = 1;
+    {
+        auto cur = db_->Prepare(
+            "SELECT version FROM prompt_layers WHERE owner_kind=?1 AND owner_id=?2 AND layer=?3 "
+            "ORDER BY version DESC LIMIT 1");
+        if (cur) {
+            (void)cur->BindText(1, ownerKind);
+            (void)cur->BindInt(2, ownerId);
+            (void)cur->BindText(3, layer);
+            if (auto s = cur->Step(); s && *s == db::sqlite::StepResult::Row) {
+                nextVersion = static_cast<int>(cur->ColumnInt(0)) + 1;
+            }
+        }
+    }
     auto del = db_->Prepare(
         "DELETE FROM prompt_layers WHERE owner_kind=?1 AND owner_id=?2 AND layer=?3");
     if (!del) return std::unexpected(del.error());
@@ -702,12 +719,13 @@ NovelVisual::SetLayer(std::string_view ownerKind, RowId ownerId, std::string_vie
     (void)del->BindText(3, layer);
     if (auto s = del->Step(); !s) return std::unexpected(s.error());
     auto st = db_->Prepare(
-        "INSERT INTO prompt_layers(owner_kind,owner_id,layer,text) VALUES(?1,?2,?3,?4)");
+        "INSERT INTO prompt_layers(owner_kind,owner_id,layer,text,version) VALUES(?1,?2,?3,?4,?5)");
     if (!st) return std::unexpected(st.error());
     (void)st->BindText(1, ownerKind);
     (void)st->BindInt(2, ownerId);
     (void)st->BindText(3, layer);
     (void)st->BindText(4, text);
+    (void)st->BindInt(5, nextVersion);
     if (auto s = st->Step(); !s) return std::unexpected(s.error());
     return db_->LastInsertRowId();
 }

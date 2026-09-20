@@ -488,6 +488,20 @@ bool RunPromptGenSelfCheck() {
         } else {
             expect(false, "S26：应有 V10 账可查");
         }
+        // ③d PV4（S27）：改一层 `prompt_layers` 文本 → **哈希必须变** → 重算且 Prompt `version + 1`。
+        // 这正是"有人把相机层从『中景』改成『特写』，旧 prompt 必须失效"的场景 ——
+        // 不加 `prompt_layers` 进哈希就是 S25/S26 那类事故的第 4 次（改了不生效）。
+        if (sc) {
+            (void)v.SetLayer("scene", *sc, "scene", "夜色库房，货架投下长影");
+            const PromptGenOutcome fifth =
+                GeneratePromptArtifacts(mem, ch.value_or(0), util::PathToUtf8(tmp));
+            expect(fifth.ok && fifth.artifacts_written == 1 && fifth.reused == 0,
+                   "PV4：`prompt_layers` 变了 → 哈希变 → **重算**（不得复用）");
+            auto list5 = v.ListPromptArtifacts(ch.value_or(0));
+            expect(list5 && !list5->empty() && list5->front().version == 4,
+                   fmt::format("PV4：layers 升版驱动 Prompt `version + 1`（期望 4，实际 {}）",
+                               (list5 && !list5->empty()) ? list5->front().version : 0));
+        }
         std::filesystem::remove_all(tmp, ec);
     }
 
