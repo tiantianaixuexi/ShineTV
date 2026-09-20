@@ -114,6 +114,24 @@ struct ShotRow {
     std::string canon_status = "PROPOSED";
 };
 
+// S49（schema v12）：**阶段产物**（"一镜一行"）—— `stage` = "V1"…"V7"。
+// ⚠️ 这是"**库是唯一权威**"的关键一步（S37 记的账）：原先 V1 骨架 + V2–V7 的 `items[]`
+//    只在盘上（`work/ch<NNN>/vNN_*.json`），想"按镜查上游设计"只能**扫盘再解析**。
+// 形状统一成"一镜一行" ⇒ V1（场/镜）与 V2–V7（`items[]`）**同构**，查某镜的六阶段设计
+// 就是一句 `WHERE chapter_id=? AND scene_ord=? AND shot_ord=?`。
+// ⚠️ 盘上文件**不废除**：它们是"LLM 原始回答的留底"+ 阶段级哈希续跑的凭据；但现在
+//    **库是查询入口**，盘只是可重建的副本。
+struct StageArtifactRow {
+    RowId id = 0;
+    RowId chapter_id = 0;
+    std::string stage;               // "V1"…"V7"
+    int scene_ord = 0;
+    int shot_ord = 0;
+    std::string payload_json = "{}"; // 该镜在该阶段的产物（V1 时是这一镜的骨架）
+    std::string input_state_hash;    // 该阶段当时的输入指纹（追溯用；复用判据仍在盘上）
+    std::int64_t created = 0;
+};
+
 // PromptArtifact（契约 `02` §2.10；schema v9 起有承载表）：**分镜提示词的产物账**。
 // 与 `prompt_layers` 的分工：`prompt_layers` 是"分层片段"（base/stage/camera…），
 // 本表是"某一镜最终产出的整条提示词 + 它的状态指纹"，K23（不变式 I9）判的就是 `input_state_hash`。
@@ -213,6 +231,17 @@ public:
     [[nodiscard]] std::expected<ShotRow, DbError> GetShot(RowId id) const;
     // 按章列出分镜（`scenes.chapter_id = ch`，按 `scenes.ord, shots.ord` 排）—— K09/K22/K24 的库来源
     [[nodiscard]] std::expected<std::vector<ShotRow>, DbError> ListShotsByChapter(RowId chapterId) const;
+
+    // S49（v12）：**阶段产物整阶段重写**（先删后插）—— 阶段是**整体重算**的：增量 upsert 会
+    // 留下上一轮的残行（镜数变少时最明显，而且残行会让"按镜查设计"读到过期数据）。
+    [[nodiscard]] std::expected<void, DbError>
+    ReplaceStageArtifacts(RowId chapterId, std::string_view stage,
+                          const std::vector<StageArtifactRow>& rows);
+    [[nodiscard]] std::expected<std::vector<StageArtifactRow>, DbError>
+    ListStageArtifacts(RowId chapterId, std::string_view stage) const;
+    // 某镜的全部阶段设计（跨 V1–V7）—— 这是"按镜查上游设计"的**正经入口**（原先靠扫盘）。
+    [[nodiscard]] std::expected<std::vector<StageArtifactRow>, DbError>
+    ListStageArtifactsForShot(RowId chapterId, int sceneOrd, int shotOrd) const;
 
     // —— PromptArtifact（`02` §2.10；K23 的库来源）——
     [[nodiscard]] std::expected<RowId, DbError> UpsertPromptArtifact(const PromptArtifactRow& row);

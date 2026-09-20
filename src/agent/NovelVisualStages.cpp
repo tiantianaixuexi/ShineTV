@@ -7,6 +7,7 @@
 #include "openai/OpenAIClient.h" // S41：LlmCreateRaw（返回原始响应体，供工具循环解析）
 #include "novel/NovelChecks.h" // ComputeInputStateHash（`04` §2.5 的唯一来源）
 #include "novel/NovelGraph.h"
+#include "novel/NovelVisual.h" // S49：阶段产物落库（stage_artifacts）
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Json.h" // S38：ExtractJsonObject（宽容提取 LLM 输出的 JSON 正文）
@@ -17,6 +18,7 @@
 #include <fmt/format.h>
 
 #include <filesystem>
+#include <map>      // S49：键 → 该镜原文（落库用）
 #include <set>      // S47：期望镜清单的键集合（与 V1 骨架对账）
 #include <utility>
 
@@ -244,6 +246,32 @@ RunSceneBreakdown(::shine::db::sqlite::Database& db, const LlmCallFn& call,
         std::filesystem::create_directories(dir, ec);
         if (!util::WriteFileBytes(path, json)) {
             out.warnings.push_back("V1 产物落盘失败（work/ 非权威，不阻断）");
+        }
+    }
+    // S49：**V1 骨架落库**（与 V2–V7 的 `stage_artifacts` 行**同构**）—— 一镜一行，
+    // 这样"查某镜的六阶段设计"能一句话把 V1 也带出来（有几镜、时长多少）。
+    // ⚠️ 用 `LoadShotSkeleton` 读回刚写的产物（不重复解析 `doc` —— 这里 `doc` 已经释放了）。
+    if (!req.project_dir.empty()) {
+        const auto sk = LoadShotSkeleton(req.project_dir, ch->ord);
+        if (!sk.empty()) {
+            std::vector<novelcore::StageArtifactRow> rows;
+            rows.reserve(sk.size());
+            for (const ShotSkeleton& s : sk) {
+                novelcore::StageArtifactRow row;
+                row.chapter_id = req.chapter_id;
+                row.stage = "V1";
+                row.scene_ord = s.scene_ord;
+                row.shot_ord = s.ord;
+                row.payload_json =
+                    fmt::format(R"({{"ord":{},"duration":{:.2f}}})", s.ord, s.duration);
+                row.input_state_hash = hash;
+                rows.push_back(std::move(row));
+            }
+            if (auto wr = novelcore::NovelVisual(db).ReplaceStageArtifacts(req.chapter_id, "V1", rows);
+                !wr) {
+                out.warnings.push_back(
+                    fmt::format("V1 骨架落库失败（不阻断，盘上产物仍在）：{}", wr.error().message));
+            }
         }
     }
     out.ok = true;
@@ -807,6 +835,8 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     int missingOrd = 0;
     std::string itemsJson;
     std::set<std::pair<int, int>> gotKeys; // S47：本阶段实际产出的键（与 V1 骨架对账用）
+    // S49：键 → 该镜这一条的**原文**（落库要用；与 `gotKeys` 同源，避免再解析一遍）
+    std::map<std::pair<int, int>, std::string> payloadByKey;
     std::size_t i = 0;
     std::size_t max = 0;
     yyjson_val* it = nullptr;
@@ -830,6 +860,9 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
             free(const_cast<char*>(raw));
         }
         itemsJson += (itemsJson.empty() ? "" : ",") + one;
+        if (sceneV > 0 && ordV > 0) {
+            payloadByKey[{sceneV, ordV}] = one; // S49：落库用（与该镜的键同源）
+        }
     }
     yyjson_doc_free(doc);
     if (missingOrd > 0) {
@@ -838,6 +871,31 @@ std::expected<StageOutcome, AgentError> RunVisualStage(db::sqlite::Database& db,
     }
     if (out.items == 0) {
         out.warnings.push_back("没有产出任何条目（`items` 为空）");
+    }
+    // —— S49：**落库**（"库是唯一权威"，盘只是可重建的副本）——
+    // ⚠️ 起因（S37 记的账）：这些产物**已经是世界状态的一部分**（V9 消费它们出分镜、V10 从
+    //    V4 产物读空间层、S34 逐镜比对），**却只躺在盘上** ⇒ 想"按镜查上游设计"只能**扫盘再解析**。
+    // 现在"一镜一行"落进 `stage_artifacts` ⇒ 查某镜的六阶段设计就是一句 `WHERE`。
+    // ⚠️ **不阻断**：落库失败只告警（盘上产物仍是权威的续跑凭据；库是**查询入口**）。
+    if (!gotKeys.empty()) {
+        std::vector<novelcore::StageArtifactRow> rows;
+        rows.reserve(gotKeys.size());
+        for (const auto& k : gotKeys) {
+            novelcore::StageArtifactRow row;
+            row.chapter_id = req.chapter_id;
+            row.stage = std::string{code};
+            row.scene_ord = k.first;
+            row.shot_ord = k.second;
+            const auto hit = payloadByKey.find(k);
+            row.payload_json = hit != payloadByKey.end() ? hit->second : "{}";
+            row.input_state_hash = hash;
+            rows.push_back(std::move(row));
+        }
+        if (auto wr = novelcore::NovelVisual(db).ReplaceStageArtifacts(req.chapter_id, code, rows);
+            !wr) {
+            out.warnings.push_back(
+                fmt::format("阶段产物落库失败（不阻断，盘上产物仍在）：{}", wr.error().message));
+        }
     }
     // S47：**与 V1 骨架对账**（跨阶段口径）。⚠️ 这是 S46 推广 Agent 模式后暴露的**真回归**：
     // user 精简成"场景清单"后模型不知道每场几镜 ⇒ 每阶段各编一套（实测 4/4/3/15/6/4 而骨架是 10）。
@@ -1073,6 +1131,50 @@ bool RunStagesSelfCheck() {
         expect(p4.has_value() && *p4 == VisualStageId::V4Spatial, "S35：`ParseVisualStage` 接受 v4");
         expect(!ParseVisualStage("V9").has_value() && !ParseVisualStage("abc").has_value(),
                "S35：非法 `--up-to` 应被拒（V9 / abc）");
+    }
+
+    // ⑥ S49：**阶段产物落库**（`stage_artifacts`，schema v12）—— 落进去、按镜能查回来、
+    //    **整阶段重写不留残行**（这是"按镜查上游设计"能信的前提）
+    {
+        novelcore::NovelVisual vis(mem);
+        const auto cid = ch.value_or(0);
+        novelcore::StageArtifactRow r1;
+        r1.chapter_id = cid;
+        r1.stage = "V1";
+        r1.scene_ord = 1;
+        r1.shot_ord = 1;
+        r1.payload_json = R"({"ord":1,"duration":3.0})";
+        std::vector<novelcore::StageArtifactRow> rows{r1};
+        novelcore::StageArtifactRow r2 = r1;
+        r2.shot_ord = 2;
+        r2.payload_json = R"({"ord":2,"duration":2.0})";
+        rows.push_back(r2);
+        expect(vis.ReplaceStageArtifacts(cid, "V1", rows).has_value(), "S49：阶段产物落库应成功");
+        auto back = vis.ListStageArtifacts(cid, "V1");
+        expect(back.has_value() && back->size() == 2,
+               fmt::format("S49：应查回 2 行（实际 {}）", back.has_value() ? back->size() : 0));
+        // **整阶段重写**：只留 1 行 ⇒ 旧的第 2 行**必须消失**（增量 upsert 会留残行，
+        // 而残行会让"按镜查上游设计"读到**过期数据** —— 比没有更坏）
+        rows.pop_back();
+        expect(vis.ReplaceStageArtifacts(cid, "V1", rows).has_value(), "S49：整阶段重写应成功");
+        auto back2 = vis.ListStageArtifacts(cid, "V1");
+        expect(back2.has_value() && back2->size() == 1,
+               fmt::format("S49：重写后只应剩 1 行、**不留残行**（实际 {}）",
+                           back2.has_value() ? back2->size() : 0));
+        auto forShot = vis.ListStageArtifactsForShot(cid, 1, 1);
+        // ⚠️ 断言用 `>= 1`（不是 `== 1`）：本函数**前面**的阶段链自检（⑤）跑过
+        // `RunAllVisualStages`、在同一个库里也落了 V1 行 —— 这里只验"**按镜查得到**"
+        // 这件事本身（`(scene_ord, shot_ord)` 过滤生效 + 拿得到该镜的设计）。
+        expect(forShot.has_value() && !forShot->empty() &&
+                   forShot->front().stage == "V1" &&
+                   forShot->front().payload_json.find("duration") != std::string::npos,
+               fmt::format("S49：**按镜查询**应能拿到该镜的阶段设计（实际 行数={} 首行 stage='{}' "
+                           "payload='{}' err='{}'）",
+                           forShot.has_value() ? forShot->size() : 0,
+                           forShot.has_value() && !forShot->empty() ? forShot->front().stage : "?",
+                           forShot.has_value() && !forShot->empty() ? forShot->front().payload_json
+                                                                    : "?",
+                           forShot.has_value() ? "" : forShot.error().message));
     }
 
     // ③ 没有 scenes 的章 → 明确报错（V1 的输入前提）

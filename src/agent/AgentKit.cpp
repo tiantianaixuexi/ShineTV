@@ -5,6 +5,7 @@
 #include "core/Log.h"
 #include "mcp/ToolRegistry.h"
 #include "novel/NovelFields.h"
+#include "novel/NovelVisual.h" // S49：阶段产物（`stage_artifacts`）—— 骨架改读库
 #include "util/Encoding.h" // S48：PathToUtf8（工具读盘上报路径）
 #include "util/File.h"     // S48：ReadFileBytes（读盘上的 V1 骨架）
 #include "util/Json.h"
@@ -436,6 +437,39 @@ public:
         auto ch = g.GetChapter(cid);
         if (!ch) {
             return ErrDoc("not_found", ch.error().message);
+        }
+        // S49：**改读库**（`stage_artifacts` 的 `V1` 行）—— 原先读盘，那是"V1 骨架只在盘上"
+        // 的临时桥。现在"**库是唯一权威**、盘只是可重建的副本"（`01` §2）。
+        // ⚠️ 库里没有时**回退读盘**：兼容"落库之前跑过的老工程"（那时只有盘上产物），
+        //    免得升级后必须整体重跑一遍才能用。
+        {
+            novelcore::NovelVisual vis(kit_->Db());
+            auto rows = vis.ListStageArtifacts(cid, "V1");
+            if (rows && !rows->empty()) {
+                // 按 `scene_ord` 分组拼回"场/镜"结构（与盘上产物同形 —— 模型看到的形状不变，
+                // 免得"改读库"顺手改了它要适配的输入格式）
+                std::string scenes = "[";
+                int curScene = -1;
+                bool firstShot = true;
+                for (const novelcore::StageArtifactRow& r : *rows) {
+                    if (r.scene_ord != curScene) {
+                        if (curScene >= 0) {
+                            scenes += "]},"; // 收上一个场
+                        }
+                        curScene = r.scene_ord;
+                        scenes += fmt::format(R"({{"scene_ord":{},"shots":[)", curScene);
+                        firstShot = true;
+                    }
+                    scenes += fmt::format("{}{}", firstShot ? "" : ",", r.payload_json);
+                    firstShot = false;
+                }
+                if (curScene >= 0) {
+                    scenes += "]}";
+                }
+                scenes += "]";
+                return OkDoc(fmt::format(
+                    R"({{"source":"db","chapter_id":{},"scenes":{}}})", cid, scenes));
+            }
         }
         const auto path = std::filesystem::path{kit_->ProjectDir()} / "work" /
                           fmt::format("ch{:03}", ch->ord) / "v01_scene_breakdown.json";
