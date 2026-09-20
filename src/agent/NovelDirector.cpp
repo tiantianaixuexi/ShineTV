@@ -443,12 +443,17 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     std::map<std::string, int> checkFailCounts;
     std::string lastChecksDescribe; // S19：T15 的产物要记"最后一次尝试"的机器校验摘要
 
+    // S55：上一次**解析失败**的提示（与"机器校验不过"分开 —— 两种毛病的处方完全不同：
+    // 前者是"JSON 都不合法"（多半引号没转义），后者是"JSON 合法但字段/取值不对"）。
+    std::string parseFailHint;
     for (int attempt = 0; attempt <= maxValidateRetries; ++attempt) {
         Report(progressCb, Phase::Extract, 90,
                attempt == 0 ? std::string{"Extractor"}
                             : fmt::format("Extractor 重做（第 {} 次 · `06` §2.6 回产出阶段）", attempt));
         std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
-        if (attempt > 0) {
+        if (!parseFailHint.empty()) {
+            exUser += parseFailHint;
+        } else if (attempt > 0) {
             exUser += fmt::format(
                 "\n\n【上一版 StateDiff 未通过机器校验（`06` §2.3），请**只修这些问题**后重新输出"
                 "完整 StateDiff】\n{}\n",
@@ -480,13 +485,35 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                 }
                 hasDiff = true;
             } else if (!util::Trim(ej).empty()) {
-                log::Warn("Extractor 输出不是合法的 StateDiff JSON（本章不回写状态）：{}",
-                          util::Trim(ej).substr(0, 200));
+                // S55：**把"截断"和"格式错"分开** —— 原先只有 `substr(0, 200)`，两种情况的
+                // 日志长得一样，导致误判（我自己就先误判成"围栏"，其实是别的原因）。
+                // 判据：JSON 正常收尾是 `}`（提取后）或原文以 `}` 结尾；没有 ⇒ 几乎肯定是
+                // `max_output_tokens` 截断 ⇒ 该**调大上限 / 精简输出**，而不是去怪模型"格式不听话"。
+                const std::string t{util::Trim(ej)};
+                const bool looksTruncated = t.empty() || (t.back() != '}' && t.back() != ']');
+                log::Warn("Extractor 输出不是合法的 StateDiff JSON（本章不回写状态）"
+                          "· 总长 {} 字 · {}：\n{}",
+                          t.size(),
+                          looksTruncated ? "**疑似被 max_output_tokens 截断**（结尾不是 } ）"
+                                         : "结尾正常，疑似格式/字段问题",
+                          t.substr(0, 800));
             }
         }
         if (!hasDiff) {
-            break; // 没有 diff → 不提交（重做也没用）
+            // S55：**解析失败也重试**（原先直接 `break` ⇒ `max_validate_retries` 形同虚设）。
+            // 实测：模型这一轮吐出**未转义的英文引号**（中文对话里直接写 `"`）⇒ `yyjson` 语法失败。
+            // 模型有随机性，重试往往就过；而"不重试"的代价是**整章状态不回写** ⇒
+            // `canon_logs` 空 ⇒ **auto 前置①永远过不了**（`--novel-run auto` 永远被拒）。
+            if (attempt < maxValidateRetries) {
+                parseFailHint =
+                    "\n\n【上一版输出**不是合法 JSON**（解析失败）。最常见原因是**字符串里的英文引号"
+                    "没有转义** —— 中文对话中的引号请写成 `\\\"`，或直接改用中文引号「」；"
+                    "另外不要输出 markdown 代码块/```json 围栏。请**重新输出完整、合法的 JSON**】\n";
+                continue;
+            }
+            break; // 用完重试次数仍不合法 → 不提交（重做也没用）
         }
+        parseFailHint.clear(); // 解析成功 → 提示作废
 
         // S8（闭环回写）：门禁 G1–G5 + 14 块事务。**门禁拒绝 ≠ 生成失败**：正文已落盘
         // （`07` §2.3 的失败处理）；其中 G2 的机器校验失败则回到本阶段重做。

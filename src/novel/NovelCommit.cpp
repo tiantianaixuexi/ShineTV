@@ -149,14 +149,26 @@ bool StateDiffFromJson(std::string_view text, StateDiff& out) {
     }
     yyjson_doc* probe = yyjson_read(text.data(), text.size(), 0);
     if (probe == nullptr) {
+        // S55：**区分"JSON 语法就过不了"和"语法过了但字段映射不上"** —— 原先三者都返回
+        // false、调用方只能笼统地说"不是合法的 StateDiff JSON"，实测时把我自己也误导了
+        //（先误判成"markdown 围栏"，其实围栏早修好了）。有区分才知道该改提示词还是改映射。
+        log::Warn("StateDiffFromJson：JSON 语法解析失败（{} 字）—— 检查是否被截断/含裸引号",
+                  text.size());
         return false;
     }
     const bool isObject = yyjson_is_obj(yyjson_doc_get_root(probe));
     yyjson_doc_free(probe);
     if (!isObject) {
+        log::Warn("StateDiffFromJson：JSON 能解析但**根不是对象**（StateDiff 必须是 `{{...}}`）");
         return false;
     }
-    return util::reflect::FromJsonString(text, out) > 0;
+    const int filled = util::reflect::FromJsonString(text, out);
+    if (filled <= 0) {
+        log::Warn("StateDiffFromJson：JSON 合法但**字段一个都没映射上**（{} 字）"
+                  "—— 多半是键名/结构不符合 `02` §2.5 的契约（不是格式问题）",
+                  text.size());
+    }
+    return filled > 0;
 }
 
 // ———— 契约校验（`07` §2.2 的 ③，机器部分）————
