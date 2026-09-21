@@ -267,7 +267,12 @@ namespace {
 // `ChatComplete`（Chat Completions 那条）已有一份同款实现；两处分开是因为它们在不同翻译单元，
 // 共用就得新建头文件 —— 记账：将来合并到一个 `openai/LlmDump.h`。
 void DumpResponsesIo(const char* kind, std::string_view text) {
+    // ★ S101：与 `OpenAIChat.cpp` 的 `LlmDumpDir()` 同款 —— `SHINE_LLM_DUMP` 优先，
+    // 未设则回退 `SHINE_DUMP_LLM_REQ`（**一个开关覆盖每一步**；见那边的注释）。
     const char* raw = std::getenv("SHINE_LLM_DUMP");
+    if (raw == nullptr || *raw == '\0') {
+        raw = std::getenv("SHINE_DUMP_LLM_REQ");
+    }
     if (raw == nullptr || *raw == '\0') {
         return;
     }

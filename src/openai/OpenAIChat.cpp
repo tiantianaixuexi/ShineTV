@@ -77,7 +77,16 @@ std::string ExtractChatContent(std::string_view body) {
 // `SHINE_LLM_DUMP=<目录>` → 把**请求体**与**响应原文**逐个落盘（诊断 LLM 问题的唯一可靠手段）。
 // ⚠️ 请求体里**不含 apiKey**（它在 HTTP header 里）—— 所以 dump 出去是安全的；关闭时零开销。
 [[nodiscard]] std::string LlmDumpDir() {
+    // ★ S101：**一个开关覆盖每一步**。原先这里只认 `SHINE_LLM_DUMP`（**客户端层**：`ChatComplete` /
+    // `ChatSession.Send` / `Responses` 的每一次调用都过这儿 ⇒ 天然覆盖 PLAN/WRITE/REVIEW/EXTRACT 每一步），
+    // 而 `NovelPipeline` 的 extractor 专用 dump（拆成 `_instructions.txt` / `_tools.json` / `_messages.json`）
+    // 只认 `SHINE_DUMP_LLM_REQ`。两个名字、两种覆盖面 ⇒ 用户问"每一步的提示词到底在哪"时只设一个就漏。
+    // ⇒ 这里把 `SHINE_DUMP_LLM_REQ` 当**回退目录**（`SHINE_LLM_DUMP` 优先）：两个开关都有效。
+    // ⚠️ 请求体里**不含 apiKey**（它在 HTTP header），落盘安全；不设 ⇒ 零开销。
     const char* raw = std::getenv("SHINE_LLM_DUMP");
+    if (raw == nullptr || *raw == '\0') {
+        raw = std::getenv("SHINE_DUMP_LLM_REQ");
+    }
     return (raw == nullptr || *raw == '\0') ? std::string{} : std::string{raw};
 }
 
