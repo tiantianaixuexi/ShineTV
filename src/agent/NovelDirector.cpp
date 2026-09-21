@@ -256,9 +256,9 @@ std::string_view ExtractSystemPrompt() noexcept {
 【形状示例（照这个填，字段名一个都不要改）】
 {"summary":"……","chapter_id":<本章章号>,
  "entities":[{"temp_id":"en:断头挂绳","kind":"item","name":"工号牌挂绳断头 092","summary":"……","status":"active"}],
- "characters":[{"entity_id":<person id>,"location_id":<location id>,"body_state":"……","mind_state":"……","goal":"……","reason":"……"}],
- "events":[{"temp_id":"ev:夜遇","cause":"……","participants":[{"entity_id":<person id>,"role":"actor"}],
-            "location_id":<location id>,"time_label":"深夜","action":"……","result":"……"}],
+ "characters":[{"entity_ref":"林澈","location_ref":"旧信号塔·塔顶灯室","body_state":"……","mind_state":"……","goal":"……","reason":"……"}],
+ "events":[{"temp_id":"ev:夜遇","cause":"……","participants":[{"entity_ref":"林澈","role":"actor"}],
+            "location_ref":"旧信号塔·塔顶灯室","time_label":"深夜","action":"……","result":"……"}],
  "foreshadows":[{"op":"new","title":"……","content":"……","status":"PLANTED","setup_ch":5,"payoff_ch":9,"importance":70}],
  "causal":[],"items":[],"locations":[],"plotlines":[],"mysteries":[],"knowledge":[],"timeline":[]}
 （引用**本章新建**实体的写法：`"participants":[{"entity_id":0,"entity_temp_id":"en:新人物-谭工","role":"actor"}]`）
@@ -267,11 +267,15 @@ std::string_view ExtractSystemPrompt() noexcept {
    而 `*_id` 字段只能填 `list_id_directory` 查到的**真实数字**。
 ⚠️ `kind` 取值必须是 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…），
    **不要把字段名当值**（写 kind:"kind" 是常见错误，会被契约校验直接挡下）。
-⚠️ `*_id` 字段（`entity_id`/`item_id`/`owner_id`/`location_id`/`from_id`/`to_id`）**两条路，别混**：
-   · **库里已存在** ⇒ 填 `list_entities` / `get_entity` **查出来的那个数字**（不凭印象编、不照抄示例）；
-   · **本章新建**（你在 `entities[]` 里给了 `temp_id`，如 `en:新人物-谭工`）⇒ 填**旁边的兄弟键 `*_temp_id`**，
-     如 `"participants":[{"entity_id":0,"entity_temp_id":"en:新人物-谭工","role":"actor"}]`、
-     `"location_temp_id":"en:新修配间"`（`temp_id` 必须与 `entities[]` 里写的**逐字一致**，含 `en:` 前缀）。
+【引用写法（照这三行做，别再纠结"id 填什么"）】
+1. **不要凭记忆猜 ID** —— 数据库 ID、存在性、kind 匹配、外键都由**下游解析**，你不用管，也别自己编数字。
+2. **已有实体** ⇒ **用名字引用**：`"entity_ref":"林澈"`、`"location_ref":"旧信号塔·塔顶灯室"`、`"from_ref"` /
+   `"to_ref"` / `"item_ref"` / `"owner_ref"`（与 `entity_id` / `from_id` / `to_id` / … 一一对应）。
+   名字**照库里的写法**（别加书名号/别简写）；同一名字同 kind 有多个时报错会**拒并列出候选** ——
+   那时**照候选列表里的 id 填**，或把名字写得更明确。
+3. **本章新建** ⇒ 在 `entities[]` 给它 `temp_id`（语义标签），要引用它就填**兄弟键 `*_temp_id`**
+   （`"entity_temp_id":"en:新人物-谭工"`、`"location_temp_id":"en:新修配间"`；必须与 `entities[]` 里**逐字一致**）。
+   要建"**同名但不同的人**"（如第二个「李默」）⇒ 在 `entities[]` 里加 `"force_new":true`。
 【输出纪律（违反一条整份作废/整章提交失败）】
 1. 只输出 JSON 本体：不要 markdown 围栏、不要任何解释文字。
 2. **字符串内部禁止出现半角双引号**（对话、便签、标题请用「」或『』）——
@@ -279,19 +283,17 @@ std::string_view ExtractSystemPrompt() noexcept {
 3. **字段尽量短**：summary ≤ 40 字，每条条目的 summary/note 同样 ≤ 40 字；**不要复述正文**。
    （整份输出越短越可靠；实测 2 万字输出必然出错。）
 4. 只填**真正发生变化**的条目；没有变化的数组一律写 []。
-5. `relations[]` 每条必须给全 from_id / to_id / rel_type（id 用上面工具查到的数字），
-   `items[]` 给全 op / item_id，`characters[]` 给全 entity_id —— 缺一个整章提交失败。
+5. `relations[]` 每条必须给全**两端**与 rel_type（**用名字引用**，见上面的【引用写法】），
+   `items[]` 给全 op 与被持有物，`characters[]` 给全实体引用 —— 缺一个整章提交失败。
 6. **id 的用途必须匹配**（K03 会挡下整章）：`characters[].entity_id` /
    `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用 **[person]** 的 id；
    `items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
    ⚠️ **库里还没有的（新物品 / 新人物 / 新地点）**：先在 `entities[]` 用 `temp_id` 新建；
    **要在这里引用它，就用上面的 `*_temp_id` 兄弟键写法**（如 `"entity_temp_id":"en:新人物-谭工"`）——
    这是"新人物在新地点卷入事件 / 新物品被谁持有"的**唯一合法表达**。
-   🔴 **`temp_id` 只是个标签，与库 id 毫无关系**；`*_id` 字段**只能填 `list_id_directory` /
-   `get_entity` 查出来的真实数字**（填错会命中一个完全无关的实体 ⇒ 整章被拒）。
-   ⚠️ 查不到（= 库里还没有）时，**正确做法是"整条 entry 不要写"**，**不是**把 id 写成 `0`
-   （填 `0` 会在落库时被拒）。凡 `*_id` 字段：**要么填查得到的真实 id，要么整条不写**；
-   `0` 只在明确允许的地方用（如 `items[].location_id` 表示"无地点"）。
+   🔴 **`temp_id` 只是个标签，与库 id 毫无关系**；**别凭记忆猜 ID**（填错会命中一个完全无关的实体 ⇒
+   整章被拒）。库里**还没有**的实体 ⇒ 先在 `entities[]` 用 `temp_id` 新建，再用 `*_temp_id` 引用它
+   （**不是**把 id 写成 `0`；`0` 只在明确允许的地方用，如 `items[].location_id` 表示"无地点"）。
 - summary: 本章 2–3 句摘要（字符串）
 - entities[]: {temp_id, kind, name, summary, status}
     kind 必须命中 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…）
