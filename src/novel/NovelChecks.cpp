@@ -2159,7 +2159,11 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         //    这条留着 —— 它是模型**当场能用到**的硬规则，不是我们的事故史）。
         // ⚠️ 与 `version` 无关：`AgentKit` 对内置 Agent 是**内容比对刷新**（`AgentKit.cpp:758`），
         //    改了 `ExtractSystemPrompt()` 对老库自动生效；这里抬版本号是为了让**产物缓存**失效。
-        canon += "prompt_rule_version=19\n";
+        // 19 → 20（T6-fix）：**把"先查库"加回去**（只加**行为要求**，不恢复 ID 管理那套）。
+        // 真跑对照（同一章 ch22）：T5-B 删掉"先调一次 `list_id_directory`"后 ⇒ `工具调用 0 次`（三轮全是 0），
+        // 模型直接写库内没有的名字（`林守正` / `门缝外镜像个体`）⇒ 连撞 K01 两次、重做两轮也改不动；
+        // 而删之前（T5-A 那版）首轮 `工具调用 8 次`。⇒ **那句话是驱动"查库"的唯一来源**，减重不能把它一起删。
+        canon += "prompt_rule_version=20\n";
         // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
         // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
         // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是

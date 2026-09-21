@@ -244,10 +244,13 @@ std::string BuildIdCheatSheet(db::sqlite::Database& db, int capPerKind = 60,
 std::string_view ExtractSystemPrompt() noexcept {
     return R"-(
 你是信息抽取器。读【计划】与【正文】，输出**一份 StateDiff JSON**（形状/字段名见下方示例与字段清单，**别看别处的文档 —— 你看不到它们**）。
+🔴 **第一步（必做）**：先调一次 `list_id_directory`，看清**库内已有的实体名字**（每个 kind 一份名单）。
+   —— 你要写的每个**引用名字**都必须是它里面有的，**或**你本章在 `entities[]` 里新建的；
+   **不查就写名字 ⇒ 大概率被拒**（真跑对照：删掉这一句时模型 `工具调用 0 次`，写出的名字库里没有）。
 ⚠️ **本任务不需要你知道任何库内 id**：引用一律用**名字**（`*_ref`），本章新建的用 `temp_id`（配 `*_temp_id`）
   —— 它们由**下游解析**成真实 id，你判错了也会被明确告知改哪里。
-  要确认"库里有没有这个名字 / 它是哪种 kind"，用工具自己查（`get_entity` / `list_entities` /
-  `list_id_directory` / `list_field_defs` / `list_entity_fields`）—— **别凭印象说"库里没有"**。
+  要查更多细节（某个名字的 kind / 有哪些字段）用 `get_entity` / `list_entities` / `list_field_defs` /
+  `list_entity_fields` —— **别凭印象写名字，也别凭印象说"库里没有"**。
 顶层键只能是下列这些，**不要自造键名**（写成 new_entities / foreshadow_updates 之类会被直接忽略）：
   summary, contract_version, producer, input_state_hash, chapter_id, no_change_declared,
   entities, characters, relationships, items, locations, events, causal,
@@ -600,19 +603,29 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
             exUser += fmt::format(
                 "\n\n【上一版 StateDiff 未通过机器校验，请**只修这些问题**后重新输出"
                 "完整 StateDiff】\n{}\n"
-                // S63：**重做时必须重新查 id** —— 真跑实证：重做的两轮**一次工具都没调**（`工具调用 0 次`），
-                // 直接照着上一版的数字改 ⇒ 同一个 K03（id 用途不匹配）连续 3 次挡下。
-                // ⚠️ 这条**不是**硬保证（K03 才是），只是把"该怎么修"说清楚：`entity_id` 这类字段只能
-                //    来自**库**，而库里的 id 必须**当场查**，不能靠上一版的数字、更不能照抄示例。
-                "\n⚠️ 上面这些问题里的 **id 一律要重新查**（`list_entities` / `get_entity`）后再填：\n"
-                "   · 只论用途对不上的，就换成查到的**同用途** id（如 `characters[].entity_id` 要 person 的 id）；\n"
-                "   · 该实体库里**还没有**的，别硬塞 id —— 放进 `entities[]` 用 `temp_id` 新建。\n"
-                "   **不要**沿用上一版的数字，**不要**照抄上面示例里的占位符。\n",
+                // S63 → ★ T6-fix：提示改成**名字口径**（引用只用名字或 temp_id）。原先这段是"id 一律
+                // 重新查"，那是"模型管 ID"时代的写法；名字引用落地后，"填错 id"大多变成
+                // "**名字库里没有 / 有歧义**"（见下面按标记分发的动作）。
+                "\n⚠️ 上面这些问题，**不要靠改数字解决**（引用只用**库里的名字**或本章 `temp_id`）：\n"
+                "   · 名字**库里没有** ⇒ 照库里的写法（报文里给了「相近名字」），确实要新建就进 `entities[]`；\n"
+                "   · 名字**有歧义** ⇒ 照候选列表填要用的那个 id；\n"
+                "   · 该实体库里**还没有**的 ⇒ 放进 `entities[]` 用 `temp_id` 新建，再用 `*_temp_id` 引用。\n"
+                "   **不要**沿用上一版凭空写的数字，**不要**照抄上面示例里的占位符。\n",
                 commit.checks_describe);
             // ★ S67：**按失败项给"具体动作"** —— 真跑实证：重做两轮都改不动的，往往是模型
             // **不知道该往哪改**（只知道"这条没过"）。这里按 check_id 给出"改哪里、改成什么"。
             // ⚠️ 只是提高重做命中率；**硬保证仍在门禁**（K03/K05/K17 会拒）。
             std::string actions;
+            // ★ T6-fix：**新机制的错误类型也要给动作** —— 判据用**失败文本的标记**，不依赖 check_id。
+            // 为什么必须这样（真跑实证，第 22/26 章）：名字引用落地后出现的失败是
+            //   `K01` 里的「**名字库里没有**」/「**有歧义**」/「名字认对了但 kind 不符」，以及契约 **D10**
+            // —— 它们**都不在** `failed("K02"|"K03"|...)` 的旧名单里 ⇒ 重做时**一句动作都没有**，
+            // 模型只能瞎改，两轮后放弃（**S67 那个病重演**：只告诉它"哪条没过"没用，必须给"改成什么"）。
+            // ⚠️ 两个来源都要扫：K 报告在 `checks_describe`，契约 D / 块级守卫在 `commit.error`。
+            const std::string failText = commit.error + "\n" + commit.checks_describe;
+            const auto mentions = [&failText](std::string_view marker) {
+                return failText.find(marker) != std::string::npos;
+            };
             const auto failed = [&commit](std::string_view id) {
                 for (const std::string& s : commit.failed_check_ids) {
                     if (s == id) {
@@ -621,6 +634,21 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                 }
                 return false;
             };
+            if (mentions("库里没有名为")) {
+                actions += "\n   · **「库里没有这个名字」不是改数字能解决的**：要么照**库里的名字**写"
+                           "（报文里的「相近名字」若是同一个实体，就用那个写法）；要么它确实是**本章新出现**的"
+                           "实体 ⇒ 在 `entities[]` 里给它 `temp_id` + `name` 新建，再用 `*_temp_id` 引用。"
+                           "**不要**把它换成一个数字 id（那会指到另一个无关实体）。";
+            }
+            if (mentions("有歧义")) {
+                actions += "\n   · **「有歧义」必须由你选定是谁**（系统不替你猜）：报文里已列候选 id ⇒ "
+                           "直接填要用的那个**数字 id**；若你要的其实是**新建**（同名不同人/物），"
+                           "就在 `entities[]` 里用 `\"force_new\":true` 建它，再用它的 `*_temp_id` 引用。";
+            }
+            if (mentions("此处期望")) {
+                actions += "\n   · **名字认对了、但 kind 不符**：该名字在库里是**别的 kind**（见报文）。"
+                           "要么换一个**该 kind 的名字**，要么按语义改字段（如地点名写进 `*_ref`，不要写进物品字段）。";
+            }
             if (failed("K03") || failed("K26") || failed("K14")) {
                 actions += "\n   · **id 的用途必须匹配库里的 kind**：`characters[].entity_id` 与 "
                            "`events[].participants[].entity_id` 只收 **[person]**；`items[].item_id` 只收 "
@@ -674,11 +702,22 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                     "   · 块 4 说「持有者解析不到」：`items[].op=\"acquire\"` 必须给 "
                     "`owner_id` 或 `owner_temp_id`。\n";
             }
+            // ★ T6-fix：`causal[]` 的 **D10**（两端都要给）**必须按文本判** —— 它原先挂在
+            // `commit.error.find("块 ")` 里，而第 26 章实证：它是**契约层**报的
+            //（`contract：D10：causal[3] 的 cause/effect 两端都要给`）⇒ **那条提示一次都没触发**
+            //（auto 连跑因此在 ch26 撞 S1 硬停：K01 连续失败 3 次）。
+            if (mentions("D10") || mentions("两端都要给")) {
+                exUser += "\n⚠️ `causal[]` 每条**两端都要给**（`cause` 与 `effect` 都要有 `temp_id` 或实体引用）"
+                          "，且**指向两个不同的事件** —— **不许留空、不许填 `0`**。\n";
+            }
             // ★ S71：**"引用错"类失败的重做，附上库内真实 id 速查表**（只在重做时；首轮绝不喂 ——
             // 见 `BuildIdCheatSheet` 的注释）。真跑实证（第 13 章 K03 连续 2 次挡下）：重做两轮
             // `工具调用 0 次`，模型只是照抄上一版数字 ⇒ 必须把"库里到底有哪些"摆到它面前。
             // ⚠️ 这**不是**硬保证（硬保证仍是 K03/K02/K05/K17 会拒），只是让"重做"有机会改对。
-            if (failed("K02") || failed("K03") || failed("K05") || failed("K06") || failed("K17")) {
+            // ★ T6-fix：**名字类失败也附速查表**（库内"kind → 名字"目录）—— 模型写了一个库里没有的名字时，
+            // 最需要的正是"库里到底叫什么"；原先只在 K02/K03/K05/K06/K17 时附 ⇒ 名字类失败拿不到。
+            if (failed("K02") || failed("K03") || failed("K05") || failed("K06") || failed("K17") ||
+                mentions("库里没有名为") || mentions("有歧义") || mentions("此处期望")) {
                 const std::string sheet = BuildIdCheatSheet(*db_);
                 log::Info("EXTRACT：重做附库内 id 速查表（{} 字节）", sheet.size());
                 exUser += sheet;
