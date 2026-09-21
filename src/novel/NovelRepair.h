@@ -83,4 +83,18 @@ struct RepairOutcome {
 // 离线自检：内存库造脏 → 扫描抓到 → dry_run 不改库 → apply 修对 → 复扫干净 → 再修 0 条（幂等）
 [[nodiscard]] bool RunRepairSelfCheck();
 
+// ★ R11：**软合并 / 重定向**（★ 用户 2026-09-21 定的核心不变量：**永不 DELETE 实体行**）。
+// 调用方必须**显式点名 survivor**（`spec` 形如 `"43<108;59<76,134"` = `survivor<loser1,loser2`，多组用 `;`）
+// ⇒ **永不自动 merge**（spec 为空 ⇒ 报错返回，一行不动）。
+// `dry_run=true`（默认）只出计划、**一个字节都不写**。真写时：
+//   ① **压平** `merged_into` 链（**直接指向活实体** —— 硬验收 A：不留 `134→76→59` 这种多跳）；
+//   ② 重指**引用/关系/状态**行（`relations` / `event_participants` / `event_details` /
+//      `character_status` / `character_knowledge` / `entity_ownerships` / `entity_fields` /
+//      **`entity_versions`**）；
+//   ③ **逻辑去重**（只删**引用/状态行**；⚠️ **`entity_versions` 是历史表 ⇒ 只重指、绝不去重**）；
+//   ④ 写 `audit_logs(action=merge_entity)`（含 survivor / losers / actor / 去重摘要）。
+// 兼容面：**旧 id 永远可解析** —— resolver 透明重定向到幸存者（并 warn 留痕，见 `NovelCommit.cpp`）。
+[[nodiscard]] RepairOutcome MergeBySpec(db::sqlite::Database& db, std::string_view merge_spec,
+                                        bool dry_run, std::string_view actor = "repair");
+
 } // namespace shine::novelcore

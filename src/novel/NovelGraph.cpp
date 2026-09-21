@@ -114,8 +114,11 @@ std::expected<RowId, DbError> NovelGraph::UpsertEntity(const EntityRow& row) {
     std::string forceNewConflicts;
     if (row.id <= 0 && DedupByPersistentName(row.kind)) {
         std::vector<std::pair<RowId, int>> cand; // (id, created_chapter)
+        // ★ R11：候选只看**活实体**（`merged_into=0`）—— 退休行不该再被"复用/歧义"判定看到
         if (auto st = db_->Prepare("SELECT n.entity_id,n.created_chapter FROM entity_names n "
-                                   "WHERE n.kind=?1 AND n.name_norm=?2 ORDER BY n.entity_id")) {
+                                   "JOIN entities e ON e.id=n.entity_id "
+                                   "WHERE n.kind=?1 AND n.name_norm=?2 AND e.merged_into=0 "
+                                   "ORDER BY n.entity_id")) {
             (void)st->BindText(1, row.kind);
             (void)st->BindText(2, NormalizeEntityName(row.name));
             while (true) {

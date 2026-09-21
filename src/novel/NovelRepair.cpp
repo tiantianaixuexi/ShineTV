@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <initializer_list>
 #include <map>
 #include <string>
@@ -399,8 +400,9 @@ ConsistencyReport ScanConsistency(db::sqlite::Database& db) {
         };
         std::map<std::string, std::vector<Ent>> groups; // key = kind + '\x1f' + name_norm
         (void)ForEachRows(db, "R10-scan",
+                          // ★ R11：**退休行不参与** —— 软合并过的实体不再算"重复"（否则会被永远报出来）
                           "SELECT id,kind,name,created_chapter,summary FROM entities "
-                          "WHERE kind<>'event' ORDER BY kind,name,id",
+                          "WHERE kind<>'event' AND merged_into=0 ORDER BY kind,name,id",
                           [&](db::sqlite::Statement& st) {
                               const std::string norm = NormalizeEntityName(st.ColumnText(2));
                               if (norm.empty()) {
@@ -447,6 +449,319 @@ ConsistencyReport ScanConsistency(db::sqlite::Database& db) {
     }
 
     return rep;
+}
+
+// ———— ★ R11：软合并 / 重定向（**永不 DELETE 实体行**）————
+//
+// 为什么不是 DELETE（用户 2026-09-21 追问逼出来的）：**实体 id 是历史身份**。物理删掉会让
+// 旧产物 / 快照 / `audit_logs.detail` / 外部 MCP 客户端 / 模型上下文里的 id 全部变**悬空**
+// —— 而且要到第 1000 章才炸。⇒ 只做：设 `merged_into` + **重指引用类行**，实体行**一行不删**。
+//
+// ⚠️ **永不自动 merge**：`merge_spec` 非空才动（形如 `"43<108;59<76,134"` = `survivor<loser1,loser2`）。
+// ⚠️ **链式必须收敛**（用户硬验收 A）：`merged_into` 一律**直接指向活实体**；若某个 loser 自己还是别人的
+//    survivor（`X.merged_into=loser`），这里**一并压平**为 `X.merged_into=survivor`。
+//
+// **引用表清单**（只碰这些"引用/关系/状态"行；新增表要在**这一处**登记）：
+//   relations(from_id,to_id) / event_participants(entity_id) / event_details(location_id) /
+//   character_status(entity_id,location_id) / character_knowledge(entity_id) /
+//   entity_ownerships(owner_id,item_id) / entity_fields(entity_id) / **entity_versions(entity_id)**。
+// ⚠️ **`entity_versions` 是历史表**（`ver`+`snapshot_json`，**无唯一键**）⇒ 只重指 entity_id、
+//    **绝不去重**（去重就是把历史抹掉）。其余表的"去重"依据是**不变式/逻辑重复**（不是 DB 约束 ——
+//    真库核查过：`event_participants`/`character_status` 等**都没有 UNIQUE**，只有 `entity_fields` 有）。
+// ⚠️ 去重**只删引用/状态行**，**永不删实体行**（硬约束）。
+
+namespace {
+[[nodiscard]] std::vector<std::pair<RowId, std::vector<RowId>>> ParseMergeSpec(std::string_view spec) {
+    std::vector<std::pair<RowId, std::vector<RowId>>> out;
+    std::size_t i = 0;
+    while (i < spec.size()) {
+        std::size_t semi = spec.find(';', i);
+        if (semi == std::string_view::npos) {
+            semi = spec.size();
+        }
+        const std::string one{spec.substr(i, semi - i)};
+        const auto lt = one.find('<');
+        if (lt != std::string::npos) {
+            const RowId survivor = std::strtoll(one.substr(0, lt).c_str(), nullptr, 10);
+            std::vector<RowId> losers;
+            std::size_t j = lt + 1;
+            while (j < one.size()) {
+                std::size_t comma = one.find(',', j);
+                if (comma == std::string::npos) {
+                    comma = one.size();
+                }
+                const RowId l = std::strtoll(one.substr(j, comma - j).c_str(), nullptr, 10);
+                if (l > 0) {
+                    losers.push_back(l);
+                }
+                j = comma + 1;
+            }
+            if (survivor > 0 && !losers.empty()) {
+                out.emplace_back(survivor, std::move(losers));
+            }
+        }
+        i = semi + 1;
+    }
+    return out;
+}
+} // namespace
+
+// 执行（或 dry-run 预演）一次软合并。`write=false` 时**一个字节都不写**。
+[[nodiscard]] bool MergeEntities(db::sqlite::Database& db, RowId survivor,
+                                 const std::vector<RowId>& losers, bool write, std::string_view actor,
+                                 std::vector<std::string>& actions, std::string& err) {
+    const auto scalar = [&db](std::string_view sql, std::initializer_list<RowId> vals) -> RowId {
+        auto st = db.Prepare(std::string{sql});
+        if (!st) {
+            return -1;
+        }
+        int i = 1;
+        for (const RowId v : vals) {
+            (void)st->BindInt(i++, v);
+        }
+        if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+            return st->ColumnInt(0);
+        }
+        return -1;
+    };
+    const auto exec = [&db, &err](std::string_view sql, std::initializer_list<RowId> vals) {
+        auto st = db.Prepare(std::string{sql});
+        if (!st) {
+            err = std::string{"R11 准备失败："} + st.error().message;
+            return false;
+        }
+        int i = 1;
+        for (const RowId v : vals) {
+            (void)st->BindInt(i++, v);
+        }
+        if (auto s = st->Step(); !s) {
+            err = std::string{"R11 执行失败："} + s.error().message;
+            return false;
+        }
+        return true;
+    };
+    // ⓪ survivor 必须是**活实体**（`merged_into=0`）；是退休的就先跟到活实体（防手写错 id）
+    RowId live = scalar("SELECT merged_into FROM entities WHERE id=?1", {survivor});
+    if (live < 0) {
+        err = fmt::format("R11：survivor #{} 不存在", survivor);
+        return false;
+    }
+    for (int hop = 0; hop < 8 && live > 0; ++hop) {
+        const RowId next = scalar("SELECT merged_into FROM entities WHERE id=?1", {live});
+        if (next <= 0) {
+            break;
+        }
+        live = next;
+    }
+    if (live > 0) {
+        actions.push_back(fmt::format("R11：survivor 传入 #{} 但它是退休身份 ⇒ 用活实体 #{}", survivor, live));
+        survivor = live;
+    }
+    for (const RowId loser : losers) {
+        if (loser == survivor) {
+            err = fmt::format("R11：loser #{} 与 survivor 相同", loser);
+            return false;
+        }
+        if (scalar("SELECT COUNT(*) FROM entities WHERE id=?1", {loser}) != 1) {
+            err = fmt::format("R11：loser #{} 不存在", loser);
+            return false;
+        }
+    }
+    for (const RowId loser : losers) {
+        // ★ 人审要看的数：**每张引用表将被重指的行数** + **碰撞预检**（去重会删哪些引用/状态行）。
+        // dry-run 与 apply **都报**（apply 时报的是"动手前"的数）。
+        struct CountQ {
+            const char* label;
+            const char* sql;
+        };
+        const CountQ counts[] = {
+            {"relations(from)", "SELECT COUNT(*) FROM relations WHERE from_id=?1"},
+            {"relations(to)", "SELECT COUNT(*) FROM relations WHERE to_id=?1"},
+            {"event_participants", "SELECT COUNT(*) FROM event_participants WHERE entity_id=?1"},
+            {"event_details.location", "SELECT COUNT(*) FROM event_details WHERE location_id=?1"},
+            {"character_status(entity)", "SELECT COUNT(*) FROM character_status WHERE entity_id=?1"},
+            {"character_status(location)", "SELECT COUNT(*) FROM character_status WHERE location_id=?1"},
+            {"character_knowledge", "SELECT COUNT(*) FROM character_knowledge WHERE entity_id=?1"},
+            {"ownerships(owner)", "SELECT COUNT(*) FROM entity_ownerships WHERE owner_id=?1"},
+            {"ownerships(item)", "SELECT COUNT(*) FROM entity_ownerships WHERE item_id=?1"},
+            {"entity_fields", "SELECT COUNT(*) FROM entity_fields WHERE entity_id=?1"},
+            {"entity_versions(历史)", "SELECT COUNT(*) FROM entity_versions WHERE entity_id=?1"},
+        };
+        std::string moves;
+        for (const CountQ& q : counts) {
+            const RowId n = scalar(q.sql, {loser});
+            if (n > 0) {
+                if (!moves.empty()) {
+                    moves += " / ";
+                }
+                moves += fmt::format("{} {}", q.label, n);
+            }
+        }
+        // 碰撞预检：重指后**同槽位会出现两行** ⇒ 去重会删掉 loser 这一行（**引用/状态行**，非实体行）
+        struct DupQ {
+            const char* label;
+            const char* sql;
+        };
+        const DupQ dups[] = {
+            {"participants",
+             "SELECT COUNT(*) FROM event_participants l WHERE l.entity_id=?1 AND EXISTS("
+             "SELECT 1 FROM event_participants s WHERE s.entity_id=?2 AND s.event_id=l.event_id)"},
+            {"status",
+             "SELECT COUNT(*) FROM character_status l WHERE l.entity_id=?1 AND EXISTS("
+             "SELECT 1 FROM character_status s WHERE s.entity_id=?2 AND s.chapter_id=l.chapter_id)"},
+            {"knowledge",
+             "SELECT COUNT(*) FROM character_knowledge l WHERE l.entity_id=?1 AND EXISTS("
+             "SELECT 1 FROM character_knowledge s WHERE s.entity_id=?2 AND s.fact_kind=l.fact_kind "
+             "AND s.fact_id=l.fact_id)"},
+            {"relations",
+             "SELECT COUNT(*) FROM relations l WHERE (l.from_id=?1 OR l.to_id=?1) AND EXISTS("
+             "SELECT 1 FROM relations s WHERE (s.from_id=?2 OR s.to_id=?2) "
+             "AND s.from_id=l.from_id AND s.to_id=l.to_id AND s.rel_type=l.rel_type)"},
+            {"fields",
+             "SELECT COUNT(*) FROM entity_fields l WHERE l.entity_id=?1 AND EXISTS("
+             "SELECT 1 FROM entity_fields s WHERE s.entity_id=?2 AND s.field_key=l.field_key "
+             "AND s.chapter_scope=l.chapter_scope AND s.layer=l.layer)"},
+        };
+        std::string collisions;
+        for (const DupQ& d : dups) {
+            const RowId n = scalar(d.sql, {loser, survivor});
+            if (n > 0) {
+                if (!collisions.empty()) {
+                    collisions += " / ";
+                }
+                collisions += fmt::format("{} {}", d.label, n);
+            }
+        }
+        actions.push_back(fmt::format(
+            "R11：loser #{} 将重指【{}】；碰撞预检（去重会删这些**引用行**）【{}】",
+            loser, moves.empty() ? "无引用行" : moves, collisions.empty() ? "无碰撞" : collisions));
+        // ① **压平链**（硬验收 A）：曾经指向本 loser 的退休行，一并直接指到 survivor
+        const RowId sub = scalar("SELECT COUNT(*) FROM entities WHERE merged_into=?1", {loser});
+        if (write && sub > 0) {
+            if (!exec("UPDATE entities SET merged_into=?1 WHERE merged_into=?2", {survivor, loser})) {
+                return false;
+            }
+            actions.push_back(fmt::format("R11：把 {} 个原指向 #{} 的退休行**压平**为直接指向 #{}", sub, loser,
+                                          survivor));
+        }
+        // ② 外键**重指**（只碰引用/关系/状态行；**不碰 entities 行**）
+        struct Repoint {
+            const char* sql;
+            const char* label;
+        };
+        const Repoint repoints[] = {
+            {"UPDATE relations SET from_id=?1 WHERE from_id=?2", "relations.from_id"},
+            {"UPDATE relations SET to_id=?1 WHERE to_id=?2", "relations.to_id"},
+            {"UPDATE event_participants SET entity_id=?1 WHERE entity_id=?2", "event_participants"},
+            {"UPDATE event_details SET location_id=?1 WHERE location_id=?2", "event_details.location_id"},
+            {"UPDATE character_status SET entity_id=?1 WHERE entity_id=?2", "character_status.entity_id"},
+            {"UPDATE character_status SET location_id=?1 WHERE location_id=?2",
+             "character_status.location_id"},
+            {"UPDATE character_knowledge SET entity_id=?1 WHERE entity_id=?2", "character_knowledge"},
+            {"UPDATE entity_ownerships SET owner_id=?1 WHERE owner_id=?2", "ownerships.owner_id"},
+            {"UPDATE entity_ownerships SET item_id=?1 WHERE item_id=?2", "ownerships.item_id"},
+            {"UPDATE entity_fields SET entity_id=?1 WHERE entity_id=?2", "entity_fields"},
+            {"UPDATE entity_versions SET entity_id=?1 WHERE entity_id=?2", "entity_versions（历史，只重指）"},
+        };
+        for (const Repoint& r : repoints) {
+            if (!write) {
+                continue; // dry-run：只报数
+            }
+            if (!exec(r.sql, {survivor, loser})) {
+                return false;
+            }
+        }
+        // ③ **逻辑去重**（碰撞 = 同一槽位出现两行；删的是**引用/状态行**）
+        // ⚠️ `entity_versions` **不在其列**（历史，绝不去重）。
+        struct Dedupe {
+            const char* key;
+            const char* sql; // 保留哪一行：MIN(id) 或 MAX(id)
+        };
+        const Dedupe dedupes[] = {
+            {"relations(from,to,type)",
+             "DELETE FROM relations WHERE (from_id=?1 OR to_id=?1) AND id NOT IN "
+             "(SELECT MIN(id) FROM relations WHERE from_id=?1 OR to_id=?1 GROUP BY from_id,to_id,rel_type)"},
+            {"event_participants(event)",
+             "DELETE FROM event_participants WHERE entity_id=?1 AND id NOT IN "
+             "(SELECT MIN(id) FROM event_participants WHERE entity_id=?1 GROUP BY event_id)"},
+            {"character_status(chapter)",
+             "DELETE FROM character_status WHERE entity_id=?1 AND id NOT IN "
+             "(SELECT MAX(id) FROM character_status WHERE entity_id=?1 GROUP BY chapter_id)"},
+            {"character_knowledge(fact)",
+             "DELETE FROM character_knowledge WHERE entity_id=?1 AND id NOT IN "
+             "(SELECT MIN(id) FROM character_knowledge WHERE entity_id=?1 GROUP BY fact_kind,fact_id)"},
+            {"ownerships(活跃 item)",
+             "DELETE FROM entity_ownerships WHERE (owner_id=?1 OR item_id=?1) AND to_chapter=0 AND id NOT IN "
+             "(SELECT MAX(id) FROM entity_ownerships WHERE (owner_id=?1 OR item_id=?1) AND to_chapter=0 "
+             " GROUP BY item_id)"},
+            {"entity_fields(唯一键)",
+             "DELETE FROM entity_fields WHERE entity_id=?1 AND id NOT IN "
+             "(SELECT MIN(id) FROM entity_fields WHERE entity_id=?1 "
+             " GROUP BY field_key,chapter_scope,layer)"},
+        };
+        for (const Dedupe& d : dedupes) {
+            if (!write) {
+                continue; // dry-run：只报数（去重只在真写时做）
+            }
+            if (!exec(d.sql, {survivor})) {
+                return false;
+            }
+            actions.push_back(fmt::format("R11：逻辑去重 {}", d.key));
+        }
+        // ④ 设退休标记（**唯一的实体行写入** —— 只改 `merged_into`，不删行）
+        if (write) {
+            if (!exec("UPDATE entities SET merged_into=?1 WHERE id=?2", {survivor, loser})) {
+                return false;
+            }
+        }
+        actions.push_back(fmt::format("R11：loser #{} → survivor #{}（引用行已重指；实体行**保留为退休身份**）",
+                                      loser, survivor));
+    }
+    if (write) {
+        std::string ids;
+        for (const RowId l : losers) {
+            if (!ids.empty()) {
+                ids += ",";
+            }
+            ids += std::to_string(l);
+        }
+        // 审计（用户要求：survivor / losers / 操作者 / 去重摘要）—— 走项目现成的 `NovelGraph::LogAudit`
+        // ⚠️ 列名是 `target_kind`（不是 `target_table`）；自检当场抓到过一次（R11 审计断言 FAIL）。
+        {
+            NovelGraph g(db);
+            (void)g.LogAudit(actor, "merge_entity", "entities", survivor,
+                             fmt::format("merge_entity: survivor=#{} losers=[{}] "
+                                         "repoint=引用行已重指 dedup=逻辑去重（只删引用/状态行；"
+                                         "entity_versions 为历史表，只重指不去重）",
+                                         survivor, ids));
+        }
+        actions.push_back(fmt::format("R11：audit_logs(merge_entity) survivor=#{} losers=[{}]", survivor, ids));
+    }
+    return true;
+}
+
+// ★ R11：对外的软合并入口（`spec` 形如 `"43<108;59<76,134"`）—— **永不自动 merge**：spec 为空 ⇒ 报错返回。
+RepairOutcome MergeBySpec(db::sqlite::Database& db, std::string_view merge_spec, bool dry_run,
+                          std::string_view actor) {
+    RepairOutcome out;
+    out.dry_run = dry_run;
+    const auto groups = ParseMergeSpec(merge_spec);
+    if (groups.empty()) {
+        out.error = "R11：merge_spec 为空或格式不对（形如 \"43<108;59<76,134\"）";
+        return out;
+    }
+    for (const auto& [survivor, losers] : groups) {
+        if (!MergeEntities(db, survivor, losers, /*write=*/!dry_run, actor, out.actions, out.error)) {
+            return out;
+        }
+        ++out.fixed;
+    }
+    if (!dry_run) {
+        for (const auto& a : out.actions) {
+            log::Info("R11 merge：{}", a);
+        }
+    }
+    return out;
 }
 
 // ———— 修复 ————
@@ -859,8 +1174,96 @@ bool RunRepairSelfCheck() {
                "R10：两行**都还在**（既没被合并也没被删除）");
     }
 
+    // 8) ★ R11：**软合并 / 重定向** —— 用户 6 项硬验收（永不删实体行 / 链式收敛 / 显式点名 survivor /
+    //    留痕 / 引用行重指 / 名字歧义消失）
+    {
+        const auto sql1 = [&mem](std::string_view s) {
+            (void)mem.Exec(std::string{s});
+            return true;
+        };
+        const auto idOf = [&mem](const char* name) -> RowId {
+            auto st = mem.Prepare("SELECT id FROM entities WHERE kind='person' AND name=?1 "
+                                  "AND merged_into=0 ORDER BY id LIMIT 1");
+            if (!st) {
+                return 0;
+            }
+            (void)st->BindText(1, name);
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                return st->ColumnInt(0);
+            }
+            return 0;
+        };
+        expect(sql1("INSERT INTO entities(kind,name,summary,status,meta_json,created_chapter,updated,"
+                    "merged_into) VALUES('person','R11甲','survivor','active','{}',5,0,0)"),
+               "R11：造 survivor A");
+        expect(sql1("INSERT INTO entities(kind,name,summary,status,meta_json,created_chapter,updated,"
+                    "merged_into) VALUES('person','R11甲','loser','active','{}',9,0,0)"),
+               "R11：造 loser B（与 A 同名同 kind）");
+        expect(sql1("INSERT INTO entities(kind,name,summary,status,meta_json,created_chapter,updated,"
+                    "merged_into) VALUES('person','R11丙','链上的旧退休行','active','{}',11,0,0)"),
+               "R11：造 C（用来测链式收敛）");
+        const RowId a = idOf("R11甲"); // 同名两张，取最小 id = A
+        const RowId b = scalar("SELECT MAX(id) FROM entities WHERE kind='person' AND name='R11甲'", {});
+        const RowId c = idOf("R11丙");
+        expect(a > 0 && b > a && c > 0, fmt::format("R11：A/B/C 就位（a={} b={} c={}）", a, b, c));
+        expect(ins("INSERT INTO relations(from_id,to_id,rel_type) VALUES(?1,?2,'ally')", {b, a}),
+               "R11：B 的关系行");
+        expect(ins("INSERT INTO character_status(entity_id,chapter_id) VALUES(?1,9)", {b}), "R11：B 的状态行");
+        expect(ins("INSERT INTO entity_versions(entity_id,ver,snapshot_json) VALUES(?1,1,'{}')", {b}),
+               "R11：B 的历史版本行");
+        expect(sql1(fmt::format("UPDATE entities SET merged_into={} WHERE id={}", b, c)),
+               "R11：预置 C→B（造一条链，检验收敛）");
+
+        // ① dry-run：出计划、**一个字节都不写**
+        const RepairOutcome dry11 =
+            MergeBySpec(mem, fmt::format("{}<{}", a, b), /*dry_run=*/true, "self-check");
+        expect(dry11.ok() && dry11.dry_run && dry11.fixed == 1,
+               fmt::format("R11：dry-run 出 1 组计划（{}）", dry11.error));
+        expect(scalar("SELECT merged_into FROM entities WHERE id=?1", {b}) == 0 &&
+                   scalar("SELECT COUNT(*) FROM relations WHERE from_id=?1", {b}) == 1,
+               "R11：dry-run **未写库**（B 仍活、关系仍指 B）");
+
+        // ② apply：收敛 + 引用重指 + **实体行仍在**
+        const RepairOutcome app11 =
+            MergeBySpec(mem, fmt::format("{}<{}", a, b), /*dry_run=*/false, "self-check");
+        expect(app11.ok() && app11.fixed == 1, fmt::format("R11：apply 成功（{}）", app11.error));
+        expect(scalar("SELECT merged_into FROM entities WHERE id=?1", {a}) == 0,
+               "R11：survivor 仍活（`merged_into=0`）");
+        expect(scalar("SELECT merged_into FROM entities WHERE id=?1", {b}) == a,
+               "R11：loser `merged_into = survivor`");
+        expect(scalar("SELECT merged_into FROM entities WHERE id=?1", {c}) == a,
+               "R11：**链式收敛** —— 原 C→B 被压平为 **C→A**（不留多跳）");
+        expect(scalar("SELECT COUNT(*) FROM entities WHERE id=?1", {b}) == 1,
+               "R11：**loser 实体行仍在**（永不 DELETE）");
+        expect(scalar("SELECT COUNT(*) FROM relations WHERE from_id=?1", {b}) == 0 &&
+                   scalar("SELECT COUNT(*) FROM relations WHERE from_id=?1", {a}) >= 1,
+               "R11：关系行**重指**到 survivor");
+        expect(scalar("SELECT COUNT(*) FROM character_status WHERE entity_id=?1", {b}) == 0 &&
+                   scalar("SELECT COUNT(*) FROM character_status WHERE entity_id=?1", {a}) >= 1,
+               "R11：状态行**重指**到 survivor");
+        expect(scalar("SELECT COUNT(*) FROM entity_versions WHERE entity_id=?1", {b}) == 0 &&
+                   scalar("SELECT COUNT(*) FROM entity_versions WHERE entity_id=?1", {a}) >= 1,
+               "R11：**历史版本只重指、不去重**（#b 的版本行改挂 survivor）");
+        expect(scalar("SELECT COUNT(*) FROM audit_logs WHERE action='merge_entity'", {}) == 1,
+               "R11：写了 `audit_logs(merge_entity)`（survivor/losers/actor）");
+
+        // ③ 退休行不进名字候选 ⇒ 同名歧义消失；R10 复扫不再报该组
+        expect(scalar("SELECT COUNT(*) FROM entities WHERE kind='person' AND name='R11甲' AND "
+                      "merged_into=0",
+                      {}) == 1,
+               "R11：退休行**不进名字候选** ⇒ 该名字重新唯一（歧义消失）");
+        const ConsistencyReport r5 = ScanConsistency(mem);
+        bool hasR10 = false;
+        for (const auto& x : r5.issues) {
+            if (x.rule == "R10" && x.detail.find("R11甲") != std::string::npos) {
+                hasR10 = true;
+            }
+        }
+        expect(!hasR10, "R11：R10 复扫**不再报该组**（不是把退休实体藏起来，是它不再是候选）");
+    }
+
     if (fail == 0) {
-        log::Info("S69/T3a repair：自检全过（扫描 10 规则 / 修复 5 规则 / dry_run 只读 / 幂等 / R10 只报不并）");
+        log::Info("S69/T3a/R11 repair：自检全过（扫描 10 规则 / 修复 R1–R5 / R11 软合并 / dry_run 只读 / 幂等）");
     }
     return fail == 0;
 }

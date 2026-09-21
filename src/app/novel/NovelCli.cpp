@@ -209,6 +209,21 @@ int RunNovelCli(const wchar_t* cmdline) {
             log::Error("novel-cli：一致性修复执行失败：{}", out.error);
             return 2;
         }
+        // ★ R11：`--merge "43<108;59<76,134"` —— **显式点名的软合并**（永不自动 merge；默认 dry-run）。
+        // 语义见 `NovelRepair.h`：压平 `merged_into` + 重指引用行 + 逻辑去重 + audit；**绝不 DELETE 实体行**。
+        const std::string mergeSpec = Opt(args, "--merge", "");
+        if (!mergeSpec.empty()) {
+            const auto mo = novelcore::MergeBySpec(db, mergeSpec, /*dry_run=*/!apply,
+                                                   "cli:--novel-repair");
+            log::Info("novel-cli：R11 软合并 {}（{}）", mo.dry_run ? "dry-run 计划" : "已执行", mergeSpec);
+            for (const auto& a : mo.actions) {
+                log::Info("novel-cli：  {}", a);
+            }
+            if (!mo.ok()) {
+                log::Error("novel-cli：R11 失败：{}", mo.error);
+                return 2;
+            }
+        }
         if (!apply) {
             log::Info("novel-cli：以上为 **dry-run 计划**（未改库）—— 确认后加 `--apply` 真改。");
             return before.ok() ? 0 : 1;

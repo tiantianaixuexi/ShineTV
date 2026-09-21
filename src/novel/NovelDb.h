@@ -76,6 +76,14 @@ public:
     //    resolver 返回**候选列表**让人/模型指定，而不是让数据库替作者判定身份。
     static void EnsureEntityNames(db::sqlite::Database& db);
 
+    // ★ R11（v14）：`entities.merged_into`（**退休身份 → 幸存实体**；`0` = 活实体）。
+    // 用户追问定的原则（2026-09-21）：**`R10`/`R11` 永不 DELETE 实体行** —— 实体 id 是**历史身份**，
+    // 物理删掉会让旧产物 / 快照 / `audit_logs.detail` / 外部 MCP 客户端 / 模型上下文里的 id
+    // 全部变成**悬空**（而且要到第 1000 章才炸）。⇒ 软合并：**保留行**、`merged_into` 指向幸存者、
+    // resolver **透明重定向**（旧 id 永远可解析）。
+    // `ALTER` 在列已存在时失败 —— 忽略即可（幂等，与 v9/v11 的 `Add*Column` 同款）。
+    static void AddEntityMergedIntoColumn(db::sqlite::Database& db);
+
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();
 

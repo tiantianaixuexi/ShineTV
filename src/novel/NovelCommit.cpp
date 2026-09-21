@@ -191,7 +191,10 @@ public:
 
 private:
     void Load(db::sqlite::Database& db) {
-        auto st = db.Prepare("SELECT id,kind,name,created_chapter FROM entities WHERE kind<>?1");
+        // ★ R11：**退休行（`merged_into<>0`）不参与名字候选** —— 软合并后"同名歧义"随之消失，
+        // 而旧 id 仍可被 resolver 透明重定向（见 `ResolveRefFull`）。
+        auto st = db.Prepare(
+            "SELECT id,kind,name,created_chapter FROM entities WHERE kind<>?1 AND merged_into=0");
         if (!st) {
             log::Warn("EntityNameIndex：查询失败（{}）—— 本轮只认 id / temp_id", st.error().message);
             return;
@@ -262,8 +265,34 @@ struct RefResolution {
                                            std::string_view kindWanted) {
     // ① 明确数字 id（模型自己指定了就用它 —— 存在性/kind 由 K02/K03 判）
     if (id > 0) {
+        // ★ R11：**退休身份透明重定向** —— **实体 id 是历史身份**，不因软合并失效（用户 2026-09-21 定）。
+        // 若 `id` 指向的实体已 `merged_into` 到别处 ⇒ 跟到**活实体**。
+        // · 链式合并（134→76→59）在 **apply 时被压平**（见 R11 的 apply 语义），这里仍做**有限跳数 + 环检测**
+        //   兜底，防手改数据造成死循环；
+        // · ⚠️ **必须留痕**（用户硬验收 B）：日志/审计要能看出"这次用的是**退休身份**" ——
+        //   正常旧数据不会炸，但诊断时不至于"以为 134 还是活的"。
+        RowId live = id;
+        for (int hop = 0; hop < 8 && ctx.db != nullptr; ++hop) {
+            RowId next = 0;
+            if (auto st = ctx.db->Prepare("SELECT merged_into FROM entities WHERE id=?1"); st) {
+                (void)st->BindInt(1, live);
+                if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    next = st->ColumnInt(0);
+                }
+            }
+            if (next <= 0 || next == live) {
+                break;
+            }
+            live = next;
+        }
+        if (live != id) {
+            log::Warn("id #{} is retired; redirected to #{}（R11 软合并：**旧 id 仍可解析**，"
+                      "但**新写入请用幸存者** —— 库内不应再新增退休 id 的外键）",
+                      id, live);
+        }
         // ★ T4-D12（**权威判定**在落库这一侧）：同时给了 id 与 ref ⇒ 必须**指向同一实体**。
         // **冗余允许、冲突拒绝**：同实体 ⇒ 放行（canonical = id）；不同实体 / ref 解析不了 ⇒ 拒。
+        // ⚠️ 比较用**重定向后的 `live`**：这样"写退休 id + 写幸存者名字"是**一致**的，不该判冲突。
         const std::string otherRef = TrimRef(refRaw);
         if (!otherRef.empty()) {
             const RefResolution other = ResolveRefFull(0, otherRef, ctx, kindWanted); // 递归：id=0 那一路
@@ -282,8 +311,8 @@ struct RefResolution {
                 if (!actualKind.empty() && actualKind != kindWanted) {
                     log::Warn("引用冗余字段被忽略：字段期望 **{}**，但 ref「{}」解析到 #{}（kind={}）—— "
                               "**错槽位的引用对槽位不构成说法**，按 id={} 继续（T4-D12 只判同 kind 冲突）",
-                              KindLabel(kindWanted), otherRef, other.id, actualKind, id);
-                    return {id, {}};
+                              KindLabel(kindWanted), otherRef, other.id, actualKind, live);
+                    return {live, {}};
                 }
             }
             if (other.id <= 0) {
@@ -291,13 +320,13 @@ struct RefResolution {
                                        "（**冗余允许、冲突拒绝**：请只留一个）",
                                        id, otherRef, other.error)};
             }
-            if (other.id != id) {
+            if (other.id != live) {
                 return {0, fmt::format("D12：同时给了 id={} 与 ref=「{}」⇒ 解析到 **#{}**：两个说法指向"
                                        "**不同**实体，请只留一个（系统不替你选）",
                                        id, otherRef, other.id)};
             }
         }
-        return {id, {}};
+        return {live, {}};
     }
     const std::string ref = TrimRef(refRaw);
     if (ref.empty()) {

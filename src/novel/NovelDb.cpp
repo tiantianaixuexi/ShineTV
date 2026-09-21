@@ -864,6 +864,13 @@ void NovelDb::EnsureEntityNames(db::sqlite::Database& db) {
     log::Info("entity_names：回填 {} 行主名索引（幂等；镜像 `entities`）", missing.size());
 }
 
+// ★ R11（v14）：见头文件注释。**软合并**用的"退休身份 → 幸存实体"列（`0` = 活实体）。
+void NovelDb::AddEntityMergedIntoColumn(db::sqlite::Database& db) {
+    (void)db.Exec("ALTER TABLE entities ADD COLUMN merged_into INTEGER NOT NULL DEFAULT 0");
+    // 名字候选（resolver）/ R10·R11 扫描 / 复用判定的查询都按它过滤 ⇒ 给它建索引（`0` 是绝大多数）
+    (void)db.Exec("CREATE INDEX IF NOT EXISTS idx_entities_merged ON entities(merged_into)");
+}
+
 std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database& db) {
     // 与 `Migrate()` 的**表 DDL 段**共用同一批常量 —— 别再各抄一份（本函数就是为此而存在）
     constexpr std::string_view kParts[] = {kSchemaV3,        kSchemaV4Visual, kSchemaV5Agents,
@@ -880,7 +887,8 @@ std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database&
     // ⚠️ 漏了它的后果是真跑才发现的：`stages` 自检整段失败（"no such table: stage_artifacts"），
     //    因为该自检走的就是 `ApplyCanonicalSchema`。
     EnsureStageArtifactsTable(db);
-    EnsureEntityNames(db); // T3b（v13）：`entity_names` 回填（幂等）
+    EnsureEntityNames(db);          // T3b（v13）：`entity_names` 回填（幂等）
+    AddEntityMergedIntoColumn(db);  // R11（v14）：`merged_into`（软合并；幂等）
     return NovelFields::EnsureSchema(db);
 }
 
