@@ -159,7 +159,8 @@ public:
         }
         std::vector<NameHit> out;
         for (const NameHit& h : it->second) {
-            if (h.kind == kindFilter) {
+            // ★ 用**唯一实现**判 kind（`item` 期望放宽到 prop/treasure/… —— 与 K03 同口径）
+            if (EntityKindMatches(h.kind, kindFilter)) {
                 out.push_back(h);
             }
         }
@@ -1068,8 +1069,8 @@ int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff) {
     if (byOrd.empty()) {
         return 0;
     }
-    // 库里该 id 的 kind（不存在 → 空）。`item` 期望放宽到同类 kind —— **与 NovelChecks 的
-    // `IsItemKind` 同口径**（那处在 NovelChecks.cpp 的匿名命名空间里，取不到；两张表必须一致）。
+    // 库里该 id 的 kind（不存在 → 空）。`item` 期望放宽到同类 kind —— 走**唯一实现**
+    // `EntityKindMatches`（`NovelNames.h`；K03 / resolver / 诊断**同一份**，不再各写一张表）。
     const auto kindOf = [&db](RowId id) -> std::string {
         auto st = db.Prepare("SELECT kind FROM entities WHERE id=?1");
         if (!st) {
@@ -1082,11 +1083,7 @@ int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff) {
         return {};
     };
     const auto kindOk = [](std::string_view actual, std::string_view expected) {
-        if (expected == kind::item) {
-            return actual == kind::item || actual == kind::treasure || actual == kind::prop ||
-                   actual == kind::clothing || actual == kind::resource;
-        }
-        return actual == expected;
+        return EntityKindMatches(actual, expected); // 唯一实现（见 `NovelNames.h`）
     };
     int n = 0;
     // 逐字段处理：`*_id` 字面解释必错、且序号有对应 TempId ⇒ 改写

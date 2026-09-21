@@ -43,17 +43,10 @@ namespace {
 }
 
 // 被持有物的合法 kind（契约：持有关系只对"物"成立）。`prop` 也在这本库里被用作物品。
-constexpr std::array<std::string_view, 5> kItemKinds = {"item", "prop", "treasure", "clothing",
-                                                        "resource"};
-
-[[nodiscard]] bool IsItemKind(std::string_view k) {
-    for (const auto& x : kItemKinds) {
-        if (x == k) {
-            return true;
-        }
-    }
-    return false;
-}
+// ★ 走**唯一实现** `EntityKindMatches`（`NovelNames.h`）—— 原先这里另有一张 5 元表，
+//   与 `NovelChecks` 的 `IsItemKind`、`NovelCommit` 的 kind 判定是**三份**，
+//   第 25 章"数字 id 放行 / 名字引用被拒"就是这么漂出来的。现在只有一份。
+[[nodiscard]] bool IsItemKind(std::string_view k) { return EntityKindMatches(k, kind::item); }
 
 // 计数（带 1 个 id 参数）：查询失败返回 -1 —— **不静默当 0**（0 会让"关系数/出场数"看起来正常）
 [[nodiscard]] RowId CountBy(db::sqlite::Database& db, std::string_view sql, RowId a) {

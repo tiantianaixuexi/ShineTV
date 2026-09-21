@@ -4,6 +4,7 @@
 #include "core/Log.h"
 #include "novel/NovelFields.h"
 #include "novel/NovelGraph.h"
+#include "novel/NovelNames.h" // kind 匹配的唯一实现（EntityKindMatches）
 #include "novel/NovelVisual.h"
 #include "util/Encoding.h"
 #include "util/File.h"
@@ -103,10 +104,9 @@ constexpr std::string_view kKinds[] = {
     return false;
 }
 
-[[nodiscard]] bool IsItemKind(std::string_view k) {
-    return k == kind::item || k == kind::treasure || k == kind::prop || k == kind::clothing ||
-           k == kind::resource;
-}
+// ★ 「物品」这一族 kind 的**唯一表**在 `NovelNames.h` 的 `EntityKindMatches` —— 原先这里另有一份，
+// 与 resolver / 诊断各写一张（第 25 章"数字 id 放行、名字引用被拒"就是三份漂出来的）。
+[[nodiscard]] bool IsItemKind(std::string_view k) { return EntityKindMatches(k, kind::item); }
 
 // ———— 小工具 ————
 
@@ -406,11 +406,10 @@ struct Ref {
 }
 
 // ———— K03 ————
+// ★ 转调**唯一实现**（`NovelNames.h`）：K03 与 resolver 必须**同一口径**，否则会出现
+// "填数字 id 通过、写名字被拒"（同一件事两种结果，最难查的那种不一致）。
 [[nodiscard]] bool KindMatches(std::string_view actual, std::string_view expected) {
-    if (expected == kind::item) {
-        return IsItemKind(actual);
-    }
-    return actual == expected;
+    return EntityKindMatches(actual, expected);
 }
 
 // S64：**temp_id 的序号 ≠ 库 id** —— 把含糊的失败变成一句可执行的指令。
@@ -469,7 +468,10 @@ struct Ref {
             return it->second;
         }
         std::string s;
-        if (auto st = c.db->Prepare("SELECT id,name FROM entities WHERE kind=?1 ORDER BY id LIMIT 12")) {
+        // ★ R11：候选**只列活实体**（`merged_into=0`）—— 退休 id 不该再被"推荐"给模型
+        //（它仍可解析、会被透明重定向，但那属于**兼容**，不是"可用的正确答案"）。
+        if (auto st = c.db->Prepare(
+                "SELECT id,name FROM entities WHERE kind=?1 AND merged_into=0 ORDER BY id LIMIT 12")) {
             (void)st->BindText(1, key);
             while (true) {
                 auto row = st->Step();
@@ -2145,7 +2147,19 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         //   ③ `id 照抄下方清单` —— **悬空引用**（"下方"压根没有清单）。
         // ⚠️ 规矩：**提示词里只允许出现"模型当场能用到的东西"**（形状、字段清单、可用工具、规则），
         //    文档编号 / 事故史 / 悬空指涉一律留在**代码注释**里。
-        canon += "prompt_rule_version=18\n";
+        // 18 → 19（T5-B，用户"做做做"）：**extract 提示词去掉最后一批"ID 管理"残留** ——
+        //   ① 删"id 的用途必须匹配（K03 会挡下整章）+ 两个 kind 表格"（9 行）：T1 之后 kind 匹配由
+        //      **门禁/解析器**保证，按 S86 的规矩「**程序能保证的 invariant 不该再塞进提示词**」；
+        //   ② 删 `list_id_directory` 的用法段（5 行）与 `*_id` 只能填"查到的真实数字"：模型**不需要**
+        //      任何库内 id 了（名字引用 + `temp_id` 就够），只在"确认库里有没有这个名字"时才查；
+        //   ③ 删 `0` 占位（`entity_id:0` 示例 + "0 只在明确允许处用"）——那是**唯一合法表达是数字 id**
+        //      时代的产物；现在"库里还没有"一律走 `temp_id`；
+        //   ④ 字段清单的 `*_id` 一律改写成 `*_ref`（形状示例早在 T5-A 就是 `*_ref` 了，清单没跟上）。
+        // ⚠️ 只删"解释/事故史/过时教法"，**没删任何形状、字段名、输出纪律**（`temp_id` 不能是纯数字=D9
+        //    这条留着 —— 它是模型**当场能用到**的硬规则，不是我们的事故史）。
+        // ⚠️ 与 `version` 无关：`AgentKit` 对内置 Agent 是**内容比对刷新**（`AgentKit.cpp:758`），
+        //    改了 `ExtractSystemPrompt()` 对老库自动生效；这里抬版本号是为了让**产物缓存**失效。
+        canon += "prompt_rule_version=19\n";
         // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
         // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
         // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是

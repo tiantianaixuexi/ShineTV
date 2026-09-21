@@ -244,11 +244,10 @@ std::string BuildIdCheatSheet(db::sqlite::Database& db, int capPerKind = 60,
 std::string_view ExtractSystemPrompt() noexcept {
     return R"-(
 你是信息抽取器。读【计划】与【正文】，输出**一份 StateDiff JSON**（形状/字段名见下方示例与字段清单，**别看别处的文档 —— 你看不到它们**）。
-需要知道"库里有哪些实体、它们的 id 与 kind"时，**用工具自己查**：
-**先调一次 `list_id_directory`**（一次拿到全部 kind 的 id 名单，最省），需要细节再用
-`get_entity` / `list_entities` / `list_entity_fields` / `list_field_defs`。
-—— 不要凭印象编 id，也不要凭印象说"库里没有"。
-（⚠️ 上面就是**你实际拥有的全部工具**；提示词里没提的名字就是没有，别去试。）
+⚠️ **本任务不需要你知道任何库内 id**：引用一律用**名字**（`*_ref`），本章新建的用 `temp_id`（配 `*_temp_id`）
+  —— 它们由**下游解析**成真实 id，你判错了也会被明确告知改哪里。
+  要确认"库里有没有这个名字 / 它是哪种 kind"，用工具自己查（`get_entity` / `list_entities` /
+  `list_id_directory` / `list_field_defs` / `list_entity_fields`）—— **别凭印象说"库里没有"**。
 顶层键只能是下列这些，**不要自造键名**（写成 new_entities / foreshadow_updates 之类会被直接忽略）：
   summary, contract_version, producer, input_state_hash, chapter_id, no_change_declared,
   entities, characters, relationships, items, locations, events, causal,
@@ -261,10 +260,8 @@ std::string_view ExtractSystemPrompt() noexcept {
             "location_ref":"旧信号塔·塔顶灯室","time_label":"深夜","action":"……","result":"……"}],
  "foreshadows":[{"op":"new","title":"……","content":"……","status":"PLANTED","setup_ch":5,"payoff_ch":9,"importance":70}],
  "causal":[],"items":[],"locations":[],"plotlines":[],"mysteries":[],"knowledge":[],"timeline":[]}
-（引用**本章新建**实体的写法：`"participants":[{"entity_id":0,"entity_temp_id":"en:新人物-谭工","role":"actor"}]`）
-⚠️ `temp_id` **必须是有语义的标签**，**不许写成「前缀+纯数字」**（`en:1` / `ev:1` 会被**契约 D9 直接拒收**）——
-   它只是**本章内的标签，不是 id**。写成数字会让你（和校验器）分不清"序号"与"库 id"，
-   而 `*_id` 字段只能填 `list_id_directory` 查到的**真实数字**。
+（引用**本章新建**实体的写法：`"participants":[{"entity_temp_id":"en:新人物-谭工","role":"actor"}]`）
+⚠️ `temp_id` **必须是有语义的标签**，**不许写成「前缀+纯数字」**（`en:1` / `ev:1` 会被**契约 D9 直接拒收**）。
 ⚠️ `kind` 取值必须是 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…），
    **不要把字段名当值**（写 kind:"kind" 是常见错误，会被契约校验直接挡下）。
 【引用写法（照这三行做，别再纠结"id 填什么"）】
@@ -285,31 +282,24 @@ std::string_view ExtractSystemPrompt() noexcept {
 4. 只填**真正发生变化**的条目；没有变化的数组一律写 []。
 5. `relations[]` 每条必须给全**两端**与 rel_type（**用名字引用**，见上面的【引用写法】），
    `items[]` 给全 op 与被持有物，`characters[]` 给全实体引用 —— 缺一个整章提交失败。
-6. **id 的用途必须匹配**（K03 会挡下整章）：`characters[].entity_id` /
-   `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用 **[person]** 的 id；
-   `items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
-   ⚠️ **库里还没有的（新物品 / 新人物 / 新地点）**：先在 `entities[]` 用 `temp_id` 新建；
-   **要在这里引用它，就用上面的 `*_temp_id` 兄弟键写法**（如 `"entity_temp_id":"en:新人物-谭工"`）——
-   这是"新人物在新地点卷入事件 / 新物品被谁持有"的**唯一合法表达**。
-   🔴 **`temp_id` 只是个标签，与库 id 毫无关系**；**别凭记忆猜 ID**（填错会命中一个完全无关的实体 ⇒
-   整章被拒）。库里**还没有**的实体 ⇒ 先在 `entities[]` 用 `temp_id` 新建，再用 `*_temp_id` 引用它
-   （**不是**把 id 写成 `0`；`0` 只在明确允许的地方用，如 `items[].location_id` 表示"无地点"）。
+6. **别自己配 id、也别写 `0` 占位**：所有引用只用**名字**（`*_ref`）或本章 `temp_id`（`*_temp_id`）——
+   "库里有没有 / kind 对不对"由**下游**判，判错了会明确告诉你要改哪里。
 - summary: 本章 2–3 句摘要（字符串）
 - entities[]: {temp_id, kind, name, summary, status}
     kind 必须命中 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…）
-- characters[]: {entity_id, location_id, body_state, mind_state, goal, reason}
-    entity_id 必须是**已存在的**人物实体 id；状态有变化必须写 reason
-- relationships[]: {op:upsert|close, from_id, to_id, rel_type, strength, reason}
-- items[]: {op:acquire|lose|move|change_state, item_id, owner_id, location_id, how, reason}
-- locations[]: {location_id, field, value, reason}
-- events[]: {temp_id, cause, participants:[{entity_id, role}], location_id, time_label, action, result}
+- characters[]: {entity_ref, location_ref, body_state, mind_state, goal, reason}
+    entity_ref 是**已存在的**人物（名字）；状态有变化必须写 reason
+- relationships[]: {op:upsert|close, from_ref, to_ref, rel_type, strength, reason}
+- items[]: {op:acquire|lose|move|change_state, item_ref, owner_ref, location_ref, how, reason}
+- locations[]: {location_ref, field, value, reason}
+- events[]: {temp_id, cause, participants:[{entity_ref, role}], location_ref, time_label, action, result}
     role ∈ actor|victim|witness|beneficiary|faction_actor
 - causal[]: {cause:{temp_id|entity_id}, effect:{temp_id|entity_id}, link_type:causes|enables|prevents|escalates|reveals, note}
 - plotlines[]: {plot_id, kind, title, status, beat:{beat_type, title, summary}}
 - foreshadows[]: {op:new|progress|reinforce|payoff, foreshadow_id, title, content, truth,
                   status:PLANNED|PLANTED|DEVELOPING|REVEALED, setup_ch, payoff_ch, importance}
 - mysteries[]: {mystery_id, question, answer, status, beat:{beat_type, content, target_entity_id}}
-- knowledge[]: {entity_id, fact_kind, fact_id, fact_text, knows, chapter_known}
+- knowledge[]: {entity_ref, fact_kind, fact_id, fact_text, knows, chapter_known}
 - timeline[]: {event_id, time_label, location_id, cause_note, result_note}
 没有变化的数组给 []；**本章确实毫无变化**才置 no_change_declared: true（此时所有数组必须为空）。
 只输出 JSON 本体：不要 markdown 围栏、不要解释、字符串内不要出现未转义的引号。
@@ -677,8 +667,8 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                     "\n【落库块报错时怎么改（这几条不在 K 校验里，但会**直接拒提交**）】\n"
                     "   · 块 5/6 说「端点解析不到」：`causal[].cause/effect`、"
                     "`events[].participants[].entity_id`、`*_location_id` 必须是"
-                    "**库内真实数字 id**（先调 `list_id_directory` 查）或**本章 TempId**"
-                    "（配兄弟键 `*_temp_id`）—— **不许留 0，不许凭空写数字**。\n"
+                    "**名字引用**（`*_ref`，照库里的写法）或**本章 `temp_id`**"
+                    "（配兄弟键 `*_temp_id`）—— **不许凭空写数字**。\n"
                     "   · 块 6 说「禁止自环」/ 契约 D10：`causal[]` 的一对 cause/effect **必须指向"
                     "两个不同的事件**，且**两端都要给**。\n"
                     "   · 块 4 说「持有者解析不到」：`items[].op=\"acquire\"` 必须给 "

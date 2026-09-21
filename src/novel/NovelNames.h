@@ -14,6 +14,8 @@
 // ⚠️ 由此："`旧信号塔` vs `旧信号塔␠`（尾空格）"算**同一个名字**；
 //    "`旧信号塔` vs `老信号塔`" **不算** —— 后者只能靠报文里的"相近名字"提示（**只提示，不自动采用**）。
 
+#include "novel/NovelTypes.h" // `kind::` 常量（kind 匹配表要用）
+
 #include <string>
 #include <string_view>
 
@@ -52,6 +54,20 @@ namespace shine::novelcore {
         out.push_back(static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch - 'A' + 'a' : ch));
     }
     return out;
+}
+
+// ★ **「期望 kind」↔「实际 kind」匹配的唯一实现** —— K03（`NovelChecks.cpp`）、resolver
+// （`NovelCommit.cpp`）、诊断（`NovelRepair.cpp` 的 R6）**全都用这一份**，别再各写一张表。
+//
+// ⚠️ 为什么 `item` 期望要**放宽**（这不是偷懒，是**真跑逼出来的**）：契约里"被持有物"的合法类别
+//    不止 `item` —— 第 25 章实证：模型写 `"item_ref":"磁带"`，而库里 #106「磁带」的 kind 是 **prop**。
+//    若只认 `item`，就出现最坏那种不一致：**同一个引用，填数字 id 走 K03 放行、写名字被 resolver 拒**。
+[[nodiscard]] inline bool EntityKindMatches(std::string_view actual, std::string_view expected) {
+    if (expected == kind::item) { // 期望"物品" ⇒ 接受同类可持有物（与 K03 原口径一致）
+        return actual == kind::item || actual == kind::treasure || actual == kind::prop ||
+               actual == kind::clothing || actual == kind::resource;
+    }
+    return actual == expected;
 }
 
 } // namespace shine::novelcore
