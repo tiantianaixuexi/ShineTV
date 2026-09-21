@@ -242,6 +242,11 @@ struct RefCtx {
     // 同一章出现两个同名实体 ⇒ 那时**拒**，要模型用 temp_id 指定，而不是悄悄取最后一个）
     const std::map<std::string, std::vector<RowId>>* chapterNames = nullptr;
     const EntityNameIndex* index = nullptr; // 库内（不含 event）
+    // ★ T4：**kind 判定的oracle**（只在 D12 的罕见分支里查一次：解析出来的那个 id 到底是什么 kind）。
+    // 为什么需要：模型会把**错槽位**的 temp_id 一起写进来（真跑第 21 章实证：
+    // `location_id=59`（有效 location）+ `location_temp_id=en:身后按扳手之手`（本章声明的 **event**））
+    // —— 那种 ref 对 location 槽位**根本不构成"说法"**，不该按 D12 冲突处理（否则为一处噪声废掉一整章）。
+    db::sqlite::Database* db = nullptr;
 };
 
 struct RefResolution {
@@ -257,6 +262,41 @@ struct RefResolution {
                                            std::string_view kindWanted) {
     // ① 明确数字 id（模型自己指定了就用它 —— 存在性/kind 由 K02/K03 判）
     if (id > 0) {
+        // ★ T4-D12（**权威判定**在落库这一侧）：同时给了 id 与 ref ⇒ 必须**指向同一实体**。
+        // **冗余允许、冲突拒绝**：同实体 ⇒ 放行（canonical = id）；不同实体 / ref 解析不了 ⇒ 拒。
+        const std::string otherRef = TrimRef(refRaw);
+        if (!otherRef.empty()) {
+            const RefResolution other = ResolveRefFull(0, otherRef, ctx, kindWanted); // 递归：id=0 那一路
+            // ★ T4：先看这个 ref 解析出来的实体**是不是这个槽位要的 kind** ——
+            // 不是 ⇒ 它对槽位**不构成"说法"**（错槽位噪声）⇒ **不参与 D12**，按 `*_id` 走 + 记一条 warn。
+            // 真跑实证（第 21 章）：`location_id=59` + `location_temp_id=en:身后按扳手之手`（kind=event）
+            // 若判成 D12 冲突，模型会因为"多写了个错槽位字段"而**整章被拒**（而 `location_id` 本身是对的）。
+            if (other.id > 0 && !kindWanted.empty() && ctx.db != nullptr) {
+                std::string actualKind;
+                if (auto st = ctx.db->Prepare("SELECT kind FROM entities WHERE id=?1"); st) {
+                    (void)st->BindInt(1, other.id);
+                    if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                        actualKind = st->ColumnText(0);
+                    }
+                }
+                if (!actualKind.empty() && actualKind != kindWanted) {
+                    log::Warn("引用冗余字段被忽略：字段期望 **{}**，但 ref「{}」解析到 #{}（kind={}）—— "
+                              "**错槽位的引用对槽位不构成说法**，按 id={} 继续（T4-D12 只判同 kind 冲突）",
+                              KindLabel(kindWanted), otherRef, other.id, actualKind, id);
+                    return {id, {}};
+                }
+            }
+            if (other.id <= 0) {
+                return {0, fmt::format("D12：同时给了 id={} 与 ref=「{}」，但该 ref 解析不了：{}"
+                                       "（**冗余允许、冲突拒绝**：请只留一个）",
+                                       id, otherRef, other.error)};
+            }
+            if (other.id != id) {
+                return {0, fmt::format("D12：同时给了 id={} 与 ref=「{}」⇒ 解析到 **#{}**：两个说法指向"
+                                       "**不同**实体，请只留一个（系统不替你选）",
+                                       id, otherRef, other.id)};
+            }
+        }
         return {id, {}};
     }
     const std::string ref = TrimRef(refRaw);
@@ -283,39 +323,54 @@ struct RefResolution {
             return {asId, {}};
         }
     }
-    // ④ 名字（归一化）
+    // ④ 名字（归一化）：★ T4-① **候选集合，不是解析优先级** ——
+    // 候选 = （本章 `entities[]` 声明的）**∪**（库内同 kind 同名的），再**按 entity id 去重**，
+    // 最后才判 0 / 1 / >1。**绝不能**写成"chapterNames 命中就 return"：
+    // 那样当本章 `force_new` 建了同名实体时，"本章优先"会把库里那个同名实体**悄悄赢掉**
+    //（真跑场景：库内 #43 李默 + 本章 #201 李默(force_new=true)，`entity_ref="李默"` 必须得到
+    //  **2 个候选 ⇒ 拒**，而不是选 #201）。
     const std::string norm = NormalizeRefName(ref);
+    std::vector<NameHit> cand;
+    const auto pushUnique = [&cand](const NameHit& h) {
+        for (const NameHit& c : cand) {
+            if (c.id == h.id) {
+                return; // **按 entity id 去重**（同一 id 从两个来源来 ⇒ 仍算**一个**候选）
+            }
+        }
+        cand.push_back(h);
+    };
+    const bool indexUsable = ctx.index != nullptr && ctx.index->loaded();
     if (ctx.chapterNames != nullptr) {
         if (const auto it = ctx.chapterNames->find(norm); it != ctx.chapterNames->end()) {
-            if (it->second.size() == 1) {
-                return {it->second.front(), {}}; // 本章 entities[] 声明过的名字
-            }
-            // 本章 `entities[]` 里有两个同名实体（`force_new` 允许这么声明）⇒ **拒**（不取"最后一个"）
-            std::string ids;
             for (const RowId one : it->second) {
-                if (!ids.empty()) {
-                    ids += " / ";
-                }
-                ids += fmt::format("#{}", one);
+                // 本章声明的候选：created_chapter 用 -1 标记（报文里显示"本章新建"）
+                pushUnique(NameHit{one, std::string{KindLabel(kindWanted)}, ref, -1});
             }
-            return {0, fmt::format("本章 `entities[]` 里声明了 {} 个同名实体（{}）⇒ 请用**各自的 "
-                                   "temp_id**（或数字 id）指定，别用一个名字指两个",
-                                   it->second.size(), ids)};
         }
     }
-    if (ctx.index == nullptr || !ctx.index->loaded()) {
+    if (indexUsable) {
+        for (const NameHit& h : ctx.index->Find(norm, kindWanted)) {
+            pushUnique(h);
+        }
+    }
+    if (cand.size() == 1) {
+        return {cand.front().id, {}}; // **唯一命中** ⇒ 用（≡ 复用）
+    }
+    if (cand.size() > 1) {
+        // **系统规则**：不猜。给**全部**候选（标明来源），要模型/作者自己指定。
+        return {0, fmt::format("「{}」**有歧义**：同名同 kind 的有 {} 个 ⇒ {}。请直接填要用的实体 "
+                               "**id（数字）**（或用本章 temp_id 指定本章新建的那个）；若你要的其实是"
+                               "**新建**，请放进 entities[] 并给它 temp_id。"
+                               "（系统**不在**\"本章新建的\"与\"库里已有的\"之间替你选，也不按"
+                               "\"最近出现\"猜）",
+                               ref, cand.size(), DescribeHits(cand))};
+    }
+    if (!indexUsable && ctx.chapterNames == nullptr) {
         return {0, fmt::format("名字索引不可用，「{}」无法解析（请直接填实体 id）", ref)};
     }
-    const std::vector<NameHit> hits = ctx.index->Find(norm, kindWanted);
-    if (hits.size() == 1) {
-        return {hits[0].id, {}}; // 唯一命中 ⇒ **复用**
-    }
-    if (hits.size() > 1) {
-        // **系统规则**：不猜。给候选、要模型自己指定（或声明新建）。
-        return {0, fmt::format("「{}」**有歧义**：库里同名同 kind 的有 {} 个 ⇒ {}。请直接填要用的实体 "
-                               "**id（数字）**；若你要的其实是**新建**，请放进 entities[] 并给它 "
-                               "temp_id。（系统不按\"最近出现\"之类替你猜）",
-                               ref, hits.size(), DescribeHits(hits))};
+    if (!indexUsable) {
+        // 索引不可用：本章也没声明过这个名字 ⇒ 无法判"库里有没有"
+        return {0, fmt::format("名字索引不可用，「{}」无法解析（请直接填实体 id）", ref)};
     }
     const std::vector<NameHit> otherKind = ctx.index->Find(norm, {});
     if (!otherKind.empty()) {
@@ -362,10 +417,32 @@ struct RefResolution {
     return out;
 }
 
+// ★ S77/T4：**"前缀 + 纯数字"的 TempId / 引用值**（`en:1` / `en:07` / `ev:3`）—— 见 D9 的注释。
+// ⚠️ **定义放在这里**（`CheckRef` 之前）：树里 `RefGate`/`CheckRef` 都在**匿名命名空间**内，
+// 若只在命名空间作用域定义、又在这里前置声明，调用点会看到**两个候选** ⇒ 重载歧义（实测踩到）。
+// T4 把它的用途从"校验 `entities[].temp_id`"**扩到所有引用值**（`*_ref` / `*_temp_id`）。
+[[nodiscard]] bool LooksLikeNumericTempId(std::string_view tid) {
+    const auto colon = tid.rfind(':');
+    if (colon == std::string_view::npos || colon + 1 >= tid.size()) {
+        return false; // 无前缀 / 空后缀 ⇒ 不是这个形态
+    }
+    for (std::size_t i = colon + 1; i < tid.size(); ++i) {
+        if (tid[i] < '0' || tid[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
 // 门禁的引用上下文（★ S87/T1：门禁也**认名字**，与落库时同一套决策树）。
 struct RefGate {
     const std::set<std::string>* tempIds = nullptr; // 本章声明的 temp_id
     const std::set<std::string>* names = nullptr;   // 本章 entities[] 声明的名字（已归一化）
+    // ★ T4-①：本章用 **`force_new`** 声明的名字（已归一化）。
+    // 语义（用户钉死）：`force_new` **允许**造同 kind 同名实体；但一旦这么做了，**该名字不再是唯一引用键**
+    // ⇒ 用这个名字做引用时必须**拒**（候选 = 本章新建的 ∪ 库里已有的）。
+    // ⚠️ 注意方向：这里拦的是**引用**，**不是**"只要 force_new 同名就拒"（后者会推翻 T3b 验收标准 5）。
+    const std::set<std::string>* forceNewNames = nullptr;
     const EntityNameIndex* index = nullptr;         // 库内名字索引（不含 event）
 };
 
@@ -375,10 +452,40 @@ struct RefGate {
 //（落库时才拒的报文模型看不到 ⇒ 白跑一轮）。判据与落库**完全同源**（`ResolveRefFull` 的规则）。
 [[nodiscard]] std::string CheckRef(std::string_view where, RowId id, const std::string& refRaw,
                                    const RefGate& gate, std::string_view kindWanted, bool required) {
+    const std::string ref = TrimRef(refRaw);
+    // ★ T4-D9（扩到引用值）：引用值不许是"**已知 temp-id 前缀 + 纯数字**"的**保留形状**（`en:7` / `ev:7`）。
+    // 它既不是真实名字、也不是库 id；放过去只会得到"库里没有名为「en:7」的实体"这种**误导**报文。
+    // ⚠️ 这条与"`*_ref` 是否需要前缀"**无关**：去前缀 ≠ 允许歧义形状（`en:7` 长得像 id 7，是"把序号当 id"的源头）。
+    if (LooksLikeNumericTempId(ref)) {
+        return fmt::format("{}：「{}」是**保留形状**（已知 temp-id 前缀 + 纯数字）—— temp_id 只是本章内的"
+                           "标签，不是名字也不是库 id；请填库内**数字 id**，或真实名字",
+                           where, ref);
+    }
+    // ★ T4-D12：**同时**给了 `*_id` 与 `*_ref` / `*_temp_id` ⇒ 必须**指向同一实体**
+    //（**冗余允许、冲突拒绝** —— 见 `Plan/HANDOFF-novel-semantic-ref.md` 的四态表）。
+    // 门禁**尽力**判（能解的才判）：解不动的情形（本章 temp_id / 本章声明的名字 / 索引不可用）
+    // 交给**落库时**的同一判定（`ResolveRefFull` 权威）。
+    if (id > 0 && !ref.empty()) {
+        RowId same = -1;
+        const bool chapterLocal =
+            (gate.tempIds != nullptr && gate.tempIds->count(ref) > 0) ||
+            (gate.names != nullptr && gate.names->count(NormalizeRefName(ref)) > 0);
+        if (!chapterLocal && gate.index != nullptr && gate.index->loaded()) {
+            const std::vector<NameHit> hits = gate.index->Find(NormalizeRefName(ref), kindWanted);
+            if (hits.size() == 1) {
+                same = hits[0].id;
+            }
+        }
+        if (same > 0 && same != id) {
+            return fmt::format("D12：{} 同时给了 id={} 与 ref=「{}」⇒ 解析到 **#{}**：两个说法指向**不同**"
+                               "实体，请只留一个（模型不该自相矛盾；系统不替你选）",
+                               where, id, ref, same);
+        }
+        return {}; // 一致（或门禁判不动 ⇒ 落库时再判）
+    }
     if (id > 0) {
         return {}; // 已存在的库 id：存在性与 kind 由 K02/K03 判（不在这里重复）
     }
-    const std::string ref = TrimRef(refRaw);
     if (ref.empty()) {
         return required
                    ? fmt::format("{} 既没填已有实体 id，也没填**名字** / 本章 temp_id（三者必有一）",
@@ -399,6 +506,19 @@ struct RefGate {
         return {}; // 数字字符串 ⇒ 当 id 用（存在性由 K02/K03 判）
     }
     const std::string norm = NormalizeRefName(ref);
+    // ★ T4-①：这个引用值正是**本章 `force_new` 新建**的那个名字，而**库内同 kind 同名已有实体**
+    // ⇒ **该名字不再是唯一引用键**（两个候选：本章新建的 / 库里已有的）⇒ **拒**。
+    // ⚠️ 只拦"**把该名字用作引用**"这一侧；**不拦** `force_new` 本身（只声明、不被引用 ⇒ 放行）。
+    if (gate.forceNewNames != nullptr && gate.forceNewNames->count(norm) > 0 && gate.index != nullptr &&
+        gate.index->loaded()) {
+        const std::vector<NameHit> same = gate.index->Find(norm, kindWanted);
+        if (!same.empty()) {
+            return fmt::format("{}：「{}」在**本章**用 `force_new` 新建，而库里同 kind 同名的已有 {} ⇒ "
+                               "这个名字**不再是唯一引用键**（本章新建的与库里已有的都是候选）。"
+                               "请用 **temp_id** 指定本章那个，或直接填数字 id",
+                               where, ref, DescribeHits(same));
+        }
+    }
     if (gate.names != nullptr && gate.names->count(norm) > 0) {
         return {}; // 本章 entities[] 声明的名字（新建）
     }
@@ -639,19 +759,8 @@ bool StateDiffFromJson(std::string_view text, StateDiff& out) {
 
 // ———— 契约校验（`07` §2.2 的 ③，机器部分）————
 
-// ★ S77：**"前缀 + 纯数字"的 TempId**（`en:1` / `en:07` / `ev:3`）—— 见 D9 的注释。
-[[nodiscard]] bool LooksLikeNumericTempId(std::string_view tid) {
-    const auto colon = tid.rfind(':');
-    if (colon == std::string_view::npos || colon + 1 >= tid.size()) {
-        return false; // 无前缀 / 空后缀 ⇒ 不是这个形态
-    }
-    for (std::size_t i = colon + 1; i < tid.size(); ++i) {
-        if (tid[i] < '0' || tid[i] > '9') {
-            return false;
-        }
-    }
-    return true;
-}
+// ★ S77/T4：`LooksLikeNumericTempId()` **定义已上移到 `CheckRef` 之前**（T4 把它扩到引用值，
+// 两处都要用；留在命名空间作用域会和匿名命名空间的前置声明撞成重载歧义）。
 
 std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const StateDiff& diff) {
     std::vector<CommitIssue> out;
@@ -758,7 +867,16 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
             declaredNames.insert(n);
         }
     }
-    const RefGate refGate{&declaredTemp, &declaredNames, &nameIndex};
+    // ★ T4-①：本章用 `force_new` 声明的名字（归一化）—— 用于"**按引用值**"拦截（见 `RefGate`）
+    std::set<std::string> forceNewNames;
+    for (const NewEntityDelta& e : diff.entities) {
+        if (e.force_new) {
+            if (const std::string n = NormalizeRefName(e.name); !n.empty()) {
+                forceNewNames.insert(n);
+            }
+        }
+    }
+    const RefGate refGate{&declaredTemp, &declaredNames, &forceNewNames, &nameIndex};
     for (const CharacterDelta& c : diff.characters) {
         if (const std::string err = CheckRef("characters[].entity_id", c.entity_id, c.entity_temp_id,
                                              refGate, kind::person, /*required=*/true);
@@ -1207,7 +1325,7 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
     //     `index` 在块 1 之后才建，所以先靠它兜住"本章新建"这一路；列表 >1 = 本章有两个同名实体 ⇒ 拒）；
     //   · `rctx.index`：库内"名字 → 候选"（块 1 之后建 ⇒ 本章刚落库的实体也在其中）。
     std::map<std::string, std::vector<RowId>> chapterNames;
-    RefCtx rctx{&tempIds, &chapterNames, nullptr};
+    RefCtx rctx{&tempIds, &chapterNames, nullptr, &db};
 
     // 块 0（写在其它块之前）：被改实体的 **Before 快照**（`07` §2.4「章级快照内容 = diff + Before 值」）
     for (const RowId id : touched) {
@@ -2142,6 +2260,136 @@ int RunCommitSelfCheck() {
                    "T3b：显式新建 ⇒ 同名实体**又多了 1 个**（库里共 3 个「S65新人物」）");
             expect(count1("SELECT COUNT(*) FROM audit_logs WHERE action='force_new_entity'") >= 1,
                    "T3b：显式新建留下 `audit_logs(force_new_entity)`（半年后能查清这个 id 的来历）");
+
+            // ———— ★ T4：引用契约 ⑧f-1..9（union 候选 / D12 四态 / D9 保留形状 / force_new 与唯一性）————
+            // ⚠️ 全部用**新名字**：`S65新人物` / `S65新地点` 此时库里已有多份（上面 (b)(e) 故意造的），
+            //    用它们会把"本组要测的东西"和被造出来的重复混在一起。
+            const auto idOf = [&mem](const char* name) -> RowId {
+                auto st = mem.Prepare("SELECT id FROM entities WHERE name=?1 ORDER BY id LIMIT 1");
+                if (!st) {
+                    return 0;
+                }
+                (void)st->BindText(1, name);
+                if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    return st->ColumnInt(0);
+                }
+                return 0;
+            };
+            CommitContext c4 = ctx;
+            c4.review_pass = true;
+            c4.canon_mode = "manual";
+
+            StateDiff mk;
+            mk.chapter_id = *chapter;
+            mk.entities.push_back({.temp_id = "T4唯一甲标签", .kind = "person", .name = "T4唯一甲",
+                                   .created_chapter = *chapter});
+            const CommitResult rMk = CommitChapterState(mem, mk, c4);
+            expect(rMk.ok, fmt::format("T4：先建一个唯一名实体（{}）", rMk.error));
+            const RowId idUniq = idOf("T4唯一甲");
+            expect(idUniq > 0, "T4：唯一名实体已落库");
+
+            // ⑧f-8 ★ **union 按 entity id 去重**（用户指定）：本章声明的名字与库内命中**最终同一个 id**
+            //    ⇒ 仍视为**唯一候选** ⇒ 成功。（反例：若实现写成"两个来源=两个候选"，这里必红。）
+            {
+                StateDiff u8;
+                u8.chapter_id = *chapter;
+                // 本章**重新声明**同名（无 `force_new` ⇒ `UpsertEntity` 复用同一个实体）
+                u8.entities.push_back({.temp_id = "T4重声明标签", .kind = "person", .name = "T4唯一甲",
+                                       .created_chapter = *chapter});
+                u8.characters.push_back({.entity_temp_id = "T4唯一甲", .body_state = "在"});
+                const CommitResult r = CommitChapterState(mem, u8, c4);
+                expect(r.ok, fmt::format("T4 ⑧f-8：本章声明与库内指向**同一** id ⇒ union 去重后唯一 ⇒ 成功"
+                                         "（{}）",
+                                         r.error));
+                expect(count1("SELECT COUNT(*) FROM entities WHERE name='T4唯一甲'") == 1,
+                       "T4 ⑧f-8：也没有因此新建出第二份同名实体");
+            }
+            // ⑧f-4：`*_id` + `*_ref` **同实体** ⇒ **允许**（冗余但一致），canonical id == `*_id`
+            {
+                StateDiff u4;
+                u4.chapter_id = *chapter;
+                u4.characters.push_back(
+                    {.entity_id = idUniq, .entity_temp_id = "T4唯一甲", .body_state = "在"});
+                const CommitResult r = CommitChapterState(mem, u4, c4);
+                expect(r.ok, fmt::format("T4 ⑧f-4：`*_id` + `*_ref` **同一实体** ⇒ 允许提交（{}）", r.error));
+            }
+            // ⑧f-5：`*_id` + `*_ref` **不同实体** ⇒ **D12 拒**
+            {
+                StateDiff u5;
+                u5.chapter_id = *chapter;
+                u5.characters.push_back(
+                    {.entity_id = physPerson, .entity_temp_id = "T4唯一甲", .body_state = "在"});
+                const CommitResult r = CommitChapterState(mem, u5, c4);
+                expect(!r.ok && r.error.find("D12") != std::string::npos,
+                       fmt::format("T4 ⑧f-5：`*_id` + `*_ref` **不同实体** ⇒ D12 拒（{}）", r.error));
+            }
+            // ⑧f-6：旧写法回归 —— `temp_id = en:语义标签` + 用该 temp_id 引用 ⇒ 仍通过
+            {
+                StateDiff u6;
+                u6.chapter_id = *chapter;
+                u6.entities.push_back({.temp_id = "en:T4旧写法", .kind = "person", .name = "T4旧写法人物",
+                                       .created_chapter = *chapter});
+                u6.characters.push_back({.entity_temp_id = "en:T4旧写法", .body_state = "在"});
+                const CommitResult r = CommitChapterState(mem, u6, c4);
+                expect(r.ok, fmt::format("T4 ⑧f-6：旧 `en:语义标签` 写法回归 ⇒ 仍通过（{}）", r.error));
+            }
+            // ⑧f-9（顺带）：**D9 扩到引用值** —— `*_ref` 写 `en:7` 这种保留形状 ⇒ 拒（报文说清"保留形状"）
+            {
+                StateDiff u9;
+                u9.chapter_id = *chapter;
+                u9.characters.push_back({.entity_temp_id = "en:7", .body_state = "在"});
+                const CommitResult r = CommitChapterState(mem, u9, c4);
+                expect(!r.ok && r.error.find("保留形状") != std::string::npos,
+                       fmt::format("T4 ⑧f-9：引用值用 `en:7` 保留形状 ⇒ 拒（D9 扩引用值）（{}）", r.error));
+            }
+            // ⑧f-7：本章 `force_new` 建同名实体后，**再用该名字引用** ⇒ **拒**（不能"本章优先"悄悄赢）
+            {
+                StateDiff u7;
+                u7.chapter_id = *chapter;
+                u7.entities.push_back({.temp_id = "T4第三份标签", .kind = "person", .name = "T4唯一甲",
+                                       .created_chapter = *chapter, .force_new = true});
+                u7.characters.push_back({.entity_temp_id = "T4唯一甲", .body_state = "在"});
+                const CommitResult r = CommitChapterState(mem, u7, c4);
+                expect(!r.ok && r.error.find("不再是唯一引用键") != std::string::npos,
+                       fmt::format("T4 ⑧f-7：本章 `force_new` 后**按名字引用** ⇒ 拒（{}）", r.error));
+            }
+            // ⑧f-10 ★ T4（**真跑第 21 章实证**）：`*_id` **有效** + 同时给了一个**错槽位**的 temp_id
+            //   （字段期望 location，而那个 temp_id 是本章声明的 **event**）⇒ 那个 ref 对槽位
+            //   **不构成"说法"** ⇒ **不按 D12 冲突处理**、也不拒，按 `*_id` 继续提交。
+            //   ⚠️ 反例保护：若实现把它当冲突（第一版就是这样），模型会因为"多写了个错槽位字段"
+            //      而**整章被拒** —— 为一处噪声废掉一整章的 LLM 输出。
+            {
+                StateDiff u10;
+                u10.chapter_id = *chapter;
+                u10.entities.push_back({.temp_id = "T4错槽位事件", .kind = "event",
+                                        .name = "T4错槽位事件名", .created_chapter = *chapter});
+                EventDelta ev10;
+                ev10.temp_id = "T4错槽位事件标签";
+                ev10.action = "T4 错槽位引用";
+                ev10.location_id = physLoc;            // ← **有效**的 location
+                ev10.location_temp_id = "T4错槽位事件"; // ← kind=event，**错槽位**
+                ev10.participants.push_back({.entity_id = physPerson, .role = "actor"});
+                u10.events.push_back(ev10);
+                const CommitResult r = CommitChapterState(mem, u10, c4);
+                expect(r.ok, fmt::format("T4 ⑧f-10：有效 `*_id` + **错槽位** temp_id ⇒ 不误判 D12、"
+                                         "照 `*_id` 提交（{}）",
+                                         r.error));
+                expect(count1(fmt::format("SELECT COUNT(*) FROM event_details WHERE location_id={}",
+                                          physLoc)
+                                  .c_str()) >= 1,
+                       "T4 ⑧f-10：事件地点落成 **physLoc**（错槽位的 ref 被忽略）");
+            }
+
+            // ⑧f-7b：**只声明、不被引用**的 `force_new` ⇒ 必须**放行**（T3b 验收标准 5 不能被 T4 破坏）
+            {
+                StateDiff u7b;
+                u7b.chapter_id = *chapter;
+                u7b.entities.push_back({.temp_id = "T4第四份标签", .kind = "person", .name = "T4唯一甲",
+                                        .created_chapter = *chapter, .force_new = true});
+                const CommitResult r = CommitChapterState(mem, u7b, c4);
+                expect(r.ok, fmt::format("T4 ⑧f-7b：只声明不被引用的 `force_new` ⇒ 仍放行（T3b 标准 5）（{}）",
+                                         r.error));
+            }
         }
     }
     // ⑨ diff 存读往返（`audit_logs.detail` / 快照都用它）
