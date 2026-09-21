@@ -68,6 +68,14 @@ public:
     // `CREATE TABLE IF NOT EXISTS` 天然幂等（不像 `ALTER ADD COLUMN` 要靠失败被忽略）。
     static void EnsureStageArtifactsTable(db::sqlite::Database& db);
 
+    // ★ T3b：`entity_names`（"名字 → 实体候选"的**索引层**，不是实体身份）。
+    // 建表在 `kSchemaV13EntityNames`（`ApplyCanonicalSchema` 里跑），这个函数负责**回填**：
+    // 给"还没有主名行"的实体补一行 `is_primary=1`（`name_norm` 用 `NormalizeEntityName()`，
+    // 与 resolver / R10 **同一份**实现）。**幂等** —— 每次开库调它也不会重复插。
+    // ⚠️ 同一 `(kind, name_norm)` **允许多行**（表上**故意不建 UNIQUE**）：真出现"两个李默"时，
+    //    resolver 返回**候选列表**让人/模型指定，而不是让数据库替作者判定身份。
+    static void EnsureEntityNames(db::sqlite::Database& db);
+
     // 离线自检：内存库建全 schema + 最小 CRUD
     [[nodiscard]] static bool RunSchemaSelfCheck();
 

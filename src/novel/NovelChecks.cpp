@@ -459,6 +459,30 @@ struct Ref {
         return Mk("K03", CheckOutcome::NotApplicable, "本章没有任何实体引用");
     }
     const std::map<RowId, std::string> tempIdx = TempSuffixIndex(c.diff);
+    // ★ S75：**候选 id**（"你要 person，库里 person 是这些"）—— 按 kind 只查一次并缓存。
+    // 为什么要它：K03 的 violation 会被回灌进重做提示（`06` §2.6），**带上正确答案**才叫"自愈"；
+    // 否则模型只知道"错了"，只能靠人再去改提示词教它 —— 那不是无人值守。
+    std::map<std::string, std::string> candCache;
+    const auto CandidatesFor = [&c, &candCache](std::string_view want) -> std::string {
+        const std::string key{want};
+        if (const auto it = candCache.find(key); it != candCache.end()) {
+            return it->second;
+        }
+        std::string s;
+        if (auto st = c.db->Prepare("SELECT id,name FROM entities WHERE kind=?1 ORDER BY id LIMIT 12")) {
+            (void)st->BindText(1, key);
+            while (true) {
+                auto row = st->Step();
+                if (!row || *row != db::sqlite::StepResult::Row) {
+                    break;
+                }
+                s += fmt::format("{}#{}({})", s.empty() ? "" : ", ", st->ColumnInt(0),
+                                 st->ColumnText(1));
+            }
+        }
+        candCache.emplace(key, s);
+        return s;
+    };
     std::string bad;
     int n = 0;
     for (const Ref& r : refs) {
@@ -479,6 +503,11 @@ struct Ref {
                                              "temp_id 的序号**不是**库 id，新建实体只能留在 `entities[]`，"
                                              "不要填进 *_id 字段（要填就用 list_entities 查到的数字）",
                                              r.id, ti->second));
+                // ★ S75：**把"正确答案"也报出来** —— 机器完全算得出来（"你要 person，库里
+                // person 是这些"），就不该让人再去改提示词教它。这是"自愈回灌"的核心：
+                // violation 自带**可执行的修法**，重做时直接照做即可（`06` §2.6 的回产出阶段）。
+                // 真跑实证（第 16 章）：模型连查 10 次库、仍把 `#50`/`#37`（item）填进 person 字段。
+                bad += fmt::format("；库里可用的 [{}]：{}", r.expected, CandidatesFor(r.expected));
             }
         }
     }
@@ -2072,7 +2101,51 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
         // 溜过门禁、在落库块 5 炸。改成"**整条 entry 不要写**，不是填 0"。
         // 9 → 10（S65）：**引用字段新增 `*_temp_id` 兄弟键**（`02` §2.5）—— "新人物/新地点/新物品
         // 被本章使用"第一次有了合法表达（原先只能填已有 id，模型只好把 `en:7` 的序号当 id）。
-        canon += "prompt_rule_version=10\n";
+        // 10 → 11（S67b）：重做提示新增"上一版是**空 diff** 时该怎么办（补全 delta 或显式
+        // `no_change_declared:true`）"—— 属"给 LLM 看的东西"，按 S61 的规矩抬版本。
+        // 11 → 12（S71/S72）：重做提示又加了两处**行动指令** ——
+        //   ① S71：按"引用错"类失败附**库内真实 id 速查表**（只在这种失败的重做里给；首轮绝不喂，
+        //      S62 的教训）——真跑实证：第 13 章 K03 连挡 2 次、重做两轮 `工具调用 0 次`，
+        //      给了速查表后当轮 `K01–K29 校验：29 条，0 不通过`。
+        //   ② S72：`items[].op="acquire"` 必须给持有者 —— 块 4 的守卫（S69）会拒"没有持有者的持有"，
+        //      而它**不在 K 列表里**，按 check_id 分发的动作提示覆盖不到。
+        // 12 → 13（S75）：**改了"给 LLM 看的东西"的三处**（用户质问"为什么是你给这么多？"后的整改）——
+        //   ① `BuildSystemPrompt` 不再给不碰动态字段的 agent 追加那段模板（extract 省掉 1522 字符噪声，
+        //      并停止教它用 `list_world_fields` —— 它根本没这个工具）；
+        //   ② "可用工具"改成**实际注册表**（原先抄白名单，而白名单与实给不一致：6 vs 4）；
+        //   ③ extract 的工具与提示词改成 `list_id_directory` 优先（删掉本地执行不了的
+        //      `get_recent_chapters`/`get_foreshadows`）。
+        // 13 → 14（S77）：**把"序号锚定"的歧义源在入口消灭**（用户要求"治本"）——
+        //   ① 形状示例里的 `temp_id` 全改成**语义标签**（`en:断头挂绳` / `ev:夜遇`），
+        //      `*_temp_id` 的示例同样（`en:新人物-谭工` / `en:新修配间`）——原先示例写 `en:1`/`en:7`，
+        //      **正是我们自己在教模型"TempId 就是序号"**（真跑实证：第 13/16 章把 `en:2`/`en:3` 的
+        //      序号填进 `entity_id`/`location_id`，一次跑出 12 处归一化拒绝）；
+        //   ② 明写 `temp_id` **不许用「前缀+纯数字」**（契约 D9 会当场拒 —— `NovelCommit::ValidateStateDiff`）。
+        // 14 → 15（S78）：**"先查库"变成默认动作 + 块级失败也给动作提示**（用户："做做做做"）
+        //   ① `RunToolLoop` 首轮**由系统预置**一次 `list_id_directory` 的结果（作为第一轮的工具结果
+        //      进对话）—— 模型一开口就能看到"库里有哪些 kind、各自 id"（真跑实证：它**经常一次工具
+        //      都不调**：第 15/18 章 `工具调用 0 次`，却照样往 `*_id` 里填数字）；
+        //   ② 重做提示新增"**块级守卫**（块 4/5/6）失败时怎么改"—— 那些守卫不在 K01–K29 里，
+        //      按 `failed("K..")` 分发的分支覆盖不到。
+        // 15 → 16（S79）：**把"语义类"错误也搬进契约层 + 通用回灌** ——
+        //   ① 新增 **D10**：`causal[]` 的 cause/effect **两端都要给**、且**不许自环**
+        //      （原先只在落库时由 `NovelGraph::UpsertCausalLink` 挡 ⇒ 报文是"块 6 因果失败"，
+        //       **不在 K01–K29 里**，模型看不到该改什么 —— 真跑实证第 18 章连卡两轮）；
+        //   ② 重做提示**把 `commit.error` 一起回灌**（原先只回灌 K 报告）⇒ 任何失败原因都到模型眼前。
+        // 16 → 17（S80）：**再加一条同类契约规则 D11** —— `items[].op="acquire"` 必须给持有者
+        //（原先只在块 4 的落库守卫里挡，报文不在 K 列表里 ⇒ 第 18 章两轮都卡这条，而重做提示里
+        //  那句"必须给 owner"的措辞模型不听）。规律：**落库时的守卫必须有一条对应的契约规则**，
+        // 否则"为什么被拒"到不了模型眼前。
+        // 17 → 18（S82）：**提示词一致性清理**（用户问"契约 02 §2.5 这个东西，模型能读取吗"——
+        // 读不到！）。把 extractor 提示词里**模型看不到的引用**全清掉：
+        //   ① `（契约 02 §2.5）` / `（\`06\` §2.3）` —— **文档编号**（模型进上下文时没有 Doc/），
+        //      换成人话（"形状见下方示例"）或直接删；
+        //   ② `（真跑实证：模型把 … 全填 0 ⇒ 门禁过、落库块 5 炸 …）` —— **我的调试笔记泄漏进提示词**
+        //      （描述历史事故，对当前任务零信息量，还占 token）；
+        //   ③ `id 照抄下方清单` —— **悬空引用**（"下方"压根没有清单）。
+        // ⚠️ 规矩：**提示词里只允许出现"模型当场能用到的东西"**（形状、字段清单、可用工具、规则），
+        //    文档编号 / 事故史 / 悬空指涉一律留在**代码注释**里。
+        canon += "prompt_rule_version=18\n";
         // ⚠️ **`13` §2.7 PV4（S27 补）**：`prompt_layers` 是 `Assemble` 的**输入**
         // （`QueryLayer` 取 `version DESC LIMIT 1`）—— 有人把 `camera` 层从"中景"改成"特写"、
         // 或改了 `base` 层文案，**输入状态就变了、旧 prompt 必须失效**。不加这一条就是

@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "novel/NovelChecks.h"
 #include "novel/NovelGraph.h"
+#include "novel/NovelNames.h"
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Reflect.h"
@@ -23,6 +24,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace shine::novelcore {
@@ -106,18 +108,242 @@ WriteChapterSnapshot(std::string_view dir, const StateDiff& diff, std::string_vi
     return ref.entity_id;
 }
 
-// ★ S65：引用字段的**统一解析** —— `*_id` 优先（已存在的库 id），否则查本章 TempId 映射
-//（`entities[]` 在块 1 先落库并回填 `tempIds`，所以块 2–5 解析时映射已就绪）。
-[[nodiscard]] RowId ResolveRef(RowId id, const std::string& tempId,
-                               const std::map<std::string, RowId>& tempIds) {
+// ———— ★★ S87（T1）：**语义引用解析** —— 名字就是引用键 ————
+// 责任边界（用户拍板）：LLM 只表达"**我指的是谁 / 我要新建谁**"；resolver 只**发现歧义**，
+// **绝不替作者判定"两个同名是不是同一个人"** —— 不用"最近章节 / 最近出现 / 关系数量"之类的启发式。
+//（这类启发式很危险：小说里有时间线、闪回、多视角，"最近出现"根本不等价于"同一个实体"。）
+//
+// 决策树（**系统规则**，逐条实现在 `ResolveRefFull`）：
+//   ① 明确数字 `*_id`      ⇒ 直接用（存在性 / kind 由 K02/K03 判）
+//   ② 本章 `temp_id` 命中   ⇒ 用（= 我本章新建的）
+//   ③ 纯数字字符串          ⇒ 当 id 用（兼容模型写 `"entity_id":"43"`）
+//   ④ 名字（归一化后）：
+//        · 同 kind 命中 **1** 个 ⇒ **复用**
+//        · 同 kind 命中 **多个** ⇒ **拒 + 候选列表**（要模型自己指定，系统不猜）
+//        · 0 个但**别的 kind** 有 ⇒ 拒（"库里「X」是 location，此处期望 person"）
+//        · **0 个**              ⇒ 拒（"库里没有「X」；要新建请进 entities[] 并给它 temp_id"）
+//                                  ＋**相近名字候选**（只提示，绝不自动采用）
+// ★ 口径唯一（用户要求）：实体名归一化**只有一份实现** —— `novel/NovelNames.h`。
+// R10 诊断（`NovelRepair`）与实际解析（本文件）必须同源：各写一套必然漂成
+// "扫描说没重复、解析说'有歧义'"（或反之），那种不一致极难查。
+[[nodiscard]] std::string NormalizeRefName(std::string_view s) { return NormalizeEntityName(s); }
+
+[[nodiscard]] std::string TrimRef(std::string_view s) { return TrimEntityRef(s); }
+
+struct NameHit { // 库里一条"名字命中"
+    RowId id = 0;
+    std::string kind;
+    std::string name;
+    int created_chapter = 0;
+};
+
+// 库内**名字索引**（一次查询、按归一化名字分组）。
+// ⚠️ 排除 `event`：事件**不用名字去重 / 不用名字引用**（它靠自己的键与来源定位）。
+// ⚠️ 这**不是** UNIQUE 约束 —— 同一 `(kind, 归一化名字)` **允许多行**：真出现"两个李默"时，
+//    resolver 返回**候选列表**让模型/人指定，而**不是**由数据库替你决定身份。
+class EntityNameIndex {
+public:
+    explicit EntityNameIndex(db::sqlite::Database& db) { Load(db); }
+
+    [[nodiscard]] bool loaded() const noexcept { return loaded_; }
+
+    // 取"名字归一化后相同"的候选；`kindFilter` 非空时只保留该 kind。
+    [[nodiscard]] std::vector<NameHit> Find(std::string_view norm,
+                                            std::string_view kindFilter = {}) const {
+        const auto it = byName_.find(std::string{norm});
+        if (it == byName_.end()) {
+            return {};
+        }
+        if (kindFilter.empty()) {
+            return it->second;
+        }
+        std::vector<NameHit> out;
+        for (const NameHit& h : it->second) {
+            if (h.kind == kindFilter) {
+                out.push_back(h);
+            }
+        }
+        return out;
+    }
+
+    // 相近名（**只用于报文提示**，绝不用于自动解析）：互相包含，如 `撑伞人影` vs `撑伞人影（青年）`。
+    [[nodiscard]] std::vector<NameHit> Similar(std::string_view norm, std::size_t limit = 5) const {
+        std::vector<NameHit> out;
+        if (norm.empty()) {
+            return out;
+        }
+        for (const auto& [key, hits] : byName_) {
+            if (key.empty() || key == norm) {
+                continue;
+            }
+            if (key.find(norm) == std::string::npos && norm.find(key) == std::string::npos) {
+                continue;
+            }
+            for (const NameHit& h : hits) {
+                out.push_back(h);
+                if (out.size() >= limit) {
+                    return out;
+                }
+            }
+        }
+        return out;
+    }
+
+private:
+    void Load(db::sqlite::Database& db) {
+        auto st = db.Prepare("SELECT id,kind,name,created_chapter FROM entities WHERE kind<>?1");
+        if (!st) {
+            log::Warn("EntityNameIndex：查询失败（{}）—— 本轮只认 id / temp_id", st.error().message);
+            return;
+        }
+        (void)st->BindText(1, kind::event);
+        while (true) {
+            auto s = st->Step();
+            if (!s || *s != db::sqlite::StepResult::Row) {
+                break;
+            }
+            NameHit h;
+            h.id = st->ColumnInt(0);
+            h.kind = st->ColumnText(1);
+            h.name = st->ColumnText(2);
+            h.created_chapter = static_cast<int>(st->ColumnInt(3));
+            const std::string norm = NormalizeRefName(h.name);
+            if (!norm.empty()) {
+                byName_[norm].push_back(std::move(h));
+            }
+        }
+        loaded_ = true;
+    }
+
+    std::map<std::string, std::vector<NameHit>> byName_;
+    bool loaded_ = false;
+};
+
+[[nodiscard]] std::string DescribeHits(const std::vector<NameHit>& hits, std::size_t limit = 6) {
+    std::string out;
+    const std::size_t n = hits.size() < limit ? hits.size() : limit;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (i > 0) {
+            out += " / ";
+        }
+        out += fmt::format("#{}（第{}章 {}「{}」）", hits[i].id, hits[i].created_chapter, hits[i].kind,
+                           hits[i].name);
+    }
+    if (hits.size() > n) {
+        out += fmt::format(" ……共 {} 个", hits.size());
+    }
+    return out;
+}
+
+// 解析上下文：本章 temp_id 映射 + 本章新建实体名 + 库内名字索引
+struct RefCtx {
+    const std::map<std::string, RowId>* tempIds = nullptr; // 本章 temp_id → 真实 id
+    // 归一化名 → 本章 `entities[]` 里声明该名字的 id **列表**（列表长度 >1 见下：`force_new` 可让
+    // 同一章出现两个同名实体 ⇒ 那时**拒**，要模型用 temp_id 指定，而不是悄悄取最后一个）
+    const std::map<std::string, std::vector<RowId>>* chapterNames = nullptr;
+    const EntityNameIndex* index = nullptr; // 库内（不含 event）
+};
+
+struct RefResolution {
+    RowId id = 0;
+    std::string error; // 非空 = 解析失败（可直接进 fail 报文）
+};
+
+[[nodiscard]] std::string KindLabel(std::string_view kindWanted) {
+    return kindWanted.empty() ? std::string{"实体"} : fmt::format("{}", kindWanted);
+}
+
+[[nodiscard]] RefResolution ResolveRefFull(RowId id, const std::string& refRaw, const RefCtx& ctx,
+                                           std::string_view kindWanted) {
+    // ① 明确数字 id（模型自己指定了就用它 —— 存在性/kind 由 K02/K03 判）
     if (id > 0) {
-        return id;
+        return {id, {}};
     }
-    if (tempId.empty()) {
-        return 0;
+    const std::string ref = TrimRef(refRaw);
+    if (ref.empty()) {
+        return {0, fmt::format("既没填已有{}的 id，也没填名字 / temp_id（二者必有一）",
+                               KindLabel(kindWanted))};
     }
-    const auto it = tempIds.find(tempId);
-    return it == tempIds.end() ? 0 : it->second;
+    // ② 本章 temp_id
+    if (ctx.tempIds != nullptr) {
+        if (const auto it = ctx.tempIds->find(ref); it != ctx.tempIds->end()) {
+            return {it->second, {}};
+        }
+    }
+    // ③ 纯数字字符串 ⇒ 当 id 用（兼容 `"entity_id":"43"`）
+    bool allDigits = true;
+    for (const char c : ref) {
+        if (c < '0' || c > '9') {
+            allDigits = false;
+            break;
+        }
+    }
+    if (allDigits) {
+        if (const RowId asId = std::strtoll(ref.c_str(), nullptr, 10); asId > 0) {
+            return {asId, {}};
+        }
+    }
+    // ④ 名字（归一化）
+    const std::string norm = NormalizeRefName(ref);
+    if (ctx.chapterNames != nullptr) {
+        if (const auto it = ctx.chapterNames->find(norm); it != ctx.chapterNames->end()) {
+            if (it->second.size() == 1) {
+                return {it->second.front(), {}}; // 本章 entities[] 声明过的名字
+            }
+            // 本章 `entities[]` 里有两个同名实体（`force_new` 允许这么声明）⇒ **拒**（不取"最后一个"）
+            std::string ids;
+            for (const RowId one : it->second) {
+                if (!ids.empty()) {
+                    ids += " / ";
+                }
+                ids += fmt::format("#{}", one);
+            }
+            return {0, fmt::format("本章 `entities[]` 里声明了 {} 个同名实体（{}）⇒ 请用**各自的 "
+                                   "temp_id**（或数字 id）指定，别用一个名字指两个",
+                                   it->second.size(), ids)};
+        }
+    }
+    if (ctx.index == nullptr || !ctx.index->loaded()) {
+        return {0, fmt::format("名字索引不可用，「{}」无法解析（请直接填实体 id）", ref)};
+    }
+    const std::vector<NameHit> hits = ctx.index->Find(norm, kindWanted);
+    if (hits.size() == 1) {
+        return {hits[0].id, {}}; // 唯一命中 ⇒ **复用**
+    }
+    if (hits.size() > 1) {
+        // **系统规则**：不猜。给候选、要模型自己指定（或声明新建）。
+        return {0, fmt::format("「{}」**有歧义**：库里同名同 kind 的有 {} 个 ⇒ {}。请直接填要用的实体 "
+                               "**id（数字）**；若你要的其实是**新建**，请放进 entities[] 并给它 "
+                               "temp_id。（系统不按\"最近出现\"之类替你猜）",
+                               ref, hits.size(), DescribeHits(hits))};
+    }
+    const std::vector<NameHit> otherKind = ctx.index->Find(norm, {});
+    if (!otherKind.empty()) {
+        return {0, fmt::format("「{}」在库里是 {}，此处期望 **{}** —— 名字认对了但 kind 不符，"
+                               "请改用正确的名字或实体 id",
+                               ref, DescribeHits(otherKind), KindLabel(kindWanted))};
+    }
+    const std::vector<NameHit> similar = ctx.index->Similar(norm);
+    return {0, fmt::format("库里没有名为「{}」的{}（已按空白 / 全角 / 大小写归一化）{}。"
+                           "要引用**已有**实体请照库里的名字写；**要新建**请放进 entities[] 并给它 "
+                           "temp_id；若只是名字变体，请用库里那个名字",
+                           ref, KindLabel(kindWanted),
+                           similar.empty() ? std::string{}
+                                           : fmt::format("；相近名字：{}", DescribeHits(similar)))};
+}
+
+// 便捷版（失败返回 0）
+[[nodiscard]] RowId ResolveRef(RowId id, const std::string& ref, const RefCtx& ctx,
+                               std::string_view kindWanted) {
+    return ResolveRefFull(id, ref, ctx, kindWanted).id;
+}
+
+// 失败报文（把"为什么解析不到"讲清楚；歧义时**带候选列表**）
+[[nodiscard]] std::string RefFail(std::string_view where, RowId id, const std::string& ref,
+                                  const RefCtx& ctx, std::string_view kindWanted) {
+    const RefResolution r = ResolveRefFull(id, ref, ctx, kindWanted);
+    return fmt::format("{}引用解析失败（id={}，name/temp_id=「{}」）：{}", where, id, ref,
+                       r.error.empty() ? "解析不到真实 id" : r.error);
 }
 
 // 本章声明过的 TempId 集合（`entities[]` + `events[]`）—— 门禁用它判"temp 引用是否合法"。
@@ -136,55 +362,93 @@ WriteChapterSnapshot(std::string_view dir, const StateDiff& diff, std::string_vi
     return out;
 }
 
-// 校验一个引用字段：`*_id` 与 `*_temp_id` **二选一**。返回错误文案（空 = 通过）。
-// `required`：必填字段在"两个都没填"时必须报错（如 `participants[].entity_id`）。
-[[nodiscard]] std::string CheckRef(const char* where, RowId id, const std::string& tempId,
-                                   const std::set<std::string>& declared, bool required) {
+// 门禁的引用上下文（★ S87/T1：门禁也**认名字**，与落库时同一套决策树）。
+struct RefGate {
+    const std::set<std::string>* tempIds = nullptr; // 本章声明的 temp_id
+    const std::set<std::string>* names = nullptr;   // 本章 entities[] 声明的名字（已归一化）
+    const EntityNameIndex* index = nullptr;         // 库内名字索引（不含 event）
+};
+
+// 校验一个引用字段：`*_id` / **名字** / 本章 `temp_id` 三选一。返回错误文案（空 = 通过）。
+// `required`：必填字段在"全都没填"时必须报错（如 `participants[].entity_id`）。
+// ★ S87（T1）：**在提交前**就把"歧义 + 候选列表 / 库里没有这个名字"回灌给模型
+//（落库时才拒的报文模型看不到 ⇒ 白跑一轮）。判据与落库**完全同源**（`ResolveRefFull` 的规则）。
+[[nodiscard]] std::string CheckRef(std::string_view where, RowId id, const std::string& refRaw,
+                                   const RefGate& gate, std::string_view kindWanted, bool required) {
     if (id > 0) {
         return {}; // 已存在的库 id：存在性与 kind 由 K02/K03 判（不在这里重复）
     }
-    if (!tempId.empty()) {
-        return declared.count(tempId) > 0
-                   ? std::string{}
-                   : fmt::format("{} 引用的 temp_id「{}」没在本章 entities[] / events[] 里声明",
-                                 where, tempId);
+    const std::string ref = TrimRef(refRaw);
+    if (ref.empty()) {
+        return required
+                   ? fmt::format("{} 既没填已有实体 id，也没填**名字** / 本章 temp_id（三者必有一）",
+                                 where)
+                   : std::string{};
     }
-    return required ? fmt::format("{} 既没填已有实体 id，也没填本章 temp_id（二者必有一）", where)
-                    : std::string{};
-}
-
-// ★ S65：**宽容读** —— `*_id` 字段写成**字符串 TempId**（如 `"entity_id":"en:7"`）也认。
-// 为什么必须容忍两种写法：`util::reflect` 是**机械映射**（标量键 ↔ 标量字段），字符串读不进
-// `RowId` ⇒ 会**静默留 0**（引用凭空消失）。而模型很自然地会这么写 —— 它产出的
-// `entities[].temp_id` 本就是字符串 `"en:7"`，而我们又要求它**别把序号 7 当 id** ⇒ 两条路它都会试。
-// 于是：数字 → `*_id`（反射负责）；字符串 TempId → 这里回填到 `*_temp_id`。
-[[nodiscard]] bool IsTempIdLike(std::string_view s) {
-    const auto colon = s.find(':');
-    if (colon == std::string_view::npos || colon == 0 || colon + 1 >= s.size()) {
-        return false;
+    if (gate.tempIds != nullptr && gate.tempIds->count(ref) > 0) {
+        return {}; // 本章 entities[] / events[] 声明的 temp_id
     }
-    for (std::size_t i = 0; i < colon; ++i) {
-        const char ch = s[i];
-        if (!(ch >= 'a' && ch <= 'z') && ch != '_') {
-            return false;
+    bool allDigits = true;
+    for (const char c : ref) {
+        if (c < '0' || c > '9') {
+            allDigits = false;
+            break;
         }
     }
-    for (std::size_t i = colon + 1; i < s.size(); ++i) {
-        if (s[i] < '0' || s[i] > '9') {
-            return false;
-        }
+    if (allDigits) {
+        return {}; // 数字字符串 ⇒ 当 id 用（存在性由 K02/K03 判）
     }
-    return true;
+    const std::string norm = NormalizeRefName(ref);
+    if (gate.names != nullptr && gate.names->count(norm) > 0) {
+        return {}; // 本章 entities[] 声明的名字（新建）
+    }
+    if (gate.index == nullptr || !gate.index->loaded()) {
+        return {}; // 没有名字索引 ⇒ 不在这里判（落库时再拒）
+    }
+    const std::vector<NameHit> hits = gate.index->Find(norm, kindWanted);
+    if (hits.size() == 1) {
+        return {}; // 唯一命中 ⇒ 复用
+    }
+    if (hits.size() > 1) {
+        return fmt::format("{}：「{}」**有歧义** ⇒ {}。请直接填要用的实体 **id（数字）**，"
+                           "或声明新建（entities[] + 给它 temp_id）—— 系统不按\"最近出现\"替你猜",
+                           where, ref, DescribeHits(hits));
+    }
+    const std::vector<NameHit> otherKind = gate.index->Find(norm, {});
+    if (!otherKind.empty()) {
+        return fmt::format("{}：「{}」在库里是 {}，此处期望 **{}** —— 名字认对了但 kind 不符",
+                           where, ref, DescribeHits(otherKind), KindLabel(kindWanted));
+    }
+    const std::vector<NameHit> similar = gate.index->Similar(norm);
+    return fmt::format("{}：库里没有名为「{}」的{}（已按空白 / 全角 / 大小写归一化）。"
+                       "要引用**已有**实体请照库里的名字写；**要新建**请放进 entities[] 并给它 "
+                       "temp_id{}",
+                       where, ref, KindLabel(kindWanted),
+                       similar.empty() ? std::string{}
+                                       : fmt::format("；相近名字：{}", DescribeHits(similar)));
 }
 
-// 取对象里某个键的**字符串 TempId**（不是字符串 / 不像 TempId → 空）
-[[nodiscard]] std::string TempIdStr(yyjson_val* obj, const char* key) {
+// ★ S87（T1）：引用字段的**字符串**取法 —— 它可能是 **temp_id**（`en:7` / `谭工`）或**实体名字**。
+// 🔴 原先只认"像 temp_id 的形状"（`前缀:数字`）⇒ 模型写**名字**（`"entity_id":"撑伞人影"`）时
+//    会**静默留 0**（引用凭空消失），只能靠报错 + 重做。名字 = 引用键之后，这里必须**原样收下**：
+//    它到底是 temp_id 还是名字**由 resolver 判**（`ResolveRefFull` 决策树），**不在这里猜形状**。
+[[nodiscard]] std::string RefStr(yyjson_val* obj, const char* key) {
     yyjson_val* v = obj == nullptr ? nullptr : yyjson_obj_get(obj, key);
     if (v == nullptr || !yyjson_is_str(v)) {
         return {};
     }
-    const std::string_view sv{yyjson_get_str(v), yyjson_get_len(v)};
-    return IsTempIdLike(sv) ? std::string{sv} : std::string{};
+    return TrimRef(std::string_view{yyjson_get_str(v), yyjson_get_len(v)});
+}
+
+// 依次取第一个非空：`X_id` → `X_ref` → `X_temp_id`（`X_ref` 是"名字引用"的显式写法）
+[[nodiscard]] std::string FirstRefStr(yyjson_val* obj, const char* idKey, const char* refKey,
+                                      const char* tempKey) {
+    for (const char* k : {idKey, refKey, tempKey}) {
+        if (const std::string s = RefStr(obj, k); !s.empty()) {
+            return s;
+        }
+    }
+    return {};
 }
 
 [[nodiscard]] yyjson_val* ArrOf(yyjson_val* root, const char* key) {
@@ -212,10 +476,10 @@ void FillStringRefs(yyjson_val* root, StateDiff& out) {
             return;
         }
         if (out.characters[i].entity_temp_id.empty()) {
-            out.characters[i].entity_temp_id = TempIdStr(o, "entity_id");
+            out.characters[i].entity_temp_id = FirstRefStr(o, "entity_id", "entity_ref", "entity_temp_id");
         }
         if (out.characters[i].location_temp_id.empty()) {
-            out.characters[i].location_temp_id = TempIdStr(o, "location_id");
+            out.characters[i].location_temp_id = FirstRefStr(o, "location_id", "location_ref", "location_temp_id");
         }
     });
     each(ArrOf(root, "relationships"), [&](yyjson_val* o, std::size_t i) {
@@ -223,10 +487,10 @@ void FillStringRefs(yyjson_val* root, StateDiff& out) {
             return;
         }
         if (out.relationships[i].from_temp_id.empty()) {
-            out.relationships[i].from_temp_id = TempIdStr(o, "from_id");
+            out.relationships[i].from_temp_id = FirstRefStr(o, "from_id", "from_ref", "from_temp_id");
         }
         if (out.relationships[i].to_temp_id.empty()) {
-            out.relationships[i].to_temp_id = TempIdStr(o, "to_id");
+            out.relationships[i].to_temp_id = FirstRefStr(o, "to_id", "to_ref", "to_temp_id");
         }
     });
     each(ArrOf(root, "items"), [&](yyjson_val* o, std::size_t i) {
@@ -234,13 +498,13 @@ void FillStringRefs(yyjson_val* root, StateDiff& out) {
             return;
         }
         if (out.items[i].item_temp_id.empty()) {
-            out.items[i].item_temp_id = TempIdStr(o, "item_id");
+            out.items[i].item_temp_id = FirstRefStr(o, "item_id", "item_ref", "item_temp_id");
         }
         if (out.items[i].owner_temp_id.empty()) {
-            out.items[i].owner_temp_id = TempIdStr(o, "owner_id");
+            out.items[i].owner_temp_id = FirstRefStr(o, "owner_id", "owner_ref", "owner_temp_id");
         }
         if (out.items[i].location_temp_id.empty()) {
-            out.items[i].location_temp_id = TempIdStr(o, "location_id");
+            out.items[i].location_temp_id = FirstRefStr(o, "location_id", "location_ref", "location_temp_id");
         }
     });
     each(ArrOf(root, "knowledge"), [&](yyjson_val* o, std::size_t i) {
@@ -248,7 +512,7 @@ void FillStringRefs(yyjson_val* root, StateDiff& out) {
             return;
         }
         if (out.knowledge[i].entity_temp_id.empty()) {
-            out.knowledge[i].entity_temp_id = TempIdStr(o, "entity_id");
+            out.knowledge[i].entity_temp_id = FirstRefStr(o, "entity_id", "entity_ref", "entity_temp_id");
         }
     });
     each(ArrOf(root, "events"), [&](yyjson_val* o, std::size_t i) {
@@ -256,14 +520,14 @@ void FillStringRefs(yyjson_val* root, StateDiff& out) {
             return;
         }
         if (out.events[i].location_temp_id.empty()) {
-            out.events[i].location_temp_id = TempIdStr(o, "location_id");
+            out.events[i].location_temp_id = FirstRefStr(o, "location_id", "location_ref", "location_temp_id");
         }
         each(ArrOf(o, "participants"), [&](yyjson_val* p, std::size_t j) {
             if (j >= out.events[i].participants.size()) {
                 return;
             }
             if (out.events[i].participants[j].entity_temp_id.empty()) {
-                out.events[i].participants[j].entity_temp_id = TempIdStr(p, "entity_id");
+                out.events[i].participants[j].entity_temp_id = FirstRefStr(p, "entity_id", "entity_ref", "entity_temp_id");
             }
         });
     });
@@ -375,6 +639,20 @@ bool StateDiffFromJson(std::string_view text, StateDiff& out) {
 
 // ———— 契约校验（`07` §2.2 的 ③，机器部分）————
 
+// ★ S77：**"前缀 + 纯数字"的 TempId**（`en:1` / `en:07` / `ev:3`）—— 见 D9 的注释。
+[[nodiscard]] bool LooksLikeNumericTempId(std::string_view tid) {
+    const auto colon = tid.rfind(':');
+    if (colon == std::string_view::npos || colon + 1 >= tid.size()) {
+        return false; // 无前缀 / 空后缀 ⇒ 不是这个形态
+    }
+    for (std::size_t i = colon + 1; i < tid.size(); ++i) {
+        if (tid[i] < '0' || tid[i] > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const StateDiff& diff) {
     std::vector<CommitIssue> out;
     NovelGraph graph(db);
@@ -409,40 +687,117 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
         }
     }
 
+    // ★ S77：**D9 —— `temp_id` 不许写成"前缀+纯数字"**（`en:1` / `ev:7`）。
+    // 这不是风格问题，是**歧义源**（真跑两组独立实证：第 13 章把 `en:1`/`en:2` 的序号填进
+    // `characters[].entity_id`；第 16 章把 `en:2`/`en:3` 的序号填进 `entity_id`/`location_id`，
+    // 一次跑出 **12 处**归一化拒绝）—— `en:7` **长得就像 id 7**，而同一份输出里 `*_id` 字段要填
+    // **库里的数字 id** ⇒ 模型天然把序号填进去，撞上库里同号的实体（#1=universe、#7=event）⇒
+    // K03 挡下整章、重做两轮都改不动。**在入口把歧义消灭**：`temp_id` 只是**本章内的标签**，
+    // 必须写成有语义的字符串（`en:断头挂绳`）—— 这样"填 7"就失去了来源。
+    for (std::size_t i = 0; i < diff.entities.size(); ++i) {
+        if (LooksLikeNumericTempId(diff.entities[i].temp_id)) {
+            out.push_back({"contract", "high",
+                           fmt::format("D9：entities[{}] 的 temp_id「{}」不能用「前缀+纯数字」—— "
+                                       "temp_id 只是**本章内的标签、不是 id**；请改成有语义的写法，"
+                                       "如 `en:断头挂绳`（数字写法会诱导把序号当库 id 填进 *_id 字段）",
+                                       i, diff.entities[i].temp_id)});
+        }
+    }
+
+    // ★ S80：**D11 —— `items[].op="acquire"` 必须给持有者**（`owner_id` 或 `owner_temp_id`）。
+    // 与 D10 **同一个毛病**：这条原先也只在**落库时**（块 4 的守卫，S69 加）挡 ⇒ 报文是
+    // "块 4 `acquire` 的持有者解析不到真实 id"，**不在 K01–K29 里**，模型看不到该改什么
+    //（真跑实证：第 18 章两轮都卡这一条，而重做提示里那句措辞它不听 —— 契约规则才拦得住）。
+    for (std::size_t i = 0; i < diff.items.size(); ++i) {
+        const ItemDelta& it = diff.items[i];
+        if (it.op == "acquire" && it.owner_id <= 0 && it.owner_temp_id.empty()) {
+            out.push_back({"contract", "high",
+                           fmt::format("D11：items[{}] 是 `acquire` 却**没给持有者** —— 必须给 "
+                                       "`owner_id`（库内 person 的 id）或 `owner_temp_id`（本章新建"
+                                       "人物）；若只是换地点/换状态，请用 `move` / `change_state`",
+                                       i)});
+        }
+    }
+
+    // ★ S79：**D10 —— 因果边必须"两端都有、且不是自环"**。
+    // 原先这两条只在**落库时**检查（`NovelGraph::UpsertCausalLink`，块 6 内）——
+    // 那时事务已经开了，报文是"块 6 因果失败：因果边禁止自环"，**不在 K01–K29 里**，模型看不到
+    // 该改什么（真跑实证：第 18 章连着两轮卡在这一条）。挪到契约层 ⇒ 与其它 D 规则一样进
+    // `gates.issues`，由重做提示回灌给模型（`NovelDirector` 现在会把 `commit.error` 一起回灌）。
+    for (std::size_t i = 0; i < diff.causal.size(); ++i) {
+        const CausalDelta& cd = diff.causal[i];
+        const auto emptyRef = [](const TempoRef& r) { return r.temp_id.empty() && r.entity_id <= 0; };
+        if (emptyRef(cd.cause) || emptyRef(cd.effect)) {
+            out.push_back({"contract", "high",
+                           fmt::format("D10：causal[{}] 的 cause/effect **两端都要给**（本章 TempId 或"
+                                       "已存在实体 id）—— 不许留空、不许填 0",
+                                       i)});
+            continue;
+        }
+        // 自环只在"可比"时判（两边同用 TempId、或同用实体 id；一边 TempId 一边 id 无法在契约层比）
+        const bool sameTemp = !cd.cause.temp_id.empty() && cd.cause.temp_id == cd.effect.temp_id;
+        const bool sameId = cd.cause.entity_id > 0 && cd.cause.entity_id == cd.effect.entity_id;
+        if (sameTemp || sameId) {
+            out.push_back({"contract", "high",
+                           fmt::format("D10：causal[{}] 是**自环**（cause 与 effect 指向同一个{}）——"
+                                       "因果边要连两个**不同**的事件；请删掉它或改其中一端",
+                                       i, sameTemp ? "TempId" : "实体 id")});
+        }
+    }
+
     // 新实体还没写库 → character 只能引用**已存在**实体（D1）
     // ★ S65：本章声明过的 TempId（`entities[]` + `events[]`）—— 下面所有引用字段共用
     const std::set<std::string> declaredTemp = DeclaredTempIds(diff);
+    // ★ S87（T1）：门禁再加**库内名字索引** + 本章 `entities[]` 声明的名字（归一化）——
+    // 自此门禁与落库**同口径地"认名字"**（决策树见 `ResolveRefFull`：唯一命中过 / 歧义拒 / 未命中拒）。
+    const EntityNameIndex nameIndex(db);
+    std::set<std::string> declaredNames;
+    for (const NewEntityDelta& e : diff.entities) {
+        const std::string n = NormalizeRefName(e.name);
+        if (!n.empty()) {
+            declaredNames.insert(n);
+        }
+    }
+    const RefGate refGate{&declaredTemp, &declaredNames, &nameIndex};
     for (const CharacterDelta& c : diff.characters) {
         if (const std::string err = CheckRef("characters[].entity_id", c.entity_id, c.entity_temp_id,
-                                             declaredTemp, /*required=*/true);
+                                             refGate, kind::person, /*required=*/true);
             !err.empty()) {
             out.push_back({"contract", "high", err});
             continue;
         }
         if (const std::string err = CheckRef("characters[].location_id", c.location_id,
-                                             c.location_temp_id, declaredTemp, /*required=*/false);
+                                             c.location_temp_id, refGate, kind::location,
+                                             /*required=*/false);
             !err.empty()) {
             out.push_back({"contract", "high", err});
         }
-        // 后半段（存在性 / reason / D4）只对**已有实体**有意义：新建实体没有"上一版状态"可比
-        if (c.entity_id <= 0) {
-            continue;
+        // 后半段（存在性 / reason / D4）只对**已有实体**有意义：新建实体没有"上一版状态"可比。
+        // ★ S87：**名字引用也算"已有实体"** —— 先把名字落到真实 id 再检查，否则"用名字"就成了
+        // 绕过 reason / D4 的后门（原先 `entity_id<=0` 直接 continue，是"只认数字 id"时代的写法）。
+        const RowId cEid =
+            c.entity_id > 0
+                ? c.entity_id
+                : ResolveRefFull(0, c.entity_temp_id, RefCtx{nullptr, nullptr, &nameIndex}, kind::person)
+                      .id;
+        if (cEid <= 0) {
+            continue; // 本章 temp_id / 本章新建的名字：没有"上一版状态"可比，跳过
         }
-        if (!graph.GetEntity(c.entity_id)) {
+        if (!graph.GetEntity(cEid)) {
             out.push_back({"contract", "high",
                            fmt::format("D1：character.entity_id={} 既不在 entities 也没在本章 NewEntity 声明",
-                                       c.entity_id)});
+                                       cEid)});
             continue;
         }
         if (c.reason.empty()) {
             out.push_back({"evidence_missing", "low",
-                           fmt::format("character {} 没写 reason（状态变化必须有因）", c.entity_id)});
+                           fmt::format("character {} 没写 reason（状态变化必须有因）", cEid)});
         }
         // D4：出现 dead/destroyed 必须显式声明
         const bool saysDead = Contains(c.body_state, "dead") || Contains(c.body_state, "destroyed") ||
                               Contains(c.mind_state, "dead") || Contains(c.mind_state, "destroyed");
         if (saysDead) {
-            const auto entity = graph.GetEntity(c.entity_id);
+            const auto entity = graph.GetEntity(cEid);
             const std::string name = entity ? entity->name : std::string{};
             const bool declared = !name.empty() && declaredDeadNames.count(name) > 0;
             const bool alreadyDead = entity && (entity->status == "dead" || entity->status == "destroyed");
@@ -451,7 +806,7 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
                                fmt::format("D4：character {} 出现 dead/destroyed，但没有 entities[] 里的 "
                                            "status 变更声明（`02` §2.5 的 entities 只有 NewEntity —— "
                                            "既有实体的状态变更需由调用方另行声明）",
-                                           c.entity_id)});
+                                           cEid)});
             }
         }
     }
@@ -459,7 +814,8 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
     // 事件参与者的 entity_id 必须存在（S65：或引用本章新建实体的 temp_id）
     for (const EventDelta& ev : diff.events) {
         if (const std::string err = CheckRef("events[].location_id", ev.location_id,
-                                             ev.location_temp_id, declaredTemp, /*required=*/false);
+                                             ev.location_temp_id, refGate, kind::location,
+                                             /*required=*/false);
             !err.empty()) {
             out.push_back({"contract", "high", fmt::format("事件「{}」：{}", ev.temp_id, err)});
         }
@@ -471,7 +827,7 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
             //（原先没有这个写法，模型才会把 `en:7` 的序号 7 当 id 填）。
             if (const std::string err =
                     CheckRef("events[].participants[].entity_id", p.entity_id, p.entity_temp_id,
-                             declaredTemp, /*required=*/true);
+                             refGate, {}, /*required=*/true);
                 !err.empty()) {
                 out.push_back({"contract", "high", fmt::format("事件「{}」：{}", ev.temp_id, err)});
                 continue;
@@ -491,29 +847,30 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
             {"relationships[].to_id", {r.to_id, &r.to_temp_id}},
         };
         for (const auto& [where, v] : fields) {
-            if (const std::string err = CheckRef(where, v.first, *v.second, declaredTemp, true);
+            if (const std::string err = CheckRef(where, v.first, *v.second, refGate, {}, true);
                 !err.empty()) {
                 out.push_back({"contract", "high", err});
             }
         }
     }
     for (const ItemDelta& it : diff.items) {
-        const std::pair<const char*, std::pair<RowId, const std::string*>> fields[] = {
-            {"items[].item_id", {it.item_id, &it.item_temp_id}},
-            {"items[].owner_id", {it.owner_id, &it.owner_temp_id}},
-            {"items[].location_id", {it.location_id, &it.location_temp_id}},
+        // ★ S87：每列**各自的期望 kind**（物品=item / 持有者=person / 地点=location）——
+        // 名字引用因此能当场判出"名字对了但 kind 不符"，不必等到落库后的 K03。
+        const std::tuple<const char*, RowId, const std::string*, std::string_view> fields[] = {
+            {"items[].item_id", it.item_id, &it.item_temp_id, kind::item},
+            {"items[].owner_id", it.owner_id, &it.owner_temp_id, kind::person},
+            {"items[].location_id", it.location_id, &it.location_temp_id, kind::location},
         };
-        for (const auto& [where, v] : fields) {
+        for (const auto& [where, id, ref, k] : fields) {
             const bool required = std::string_view{where} == "items[].item_id";
-            if (const std::string err = CheckRef(where, v.first, *v.second, declaredTemp, required);
-                !err.empty()) {
+            if (const std::string err = CheckRef(where, id, *ref, refGate, k, required); !err.empty()) {
                 out.push_back({"contract", "high", err});
             }
         }
     }
     for (const KnowledgeDelta& k : diff.knowledge) {
         if (const std::string err = CheckRef("knowledge[].entity_id", k.entity_id, k.entity_temp_id,
-                                             declaredTemp, /*required=*/true);
+                                             refGate, kind::person, /*required=*/true);
             !err.empty()) {
             out.push_back({"contract", "high", err});
         }
@@ -525,7 +882,13 @@ std::vector<CommitIssue> ValidateStateDiff(db::sqlite::Database& db, const State
 int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff) {
     // 本章声明的 `en:N` / `ev:N` 按**序号**建索引（模型常把 N 当 id 填）
     std::map<RowId, std::string> byOrd;
-    const auto addTemp = [&byOrd](const std::string& tid) {
+    // ★ S67：**改写后必须复核 kind** —— 否则就是把"能被 K03 挡下的错"变成"挡不下的错"。
+    // 🔴 真跑事故：`items[].owner_id = 36` 字面指向的是 `kind=item` 的实体（期望 person）⇒ 被判
+    //   "字面必然错"改写成 `en:36`，而本章的 `en:36` 恰好**也是那个物品** ⇒ K03 再也看不到它，
+    //   落库成"物品持有物品 / 自己持有自己"（`entity_ownerships` 里出现 `item 36 ← owner 36`），
+    //   还把 K07（同一物品多个持有者）**永久**挡死。所以改写前必须确认"改成 TempId 之后 kind 也对"。
+    std::map<RowId, std::string> kindByOrd;
+    const auto addTemp = [&byOrd, &kindByOrd](const std::string& tid, std::string_view kind) {
         const auto colon = tid.rfind(':');
         if (colon == std::string::npos || colon + 1 >= tid.size()) {
             return;
@@ -540,15 +903,20 @@ int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff) {
                 return;
             }
         }
-        if (n > 0 && byOrd.find(n) == byOrd.end()) {
-            byOrd[n] = tid;
+        if (n > 0) {
+            if (byOrd.find(n) == byOrd.end()) {
+                byOrd[n] = tid;
+            }
+            if (kindByOrd.find(n) == kindByOrd.end()) {
+                kindByOrd[n] = std::string{kind};
+            }
         }
     };
     for (const NewEntityDelta& e : diff.entities) {
-        addTemp(e.temp_id);
+        addTemp(e.temp_id, e.kind);
     }
     for (const EventDelta& e : diff.events) {
-        addTemp(e.temp_id);
+        addTemp(e.temp_id, "event");
     }
     if (byOrd.empty()) {
         return 0;
@@ -588,9 +956,20 @@ int NormalizeNumericTempRefs(db::sqlite::Database& db, StateDiff& diff) {
         if (it == byOrd.end()) {
             return;
         }
+        // ★ S67：**只在该 TempId 的 kind 也对得上时才改写**（见函数开头的真跑事故注释）。
+        // 对不上 ⇒ **一个字都不改**，让 K02/K03 照实报错（"能不能改"必须有判别力）。
+        const auto kIt = kindByOrd.find(id);
+        const std::string newKind = kIt == kindByOrd.end() ? std::string{} : kIt->second;
+        if (!kindOk(newKind, expected)) {
+            log::Warn("StateDiff 归一化：{} 的 {} 按字面不成立（库 #{} kind='{}'），而对应的「{}」"
+                      "kind='{}' 也不符合期望 {} ⇒ **不改写**（改动只会把错藏起来），交给 K02/K03 报错",
+                      where, id, id, k.empty() ? "不存在" : k, it->second,
+                      newKind.empty() ? "?" : newKind, expected);
+            return;
+        }
         log::Warn("StateDiff 归一化：{} 的 {} 字面解释不成立（库 #{} 的 kind='{}'，期望 {}）"
-                  "而本章声明了「{}」⇒ 按 TempId 解释（与 `02` §2.5 的 `*_temp_id` 等价）",
-                  where, id, id, k.empty() ? "不存在" : k, expected, it->second);
+                  "而本章声明了「{}」（kind='{}'）⇒ 按 TempId 解释（与 `02` §2.5 的 `*_temp_id` 等价）",
+                  where, id, id, k.empty() ? "不存在" : k, expected, it->second, newKind);
         tempId = it->second;
         id = 0;
         ++n;
@@ -785,6 +1164,10 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // G4：契约校验通过且非空（或显式声明无变化）
     out.gates.g4_diff_valid = !hasHigh() && (diff.HasAnyDelta() || diff.no_change_declared);
+    // ★ S67b：**单独标出"空 diff 且未声明无变化"** —— 它是**唯一**一类"重跑 extractor 恰恰有效"的
+    // G4 失败（真跑实证：第 9 章模型 0 次工具调用、直接吐全空 diff ⇒ G4 拒；而调用方原先按
+    // "非 G2 不重做"短路 ⇒ 一整章白废）。其余 G4 失败（如 D7 自相矛盾）仍不该重做。
+    out.diff_empty_undeclared = !hasHigh() && !diff.HasAnyDelta() && !diff.no_change_declared;
     // G1 / G2 / G5
     out.gates.g1_review_pass = ctx.review_pass;
     out.gates.g2_checks_pass = g2Pass && !hasHigh();
@@ -819,6 +1202,12 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
     };
 
     std::map<std::string, RowId> tempIds;
+    // ★ S87（T1）：**语义引用解析**的上下文 ——
+    //   · `chapterNames`：本章 `entities[]` 的名字 → 真实 id **列表**（模型用**名字**引用本章新建实体时用；
+    //     `index` 在块 1 之后才建，所以先靠它兜住"本章新建"这一路；列表 >1 = 本章有两个同名实体 ⇒ 拒）；
+    //   · `rctx.index`：库内"名字 → 候选"（块 1 之后建 ⇒ 本章刚落库的实体也在其中）。
+    std::map<std::string, std::vector<RowId>> chapterNames;
+    RefCtx rctx{&tempIds, &chapterNames, nullptr};
 
     // 块 0（写在其它块之前）：被改实体的 **Before 快照**（`07` §2.4「章级快照内容 = diff + Before 值」）
     for (const RowId id : touched) {
@@ -837,6 +1226,8 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         row.summary = e.summary;
         row.status = e.status.empty() ? "active" : e.status;
         row.created_chapter = e.created_chapter > 0 ? e.created_chapter : diff.chapter_id;
+        // ★ T3b：**显式新建**（`force_new`）—— 明知同名也建（决策树最后一支；审计见 `UpsertEntity`）
+        row.force_new = e.force_new;
         auto id = graph.UpsertEntity(row);
         if (!id) {
             return fail(fmt::format("块 1 entities 失败：{}", id.error().message));
@@ -844,17 +1235,25 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         if (!e.temp_id.empty()) {
             tempIds[e.temp_id] = *id;
         }
+        // ★ S87：名字也进映射（模型很自然的写法："上文刚声明 `谭工`，下面就写 `谭工`"）。
+        // 同名复用（S84）时这里指向被复用的那个 id ⇒ 两路一致。
+        if (const std::string n = NormalizeRefName(e.name); !n.empty()) {
+            chapterNames[n].push_back(*id);
+        }
         out.applied.push_back(fmt::format("entities: +1（{} → #{}）", e.name, *id));
     }
 
+    // ★ S87：建**库内名字索引**（放在块 1 之后 ⇒ 本章刚落库的实体也在索引里；`event` 已排除）
+    const EntityNameIndex nameIndex(db);
+    rctx.index = &nameIndex;
+
     // 块 2：character_status（I2：先删同 (entity_id, chapter_id) 再插，重复提交不叠加）
     for (const CharacterDelta& c : diff.characters) {
-        // S65：引用先解析（`*_temp_id` → 块 1 刚落库的真实 id）
-        const RowId cEid = ResolveRef(c.entity_id, c.entity_temp_id, tempIds);
-        const RowId cLid = ResolveRef(c.location_id, c.location_temp_id, tempIds);
+        // S87：引用解析（数字 id / 本章 temp_id / **名字** —— 决策树见 `ResolveRefFull`）
+        const RowId cEid = ResolveRef(c.entity_id, c.entity_temp_id, rctx, kind::person);
+        const RowId cLid = ResolveRef(c.location_id, c.location_temp_id, rctx, kind::location);
         if (cEid <= 0) {
-            return fail(fmt::format("块 2 角色引用解析不到真实 id（entity_id={} temp_id={}）", c.entity_id,
-                                    c.entity_temp_id));
+            return fail(RefFail("块 2 角色", c.entity_id, c.entity_temp_id, rctx, kind::person));
         }
         if (auto del = db.Prepare("DELETE FROM character_status WHERE entity_id=?1 AND chapter_id=?2");
             del) {
@@ -884,12 +1283,14 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // 块 3：relations（upsert / close）
     for (const RelationDelta& r : diff.relationships) {
-        // S65：引用解析（`*_temp_id` → 本章新建实体的真实 id）
-        const RowId rFrom = ResolveRef(r.from_id, r.from_temp_id, tempIds);
-        const RowId rTo = ResolveRef(r.to_id, r.to_temp_id, tempIds);
-        if (rFrom <= 0 || rTo <= 0) {
-            return fail(fmt::format("块 3 关系端点解析不到真实 id（from={}/{} to={}/{}）", r.from_id,
-                                    r.from_temp_id, r.to_id, r.to_temp_id));
+        // S87：端点解析（关系两端可以是**任何** kind ⇒ 期望 kind 传空）
+        const RowId rFrom = ResolveRef(r.from_id, r.from_temp_id, rctx, {});
+        const RowId rTo = ResolveRef(r.to_id, r.to_temp_id, rctx, {});
+        if (rFrom <= 0) {
+            return fail(RefFail("块 3 关系 from", r.from_id, r.from_temp_id, rctx, {}));
+        }
+        if (rTo <= 0) {
+            return fail(RefFail("块 3 关系 to", r.to_id, r.to_temp_id, rctx, {}));
         }
         if (r.op == "close") {
             auto st = db.Prepare(
@@ -923,12 +1324,16 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // 块 4：entity_ownerships（acquire / lose）
     for (const ItemDelta& it : diff.items) {
-        // S65：引用解析（物品/持有者都可能是本章新建的）
-        const RowId iItem = ResolveRef(it.item_id, it.item_temp_id, tempIds);
-        const RowId iOwner = ResolveRef(it.owner_id, it.owner_temp_id, tempIds);
+        // S87：物品=item / 持有者=person（**名字引用时期望 kind 一起判**）
+        const RowId iItem = ResolveRef(it.item_id, it.item_temp_id, rctx, kind::item);
+        const RowId iOwner = ResolveRef(it.owner_id, it.owner_temp_id, rctx, kind::person);
         if (iItem <= 0) {
-            return fail(fmt::format("块 4 物品引用解析不到真实 id（item_id={} temp_id={}）", it.item_id,
-                                    it.item_temp_id));
+            return fail(RefFail("块 4 物品", it.item_id, it.item_temp_id, rctx, kind::item));
+        }
+        // ⚠️ S87：`lose` 也**必须**有持有者 —— 否则 `owner_id=0` 的 UPDATE 匹配不到任何行，
+        // 变成"静默无操作"（比报错更坏：模型以为已交出，库里还挂着）。
+        if (it.op == "lose" && iOwner <= 0) {
+            return fail(RefFail("块 4 lose 的持有者", it.owner_id, it.owner_temp_id, rctx, kind::person));
         }
         if (it.op == "lose") {
             auto st = db.Prepare(
@@ -949,6 +1354,51 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         if (it.op != "acquire") {
             out.applied.push_back(fmt::format("ownerships: {} 不改表（move/change_state 无落地表）", it.op));
             continue;
+        }
+        // ★ S67b：**`acquire` 按"转移"落库** —— 先关闭该物品**其它**仍然有效的持有行。
+        // 为什么：不变式 I5 是"**同一物品同时只能有一个持有者**"。模型只写 `acquire`（新持有者）
+        // 而漏写旧持有者的 `lose` 时，库里就会出现两行 `to_chapter=0` ⇒ K07 报"多个持有者"，
+        // 而且这行脏数据会**永久**留在库里（真跑实证：第 9 章这么写了一次，第 10 章就被 K07 挡死）。
+        // ⚠️ 这**不掩盖**模型的错：K17 仍会以"物品 #X 已被 #Y 持有却 acquire"**可见地**拒掉那份 diff
+        //    （本块只在 diff 已经过门禁后才执行）；这里只保证"已提交的世界状态始终满足 I5"。
+        // 先数（`SqliteDb` 没暴露 `changes()`），再关 —— 顺序不能反
+        int closed = 0;
+        if (auto cnt = db.Prepare("SELECT COUNT(*) FROM entity_ownerships WHERE item_id=?1 AND "
+                                  "to_chapter=0 AND owner_id<>?2");
+            cnt) {
+            (void)cnt->BindInt(1, iItem);
+            (void)cnt->BindInt(2, iOwner);
+            if (auto s = cnt->Step(); s && *s == db::sqlite::StepResult::Row) {
+                closed = static_cast<int>(cnt->ColumnInt(0));
+            }
+        }
+        if (closed > 0) {
+            if (auto cl = db.Prepare("UPDATE entity_ownerships SET to_chapter=?1 WHERE item_id=?2 AND "
+                                     "to_chapter=0 AND owner_id<>?3");
+                cl) {
+                (void)cl->BindInt(1, diff.chapter_id);
+                (void)cl->BindInt(2, iItem);
+                (void)cl->BindInt(3, iOwner);
+                if (auto s = cl->Step(); !s) {
+                    return fail(fmt::format("块 4 关闭旧持有失败：{}", s.error().message));
+                }
+            }
+            out.applied.push_back(
+                fmt::format("ownerships: 物品 #{} 的旧持有者已按转移关闭（{} 行）", iItem, closed));
+        }
+        // ⚠️ S69：`acquire` 的持有者**必须**解析到真实 id —— 本块原先**不检查**（块 5 的参与者就检查了），
+        // 于是 `owner_id=0` 且没有 `owner_temp_id` 时会**直接写一行"无持有者的持有"**。
+        // 🔴 真跑实证（第 12 章）：库里出现
+        //   `entity_ownerships(owner_id=0, item_id=93, from_chapter=12, to_chapter=0, how='替身取出放在控制台')`
+        //   —— 一行**活跃**持有、持有者却不存在。它是被 S69 的一致性扫描（`R4 ownership_owner_missing`）
+        //   当场抓出来的（`--novel-repair` 第一条就点了它）。契约层 `CheckRef` 只把 `items[].item_id`
+        //   标成 required、没管 owner ⇒ 必须在落库前挡一道。
+        // 修法是**拒提交**而不是静默跳过：模型漏写持有者是契约错，要让它可见地重做
+        //（与块 5「参与者解析不到就 fail」同口径）。
+        if (iOwner <= 0) {
+            return fail(fmt::format("块 4 `acquire`：{} —— 持有必须有持有者，不许写 owner=0",
+                                    RefFail("持有者", it.owner_id, it.owner_temp_id, rctx,
+                                            kind::person)));
         }
         OwnershipRow row;
         row.owner_id = iOwner;
@@ -971,8 +1421,12 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
         entity.created_chapter = diff.chapter_id;
         EventDetailRow detail;
         detail.time_label = ev.time_label;
-        // S65：地点可以是本章新建的
-        detail.location_id = ResolveRef(ev.location_id, ev.location_temp_id, tempIds);
+        // S87：地点可以是本章新建的 / 可以是**名字**（kind=location，且**不许静默留 0**）
+        detail.location_id = ResolveRef(ev.location_id, ev.location_temp_id, rctx, kind::location);
+        if (detail.location_id <= 0 && (ev.location_id > 0 || !ev.location_temp_id.empty())) {
+            return fail(RefFail("块 5 事件地点", ev.location_id, ev.location_temp_id, rctx,
+                                kind::location));
+        }
         detail.cause_note = ev.cause;
         detail.result_note = ev.result;
         auto id = graph.UpsertEvent(entity, detail);
@@ -983,11 +1437,10 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
             tempIds[ev.temp_id] = *id;
         }
         for (const EventParticipantDelta& p : ev.participants) {
-            // S65：参与者可以是本章新建的角色
-            const RowId pEid = ResolveRef(p.entity_id, p.entity_temp_id, tempIds);
+            // S87：参与者可以是本章新建的角色 / 名字（kind 不限：`faction_actor` 可能是组织）
+            const RowId pEid = ResolveRef(p.entity_id, p.entity_temp_id, rctx, {});
             if (pEid <= 0) {
-                return fail(fmt::format("块 5 参与者引用解析不到真实 id（entity_id={} temp_id={}）",
-                                        p.entity_id, p.entity_temp_id));
+                return fail(RefFail("块 5 参与者", p.entity_id, p.entity_temp_id, rctx, {}));
             }
             if (auto added = graph.UpsertEventParticipant({.event_id = *id, .entity_id = pEid,
                                                           .role = p.role});
@@ -1107,11 +1560,10 @@ CommitResult CommitChapterState(db::sqlite::Database& db, const StateDiff& diff,
 
     // 块 10：character_knowledge
     for (const KnowledgeDelta& k : diff.knowledge) {
-        // S65：知情者可以是本章新建的角色
-        const RowId kEid = ResolveRef(k.entity_id, k.entity_temp_id, tempIds);
+        // S87：知情者可以是本章新建的角色 / 名字（期望 kind=person）
+        const RowId kEid = ResolveRef(k.entity_id, k.entity_temp_id, rctx, kind::person);
         if (kEid <= 0) {
-            return fail(fmt::format("块 10 知情者引用解析不到真实 id（entity_id={} temp_id={}）",
-                                    k.entity_id, k.entity_temp_id));
+            return fail(RefFail("块 10 知情者", k.entity_id, k.entity_temp_id, rctx, kind::person));
         }
         if (auto id = graph.UpsertKnowledge({.entity_id = kEid,
                                             .fact_kind = k.fact_kind,
@@ -1226,7 +1678,7 @@ int RunCommitSelfCheck() {
     StateDiff diff;
     diff.chapter_id = *chapter;
     diff.input_state_hash = "sha1:s8selfcheck";
-    diff.entities.push_back({.temp_id = "en:1",
+    diff.entities.push_back({.temp_id = "en:密使",
                              .kind = "person",
                              .name = "北境密使",
                              .summary = "入城联络的密探",
@@ -1428,7 +1880,7 @@ int RunCommitSelfCheck() {
     {
         StateDiff badKind;
         badKind.chapter_id = *chapter;
-        badKind.entities.push_back({.temp_id = "en:9", .kind = "魂环", .name = "千年魂环"});
+        badKind.entities.push_back({.temp_id = "en:魂环", .kind = "魂环", .name = "千年魂环"});
         CommitContext ok = ctx;
         ok.review_pass = true;
         const CommitResult r = CommitChapterState(mem, badKind, ok);
@@ -1473,6 +1925,224 @@ int RunCommitSelfCheck() {
         bad.canon_mode = "auto";
         const CommitResult r2 = CommitChapterState(mem, d2, bad);
         expect(!r2.ok && !r2.gates.g1_review_pass, "auto：G1 不满足 → 拒绝（不静默降级）");
+    }
+    // ⑧b ★ S65/S67：**"引用本章新建实体"必须能表达**（`*_temp_id`）—— 本条**跑在全新库上**
+    //（`mem` 是自检现建的库，没有任何历史行/没有我手工修补过的数据）⇒ 它就是
+    //"**换一本新书会不会失效**"的机器断言：只要它绿，机制对任何工程都成立。
+    // 背景（真跑三轮实证）：模型想写"新人物在新地点卷入事件、新物品被谁持有"，而 `*_id` 字段
+    // 只收**已存在** id ⇒ 它只好把 `en:7` 的**序号 7** 当 id 填（撞上无关实体）⇒ K03 挡下、改不动。
+    {
+        StateDiff td;
+        td.chapter_id = *chapter;
+        // ⚠️ S77：TempId 一律用**语义标签**（`en:1` 这种纯数字已被 D9 拒 —— 见 `ValidateStateDiff`）
+        td.entities.push_back(
+            {.temp_id = "en:新地点", .kind = "location", .name = "S65新地点", .created_chapter = *chapter});
+        td.entities.push_back(
+            {.temp_id = "en:新人物", .kind = "person", .name = "S65新人物", .created_chapter = *chapter});
+        td.entities.push_back(
+            {.temp_id = "en:新物品", .kind = "item", .name = "S65新物品", .created_chapter = *chapter});
+        EventDelta ev;
+        ev.temp_id = "ev:101";
+        ev.action = "S65事件";
+        ev.location_temp_id = "en:新地点";
+        ev.location_id = 0;
+        ev.participants.push_back({.entity_id = 0, .entity_temp_id = "en:新人物", .role = "actor"});
+        td.events.push_back(ev);
+        td.items.push_back({.op = "acquire",
+                            .item_temp_id = "en:新物品",
+                            .owner_temp_id = "en:新人物",
+                            .how = "S65 自检"});
+        CommitContext ok = ctx;
+        ok.review_pass = true;
+        ok.canon_mode = "manual";
+        const CommitResult r = CommitChapterState(mem, td, ok);
+        expect(r.ok, fmt::format("S65：`*_temp_id` 引用本章新建实体 → 全新库提交成功（{}）", r.error));
+        RowId physLoc = 0;
+        RowId physPerson = 0;
+        RowId physItem = 0;
+        if (auto st = mem.Prepare("SELECT id,kind FROM entities WHERE name LIKE 'S65%'"); st) {
+            while (true) {
+                auto s = st->Step();
+                if (!s || *s != db::sqlite::StepResult::Row) {
+                    break;
+                }
+                const std::string k = st->ColumnText(1);
+                if (k == "location") physLoc = st->ColumnInt(0);
+                if (k == "person") physPerson = st->ColumnInt(0);
+                if (k == "item") physItem = st->ColumnInt(0);
+            }
+        }
+        expect(physLoc > 0 && physPerson > 0 && physItem > 0, "S65：三个新建实体都已落库");
+        const auto countWhere = [&mem](const char* sql, RowId a, RowId b) {
+            auto st = mem.Prepare(sql);
+            if (!st) {
+                return -1;
+            }
+            (void)st->BindInt(1, a);
+            if (b > 0) {
+                (void)st->BindInt(2, b);
+            }
+            if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                return static_cast<int>(st->ColumnInt(0));
+            }
+            return -1;
+        };
+        expect(countWhere("SELECT COUNT(*) FROM event_participants WHERE entity_id=?1", physPerson, 0) ==
+                   1,
+               "S65：参与者 `entity_temp_id` 解析成**真实 id**（不是 0、不是别人）");
+        expect(countWhere("SELECT COUNT(*) FROM event_details WHERE location_id=?1", physLoc, 0) == 1,
+               "S65：`location_temp_id` 解析成**真实 id**");
+        expect(countWhere("SELECT COUNT(*) FROM entity_ownerships WHERE item_id=?1 AND owner_id=?2 "
+                          "AND to_chapter=0",
+                          physItem, physPerson) == 1,
+               "S65：`item_temp_id`/`owner_temp_id` 解析成真实 id，且 I5（唯一持有者）成立");
+        // ⑧c S69：`acquire` 给不出持有者 → **拒提交**（不许落"无持有者的持有"。
+        // 真跑实证：第 12 章就是这么写出一行 `owner_id=0` 的**活跃**持有，被一致性扫描抓到。）
+        {
+            StateDiff bad;
+            bad.chapter_id = *chapter;
+            bad.items.push_back({.op = "acquire", .item_id = physItem, .owner_id = 0,
+                                 .how = "S69 自检：无持有者"});
+            CommitContext c2 = ctx;
+            c2.review_pass = true;
+            const CommitResult r2 = CommitChapterState(mem, bad, c2);
+            expect(!r2.ok, "S69：`acquire` 无持有者 → 拒提交（不被静默写成 owner=0）");
+        }
+        // ⑧d ★ S77：**`temp_id` 写"前缀+纯数字" ⇒ 契约当场拒**（D9 —— 把歧义源消灭在入口）
+        {
+            StateDiff numTid;
+            numTid.chapter_id = *chapter;
+            numTid.entities.push_back({.temp_id = "en:1", .kind = "item", .name = "数字标签物品",
+                                       .created_chapter = *chapter});
+            CommitContext c3 = ctx;
+            c3.review_pass = true;
+            const CommitResult r3 = CommitChapterState(mem, numTid, c3);
+            bool hasD9 = false;
+            for (const CommitIssue& is : r3.gates.issues) {
+                if (is.detail.find("D9") != std::string::npos) {
+                    hasD9 = true;
+                }
+            }
+            expect(!r3.ok && hasD9, "S77：`temp_id` 用纯数字（`en:1`）→ 契约拒（D9），不许进库");
+        }
+        // ⑧e ★ S79：**因果自环 ⇒ 契约拒**（D10）—— 原先只在**落库时**（`UpsertCausalLink`，块 6 内）
+        // 挡下，报文是"块 6 因果失败"，模型看不到该改什么（第 18 章连着两轮卡这条）。
+        {
+            StateDiff loop;
+            loop.chapter_id = *chapter;
+            loop.causal.push_back(
+                {.cause = {.temp_id = "ev:自环"}, .effect = {.temp_id = "ev:自环"},
+                 .link_type = "causes"});
+            CommitContext c4 = ctx;
+            c4.review_pass = true;
+            const CommitResult r4 = CommitChapterState(mem, loop, c4);
+            bool hasD10 = false;
+            for (const CommitIssue& is : r4.gates.issues) {
+                if (is.detail.find("D10") != std::string::npos) {
+                    hasD10 = true;
+                }
+            }
+            expect(!r4.ok && hasD10, "S79：`causal[]` 自环 → 契约拒（D10），不许进库");
+        }
+        // ⑧f ★ S87（T1）：**名字就是引用键** —— 决策树四类结果各断一条。
+        // 这里**刻意一个数字 id 都不写**：模型应当只说"我指的是谁 / 我要新建谁"。
+        {
+            const auto count1 = [&mem](const char* sql) {
+                auto st = mem.Prepare(sql);
+                if (!st) {
+                    return -1;
+                }
+                if (auto s = st->Step(); s && *s == db::sqlite::StepResult::Row) {
+                    return static_cast<int>(st->ColumnInt(0));
+                }
+                return -1;
+            };
+            CommitContext c87 = ctx;
+            c87.review_pass = true;
+            c87.canon_mode = "manual";
+
+            // (a) 唯一命中 ⇒ **复用**（不新建），并解析成真实 id
+            StateDiff byName;
+            byName.chapter_id = *chapter;
+            CharacterDelta byNameCh;
+            byNameCh.entity_temp_id = "S65新人物"; // ← 名字（不是 id、也不是本章 temp_id）
+            byNameCh.location_temp_id = "S65新地点";
+            byName.characters.push_back(byNameCh);
+            const CommitResult r87a = CommitChapterState(mem, byName, c87);
+            expect(r87a.ok, fmt::format("S87：名字引用（唯一命中）⇒ 提交成功（{}）", r87a.error));
+            expect(count1("SELECT COUNT(*) FROM entities WHERE name='S65新人物'") == 1,
+                   "S87：名字命中 ⇒ **复用**（没有新建出第二个同名实体）");
+            expect(count1(fmt::format("SELECT COUNT(*) FROM character_status WHERE entity_id={} AND "
+                                      "chapter_id={}",
+                                      physPerson, *chapter)
+                              .c_str()) == 1,
+                   "S87：名字「S65新人物」解析成 **真实 id**（写进了 character_status）");
+
+            // (b) 同名同 kind **两个** ⇒ **拒 + 候选列表**（系统不替作者猜"是哪一个"）
+            RowId dupPerson = 0;
+            if (auto ins = mem.Prepare("INSERT INTO entities(kind,name,summary,status,meta_json,"
+                                       "created_chapter,updated) VALUES('person','S65新人物','重复声明',"
+                                       "'active','{}',?1,0)");
+                ins) {
+                (void)ins->BindInt(1, *chapter);
+                if (auto s = ins->Step(); s) {
+                    dupPerson = mem.LastInsertRowId();
+                }
+            }
+            expect(dupPerson > 0, "S87：造一个「同名同 kind」的重复实体（模拟「两个李默」）");
+            // ⚠️ 必须换一份**内容不同**的 diff：I1 幂等（同章 + 同 diff 哈希）会在门禁**之前**直接
+            // `ok+skipped` 返回 ⇒ 那样根本断不到"歧义被拒"（这个坑自检当场抓到了一次）。
+            StateDiff amb = byName;
+            amb.characters[0].body_state = "S87-b";
+            const CommitResult r87b = CommitChapterState(mem, amb, c87);
+            expect(!r87b.ok && r87b.error.find(fmt::format("#{}", physPerson)) != std::string::npos &&
+                       r87b.error.find(fmt::format("#{}", dupPerson)) != std::string::npos,
+                   fmt::format("S87：同名两个 ⇒ **拒**且**列出两个候选**（{}）", r87b.error));
+
+            // (c) 库里没有这个名字 ⇒ 拒，并在报文里给出"**要新建**就走 entities[]"
+            StateDiff miss;
+            miss.chapter_id = *chapter;
+            CharacterDelta missCh;
+            missCh.entity_temp_id = "S87库里没有的名字";
+            miss.characters.push_back(missCh);
+            const CommitResult r87c = CommitChapterState(mem, miss, c87);
+            expect(!r87c.ok && r87c.error.find("entities[]") != std::string::npos,
+                   fmt::format("S87：未命中 ⇒ 拒，且报文指出「新建请进 entities[]」（{}）", r87c.error));
+
+            // (d) 名字对了但 **kind 不符** ⇒ 拒（否则会写进错误的列）
+            StateDiff wrongKind;
+            wrongKind.chapter_id = *chapter;
+            ItemDelta wrongItem;
+            wrongItem.op = "acquire";
+            wrongItem.item_temp_id = "S65新地点"; // ← 库内是 location，此处期望 item
+            wrongItem.owner_temp_id = "S65新人物";
+            wrongKind.items.push_back(wrongItem);
+            const CommitResult r87d = CommitChapterState(mem, wrongKind, c87);
+            expect(!r87d.ok && r87d.error.find("kind") != std::string::npos,
+                   fmt::format("S87：名字对了但 kind 不符 ⇒ 拒（{}）", r87d.error));
+
+            // (e) ★ T3b：`force_new` —— **从 JSON 反射进来也要生效**（模型走的就是这条路：
+            // JSON → `util::reflect`（C++26 静态反射，按成员名映射）→ `NewEntityDelta::force_new`）。
+            // 只测 `UpsertEntity` 是不够的：那样"字段加了但反射没读到"的错会漏网（一律变 false ⇒ 又去复用）。
+            const std::string js = fmt::format(
+                R"({{"contract_version":1,"producer":"extractor","chapter_id":{},"entities":[)"
+                R"({{"temp_id":"另一个S65新人物","kind":"person","name":"S65新人物",)"
+                R"("summary":"另一个同名的人","force_new":true}}]}})",
+                *chapter);
+            StateDiff forceNew;
+            expect(StateDiffFromJson(js, forceNew) && forceNew.entities.size() == 1 &&
+                       forceNew.entities[0].force_new,
+                   "T3b：`force_new` 能从 **JSON 反射**进来（读成 true）");
+            CommitContext c5 = ctx;
+            c5.review_pass = true;
+            c5.canon_mode = "manual";
+            const CommitResult r87e = CommitChapterState(mem, forceNew, c5);
+            expect(r87e.ok, fmt::format("T3b：带 `force_new` 的提交成功（{}）", r87e.error));
+            expect(count1("SELECT COUNT(*) FROM entities WHERE name='S65新人物'") == 3,
+                   "T3b：显式新建 ⇒ 同名实体**又多了 1 个**（库里共 3 个「S65新人物」）");
+            expect(count1("SELECT COUNT(*) FROM audit_logs WHERE action='force_new_entity'") >= 1,
+                   "T3b：显式新建留下 `audit_logs(force_new_entity)`（半年后能查清这个 id 的来历）");
+        }
     }
     // ⑨ diff 存读往返（`audit_logs.detail` / 快照都用它）
     {

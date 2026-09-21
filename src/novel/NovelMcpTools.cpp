@@ -10,6 +10,7 @@
 #include "novel/NovelGraph.h"
 #include "novel/NovelMemory.h"
 #include "novel/NovelProjects.h"
+#include "novel/NovelRepair.h"
 #include "util/Encoding.h"
 #include "util/Json.h"
 #include "util/Time.h"
@@ -1109,6 +1110,35 @@ mcp::CallOutcome HSearchMemory(yyjson_val* args) {
     return mcp::CallOutcome::Ok(arr);
 }
 
+// ———— S69：工程库一致性（**库级**，补章级 K 校验够不到的地方；见 `NovelRepair.h`）————
+// `novel_consistency_report` **只读** ⇒ 不查写开关（外部 AI 随时可调，先看再决定）；
+// `novel_consistency_repair` 的 `dry_run`（**默认 true**）同样不写 ⇒ 也不查；
+// **只有真写**（`dry_run=false`）才要求写开关 —— 这样"先看计划"这一步在只读挂载下也能自动化。
+mcp::CallOutcome HConsistencyReport(yyjson_val* args) {
+    (void)args;
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    return mcp::CallOutcome::Ok(ScanConsistency(*db).ToJson());
+}
+
+mcp::CallOutcome HConsistencyRepair(yyjson_val* args) {
+    // ⚠️ 参数设计（S69 修正）：**写要显式说**。
+    // 起因：`dry_run` 的语义默认是 `true`，但 schema 助手对 boolean 会自动填 `"default":false`
+    // ⇒ 外部 AI 照抄 schema 传 `dry_run:false` 就成了"真写"，与我们"默认只读"的承诺相反。
+    // 所以对外主参数是 **`apply`**（缺省 false = 只出计划，schema 里的 `default:false` 与语义一致），
+    // `dry_run` 仍兼容（缺省 true）—— 两者**只要有一个明确要求写**才写。
+    const bool apply = ArgBool(args, "apply", false);
+    const bool dryRun = ArgBool(args, "dry_run", true);
+    const bool reallyWrite = apply || !dryRun;
+    if (reallyWrite && !McpWriteAllowed()) return WriteDenied("novel_consistency_repair");
+    db::sqlite::Database* db = ResolveDb();
+    if (!db) return NeedDb();
+    return mcp::CallOutcome::Ok(
+        RepairConsistency(*db, /*dry_run=*/!reallyWrite, ArgStr(args, "rules"),
+                          "mcp:novel_consistency_repair")
+            .ToJson());
+}
+
 } // namespace
 
 void SetMcpDbOverride(db::sqlite::Database* db) noexcept { g_dbOverride = db; }
@@ -1663,6 +1693,37 @@ void RegisterMcpTools(mcp::ToolRegistry& reg) {
         .handler = HGenerateChapter,
     });
 
+    // ———— S69：一致性（库级）———— 让**外部 AI** 能"先扫再修"，不必人工敲 sqlite。
+    // 这解决的是"下一个小说/下一个库又要手工修一遍"的问题：规则写在代码里、修法可 dry-run 预演、
+    // 真写完记 `audit_logs`。
+    regTool(mcp::Tool{
+        .name = "novel_consistency_report",
+        .title = "工程库一致性扫描（只读）",
+        .description = "扫库级不一致：R1 持有区间无效 / R2 活跃持有者非人物 / R3 多行活跃持有 / "
+                       "R4-R5 悬空外键 / R7-R9 事件与关系悬空。只读，不需要写开关。",
+        .moduleId = "novel",
+        .schemaJson = EmptySchema(),
+        .handler = HConsistencyReport,
+    });
+
+    regTool(mcp::Tool{
+        .name = "novel_consistency_repair",
+        .title = "工程库一致性修复（dry_run 只出计划）",
+        .description = "只修**可机械判定**的规则（R1–R5）；R6–R9 只报告（需要人/AI 决策，"
+                       "例如悬空引用应重跑该章 EXTRACT 而不是删行）。"
+                       "**缺省只出计划**（不写库、不需要写开关）：要真改必须显式 `apply=true`"
+                       "（需写开关，改完记一条 audit_logs）。",
+        .moduleId = "novel",
+        .schemaJson = SchemaWith([](yyjson_mut_doc* d, yyjson_mut_val* s) {
+            mcp::schema::AddBoolean(d, s, "apply", "true=真写库（需写开关）；缺省 false=只出计划",
+                                    false);
+            mcp::schema::AddBoolean(d, s, "dry_run", "兼容项（缺省 true）；apply=true 时以 apply 为准",
+                                    true);
+            mcp::schema::AddString(d, s, "rules", "要执行的规则，如 R1,R3；空=全部可修规则", false);
+        }),
+        .handler = HConsistencyRepair,
+    });
+
     log::Info("mcp novel 模块已注册 tools={}", reg.ToolNames("novel").size());
 }
 
@@ -1725,7 +1786,9 @@ bool RunNovelMcpSelfCheck() {
                             "novel_get_foreshadows", "novel_get_secrets_for",
                             "novel_get_event_chain", "novel_get_ownership",
                             "novel_get_character_slice", "novel_get_world_slice",
-                            "novel_search_memory", "novel_link_causal"}) {
+                            "novel_search_memory", "novel_link_causal",
+                            // S69：库级一致性（只读扫描 + dry_run 修复）
+                            "novel_consistency_report", "novel_consistency_repair"}) {
         if (!has(req)) {
             fail(fmt::format("缺少工具 {}", req));
         }

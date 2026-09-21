@@ -12,6 +12,7 @@
 #include "novel/NovelContinuity.h"
 #include "novel/NovelGeneration.h"
 #include "novel/NovelPromptGen.h"     // S24：V10 提示词产物
+#include "novel/NovelRepair.h"        // S69：库级一致性扫描/修复
 #include "openai/OpenAIProvider.h"    // S34：LLM 前置检查（ResolveActiveProfile / ProviderLabel）
 #include "util/File.h"                // S54：WriteFileBytes（导出正文）
 #include "util/Encoding.h"
@@ -129,12 +130,14 @@ int RunNovelCli(const wchar_t* cmdline) {
     const bool wantStages = Has(args, "--novel-stages");
     // S54：`--novel-export` 也计入（否则会被下面的"未知子命令"拦掉）
     const bool wantExport = Has(args, "--novel-export");
+    // S69：`--novel-repair` —— 库级一致性扫描/修复（默认 dry-run；`--apply` 才写）
+    const bool wantRepair = Has(args, "--novel-repair");
     if (!wantGen && !wantRun && !wantInit && !wantSb && !wantPrompt && !wantImages && !wantChecks &&
-        !wantCont && !wantStages && !wantExport) {
+        !wantCont && !wantStages && !wantExport && !wantRepair) {
         log::Error("novel-cli：未知子命令。可用：`--novel-init` / `--novel-stages`(V1) / "
                    "`--novel-storyboard`(V9) / `--novel-prompt`(V10) / `--novel-generate-images`(V11) / "
-                   "`--novel-continuity`(V8) / `--novel-checks`(K01–K29) / `--novel-generate` / "
-                   "`--novel-run`");
+                   "`--novel-continuity`(V8) / `--novel-checks`(K01–K29) / `--novel-repair` / "
+                   "`--novel-generate` / `--novel-run`");
         return 2;
     }
 
@@ -185,6 +188,35 @@ int RunNovelCli(const wchar_t* cmdline) {
     log::Info("novel-cli：库 {} · 工程 {}", dbArg, util::PathToUtf8(projectDir));
 
     std::atomic<bool> cancel{false};
+
+    if (wantRepair) {
+        // S69：**库级一致性**（`06` §2.3 的 K01–K29 只管"这一章"，管不到库里跨章躺着的脏行）。
+        // 默认 **dry-run**（只出计划、一个字节都不写）；`--apply` 才真改（并记一条 `audit_logs`）。
+        // `--rules R1,R3` 可只跑部分规则。MCP 侧同一份实现：`novel_consistency_report` /
+        // `novel_consistency_repair`（外部 AI 自动化走那条）。
+        // 退出码：0 = 干净 / 修完干净；1 = 仍有问题（dry-run 有 error，或 apply 后还有不可修项）；2 = 参数/环境错。
+        const bool apply = Has(args, "--apply");
+        const std::string rules = Opt(args, "--rules", "");
+        const novelcore::ConsistencyReport before = novelcore::ScanConsistency(db);
+        log::Info("novel-cli：{}", before.ToText());
+        const auto out = novelcore::RepairConsistency(
+            db, /*dry_run=*/!apply, rules, "cli:--novel-repair");
+        log::Info("novel-cli：{}", out.ToJson());
+        for (const auto& a : out.actions) {
+            log::Info("novel-cli：  {}", a);
+        }
+        if (!out.ok()) {
+            log::Error("novel-cli：一致性修复执行失败：{}", out.error);
+            return 2;
+        }
+        if (!apply) {
+            log::Info("novel-cli：以上为 **dry-run 计划**（未改库）—— 确认后加 `--apply` 真改。");
+            return before.ok() ? 0 : 1;
+        }
+        const novelcore::ConsistencyReport after = novelcore::ScanConsistency(db);
+        log::Info("novel-cli：修复后 {}", after.ToText());
+        return after.ok() ? 0 : 1;
+    }
 
     if (wantInit) {
         // S21（`10`）：初始化链 —— 骨架（路径 B/D，不调 LLM）+ 「可开写」门禁报告（`10` §2.3）。

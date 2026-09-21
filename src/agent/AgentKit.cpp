@@ -402,6 +402,65 @@ public:
     }
 };
 
+// ★ S75：**`list_id_directory`** —— 一次拿到"kind → id 名单"的**权威目录**。
+// 为什么要有它（真跑实证，第 16 章）：模型为填 `*_id` **连查 10 次** `list_entities`，
+// 工具结果一路累积到 13.5KB，**结果还是把 `#50`/`#37`（item）填进了要求 person 的字段**。
+// 它真正需要的不是"原始实体列表"，而是**一张紧凑的对照表**。
+// 而按 `00` §2 总纲「**事实就该能查**」，正确的给法是**给工具**（而不是我们往 prompt 里塞清单 ——
+// 那正是 S62 试过并回退的做法）。⇒ 一次调用替掉十次查询。
+class ListIdDirectoryTool final : public KitTool {
+public:
+    using KitTool::KitTool;
+    std::string_view Name() const override { return "list_id_directory"; }
+    std::string_view Description() const override {
+        return "一次拿到【kind → id 名单】的权威目录（填 `*_id` 字段前先查这个，比逐个 list_entities 快）。";
+    }
+    yyjson_mut_val* Schema(yyjson_mut_doc* doc) const override {
+        auto* o = ObjType(doc);
+        AddStrProp(doc, o, "kinds", "逗号分隔，如 person,location,item；空=常用全部");
+        AddIntProp(doc, o, "limit_per_kind", "每种最多几条（默认 40，上限 200）");
+        return o;
+    }
+    std::expected<yyjson_doc*, ToolError> Execute(yyjson_val* args) override {
+        if (!graph_) return ErrDoc("state", "graph 未绑定");
+        const std::string kindsArg = ArgStr(args, "kinds");
+        int limit = static_cast<int>(ArgI64(args, "limit_per_kind", 40));
+        if (limit < 1) limit = 1;
+        if (limit > 200) limit = 200;
+        std::vector<std::string> kinds;
+        if (kindsArg.empty()) {
+            kinds = {"person", "location", "item", "prop", "faction", "event"};
+        } else {
+            std::string cur;
+            for (const char ch : kindsArg) {
+                if (ch == ',' || ch == ' ' || ch == '、' || ch == ';') {
+                    if (!cur.empty()) kinds.push_back(cur);
+                    cur.clear();
+                } else {
+                    cur += ch;
+                }
+            }
+            if (!cur.empty()) kinds.push_back(cur);
+        }
+        std::string out = "{";
+        bool firstK = true;
+        for (const std::string& k : kinds) {
+            auto list = graph_->ListEntities(k, "", limit);
+            if (!list) return ErrDoc("db", list.error().message);
+            if (!firstK) out += ",";
+            firstK = false;
+            out += fmt::format("\"{}\":[", k);
+            for (std::size_t i = 0; i < list->size(); ++i) {
+                if (i) out += ",";
+                out += fmt::format(R"({{"id":{},"name":"{}"}})", (*list)[i].id, (*list)[i].name);
+            }
+            out += "]";
+        }
+        out += "}";
+        return OkDoc(out);
+    }
+};
+
 // ── S51：本章世界级字段（`NovelFields::ListWorldFields`）──
 // 用途：**让模型自己查** —— 原先它是**预塞进 system prompt** 的（见 `BuildSystemPrompt`）。
 // ⚠️ 为什么该挪：按用户立的规矩「**事实就该能查**」—— 字段**定义**（`field_defs`）是**契约**，
@@ -882,14 +941,46 @@ std::expected<std::string, DbError> AgentKit::BuildSystemPrompt(std::string_view
                                                                  RowId chapterId) const {
     auto def = GetAgentDef(agentId);
     std::string base;
-    std::string toolsHint = "[]";
     std::string outHint;
     if (def) {
         base = def->system_prompt.empty() ? DefaultPromptFor(agentId) : def->system_prompt;
-        toolsHint = def->tools_json.empty() ? "[]" : def->tools_json;
         outHint = def->output_hint;
     } else {
         base = DefaultPromptFor(agentId);
+    }
+
+    // ★ S75：**只给这个 agent 真正用得到的东西**（用户质问："为什么是你给这么多？"）。
+    // 原先这里给**所有** agent 追加同一段"本项目约束 / 动态字段定义 / `list_world_fields`"，
+    // 那是为 `field_builder` 那类**写动态字段**的 agent 写的模板 —— 套在 extractor 上就是：
+    //   ① **噪声**：真跑实测（`_llm_dump/extract_req_01_instructions.txt`）instructions 共 8305 字节，
+    //      后 **1522 字符 / 1753 字节**与 extract 毫无关系（讲 upsert_field_def / layer / 动态字段）；
+    //   ② **教它用一个它没有的工具**：那段写着"用 `list_world_fields` 查" —— 而 extract 只有 4 个工具。
+    // 判据用**实际注册表**（拿真相说话），不用 agent 名字猜：不碰动态字段的 agent 就不该看到这些约束。
+    ToolRegistry promptTools;
+    RegisterToolsFor(agentId, promptTools);
+    const std::vector<std::string> toolNames = promptTools.Names();
+    const auto hasTool = [&toolNames](std::string_view n) {
+        for (const auto& x : toolNames) {
+            if (x == n) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const bool fieldAware = hasTool("upsert_field_def") || hasTool("upsert_entity_field") ||
+                            hasTool("list_world_fields");
+    // "可用工具"**必须来自实际注册表** —— 原先抄的是 `agent_defs.tools_json`（白名单），
+    // 而白名单与实给长期不一致（真跑实测：白名单写 6 个、实给 4 个）⇒ 提示词当场说谎。
+    std::string toolList = "[";
+    for (std::size_t i = 0; i < toolNames.size(); ++i) {
+        if (i) toolList += ",";
+        toolList += fmt::format("\"{}\"", toolNames[i]);
+    }
+    toolList += "]";
+    if (!fieldAware) {
+        // 不碰动态字段的 agent（如 extract / review）：只给**它自己的规则** + 可用工具 + 期望输出。
+        return fmt::format("{}\n\n- 可用工具：{}\n{}", base, toolList,
+                           outHint.empty() ? "" : "\n## 期望输出\n" + outHint);
     }
 
     NovelFields fields(*db_);
@@ -917,11 +1008,16 @@ std::expected<std::string, DbError> AgentKit::BuildSystemPrompt(std::string_view
         "- 小说体系**不写死**：需要新维度时用 upsert_field_def + upsert_entity_field 自己生成并存储。\n"
         "- 人物多面性用 layer 字段（mask=公开伪装，true=真实）；不同章不同世界观用 chapter_scope。\n"
         "- 写库后其它 Agent / MCP 通过 list_entity_fields / list_field_defs 读取理解。\n"
-        "- 可用工具（白名单）：{}\n"
+        "- 可用工具（**实际给出去的那份**）：{}\n"
         "- 动态字段定义：{}\n"
-        "- **本章世界级字段**：用工具 `list_world_fields`（chapter_id={}）查，**别猜**。\n"
+        "{}"
         "{}",
-        base, toolsHint, fieldList, chapterId,
+        base, toolList, fieldList,
+        // S75：**没有这个工具就不要写这一行**（"承诺了做不到"是上一版的实测缺陷）
+        hasTool("list_world_fields")
+            ? fmt::format("- **本章世界级字段**：用工具 `list_world_fields`（chapter_id={}）查，**别猜**。\n",
+                          chapterId)
+            : std::string{},
         outHint.empty() ? "" : "\n## 期望输出\n" + outHint);
 }
 
@@ -935,6 +1031,8 @@ void AgentKit::RegisterToolsFor(std::string_view agentId, ToolRegistry& reg) con
     auto addShared = [&] {
         reg.Register(std::make_unique<GetEntityTool>(g));
         reg.Register(std::make_unique<ListEntitiesTool>(g));
+        // S75：一次拿到"kind → id 名单"的权威目录（所有 agent 都用得上；是否真导给模型由**白名单**决定）
+        reg.Register(std::make_unique<ListIdDirectoryTool>(g));
         if (allowWrite_) {
             reg.Register(std::make_unique<UpsertEntityTool>(g));
             reg.Register(std::make_unique<LinkRelationTool>(g));
@@ -1171,6 +1269,22 @@ AgentKit::Run(const AgentRunRequest& req, const CreateFn& create, ToolLoopStats*
 
     ToolRegistry reg;
     RegisterToolsFor(req.agent_id, reg);
+    // ★ S75：**白名单必须真的生效** —— 原先这里把 `RegisterToolsFor` 注册的**全部**工具都导给模型，
+    // 完全无视 `agent_defs.tools_json`（真跑实证 2026-09-20：白名单写 6 个，实际发出去的是
+    // "只读四件套" `get_entity/list_entities/list_field_defs/list_entity_fields` —— 恰好也是那 4 个，
+    // 所以**一直没人发现白名单没生效**）。后果：① 提示词写的"可用工具（白名单）"与实际不符；
+    // ② 想收窄某个 agent 的工具面**根本做不到**（`05` W1 的规矩落不了地）。
+    if (auto def = GetAgentDef(req.agent_id); def && !def->tools_json.empty()) {
+        const auto whitelist = util::json::ParseStringArray(def->tools_json);
+        if (!whitelist.empty()) {
+            const std::vector<std::string> registered = reg.Names();
+            for (const std::string& n : registered) {
+                if (!WhitelistHas(whitelist, n)) {
+                    (void)reg.Unregister(n);
+                }
+            }
+        }
+    }
 
     std::string user = req.user_text;
     if (!req.extra_json.empty() && req.extra_json != "{}") {
@@ -1253,10 +1367,9 @@ std::vector<AgentDefRow> AgentKit::BuiltinAgents() {
         //      （同一缺陷的第三处）⇒ 改成契约形状。
         // `version=2` ⇒ 老库里的同名内置 Agent 会被覆盖刷新（否则改动对既有工程不生效）。
         {"extract", "抽取 Agent", "extract",
-         R"(["list_entities","get_entity","list_entity_fields","list_field_defs","get_recent_chapters",)"
-         R"("get_foreshadows"])",
-         "完整 StateDiff JSON（契约 02 §2.5）：summary + entities/characters/relationships/items/"
-         "locations/events/causal/plotlines/foreshadows/mysteries/knowledge/timeline", 2},
+         R"(["list_id_directory","list_entities","get_entity","list_entity_fields","list_field_defs"])",
+         "完整 StateDiff JSON：summary + entities/characters/relationships/items/"
+         "locations/events/causal/plotlines/foreshadows/mysteries/knowledge/timeline", 3},
         {"review", "审校 Agent", "review,critic",
          R"(["get_entity","list_entities","list_entity_fields","list_field_defs"])",
          R"({"passed":bool,"issues":[…]})"},

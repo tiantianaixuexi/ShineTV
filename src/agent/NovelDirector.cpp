@@ -174,6 +174,67 @@ std::string DefaultPrompt(std::string_view role) {
     return "你是小说助手。";
 }
 
+// ★ S71：**重做专用**的"库内真实 id 速查表"。
+//
+// ⚠️ 边界（必须先说清，免得又走回 S62 的老路）：**首轮绝不喂清单** —— 那是 S62 试过并**回退**的
+// 做法（`00` §2 总纲 + S48 立的规矩：**"有哪些实体、id 是多少"是事实 ⇒ 就该让模型查**；喂清单会
+// 随实体变多而膨胀，还会让模型**不再去查**）。所以本函数**只在该章已经因为"引用错"被门禁拒过
+// 至少一次之后**才被调用 —— 此时要救的是"**改不动**"：模型已经错过一次，光靠"请重新查"这句
+// 措辞它（实测）**一轮工具都不调**，照样照抄上一版的数字。
+//
+// 为什么不能靠"强制工具调用"（原计划）：**这个端点不支持**。2026-09-20 用 curl 实测 MiniMax
+// `/v1/responses`：`tool_choice:"required"` 与 `{"type":"function","name":...}` 两种写法都**不产出
+// 结构化 `function_call`** —— 它把工具调用**当文本**写在 `output_text` 里（甚至编出一个不存在的
+// 工具错误），而我们的工具循环只认 `output[].type=="function_call"` ⇒ 强制不成，反而会把那串
+// 文本当"最终答案"。⇒ "机械保证"只能落在**我们这侧**：把"它写错的那类 id，库里到底有哪些"
+// **按需、限量**地摆到它面前。
+//
+// 限量：每种 kind 最多 `capPerKind` 条（默认 60），只列**会被引用**的 kind，总量再截断到 `maxLen`。
+std::string BuildIdCheatSheet(db::sqlite::Database& db, int capPerKind = 60,
+                              std::size_t maxLen = 6000) {
+    static constexpr std::string_view kKinds[] = {"person", "location", "item",
+                                                 "prop",   "faction",  "event"};
+    std::string out =
+        "\n【库内**真实** id 速查（权威：只能用这些数字；这是你上次写错 id 后给你的事实）】\n";
+    for (const std::string_view k : kKinds) {
+        auto st = db.Prepare("SELECT id,name FROM entities WHERE kind=?1 ORDER BY id");
+        if (!st) {
+            continue;
+        }
+        (void)st->BindText(1, k);
+        std::string line;
+        int n = 0;
+        int shown = 0;
+        while (true) {
+            auto s = st->Step();
+            if (!s || *s == db::sqlite::StepResult::Done) {
+                break;
+            }
+            ++n;
+            if (shown >= capPerKind) {
+                continue;
+            }
+            ++shown;
+            if (shown > 1) {
+                line += "、";
+            }
+            line += fmt::format("#{} {}", st->ColumnInt(0), st->ColumnText(1));
+        }
+        if (n == 0) {
+            continue;
+        }
+        out += fmt::format("  {}（共 {}）：{}{}\n", k, n, line,
+                           n > shown ? " …（其余省略）" : "");
+        if (out.size() > maxLen) {
+            out.resize(maxLen);
+            out += "…（速查表已截断）\n";
+            break;
+        }
+    }
+    out += "  ⚠️ 上面**没有**的实体：放进 `entities[]` 用 `temp_id` 新建，**别硬塞数字**。\n";
+    return out;
+}
+
 // ★ S62：**Extractor 的 instructions 唯一来源** —— 单轮路径（上面的 `InstructionsFor("extractor")`）
 // 与工具循环路径（`AgentKit::DefaultPromptFor("extract")`）都取这一份，**别抄第二份**（S35/S42 的教训）。
 // ⚠️ 契约要点：顶层键必须与 `StateDiff`（`02` §2.5）同名同形；旧版写的是 `new_entities` /
@@ -182,30 +243,35 @@ std::string DefaultPrompt(std::string_view role) {
 // ⚠️ `summary` 是调用方自己的字段（不在 StateDiff 契约里，单独读取）—— 解析端的契约外键告警对它白名单。
 std::string_view ExtractSystemPrompt() noexcept {
     return R"-(
-你是信息抽取器。读【计划】与【正文】，输出**一份 StateDiff JSON**（契约 02 §2.5）。
-需要知道"库里有哪些实体、它们的 id 与 kind"时，**用工具自己查**
-（list_entities / get_entity / list_entity_fields / list_field_defs / get_recent_chapters / get_foreshadows）
+你是信息抽取器。读【计划】与【正文】，输出**一份 StateDiff JSON**（形状/字段名见下方示例与字段清单，**别看别处的文档 —— 你看不到它们**）。
+需要知道"库里有哪些实体、它们的 id 与 kind"时，**用工具自己查**：
+**先调一次 `list_id_directory`**（一次拿到全部 kind 的 id 名单，最省），需要细节再用
+`get_entity` / `list_entities` / `list_entity_fields` / `list_field_defs`。
 —— 不要凭印象编 id，也不要凭印象说"库里没有"。
+（⚠️ 上面就是**你实际拥有的全部工具**；提示词里没提的名字就是没有，别去试。）
 顶层键只能是下列这些，**不要自造键名**（写成 new_entities / foreshadow_updates 之类会被直接忽略）：
   summary, contract_version, producer, input_state_hash, chapter_id, no_change_declared,
   entities, characters, relationships, items, locations, events, causal,
   plotlines, foreshadows, mysteries, knowledge, timeline
 【形状示例（照这个填，字段名一个都不要改）】
-{"summary":"……","chapter_id":5,
- "entities":[{"temp_id":"en:1","kind":"item","name":"工号牌挂绳断头 092","summary":"……","status":"active"}],
+{"summary":"……","chapter_id":<本章章号>,
+ "entities":[{"temp_id":"en:断头挂绳","kind":"item","name":"工号牌挂绳断头 092","summary":"……","status":"active"}],
  "characters":[{"entity_id":<person id>,"location_id":<location id>,"body_state":"……","mind_state":"……","goal":"……","reason":"……"}],
- "events":[{"temp_id":"ev:1","cause":"……","participants":[{"entity_id":<person id>,"role":"actor"}],
+ "events":[{"temp_id":"ev:夜遇","cause":"……","participants":[{"entity_id":<person id>,"role":"actor"}],
             "location_id":<location id>,"time_label":"深夜","action":"……","result":"……"}],
  "foreshadows":[{"op":"new","title":"……","content":"……","status":"PLANTED","setup_ch":5,"payoff_ch":9,"importance":70}],
  "causal":[],"items":[],"locations":[],"plotlines":[],"mysteries":[],"knowledge":[],"timeline":[]}
-（引用**本章新建**实体的写法：`"participants":[{"entity_id":0,"entity_temp_id":"en:7","role":"actor"}]`）
+（引用**本章新建**实体的写法：`"participants":[{"entity_id":0,"entity_temp_id":"en:新人物-谭工","role":"actor"}]`）
+⚠️ `temp_id` **必须是有语义的标签**，**不许写成「前缀+纯数字」**（`en:1` / `ev:1` 会被**契约 D9 直接拒收**）——
+   它只是**本章内的标签，不是 id**。写成数字会让你（和校验器）分不清"序号"与"库 id"，
+   而 `*_id` 字段只能填 `list_id_directory` 查到的**真实数字**。
 ⚠️ `kind` 取值必须是 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…），
    **不要把字段名当值**（写 kind:"kind" 是常见错误，会被契约校验直接挡下）。
 ⚠️ `*_id` 字段（`entity_id`/`item_id`/`owner_id`/`location_id`/`from_id`/`to_id`）**两条路，别混**：
    · **库里已存在** ⇒ 填 `list_entities` / `get_entity` **查出来的那个数字**（不凭印象编、不照抄示例）；
-   · **本章新建**（你在 `entities[]` 里给了 `temp_id`，如 `en:7`）⇒ 填**旁边的兄弟键 `*_temp_id`**，
-     如 `"participants":[{"entity_id":0,"entity_temp_id":"en:7","role":"actor"}]`、
-     `"location_temp_id":"en:10"`（`temp_id` 必须与 `entities[]` 里写的**逐字一致**，含 `en:` 前缀）。
+   · **本章新建**（你在 `entities[]` 里给了 `temp_id`，如 `en:新人物-谭工`）⇒ 填**旁边的兄弟键 `*_temp_id`**，
+     如 `"participants":[{"entity_id":0,"entity_temp_id":"en:新人物-谭工","role":"actor"}]`、
+     `"location_temp_id":"en:新修配间"`（`temp_id` 必须与 `entities[]` 里写的**逐字一致**，含 `en:` 前缀）。
 【输出纪律（违反一条整份作废/整章提交失败）】
 1. 只输出 JSON 本体：不要 markdown 围栏、不要任何解释文字。
 2. **字符串内部禁止出现半角双引号**（对话、便签、标题请用「」或『』）——
@@ -213,23 +279,19 @@ std::string_view ExtractSystemPrompt() noexcept {
 3. **字段尽量短**：summary ≤ 40 字，每条条目的 summary/note 同样 ≤ 40 字；**不要复述正文**。
    （整份输出越短越可靠；实测 2 万字输出必然出错。）
 4. 只填**真正发生变化**的条目；没有变化的数组一律写 []。
-5. `relations[]` 每条必须给全 from_id / to_id / rel_type（id 照抄下方清单），
+5. `relations[]` 每条必须给全 from_id / to_id / rel_type（id 用上面工具查到的数字），
    `items[]` 给全 op / item_id，`characters[]` 给全 entity_id —— 缺一个整章提交失败。
 6. **id 的用途必须匹配**（K03 会挡下整章）：`characters[].entity_id` /
    `relationships[].from_id|to_id` / `events[].participants[].entity_id` 只能用 **[person]** 的 id；
    `items[].item_id` 只能用 **[item]** 的 id；`*_location_id` 只能用 **[location]** 的 id。
    ⚠️ **库里还没有的（新物品 / 新人物 / 新地点）**：先在 `entities[]` 用 `temp_id` 新建；
-   **要在这里引用它，就用上面的 `*_temp_id` 兄弟键写法**（如 `"entity_temp_id":"en:7"`）——
-   这是"新人物在新地点卷入事件 / 新物品被谁持有"的**唯一合法表达**（原先没有这个写法，
-   模型才会把 `en:7` 的序号当 id 填，整章被 K03 挡下还改不动）。
-   🔴 **`temp_id` 的序号绝不是库 id**：`entities[].temp_id:"en:10"` 里的 **10 与库 id 毫无关系** ——
-   把 10 填进 `location_id` 会命中一个**完全无关**的实体（真跑实证：模型这么干，`location_id:10`
-   撞上了库里的 `event` ⇒ 整章被 K03 挡下，重做两次都改不动）。**要填 id 就只用
-   `list_entities` / `get_entity` 查出来的那个数字**。
+   **要在这里引用它，就用上面的 `*_temp_id` 兄弟键写法**（如 `"entity_temp_id":"en:新人物-谭工"`）——
+   这是"新人物在新地点卷入事件 / 新物品被谁持有"的**唯一合法表达**。
+   🔴 **`temp_id` 只是个标签，与库 id 毫无关系**；`*_id` 字段**只能填 `list_id_directory` /
+   `get_entity` 查出来的真实数字**（填错会命中一个完全无关的实体 ⇒ 整章被拒）。
    ⚠️ 查不到（= 库里还没有）时，**正确做法是"整条 entry 不要写"**，**不是**把 id 写成 `0`
-   （真跑实证：模型把 `participants[].entity_id` 全填 0 ⇒ 门禁过、落库块 5 炸
-   `事件参与必须指定 event_id 与 entity_id` ⇒ 白跑一轮）。凡 `*_id` 字段：**要么填查得到的真实 id，
-   要么整条不写**；`0` 只在契约明确允许的地方用（如 `items[].location_id` 表示"无地点"）。
+   （填 `0` 会在落库时被拒）。凡 `*_id` 字段：**要么填查得到的真实 id，要么整条不写**；
+   `0` 只在明确允许的地方用（如 `items[].location_id` 表示"无地点"）。
 - summary: 本章 2–3 句摘要（字符串）
 - entities[]: {temp_id, kind, name, summary, status}
     kind 必须命中 31 种元类别之一（person|location|item|prop|event|universe|world_rule|…）
@@ -522,6 +584,9 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
     // S55：上一次**解析失败**的提示（与"机器校验不过"分开 —— 两种毛病的处方完全不同：
     // 前者是"JSON 都不合法"（多半引号没转义），后者是"JSON 合法但字段/取值不对"）。
     std::string parseFailHint;
+    // ★ S67b：上一次是"**空 diff 且未声明无变化**"（G4 拒）的提示 —— 与上面两种毛病分开：
+    // 它的处方是"补全 delta 或显式声明 no_change_declared"。
+    std::string emptyDiffHint;
     for (int attempt = 0; attempt <= maxValidateRetries; ++attempt) {
         Report(progressCb, Phase::Extract, 90,
                attempt == 0 ? std::string{"Extractor"}
@@ -533,11 +598,15 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         // 也会让模型不去查），而是**给它工具循环**（只读白名单 `list_entities` / `get_entity` / …），
         // 让它自己按需查。诱因：正文链的 Extractor 原先走**单轮** `CallLlm`，没有工具循环才逼出歪路。
         std::string exUser = fmt::format("【计划】\n{}\n\n【正文】\n{}", result.plan_json, body);
+        if (!emptyDiffHint.empty()) {
+            exUser += emptyDiffHint;
+            emptyDiffHint.clear(); // 只影响紧接着的这一次重做
+        }
         if (!parseFailHint.empty()) {
             exUser += parseFailHint;
         } else if (attempt > 0) {
             exUser += fmt::format(
-                "\n\n【上一版 StateDiff 未通过机器校验（`06` §2.3），请**只修这些问题**后重新输出"
+                "\n\n【上一版 StateDiff 未通过机器校验，请**只修这些问题**后重新输出"
                 "完整 StateDiff】\n{}\n"
                 // S63：**重做时必须重新查 id** —— 真跑实证：重做的两轮**一次工具都没调**（`工具调用 0 次`），
                 // 直接照着上一版的数字改 ⇒ 同一个 K03（id 用途不匹配）连续 3 次挡下。
@@ -571,14 +640,56 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
                            "填 ≤ 本章的章号，或留 0（= 本章）。";
             }
             if (failed("K17")) {
-                actions += "\n   · `items[].op=lose` 只能用于**该物品此刻确实在该人手上**的持有关系；"
-                           "不在手上就别写 `lose`（先在库里核对 ownership）。`acquire` 同理不许重复。";
+                actions += "\n   · `items[].op` 只有四种，**别用错**：`acquire` 只能用于**尚无人持有**的物品；"
+                           "**已经被某人持有**时——只是换地点用 `move`、只是状态变了用 `change_state`、"
+                           "**要易主**就先给旧持有者写一条 `lose`、再给新持有者写 `acquire`；"
+                           "`lose` 只能用于**该物品此刻确实在该人手上**的关系。"
+                           "（不确定谁持有，就用 `get_entity` 或先 `list_entities` 查清。）";
             }
             if (failed("K04")) {
                 actions += "\n   · `status` 是 `dead` / `destroyed` 的实体**不能**再当 `actor`。";
             }
             if (!actions.empty()) {
                 exUser += "\n【按失败项该怎么做（照这个改，别只改数字）】" + actions + "\n";
+            }
+            // ★ S72：`acquire` **必须给持有者** —— 块 4 的守卫（S69 加）在"`owner_id=0` 且没有
+            // `owner_temp_id`"时**拒提交**；而这条**不在 K01–K29 列表里**（是落库前的守卫），
+            // 所以上面按 `failed("K..")` 的分支覆盖不到 ⇒ 这里无条件给一句。
+            // 真跑实证（第 13 章）：K03 已被"id 速查表"解决（`K01–K29 校验：29 条，0 不通过`），
+            // 结果卡在这一条上 —— 模型写了 `acquire` 却没给持有者。
+            exUser +=
+                "\n⚠️ `items[].op=\"acquire\"` **必须**同时给 `owner_id`（库内 person 的 id）"
+                "或 `owner_temp_id`（本章新建的人物）——**「持有」必须有持有者**，"
+                "只写 `item_id` 会被拒。若该物品只是换地点/换状态，请用 `move` / `change_state`。\n";
+            // ★ S78：**块级守卫失败也给动作提示** —— 块 4/5/6 的守卫**不在 K01–K29 里**，
+            // 按 `failed("K..")` 分发的分支覆盖不到（真跑实证：块 4「持有者解析不到 owner=0」、
+            // 块 6「因果链端点解析不到 cause=177 effect=0」，模型连着两轮都不知道该改什么）。
+            // ★ S79：**把 `commit.error` 也回灌** —— 原先只回灌 K 报告（`checks_describe`），
+            // 而**契约 D 规则**与**块级守卫**的失败原因都在 `commit.error` 里（K 报告里没有）
+            // ⇒ 模型看不到"到底为什么被拒"。这一条让**任何**失败原因都到它眼前（自愈回灌的通用口）。
+            if (!commit.error.empty()) {
+                exUser += "\n【上次提交被拒的**原始原因**（照它改）】\n" + commit.error + "\n";
+            }
+            if (commit.error.find("块 ") != std::string::npos) {
+                exUser +=
+                    "\n【落库块报错时怎么改（这几条不在 K 校验里，但会**直接拒提交**）】\n"
+                    "   · 块 5/6 说「端点解析不到」：`causal[].cause/effect`、"
+                    "`events[].participants[].entity_id`、`*_location_id` 必须是"
+                    "**库内真实数字 id**（先调 `list_id_directory` 查）或**本章 TempId**"
+                    "（配兄弟键 `*_temp_id`）—— **不许留 0，不许凭空写数字**。\n"
+                    "   · 块 6 说「禁止自环」/ 契约 D10：`causal[]` 的一对 cause/effect **必须指向"
+                    "两个不同的事件**，且**两端都要给**。\n"
+                    "   · 块 4 说「持有者解析不到」：`items[].op=\"acquire\"` 必须给 "
+                    "`owner_id` 或 `owner_temp_id`。\n";
+            }
+            // ★ S71：**"引用错"类失败的重做，附上库内真实 id 速查表**（只在重做时；首轮绝不喂 ——
+            // 见 `BuildIdCheatSheet` 的注释）。真跑实证（第 13 章 K03 连续 2 次挡下）：重做两轮
+            // `工具调用 0 次`，模型只是照抄上一版数字 ⇒ 必须把"库里到底有哪些"摆到它面前。
+            // ⚠️ 这**不是**硬保证（硬保证仍是 K03/K02/K05/K17 会拒），只是让"重做"有机会改对。
+            if (failed("K02") || failed("K03") || failed("K05") || failed("K06") || failed("K17")) {
+                const std::string sheet = BuildIdCheatSheet(*db_);
+                log::Info("EXTRACT：重做附库内 id 速查表（{} 字节）", sheet.size());
+                exUser += sheet;
             }
         }
         // ★ S62：**优先走工具循环** —— 让模型自己用 `list_entities` / `get_entity` 查
@@ -653,9 +764,20 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
             // S8：把 extractor 的**完整** StateDiff 解出来（契约 `02` §2.5）—— 原先这里只取 summary，
             // 于是章节生成完**从不回写世界状态**（`07` 差距 07-1，本章不改变世界，长篇必崩）。
             if (novelcore::StateDiffFromJson(ej, diff)) {
-                if (diff.chapter_id <= 0) {
-                    diff.chapter_id = req.chapter_id;
+                // 🔴 S76：**`chapter_id` 必须无条件以"我们下发的"为准** —— 原先写的是
+                // `if (diff.chapter_id <= 0) diff.chapter_id = req.chapter_id;` ⇒ **模型给了就采信模型**。
+                // 真跑实证（2026-09-20）：`--novel-generate 16` 的结果被**提交到了第 17 章**
+                //（`chapters` 里 id16 停在 `review`、id17 变 `done`；`canon_logs` 的 target_id=17，
+                // 而盘上 `work/ch016/12_state_diff.json` 写的是 `chapter_id:16` ⇒ 说明**重做那一轮**
+                // 模型写了 17）。这**不是"模型写错字段"**，是**我们账错**：`chapter_id` 是调用方下发的
+                // 账务字段，模型没有资格决定"这一章的状态写进哪一章"。写错就是**跨章污染世界状态**，
+                // 而且下游 K 校验/快照都按错章号走，极难追。
+                if (diff.chapter_id != req.chapter_id) {
+                    log::Warn("EXTRACT：模型给的 chapter_id={} 与请求的 {} 不一致 —— 以**请求的**为准"
+                              "（账务字段不由模型决定）",
+                              diff.chapter_id, req.chapter_id);
                 }
+                diff.chapter_id = req.chapter_id;
                 // ★ S65b：**宽容读兜底** —— 模型仍把 `en:11` 的"序号 11"填进 `from_id`（真跑三轮实证；
                 // 提示词里已明写 `*_temp_id` 写法，但它不用）。这里只在"按字面解释**必然错**"时改写
                 //（库里 #11 不存在或 kind 不符，而本章又声明了 `en:11`）⇒ 不改变任何本来合法的语义，
@@ -735,6 +857,23 @@ std::expected<GenerateChapterResult, AgentError> NovelDirector::GenerateChapter(
         commit = novelcore::CommitChapterState(*db_, diff, cctx);
         if (commit.ok) {
             break;
+        }
+        // ★ S67b：**"空 diff 且未声明无变化"要重做** —— 它属于 G4，但**恰恰是重跑 extractor 有效的**
+        // 那一类（模型这次偷懒/没查库；真跑实证：第 9 章 0 次工具调用、直接吐全空 diff）。
+        // 原先的"非 G2 不重做"短路会把这一整章白废掉。
+        if (commit.diff_empty_undeclared) {
+            emptyDiffHint =
+                "\n\n【上一版是**全空 diff**（所有数组都是 `[]`），而本章正文明显有变化 —— 门禁直接拒了】\n"
+                "   · 要么把本章真正发生的事**补全**（`entities` / `characters` / `relationships` / "
+                "`items` / `events` / `foreshadows` / `knowledge` / `timeline` 里该有的都写上）；\n"
+                "   · 要么**显式**声明 `\"no_change_declared\": true`（此时所有数组必须为空）。\n"
+                "   两者只能选一个：**空数组 + `no_change_declared:false` = 一定被拒（G4）**。\n"
+                "   （需要知道库里有哪些实体/id，就用工具 `list_entities` / `get_entity` 自己查。）\n";
+            if (attempt >= maxValidateRetries) {
+                break;
+            }
+            ++result.validation_retries;
+            continue;
         }
         // 只有**机器校验**（G2 的 K01–K29）挡下才值得重做提取：G1（评审）/G3（快照）/G4（契约）
         // 类原因重跑 extractor 不会变好（`07` §2.3 的失败处理），别浪费调用。

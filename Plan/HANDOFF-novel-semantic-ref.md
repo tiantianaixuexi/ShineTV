@@ -1,0 +1,209 @@
+# 新会话交接 · 小说 Extractor「语义引用」重构（LLM 管语义 / SQLite 管 ID）
+
+> 起因：用户指出 —— **"如果 SQLite 才是权威数据源，提示词里没必要把 ID 规则写得这么死"**。
+> 目标：让**模型只负责语义**（谁 / 在哪 / 什么变化 / 新出现什么 / 关系建立结束），
+> **`*_id` 的解析、kind 匹配、存在性、外键全部由下游 SQLite 层做**。
+> 副产品：**K03 从"模型的负担"变成"解析器的自检"**；extractor 提示词可砍 **40–60%**。
+
+---
+
+## 0. 必读（按序，别重开设计讨论）
+
+1. `e:\c++\ShineTV\.codebuddy\memory\MEMORY.md` —— 长期记忆（**尤其 "架构规律" 那两条**）
+2. `.codebuddy/memory/2026-09-20.md`、`.codebuddy/memory/2026-09-21.md` —— S74–S84 全过程（含全部实测证据）
+3. 本文 §2 的"关键源码位置"（新会话最需要的就是这张表）
+
+## 1. 当前状态（2026-09-21 收工时）
+
+- 分支 `s62-extractor-agent-tools`；**1–20 章全部 `done`**（18 章）。
+- ⚠️ **ch16 挂在 `review` 状态** —— 它是"跨章污染 bug"（`chapter_id` 采信模型）的受害者，**需要重跑一次**。
+- ⚠️ **一大批改动尚未提交**（`git status`）：`CMakeLists/App/NovelCli/NovelPipeline/NovelChecks/NovelCommit(.h)/NovelGraph/NovelMcpTools/NovelDirector/AgentKit/ToolRegistry(.h)` + **新增 `NovelRepair.{h,cpp}`**。
+- 自检 **26 项全 ok**；`prompt_rule_version=18`。
+- 已建立的机制（**别拆掉**）：Anthropic 协议工具循环（`MakeLlmCreateRawAnthropic`）、契约规则 **D9/D10/D11**、
+  重做回灌 `commit.error`、`list_id_directory` 工具、锁库工具循环**预置默认关**（`SHINE_TOOL_PREFETCH=1` 才开）、
+  库级一致性扫描/修复 `NovelRepair`（R1–R9 + `--novel-repair`、MCP 的 `novel_consistency_report/repair`）。
+
+## 2. 关键源码位置（照这张表改，别到处找）
+
+| 关注点 | 位置 |
+|---|---|
+| extractor 系统提示词（**唯一来源**） | `src/agent/NovelDirector.cpp` `ExtractSystemPrompt()` |
+| 提示词组装（指令 = 本 agent 提示词 + 结尾"可用工具"行） | `src/agent/AgentKit.cpp` `BuildSystemPrompt()` |
+| Extractor 白名单（tools_json）+ outHint | `src/agent/AgentKit.cpp` `BuiltInAgents()` 的 `extract` 条目 |
+| 工具注册（白名单挂钩点 + `list_id_directory`） | `src/agent/AgentKit.cpp` `RegisterToolsFor()` / `AgentKit::Run()`（**在 Run 里按白名单 `Unregister`**） |
+| StateDiff 解析（含字符串引用回填） | `src/novel/NovelCommit.cpp` `StateDiffFromJson()` / `FillStringRefs()` / `IsTempIdLike()` |
+| 契约校验（D 规则） | `src/novel/NovelCommit.cpp` `ValidateStateDiff()`（**D9/D10/D11 都在这**） |
+| 引用解析（temp_id → 真 id） | `src/novel/NovelCommit.cpp` `ResolveRef()` / `CheckRef()`（14 块事务里逐块调用） |
+| 库级一致性规则 | `src/novel/NovelRepair.{h,cpp}`（R1–R9；**新规则加在这**） |
+| 提示词/规则版本（改了给 LLM 看的东西就要抬） | `src/novel/NovelChecks.cpp` 的 `prompt_rule_version` |
+| 原始请求落盘（排查用） | `SHINE_DUMP_LLM_REQ=<目录>` → `extract_req_NN_{instructions.txt,tools.json,messages.json}` |
+
+## 3. 铁律（这几条是 S74–S84 血泪换的，务必守住）
+
+1. **"落库时的守卫"必须有一条对应的契约规则**（否则"为什么被拒"到不了模型眼前，重做就是瞎改）。
+2. **歧义绝不静默猜**：解析多个候选时必须**拒**并列出候选 id。
+3. **别替模型伪造它的动作**（`SHINE_TOOL_PREFETCH` 那次：伪造 `assistant(function_call)` ⇒ 模型再也不调工具）。
+4. **提示词里只允许出现"模型当场能用到的东西"**（形状/字段清单/工具/规则）；
+   文档编号（`02 §2.5`）、事故史（"真跑实证…"）、悬空指涉（"下方清单"）一律留在**代码注释**里。
+5. **契约一收紧，自检 fixture 是第一波受害者**（D9 上线时 4 处 fixture 全中 —— 记得一起改）。
+6. **`event` 与"持续实体"要分开对待**（事件是"一次性实例"，名字还是代码生成的 `"ch{} 事件"`）。
+
+## 3.5 核心决策（用户 2026-09-21 修正 —— **这一节优先于本文其它描述**）
+
+### `entity_names` 是「名字 → 实体候选」的**解析层**，**不是实体身份**
+
+❌ **不要**把 `UNIQUE(kind, name_norm)` 当成实体唯一性的最终规则 —— 那会让"数据库替你决定两个李默是不是同一个人"，
+以后真要两个同名实体时**得跟约束打架**。⇒ 表里**只建索引，不建 UNIQUE**：
+
+```sql
+entity_names(
+  entity_id, kind, name, name_norm,   -- name_norm：去空白 / 全角→半角 / 小写
+  is_primary, created_chapter, alias_of
+)
+-- 索引：INDEX(kind, name_norm)；**不要 UNIQUE**
+```
+
+resolver 查到**多个候选**时返回**候选列表**（`李默 → #43 / #108`），由**上下文/规则/人**决定，而不是数据库替你决定。
+
+### 四种情况的处理（这是"候选去重策略"，不是"数据库语义约束"）
+
+| 情况 | 处理 |
+|---|---|
+| **同一实体重复声明**（如 `撑伞人影` #43/#108 确为同一角色） | **复用**已有 entity（`reuse_entity`） |
+| **不确定是不是同一个** | **绝不自动合并** ⇒ 进"候选 / 待确认"（R10 报告） |
+| **明确是两个同名实体**（两个"李默"） | **新建** entity，用 `alias` / `display_name` 区分 |
+| **事件** | **不用名字去重** —— 用事件自己的唯一键/来源定位（`DedupByPersistentName()` 已排除 `event`） |
+
+⚠️ 由此推出：**S84 的"同名 ⇒ 无条件复用"必须补一个"显式新建"通道**
+（否则模型想建"第二个李默"会被复用掉）。候选新建的表达方式在 T3 定。
+
+### 保留 `entity_ref` 与 `temp_id` 的**语义区别**（这个边界值得留）
+
+```jsonc
+{"entity_ref": "撑伞人影", "kind": "person"}   // = 我认为这是**库里已存在的**哪个实体
+{"temp_id":    "谭工",     "kind": "person"}   // = 我在**本章新建**的实体
+```
+⇒ StateDiff 因此能**自解释**（"引用的" vs "新建的"一眼可分），resolver 的语义也干净。
+`en:` / `ev:` 前缀**去掉**（引入 `entity_ref` 后它没有任何价值）。
+
+### 优先级（用户修正后的顺序）
+
+> **① entity_ref + SQLite resolver**（架构收益最大：把 LLM 从 ID 管理里解放出来）
+> **② R10 历史重复诊断**（摸清脏数据，**不急着自动合并**）
+> **③ entity_names / alias**（做好扩展点，**现在别复杂化** —— 已知库里还没有合法同名实例）
+> **④ 事件唯一化**（数据清洁，**不阻挡前三件事**）
+
+## 4. 计划表（一次做一个 T，做完就 build + 自检 + 记录）
+
+> ⚠️ **执行顺序按 §3.5 的优先级**（T1 → T3 → T2 → T4/T5 → T6；T2 事件唯一化排最后），
+> 并且 T1 起就必须按 §3.5 的三条修正来实现（**不加 UNIQUE / 多候选返回列表 / 保留 `entity_ref`↔`temp_id` 边界**）。
+
+### T0 收尾（先做）
+- 提交现有改动（S67b–S84）；**重跑 ch16** 使其 `done`。
+- 判据：`chapters` 1–20 全 `done`；`git status` 只剩 `runtime/`（测试产物，不入库）。
+
+### T1 语义引用解析器（**核心**）
+- `ResolveRef` / `FillStringRefs` 扩展：**`*_ref` 通道（`entity_ref`/`location_ref`/…）**接受
+  **① 本章 temp_id ② 实体名字 ③ 数字 id（兼容）**；**`temp_id` 与 `entity_ref` 语义不同**（§3.5）。
+  名字匹配 = **同 kind + 归一化名字**（去空白、全角→半角、小写）。
+  ⚠️ 过渡期可先复用现有 `*_temp_id` 字段承载"名字"，**T4 再正式引入 `entity_ref`**（避免一次改两处）。
+- 五分支决策树（用户拍板，见 §3.5）：数字 id ⇒ 用；本章 `temp_id` ⇒ 用；纯数字字符串 ⇒ 当 id；
+  名字 ⇒ **唯一命中复用 / 多候选拒 + 列表 / 零候选拒（"要新建请进 entities[]"）**；**同名但 kind 不符 ⇒ 拒**。
+- 自检断言（加在 `RunCommitSelfCheck`）：唯一命中复用 / 重名拒 + 候选 / 未命中拒 / kind 不符拒。
+- 判据：自检 0 fail；**不动提示词**也能跑通一章（兼容验证）。
+
+#### ✅ T1 已完成（2026-09-21，尚未提交）
+- **代码**（全在 `src/novel/NovelCommit.cpp`）：
+  - `NormalizeRefName`（去空白 + 全角空格 + ASCII 小写）、`EntityNameIndex`（**库内名字索引：只建 map、无 UNIQUE、排除 `event`**）、
+    `RefCtx` / `ResolveRefFull`（**五分支决策树**）/ `RefFail`（失败报文，歧义时带候选列表）；
+  - 门禁 `CheckRef` 改为**也认名字**（`RefGate`：本章 temp_id / 本章新建名字 / 库内名字），
+    并在 `ValidateStateDiff` 为每列传**期望 kind**（`characters[].entity_id`=person、`items[].owner_id`=person、
+    `items[].item_id`=item、`location`=location、关系端点/参与者=不限）；
+  - `FillStringRefs`：从"只认 `前缀:数字`"改为**原样收下名字**（`*_id` 里写字符串、或新增 `*_ref` 键，都收）。
+- **堵了一个后门**：`characters[]` 的 reason / D4 检查原先遇 `entity_id<=0` 直接 `continue` ⇒ "用名字"会绕过它；
+  现在**先把名字解析成真实 id 再检查**。
+- **顺手修**：`items[].op="lose"` 的持有者解析不到时，原先 `owner_id=0` 的 UPDATE 匹配不到任何行 ⇒
+  **静默无操作**（比报错更坏）；改为**拒提交**。
+- **自检**：`commit:ok`、**0 fail**；新增 ⑧f 四条断言全绿，报文正是 §3.5 的口径，例如
+  `「S65新人物」**有歧义** ⇒ #8（第1章 person「S65新人物」） / #11（第1章 person「S65新人物」）。…系统不按"最近出现"替你猜`。
+- **兼容判据**：**不动提示词**、在真实库 `rain-signal-clean` 上跑 **第 16 章 ⇒ 提交成功**
+  （`RepairLlmJson=0 / 归一化 0 / TLS 0`）⇒ 模型仍走 id/temp_id 老路 **零回归**（`chapters` 1–20 现全 `done`）。
+- ⚠️ **遗留（按计划留给 T3/T4）**：**显式新建通道**（`entities[]` 中"即使同名也新建"）与 `entity_names` 表未做；
+  `*_ref` 键已能收，但**提示词还没教模型用名字**（T4/T5 一起做，`prompt_rule_version` 抬到 19）。
+
+### T2 事件名唯一化 + 历史脏名
+- 事件 name 由 `"ch{} 事件"` 改为**含序号唯一**（如 `ch18 事件#3`）。
+- 历史 `ch1 事件`×11 等：**写成 `NovelRepair` 的一条规则（R11）报告 + 给改名 SQL**，不手改库。
+- 判据：`NovelRepair` 扫描 R11 归零。
+
+### T3 R10：同名同 kind 重复实体（**报告 + 合并方案，不自动并**）
+- 现状实测：**7 组**（`撑伞人影` #43/#108、`旧信号塔·塔顶灯室` ×3、`备用信号机` ×2 …）。
+- 报告含：两边 id/created_chapter/summary + 各挂多少关系/出场（用于人工判断"是不是同一个人"）。
+- ⚠️ **不加后缀、不自动合并** —— 加后缀会把"同一个人的重复声明"变成两个名字（更割裂）；
+  自动并会误伤"真·同名的两个人"。
+- **同时建 `entity_names`（§3.5 的表：无 UNIQUE、只建索引 + `alias_of`）**，并给 S84 的"同名复用"补上
+  **显式新建通道**（模型要建"第二个李默"时不被复用掉）。
+- 判据：7 组都能列出来；合并 SQL 交用户确认后执行。
+
+#### ✅ T3 已完成（2026-09-21，尚未提交）—— 用户 6 条验收标准**全过**
+
+**T3a（R10 只读诊断）**
+- `NovelRepair` 新增 **R10 `entity_duplicate_name`**（`severity=warn`、`fixable=false`）：**只查同 kind** +
+  **同 `name_norm`**；报告每份的 `id / created_chapter / 关系数 / 出场章数 / 知情数 / summary`，
+  `suggest` 只给"**不自动 merge**、请人工确认后自行执行 merge SQL + 候选 id 列表"。
+- 🔑 **归一化口径唯一**：新增 `src/novel/NovelNames.h`（`NormalizeEntityName` / `TrimEntityRef`），
+  resolver（`NovelCommit`）、R10（`NovelRepair`）、`entity_names.name_norm`（`NovelDb`/`NovelGraph`）
+  **全部调它** —— 不再"SQL 一套、C++ 一套"。
+- 自检新增 6 条断言（同 kind 命中、**带空格也归一化命中**、**同名的 location 不进组**、`fixable=false`、
+  `--apply` 一条不修、两行都还在）⇒ 全 PASS。
+- 真库实测：R10 报出 **3 组**（`item 备用信号机 #52/#159`、`location 旧信号塔·塔顶灯室 #59/#76/#134`、
+  `person 撑伞人影 #43/#108`，证据含"关系 8/出场 8 vs 关系 2/出场 2"）；`--apply` 后实体总数 **199 不变、
+  7 行逐字未动**（验收 1–3 ✅）。
+
+**T3b（`entity_names` + `force_new`）**
+- 新表 `entity_names`（v13，`ApplyCanonicalSchema` 里建）：`(entity_id, kind, name, name_norm, is_primary,
+  created_chapter, alias_of)`，**只建索引、故意不建 UNIQUE**；`alias_of reserved; semantics not implemented`。
+- `EnsureEntityNames()` **回填**（幂等，C++ 侧算 `name_norm`）：真库首次补 **199 行**；
+  `UpsertEntity` 写入时维护主名行 ⇒ 自检断言 **`is_primary=1` 行数 == `entities` 行数**（验收 4 ✅）。
+- `UpsertEntity` 的复用判定改为**归一化名**比对（带"精确名"兜底）⇒ `旧信号塔` 与 `旧信号塔␠` 不再建两份。
+- **`force_new`**：`EntityRow` / `NewEntityDelta` 各加一个字段（C++26 静态反射自动成为 JSON 键
+  `force_new`）；`entities[]` 带它 ⇒ **明知同名也新建**，并记
+  `audit_logs(action='force_new_entity', detail='… new_id=N conflict_ids=[…]')`（验收 5 ✅）。
+- 顺带堵洞：`RefCtx.chapterNames` 由 `name → id` 改为 `name → id **列表**` ⇒ 同一章声明两个同名实体
+  再按名字引用时**拒**（不悄悄取最后一个）。
+- 自检断言：归一化同名复用 / `force_new` 新建出第二个同名人 / 镜像一致 / audit 存在 /
+  **`force_new` 能从 JSON 反射进来**（模型的真实入口）⇒ 全 PASS（验收 5 ✅）。
+- 验收 6（歧义必须拒绝、不自动猜）由 T1 的 ⑧f(b) 覆盖 ✅。
+
+### T4 契约：`entity_ref`（名字引用）+ 去 `en:`/`ev:` 前缀
+- 新增/等价复用：引用字段可用**名字**；`temp_id` 保留但**不要求前缀**（旧的 `en:x` 继续兼容）。
+- 提示词同步改（**T5 一起做**）；`prompt_rule_version` 抬到 **19**。
+- 判据：提示词示例里**不出现任何数字 id**；跑一章 K03=0。
+
+### T5 提示词大砍（砍 40–60%）
+- 删：ID 类型规则 / K03 说明 / `list_id_directory` 用法 / "0 不能填" / "temp_id 序号不是 id" 等段落。
+- 压成一句原则：
+  > **模型不生成数据库 ID。** 已有实体用**名字**引用；新实体用 `temp_id`（仅本次 StateDiff 内部关联）。
+  > 数据库 ID、存在性、kind 匹配、外键由**下游解析**。
+- 判据：`instructions` 字节数下降 ≥ 40%（当前 7117 字节）；`SHINE_DUMP_LLM_REQ` 落盘自查无 §/文档编号/事故史。
+
+### T6 A/B 验证（**终局判据**）
+- 对照：取一章**已 done** 的旧章重跑（`--novel-generate <id>`），比：`K03 次数 / 契约 D 触发 / 重做次数 / instructions 字节`。
+- 再跑 `--novel-run auto --max 20`：**无硬停**（S1/S4 不触发）；`NovelRepair` R1–R11 干净。
+- 注意：`auto` 模式的前置门禁已实测满足（N1–N14 全过）。
+
+## 5. 风险与对策（诚实记录）
+
+| 风险 | 对策 |
+|---|---|
+| 模型写名字变体（`林澈` vs `林澈（主角）`） | 解析**拒**（不静默错）＋重做时**回灌候选名单**（机制现成） |
+| 同名但**不同人**（如两个"李默"） | 解析**拒**并要模型给可区分的名字；将来再上 `entity_names(kind,name_norm) UNIQUE` + alias（**现在库里没有这种实例，别过度设计**） |
+| 事件被误按名字去重 | 已用 `DedupByPersistentName()` 排除 `event`；**别把它打开** |
+| 提示词大砍后行为回退 | 一次只砍一类，砍完立刻跑一章对照；`prompt_rule_version` 每次抬 |
+
+## 6. 禁止
+
+- 一次性做完 T1–T6（一次一个 T，做完就验证）。
+- 手改真实库（一律走 `NovelRepair` 规则或给出 SQL 交用户确认）。
+- 把"事实"塞进 prompt（`00` §2 总纲 / S48 / S62 的教训）；事实要**给工具**或**由系统预置为工具结果**。
+- 用 `tool_choice` 强制工具调用（该端点不支持，见 2026-09-20 记忆）。

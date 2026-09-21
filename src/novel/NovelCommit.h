@@ -35,6 +35,11 @@ struct NewEntityDelta {
     std::string summary;
     std::string status = "active";
     RowId created_chapter = 0;
+    // ★ T3b：**显式新建**（默认 false = 走"同名复用"的默认策略）。
+    // `true` 的语义是"**我知道库里有同名实体，我就是要再建一个**"（如"第二个李默"）。
+    // ⇒ 跳过复用、直接 INSERT，并记 `audit_logs(action='force_new_entity')`。
+    // 不填 ⇒ 同名时**复用**（不新建）；**也不报错**（模型没有义务先查库）。
+    bool force_new = false;
 };
 
 // ★ S65：**引用字段一律"二选一"** —— `*_id` 填**已存在**的库 id；如果指向的是**本章
@@ -281,6 +286,9 @@ struct CommitResult {
     // 拿它驱动 `09` §2.2 的 S1（同章同 check_id 连续失败）与「回到产出阶段重做」。
     std::string checks_describe;
     std::vector<std::string> failed_check_ids;
+    // ★ S67b：**空 diff 且未声明无变化**（G4 失败里唯一"重跑 extractor 有效"的一类）。
+    // 调用方（`NovelDirector`）据此重做一次，而不是按"非 G2 不重做"直接放弃这一章。
+    bool diff_empty_undeclared = false;
 };
 
 // 提交一章的状态回写（14 块事务；任一步失败 → ROLLBACK，库回到提交前）

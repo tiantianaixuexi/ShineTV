@@ -56,6 +56,17 @@ namespace {
 
 } // namespace
 
+// ★ S75：按名字摘掉（白名单收窄用，见 `AgentKit::Run`）
+bool ToolRegistry::Unregister(std::string_view name) {
+    for (auto it = tools_.begin(); it != tools_.end(); ++it) {
+        if (*it && (*it)->Name() == name) {
+            tools_.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
 void ToolRegistry::Register(std::unique_ptr<Tool> tool) {
     if (tool) {
         tools_.push_back(std::move(tool));
@@ -182,6 +193,66 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
     if (tjson) std::free(tjson);
     yyjson_mut_doc_free(tdoc);
 
+    // ★ S78：**首轮预置"权威 id 目录"** —— 由**系统**先替模型调一次 `list_id_directory`，把结果作为
+    // **第一轮的工具结果**放进对话。这不是"往 prompt 里塞数据"（S62 试过并回退），也不是改措辞 ——
+    // 而是**系统执行、AI 消费**：模型一开口就已经看到"库里有哪些 kind、各自 id 是多少"。
+    // 依据（真跑实证）：模型**经常一次工具都不调**（第 15/18 章 `工具调用 0 次`）却照样往 `*_id`
+    // 字段里填数字 ⇒ 把事实在它开口前摆好，K03 一类失败自然下降。
+    // ⚠️ 只对"注册表里真给了这个工具"的 agent 生效（白名单已收窄：没给它就没有这一步）。
+    const auto appendItem = [](std::string& h, const std::string& item) {
+        if (!h.empty() && h.back() == ']') {
+            h.pop_back();
+            if (h.size() > 1 && h[h.size() - 1] == '[') {
+                h += item;
+            } else {
+                h += ",";
+                h += item;
+            }
+            h += "]";
+        }
+    };
+    {
+        bool hasDirTool = false;
+        for (const std::string& n : reg.Names()) {
+            if (n == "list_id_directory") {
+                hasDirTool = true;
+                break;
+            }
+        }
+        // ⚠️ S81：**默认关闭**（实测：开了它反而让模型"一次工具都不调"）。
+        // 🔴 真跑 A/B（同一套机制、同一模型、相邻两章）：
+        //   预置 **ON**  → `工具调用 0 次`（第 18 章连续三次），要 1–2 轮重做才勉强提交；
+        //   预置 **OFF** → `工具调用 1 次`，**一次过、直接提交**（第 19 章）。
+        // 原因（用户先怀疑、实测确认）：我们伪造了一条 `assistant(function_call list_id_directory)`
+        // 记录塞进对话 ⇒ 模型读到"**我已经查过了**" ⇒ **它就不再自己调工具了**。
+        // ⇒ **伪造 assistant 轮 = 教会模型"不用查"**。教训：**别替模型伪造它的动作** ——
+        //    事实可以预置（放进工具结果/上下文），但**不能伪装成"它自己调用过"**。
+        // 保留开关 `SHINE_TOOL_PREFETCH=1` 仅供对照实验（默认关）。
+        if (!(std::getenv("SHINE_TOOL_PREFETCH") != nullptr &&
+              *std::getenv("SHINE_TOOL_PREFETCH") == '1')) {
+            hasDirTool = false;
+        }
+        if (hasDirTool) {
+            yyjson_doc* adoc = yyjson_read("{}", 2, 0);
+            auto prefetched =
+                reg.Execute("list_id_directory", adoc ? yyjson_doc_get_root(adoc) : nullptr);
+            if (adoc) {
+                yyjson_doc_free(adoc);
+            }
+            if (prefetched) {
+                const std::string resultJson = ValToJson(yyjson_doc_get_root(*prefetched));
+                yyjson_doc_free(*prefetched);
+                appendItem(history,
+                           fmt::format(
+                               R"({{"type":"function_call","call_id":"prefetch_dir","name":"list_id_directory","arguments":"{{}}"}})"
+                               R"(,{{"type":"function_call_output","call_id":"prefetch_dir","output":{}}})",
+                               util::json::JsonQuote(resultJson)));
+                log::Info("工具循环：**系统预置** list_id_directory 结果（{} 字节；模型未调用即已可见）",
+                          resultJson.size());
+            }
+        }
+    }
+
     for (int iter = 0; iter < ToolRegistry::kMaxToolCalls + 2; ++iter) {
         auto resp = create(instructions, history, toolsJson);
         if (!resp) {
@@ -281,17 +352,8 @@ RunToolLoop(ToolRegistry& reg, std::string_view instructions, std::string_view u
                 R"(,{{"type":"function_call_output","call_id":"{}","output":{}}})",
                 callId, name, util::json::JsonQuote(argsStr.empty() ? "{}" : argsStr), callId,
                 util::json::JsonQuote(resultJson));
-            // history 是 [...]
-            if (!history.empty() && history.back() == ']') {
-                history.pop_back();
-                if (history.size() > 1 && history[history.size() - 1] == '[') {
-                    history += item;
-                } else {
-                    history += ",";
-                    history += item;
-                }
-                history += "]";
-            }
+            // history 是 [...]（追加逻辑与上面的预置共用 `appendItem`，只此一份）
+            appendItem(history, item);
         }
         yyjson_doc_free(doc);
     }

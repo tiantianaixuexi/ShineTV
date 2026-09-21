@@ -52,6 +52,11 @@ struct EntityRow {
     std::string meta_json = "{}";
     RowId created_chapter = 0;
     std::int64_t updated = 0;
+    // ★ T3b：**显式新建**（决策树最后一支：明确声明 new ⇒ 即使同名也 create）。
+    // 只在 `id<=0`（新建）时有意义：跳过"同 kind + 同名（归一化）⇒ 复用"的**默认策略**。
+    // ⚠️ 同名是**高风险操作** ⇒ `UpsertEntity` 会写一条
+    //    `audit_logs(action='force_new_entity', … new_id=… conflict_ids=[…])`（半年后能查清来历）。
+    bool force_new = false;
 };
 
 struct RelationRow {

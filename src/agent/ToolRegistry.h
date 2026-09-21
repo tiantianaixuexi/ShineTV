@@ -34,6 +34,9 @@ class ToolRegistry {
 public:
     void Register(std::unique_ptr<Tool> tool);
     void Clear() noexcept;
+    // ★ S75：按名字移除 —— 用于**白名单收窄**（`AgentKit::Run` 里把不在 `agent_defs.tools_json`
+    // 里的工具摘掉）。原先工具循环把注册了的全导给模型，白名单形同虚设。
+    [[nodiscard]] bool Unregister(std::string_view name);
 
     [[nodiscard]] yyjson_mut_val* ExportOpenAiTools(yyjson_mut_doc* doc) const;
 

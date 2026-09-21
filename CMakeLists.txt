@@ -324,6 +324,7 @@ add_executable(ShineTVStudio WIN32
   src/novel/NovelCommit.cpp
   src/novel/NovelRunLoop.cpp
   src/novel/NovelChecks.cpp
+  src/novel/NovelRepair.cpp
   src/novel/NovelStageLedger.cpp
   src/novel/NovelInit.cpp
   src/novel/NovelContinuity.cpp

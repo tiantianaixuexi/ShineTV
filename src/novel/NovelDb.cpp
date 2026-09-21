@@ -1,5 +1,7 @@
 #include "novel/NovelDb.h"
 
+#include "novel/NovelNames.h" // T3b：`entity_names.name_norm` 与 resolver/R10 **同一份**归一化
+
 #include "core/Log.h"
 #include "util/Encoding.h"
 #include "util/Time.h"
@@ -785,6 +787,27 @@ CREATE TABLE IF NOT EXISTS audit_logs(
 
 } // namespace
 
+// ★ T3b（v13）：`entity_names` —— **名字索引层**（"名字 → 实体候选"），**不是实体身份**。
+// 语义（用户 2026-09-21 拍板）：
+//   · 同一 `(kind, name_norm)` **允许多行** ⇒ **故意不建 UNIQUE**。"同名 ⇒ 复用"只是 resolver 的
+//     **候选去重策略**，不是数据库语义上的绝对约束（否则以后真要"两个李默"就得跟约束打架）；
+//   · `is_primary=1` = 该实体的**当前主名**（`entities.name` 的镜像，由 `EnsureEntityNames` 回填 +
+//     `UpsertEntity` 写入时维护）；`is_primary=0` 留给**别名**（本 S **不实现**语义，只留列）；
+//   · `alias_of reserved; semantics not implemented` —— 别看到这一列就去写半成品 alias 逻辑。
+constexpr std::string_view kSchemaV13EntityNames = R"SQL(
+CREATE TABLE IF NOT EXISTS entity_names(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  name_norm TEXT NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 1,
+  created_chapter INTEGER NOT NULL DEFAULT 0,
+  alias_of INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_entity_names_norm ON entity_names(kind, name_norm);
+CREATE INDEX IF NOT EXISTS idx_entity_names_entity ON entity_names(entity_id);
+)SQL";
+
 NovelDb& NovelDb::Instance() noexcept {
     static NovelDb inst;
     return inst;
@@ -794,11 +817,58 @@ std::expected<void, DbError> NovelDb::ExecAll(std::string_view sql) {
     return db_.Exec(sql);
 }
 
+// ★ T3b：`entity_names` **回填**（幂等）—— 给"还没有主名行"的实体补一行 `is_primary=1`。
+// 为什么必须回填：这张表是"名字 → 实体候选"的**索引层**（`entities.name` 的镜像 + 未来的别名层）。
+// 建表之前就存在的老实体没有对应行 ⇒ 按"缺就补"逐个插；`name_norm` 用 **`NormalizeEntityName()`**
+// （与 resolver / R10 **同一份**实现 —— 绝不在 SQL 里另写一套 lower/replace，否则口径一定漂）。
+// ⚠️ **幂等**：已有 `is_primary=1` 行的实体一律跳过 ⇒ 每次开库都调也不会重复插
+//    （K23 那个"seed 每次刷新导致哈希漂移"的教训）。
+void NovelDb::EnsureEntityNames(db::sqlite::Database& db) {
+    struct Miss {
+        RowId id = 0;
+        std::string kind;
+        std::string name;
+        RowId chapter = 0;
+    };
+    std::vector<Miss> missing;
+    if (auto st = db.Prepare("SELECT e.id,e.kind,e.name,e.created_chapter FROM entities e "
+                             "WHERE NOT EXISTS(SELECT 1 FROM entity_names n "
+                             "                 WHERE n.entity_id=e.id AND n.is_primary=1) "
+                             "ORDER BY e.id")) {
+        while (true) {
+            auto s = st->Step();
+            if (!s || *s != db::sqlite::StepResult::Row) {
+                break;
+            }
+            missing.push_back(Miss{st->ColumnInt(0), st->ColumnText(1), st->ColumnText(2),
+                                   st->ColumnInt(3)});
+        }
+    }
+    if (missing.empty()) {
+        return;
+    }
+    for (const Miss& m : missing) {
+        auto ins = db.Prepare("INSERT INTO entity_names(entity_id,kind,name,name_norm,is_primary,"
+                              "created_chapter,alias_of) VALUES(?1,?2,?3,?4,1,?5,0)");
+        if (!ins) {
+            log::Warn("entity_names：回填失败 {}", ins.error().message);
+            return;
+        }
+        (void)ins->BindInt(1, m.id);
+        (void)ins->BindText(2, m.kind);
+        (void)ins->BindText(3, m.name);
+        (void)ins->BindText(4, NormalizeEntityName(m.name));
+        (void)ins->BindInt(5, m.chapter);
+        (void)ins->Step();
+    }
+    log::Info("entity_names：回填 {} 行主名索引（幂等；镜像 `entities`）", missing.size());
+}
+
 std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database& db) {
     // 与 `Migrate()` 的**表 DDL 段**共用同一批常量 —— 别再各抄一份（本函数就是为此而存在）
     constexpr std::string_view kParts[] = {kSchemaV3,        kSchemaV4Visual, kSchemaV5Agents,
                                           kSchemaV6ImageGen, kSchemaV7VisualArtifacts,
-                                          kSchemaV9PromptArtifacts};
+                                          kSchemaV9PromptArtifacts, kSchemaV13EntityNames};
     for (const std::string_view sql : kParts) {
         if (auto r = db.Exec(sql); !r) {
             return r;
@@ -810,6 +880,7 @@ std::expected<void, DbError> NovelDb::ApplyCanonicalSchema(db::sqlite::Database&
     // ⚠️ 漏了它的后果是真跑才发现的：`stages` 自检整段失败（"no such table: stage_artifacts"），
     //    因为该自检走的就是 `ApplyCanonicalSchema`。
     EnsureStageArtifactsTable(db);
+    EnsureEntityNames(db); // T3b（v13）：`entity_names` 回填（幂等）
     return NovelFields::EnsureSchema(db);
 }
 

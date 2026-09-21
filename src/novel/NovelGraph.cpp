@@ -1,5 +1,11 @@
 #include "novel/NovelGraph.h"
 
+#include "novel/NovelNames.h" // T3b：归一化口径唯一来源（与 resolver / R10 同源）
+
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "core/Log.h"
 #include "util/Reflect.h" // 快照载荷（EntitySnapshot）走反射序列化
 #include "util/Time.h"
@@ -19,6 +25,14 @@ namespace {
 
 [[nodiscard]] DbError Err(std::string_view msg) { return DbError{0, std::string{msg}}; }
 
+// ★ S84：**哪些 kind 该按名字去重** —— "持续存在的实体"（人物/地点/物品/势力/规则…）。
+// ⚠️ **排除 `event`**：事件是"**一次性实例**"，而且它的名字是**我们自动生成的** `"ch{} 事件"`
+//（库里已经 `ch1 事件`×11）⇒ 按名字去重会把整章事件**塌成一行**。事件那边的正确做法是
+// **把名字变唯一**（或只用它做显示名），而不是去重。
+[[nodiscard]] bool DedupByPersistentName(std::string_view kind) {
+    return kind != "event";
+}
+
 // 自检用最小 schema（列名与 v3 对齐）
 } // namespace
 
@@ -33,6 +47,32 @@ EntityRow NovelGraph::ReadEntity(db::sqlite::Statement& st) const {
     e.created_chapter = st.ColumnInt(6);
     e.updated = st.ColumnInt(7);
     return e;
+}
+
+// ★ T3b：`entity_names` 的"主名行"维护（**幂等**：该实体已有主名行就不重复插）。
+// 与 `entities.name` **镜像**（自检断言：`entity_names` 里 `is_primary=1` 的行数 == `entities` 行数）。
+void EnsurePrimaryNameRow(db::sqlite::Database& db, RowId entityId, std::string_view kind,
+                          std::string_view name, RowId createdChapter) {
+    auto q = db.Prepare("SELECT COUNT(*) FROM entity_names WHERE entity_id=?1 AND is_primary=1");
+    if (!q) {
+        return;
+    }
+    (void)q->BindInt(1, entityId);
+    if (auto s = q->Step(); s && *s == db::sqlite::StepResult::Row && q->ColumnInt(0) > 0) {
+        return;
+    }
+    auto ins = db.Prepare("INSERT INTO entity_names(entity_id,kind,name,name_norm,is_primary,"
+                          "created_chapter,alias_of) VALUES(?1,?2,?3,?4,1,?5,0)");
+    if (!ins) {
+        log::Warn("entity_names：写主名行失败 {}", ins.error().message);
+        return;
+    }
+    (void)ins->BindInt(1, entityId);
+    (void)ins->BindText(2, kind);
+    (void)ins->BindText(3, name);
+    (void)ins->BindText(4, NormalizeEntityName(name)); // 口径唯一：`NovelNames.h`
+    (void)ins->BindInt(5, createdChapter);
+    (void)ins->Step();
 }
 
 std::expected<RowId, DbError> NovelGraph::UpsertEntity(const EntityRow& row) {
@@ -59,6 +99,70 @@ std::expected<RowId, DbError> NovelGraph::UpsertEntity(const EntityRow& row) {
         (void)LogAudit("agent", "upsert_entity", row.kind, row.id, row.name);
         return row.id;
     }
+    // ★ S84 + T3b：**同 kind + 同名（归一化）⇒ 复用已有实体**（治本 —— 这是"名字当引用键"的前提）。
+    // 🔴 真跑实证：`撑伞人影` 被第 5 章与第 10 章**各新建一行**（#43 / #108）——
+    //    关系 8 vs 2、出场 12 vs 5 ⇒ **同一个角色的状态被割裂**，而 K01–K29 与一致性扫描**都没管它**。
+    // 规矩（T3b 起）：
+    //   · 命中 ⇒ **复用**（不新建）；**不静默** —— 日志 + audit 各记一条；
+    //   · **显式新建**（`force_new=true`）⇒ 明知同名也建（"两个李默"是**真实的写作需求**），
+    //     并记 `audit_logs(action='force_new_entity', … conflict_ids=[…])` —— 同名是**高风险操作**，
+    //     半年后必须能查清这个新 id 的来历（模型误造？作者要求？迁移产生？）；
+    //   · 想建同名却不写 `force_new` ⇒ 被**复用**（**不报错**：模型没有义务先查库）；
+    //   · 事件等"一次性实例"不在其列（见 `DedupByPersistentName`）。
+    // ⚠️ 比对用**归一化名**（`NormalizeEntityName`，与 resolver / R10 **同一份**）⇒
+    //    `旧信号塔` 与 `旧信号塔␠`（尾空格）不会再被建成两份（而 R10 又说它们同名 —— 那就自相矛盾了）。
+    std::string forceNewConflicts;
+    if (row.id <= 0 && DedupByPersistentName(row.kind)) {
+        std::vector<std::pair<RowId, int>> cand; // (id, created_chapter)
+        if (auto st = db_->Prepare("SELECT n.entity_id,n.created_chapter FROM entity_names n "
+                                   "WHERE n.kind=?1 AND n.name_norm=?2 ORDER BY n.entity_id")) {
+            (void)st->BindText(1, row.kind);
+            (void)st->BindText(2, NormalizeEntityName(row.name));
+            while (true) {
+                auto s = st->Step();
+                if (!s || *s != db::sqlite::StepResult::Row) {
+                    break;
+                }
+                cand.emplace_back(st->ColumnInt(0), static_cast<int>(st->ColumnInt(1)));
+            }
+        }
+        if (cand.empty()) {
+            // 兜底：名字索引行缺失的库（老库还没回填 / 有写入方绕过本函数）⇒ 退回**精确名**比对
+            if (auto st = db_->Prepare("SELECT id,created_chapter FROM entities WHERE kind=?1 AND "
+                                       "name=?2 ORDER BY id")) {
+                (void)st->BindText(1, row.kind);
+                (void)st->BindText(2, row.name);
+                while (true) {
+                    auto s = st->Step();
+                    if (!s || *s != db::sqlite::StepResult::Row) {
+                        break;
+                    }
+                    cand.emplace_back(st->ColumnInt(0), static_cast<int>(st->ColumnInt(1)));
+                }
+            }
+        }
+        if (!cand.empty() && row.force_new) {
+            for (std::size_t i = 0; i < cand.size(); ++i) {
+                if (i) {
+                    forceNewConflicts += ",";
+                }
+                forceNewConflicts += std::to_string(cand[i].first);
+            }
+            log::Info("实体「{}」（kind={}）**显式新建**（force_new）—— 库内已有同名 {} 个（#{}）",
+                      row.name, row.kind, cand.size(), forceNewConflicts);
+        } else if (!cand.empty()) {
+            const RowId existing = cand.front().first;
+            log::Info("实体「{}」（kind={}）库内已有 #{}（第 {} 章建）⇒ **复用，未新建**"
+                      "（本次 summary：{}）",
+                      row.name, row.kind, existing, cand.front().second,
+                      row.summary.empty() ? "（空）" : row.summary);
+            (void)LogAudit("agent", "reuse_entity", row.kind, existing,
+                           fmt::format("同名复用：{}（本次 created_chapter={}）", row.name,
+                                       row.created_chapter));
+            EnsurePrimaryNameRow(*db_, existing, row.kind, row.name, row.created_chapter);
+            return existing;
+        }
+    }
     auto st = db_->Prepare(
         "INSERT INTO entities(kind,name,summary,status,meta_json,created_chapter,updated)"
         " VALUES(?1,?2,?3,?4,?5,?6,?7)");
@@ -75,6 +179,14 @@ std::expected<RowId, DbError> NovelGraph::UpsertEntity(const EntityRow& row) {
     }
     const auto id = db_->LastInsertRowId();
     (void)LogAudit("agent", "insert_entity", row.kind, id, row.name);
+    // ★ T3b：维护**名字索引**（主名行）—— 与 `entities` 镜像一致（自检断言两者行数相等）
+    EnsurePrimaryNameRow(*db_, id, row.kind, row.name, row.created_chapter);
+    // ★ T3b：**显式新建**的审计（同名是高风险操作；语义见 `NovelTypes.h` 的 `EntityRow::force_new`）
+    if (row.force_new && !forceNewConflicts.empty()) {
+        (void)LogAudit("agent", "force_new_entity", row.kind, id,
+                       fmt::format("force_new_entity: kind={} name={} new_id={} conflict_ids=[{}]",
+                                   row.kind, row.name, id, forceNewConflicts));
+    }
     return id;
 }
 
