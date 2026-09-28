@@ -155,10 +155,28 @@ class ProjectCard final : public widgets::Card {
 
 ProjectHubView::ProjectHubView(shine::project::ProjectService* svc, QWidget* parent)
     : QWidget(parent), svc_(svc) {
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(theme::space::kSteps[7], theme::space::kSteps[6],
-                             theme::space::kSteps[7], theme::space::kSteps[6]);
+    // webui views.css .hub-inner：max-width 1080 居中 + padding 40 32 60。
+    // 这里用外层铺满 + 内层定宽居中的两段式，等价于 margin: 0 auto。
+    auto* shell = new QVBoxLayout(this);
+    shell->setContentsMargins(0, 0, 0, 0);
+    shell->setSpacing(0);
+
+    auto* inner_host = new QWidget(this);
+    auto* inner_row = new QHBoxLayout(inner_host);
+    inner_row->setContentsMargins(0, 0, 0, 0);
+    inner_row->setSpacing(0);
+
+    auto* root = new QVBoxLayout;
+    root->setContentsMargins(40, 32, 40, 60);
     root->setSpacing(theme::space::kSteps[4]);
+
+    auto* inner = new QWidget(inner_host);
+    inner->setLayout(root);
+    inner->setMaximumWidth(1080);
+    inner_row->addStretch(1);
+    inner_row->addWidget(inner, 10);
+    inner_row->addStretch(1);
+    shell->addWidget(inner_host, 1);
 
     // —— 顶行：大标题 + 主/次操作（UI.md §2.1）——
     auto* head = new QHBoxLayout();

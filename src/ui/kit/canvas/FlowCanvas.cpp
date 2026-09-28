@@ -1,7 +1,11 @@
 #include "ui/kit/canvas/FlowCanvas.h"
 
+#include "ui/kit/controls/WidgetCommon.h"
+#include "ui/kit/theme/Theme.h"
+
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFont>
 #include <QGraphicsPathItem>
 #include <QGraphicsProxyWidget>
 #include <QGraphicsScene>
@@ -22,14 +26,54 @@
 namespace shine::kit {
 namespace {
 
+// webui views.css .fnode 的几何常量：w150 / r10 / head p7 10 / body p7 10 9 / port ⌀9。
+inline constexpr double kNodeWidth = 150.0;
+inline constexpr double kNodeHeadH = 30.0;
+inline constexpr double kPortTop = 40.0;
+inline constexpr double kPortPitch = 18.0;
+inline constexpr double kNodeRadius = 10.0;
+
+// 自绘控件统一走 theme token（禁止 QColor(55,83,112) 这类字面色值 —— 四套主题
+// 里画布节点之前是同一个颜色，切主题时节点根本不变）。
+[[nodiscard]] QColor TokenBgPanel() { return widgets::TokenQColor(shine::theme::Current().bgPanel); }
+[[nodiscard]] QColor TokenLineNormal() { return widgets::TokenQColor(shine::theme::Current().lineNormal); }
+[[nodiscard]] QColor TokenAccent() { return widgets::TokenQColor(shine::theme::Current().accentPrimary); }
+[[nodiscard]] QColor TokenAccent2() { return widgets::TokenQColor(shine::theme::Current().accentSecondary); }
+[[nodiscard]] QColor TokenInfo() { return widgets::TokenQColor(shine::theme::Current().accentInfo); }
+[[nodiscard]] QColor TokenOk() { return widgets::TokenQColor(shine::theme::Current().statusOk); }
+[[nodiscard]] QColor TokenBusy() { return widgets::TokenQColor(shine::theme::Current().statusBusy); }
+[[nodiscard]] QColor TokenDanger() { return widgets::TokenQColor(shine::theme::Current().statusDanger); }
+[[nodiscard]] QColor TokenTextPrimary() { return widgets::TokenQColor(shine::theme::Current().textPrimary); }
+[[nodiscard]] QColor TokenTextMuted() { return widgets::TokenQColor(shine::theme::Current().textMuted); }
+
+// 节点状态 → 边框色 + 底色（webui .fnode.done/.run/.fail）。
+struct NodeSkin {
+    QColor border;
+    QColor fill;
+};
+
+[[nodiscard]] NodeSkin SkinFor(const std::string& state) {
+    if (state == "running") return {TokenBusy(), TokenBgPanel()};
+    if (state == "done") return {TokenOk(), TokenBgPanel()};
+    if (state == "failed") return {TokenDanger(), TokenBgPanel()};
+    return {TokenLineNormal(), TokenBgPanel()};
+}
+
 class NodeItem final : public QGraphicsObject {
   public:
     NodeItem(const FlowCanvasNode& node, QGraphicsItem* parent = nullptr)
         : QGraphicsObject(parent), node_(node) {
+        node_.width = kNodeWidth;
+        node_.height = NodeHeightFor(node_);
         setFlag(QGraphicsItem::ItemIsSelectable, true);
         setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
         setAcceptHoverEvents(true);
         setZValue(1);
+    }
+
+    [[nodiscard]] static double NodeHeightFor(const FlowCanvasNode& node) {
+        const double ports = static_cast<double>(node.ports.size());
+        return std::max(kNodeHeadH + 14.0, kNodeHeadH + ports * kPortPitch + 10.0);
     }
 
     QRectF boundingRect() const override {
@@ -39,43 +83,59 @@ class NodeItem final : public QGraphicsObject {
     void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing, true);
         const QRectF box = boundingRect().adjusted(1, 1, -1, -1);
-        QColor fill = node_.state == "running" ? QColor(55, 83, 112)
-                      : node_.state == "done" ? QColor(33, 77, 61)
-                      : node_.state == "failed" ? QColor(102, 48, 55)
-                                               : QColor(35, 35, 47);
-        painter->setBrush(fill);
-        painter->setPen(QPen(node_.state == "failed" ? QColor(235, 105, 117)
-                                                    : QColor(120, 130, 160), 1.2));
-        painter->drawRoundedRect(box, 8, 8);
-        painter->setPen(QColor(235, 238, 245));
-        QFont title = painter->font();
-        title.setBold(true);
-        painter->setFont(title);
-        painter->drawText(QRectF(12, 8, node_.width - 24, 22), Qt::AlignLeft | Qt::AlignVCenter,
+        const NodeSkin skin = SkinFor(node_.state);
+
+        // webui .fnode：bg-panel + 1.5px 边 + r-md(10)
+        painter->setBrush(skin.fill);
+        painter->setPen(QPen(skin.border, 1.5));
+        painter->drawRoundedRect(box, kNodeRadius, kNodeRadius);
+
+        // 标题带：accent 图标 + 12px w700 标题 + 底部发丝线
+        const QFont base = painter->font();
+        QFont head = base;
+        head.setPixelSize(12);
+        head.setWeight(QFont::DemiBold);
+        painter->setFont(head);
+        painter->setPen(TokenAccent());
+        painter->drawText(QRectF(10, 0, 14, kNodeHeadH), Qt::AlignLeft | Qt::AlignVCenter,
+                          QStringLiteral("◆"));
+        painter->setPen(TokenTextPrimary());
+        painter->drawText(QRectF(24, 0, node_.width - 34, kNodeHeadH),
+                          Qt::AlignLeft | Qt::AlignVCenter,
                           QString::fromStdString(node_.title));
-        painter->setFont(painter->font());
-        painter->setPen(QColor(170, 178, 198));
-        painter->drawText(QRectF(12, 30, node_.width - 24, 18), Qt::AlignLeft | Qt::AlignVCenter,
-                          QString::fromStdString(node_.type));
+        painter->setPen(QPen(TokenBgPanel(), 1));
+        painter->drawLine(QPointF(0, kNodeHeadH), QPointF(node_.width, kNodeHeadH));
+
+        // 端口行：11px muted 名称 + 9px 圆点（状态色描边）
+        QFont body = base;
+        body.setPixelSize(11);
+        painter->setFont(body);
         for (std::size_t i = 0; i < node_.ports.size(); ++i) {
             const auto& port = node_.ports[i];
-            const double y = 58.0 + static_cast<double>(i) * 17.0;
+            const double y = kPortTop + static_cast<double>(i) * kPortPitch;
             const double x = port.input ? 0.0 : node_.width;
-            painter->setBrush(port.type == "ANY" || port.type.empty() ? QColor(210, 170, 90)
-                                                                         : QColor(90, 170, 210));
-            painter->setPen(QPen(QColor(235, 238, 245), 1));
+            QColor port_color = port.type == "ANY" || port.type.empty()
+                                    ? TokenAccent2()
+                                    : TokenInfo();
+            if (node_.state == "done") port_color = TokenOk();
+            if (node_.state == "running") port_color = TokenBusy();
+            painter->setPen(QPen(port_color, 2));
+            painter->setBrush(TokenBgPanel());
             painter->drawEllipse(QPointF(x, y), 4.5, 4.5);
-            painter->setPen(QColor(190, 196, 212));
+            painter->setPen(TokenTextMuted());
             const QRectF text(port.input ? 10 : 14, y - 9,
                               port.input ? node_.width - 22 : node_.width - 28, 18);
             painter->drawText(text, Qt::AlignLeft | Qt::AlignVCenter,
                               QString::fromStdString(port.name));
         }
+        painter->setFont(base);
     }
 
     [[nodiscard]] const FlowCanvasNode& Data() const noexcept { return node_; }
     void SetNode(const FlowCanvasNode& node) {
         node_ = node;
+        node_.width = kNodeWidth;
+        node_.height = NodeHeightFor(node_);
         prepareGeometryChange();
         update();
     }
@@ -85,10 +145,10 @@ class NodeItem final : public QGraphicsObject {
 };
 
 [[nodiscard]] QColor LinkColor(const std::string& type) {
-    if (type == "MODEL" || type == "CLIP") return QColor(125, 177, 232);
-    if (type == "CONDITIONING") return QColor(232, 177, 104);
-    if (type == "IMAGE" || type == "LATENT") return QColor(133, 211, 153);
-    return QColor(180, 150, 224);
+    if (type == "MODEL" || type == "CLIP") return TokenInfo();
+    if (type == "CONDITIONING") return TokenAccent2();
+    if (type == "IMAGE" || type == "LATENT") return TokenOk();
+    return TokenBusy();
 }
 
 [[nodiscard]] bool TypeCompatible(const std::string& from, const std::string& to) {
@@ -208,7 +268,7 @@ FlowCanvas::PortPoint FlowCanvas::PortAt(const QPointF& scenePos) const {
         for (std::size_t i = 0; i < node.ports.size(); ++i) {
             const auto& port = node.ports[i];
             const double x = node.x + (port.input ? 0.0 : node.width);
-            const double y = node.y + 58.0 + static_cast<double>(i) * 17.0;
+            const double y = node.y + kPortTop + static_cast<double>(i) * kPortPitch;
             if (QRectF(QPointF(x, y) - QPointF(8, 8), QSizeF(16, 16)).contains(scenePos)) {
                 return {QPointF(x, y), true};
             }
@@ -316,12 +376,12 @@ void FlowCanvas::RebuildItems() {
         QPointF p2;
         for (std::size_t i = 0; i < from->ports.size(); ++i) {
             if (!from->ports[i].input && from->ports[i].name == link.from_port) {
-                p1 = QPointF(from->x + from->width, from->y + 58 + i * 17);
+                p1 = QPointF(from->x + from->width, from->y + kPortTop + i * kPortPitch);
             }
         }
         for (std::size_t i = 0; i < to->ports.size(); ++i) {
             if (to->ports[i].input && to->ports[i].name == link.to_port) {
-                p2 = QPointF(to->x, to->y + 58 + i * 17);
+                p2 = QPointF(to->x, to->y + kPortTop + i * kPortPitch);
             }
         }
         QPainterPath path(p1);
@@ -361,7 +421,7 @@ void FlowCanvas::mousePressEvent(QMouseEvent* event) {
         for (const auto& node : nodes_) {
             for (std::size_t i = 0; i < node.ports.size(); ++i) {
                 const double x = node.x + (node.ports[i].input ? 0 : node.width);
-                const double y = node.y + 58 + i * 17;
+                const double y = node.y + kPortTop + i * kPortPitch;
                 if (QRectF(QPointF(x, y) - QPointF(8, 8), QSizeF(16, 16)).contains(pos) &&
                     !node.ports[i].input) {
                     wire_start_ = {QPointF(x, y), true};
@@ -412,14 +472,14 @@ void FlowCanvas::mouseReleaseEvent(QMouseEvent* event) {
             for (const auto& node : nodes_) {
                 for (std::size_t i = 0; i < node.ports.size(); ++i) {
                     const double x = node.x + (node.ports[i].input ? 0 : node.width);
-                    const double y = node.y + 58 + i * 17;
+                    const double y = node.y + kPortTop + i * kPortPitch;
                     if (node.ports[i].input &&
                         QRectF(QPointF(x, y) - QPointF(8, 8), QSizeF(16, 16)).contains(pos)) {
                         FlowCanvasLink link;
                         for (const auto& source : nodes_) {
                             for (std::size_t j = 0; j < source.ports.size(); ++j) {
                                 const double sx = source.x + (source.ports[j].input ? 0 : source.width);
-                                const double sy = source.y + 58 + j * 17;
+                                const double sy = source.y + kPortTop + j * kPortPitch;
                                 if (!source.ports[j].input &&
                                     QRectF(QPointF(sx, sy) - QPointF(8, 8), QSizeF(16, 16)).contains(wire_start_.scene)) {
                                     link.from_node = source.id;

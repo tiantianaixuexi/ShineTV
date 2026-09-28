@@ -10,11 +10,10 @@ namespace shine::app {
 
 Breadcrumb::Breadcrumb(QWidget* parent) : QFrame(parent) {
     setObjectName(QStringLiteral("breadcrumb"));
+    setFixedHeight(34); // webui shell.css .crumbs：h34
     auto* lay = new QHBoxLayout(this);
-    lay->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[1],
-                            theme::space::kSteps[3], theme::space::kSteps[1]);
-    lay->setSpacing(theme::space::kSteps[1]);
-    lay->addStretch();
+    lay->setContentsMargins(16, 0, 16, 0); // webui .crumbs：padding 0 16
+    lay->setSpacing(7);
 }
 
 void Breadcrumb::SetPath(const QStringList& crumbs) {
@@ -24,8 +23,9 @@ void Breadcrumb::SetPath(const QStringList& crumbs) {
 
 void Breadcrumb::Rebuild() {
     auto* lay = qobject_cast<QHBoxLayout*>(layout());
-    // 清掉旧段（保留尾部 stretch）
-    while (lay->count() > 1) {
+    // 清掉全部旧段（构造期与历次 Rebuild 都可能留下 stretch，必须一并清掉，
+    // 否则段落在两个 stretch 之间被推到中间，看起来像"面包屑浮在顶栏中央"）。
+    while (lay->count() > 0) {
         QLayoutItem* item = lay->takeAt(0);
         if (item->widget() != nullptr) {
             item->widget()->deleteLater();
@@ -34,14 +34,14 @@ void Breadcrumb::Rebuild() {
     }
     for (int i = 0; i < crumbs_.size(); ++i) {
         if (i > 0) {
-            auto* sep = new QLabel(QStringLiteral("/"), this);
+            auto* sep = new QLabel(QStringLiteral("›"), this);
             sep->setObjectName(QStringLiteral("crumbSep"));
             lay->addWidget(sep);
         }
         // 末段是当前位置（不可点），前面的段可点回
         if (i + 1 == crumbs_.size()) {
             auto* cur = new QLabel(crumbs_[i], this);
-            shine::widgets::SetSemibold(cur, true);
+            cur->setObjectName(QStringLiteral("crumbHere")); // 当前段：text-primary + w600
             lay->addWidget(cur);
         } else {
             auto* btn = new shine::widgets::Button(crumbs_[i],

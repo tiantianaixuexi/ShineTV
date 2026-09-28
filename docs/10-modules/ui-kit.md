@@ -72,8 +72,23 @@ last_verified: 2026-09-28
 | 中文相对时间格式化 | `pages/project/ProjectHubView.cpp` | 业务无关，可进 `ui/layout/QtLayout.h` |
 | 哈希短显示 `left(12)` | `pages/novel/DraftView.cpp` | 可加 `util::ShortHash()` |
 | `QString::fromStdString` 与 `fromUtf8` 两种 `Text()` 助手语义不同 | `pages/novel/AutoRunPanel.cpp`（fromUtf8，正确）、`pages/imageflow/ImageFlowWorkspace.cpp`（fromStdString） | 中文路径下后者有编码风险 |
+| `setStyleSheet("color: …")` 内联写 token 色（绕过 QSS） | `pages/novel/ReviewView.cpp`、`pages/novel/StateDiffView.cpp` 等 | `kit::data::Panels.cpp` 的 KPI 涨跌色已改为 `shineVariant="up/down"` + QSS 规则 |
 
 已收敛的部分见 `ui/kit/controls/WidgetCommon.h`（`SetTextColor` / `SectionTitle`）与 `ui/verify/review/ReviewProbe.h`（评审层 `Pump`/`Grab` 公共实现）。
+
+## 页面留白与设计稿数值来源
+
+页面最外层布局统一调 `shine::util::PageMargins()` / `PageSpacing()`（`ui/layout/QtLayout.h`），
+数值与 `webui/src/styles/views.css` 的 `.vw` 逐值对齐：`padding 20px 24px 26px`、`gap 16px`。
+新增页面不要再直接写 `theme::space::kSteps[]` 下标。
+
+控件的几何与排版数值（按钮 h30/r6/f13/w600、标签 h20/f11.5/w600、卡片 r10、输入 h30/r6、
+进度条 h6/pill、表头 f11.5/w600、页签 p8 12/f13/w600/选中 accent+2px 下划线）
+统一写在 `kit/theme/QssBuilder.cpp` 的 kit 样式段里，**不在页面里写几何值**。
+
+`kit::canvas::FlowCanvas` 的节点自绘同样走 `theme::Current()` token
+（节点 w150 / r10 / 1.5px 边 / 标题 12px w700 + accent 标记 / 端口 11px muted），
+四套主题下节点与连线随主题变化。
 
 ## FlowCanvas
 

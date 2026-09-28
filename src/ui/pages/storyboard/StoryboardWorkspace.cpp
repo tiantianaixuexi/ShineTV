@@ -12,8 +12,11 @@
 #include "ui/kit/data/Flow.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Feedback.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/layout/QtLayout.h"
 #include "novel/NovelVisual.h"
 #include "novel/NovelGraph.h"
 #include "util/Encoding.h"
@@ -50,9 +53,9 @@ StoryboardWorkspace::~StoryboardWorkspace() = default;
 
 void StoryboardWorkspace::BuildUi() {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[2],
-                              theme::space::kSteps[3], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[1]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     status_ = widgets::SectionTitle(QStringLiteral("分镜 · 未打开书库"), this);
     outer->addWidget(status_);

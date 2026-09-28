@@ -37,4 +37,29 @@ inline void ClearLayout(QLayout* lay) {
     return s.size() <= maxChars ? s : s.left(maxChars) + QStringLiteral("…");
 }
 
+// ── 页面级留白与分区节奏 ──────────────────────────────────────────
+// 与 webui src/styles/views.css 的 .vw 逐值对齐：
+//   padding: 20px 24px 26px;  gap: 16px;
+// 各 Workspace 的最外层布局统一调 PageMargins() + PageSpacing()，
+// 避免每个页面各写一套 kSteps 下标（8/4 与设计稿的 20/24/26 差了一个量级，
+// 这正是上一轮「结构对了但不像」的直接原因）。
+namespace page {
+inline constexpr int kPadTop = 20;
+inline constexpr int kPadX = 24;
+inline constexpr int kPadBottom = 26;
+inline constexpr int kGap = 16;
+} // namespace page
+
+inline void PageMargins(QLayout* lay) {
+    if (lay != nullptr) {
+        lay->setContentsMargins(page::kPadX, page::kPadTop, page::kPadX, page::kPadBottom);
+    }
+}
+
+inline void PageSpacing(QLayout* lay) {
+    if (lay != nullptr) {
+        lay->setSpacing(page::kGap);
+    }
+}
+
 } // namespace shine::util

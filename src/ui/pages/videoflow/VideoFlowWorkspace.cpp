@@ -10,6 +10,7 @@
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
 
+#include <QGridLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QSplitter>
@@ -25,51 +26,61 @@ void VideoFlowWorkspace::BuildUi() {
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
 
-    auto* canvas_host = new QWidget(this);
-    auto* host_lay = new QVBoxLayout(canvas_host);
-    host_lay->setContentsMargins(0, 0, 0, 0);
-    host_lay->setSpacing(0);
+    // 画布满铺整页（webui .canvas-page）；浮动工具栏（左上）、浮动参数面板（右侧）、
+    // 连播胶片条（底部）都压在画布之上。三者与画布放进同一个 grid cell，
+    // 靠对齐标志定位 —— 与 CSS 的 absolute + inset 等价。
+    auto* stage = new QWidget(this);
+    auto* stage_lay = new QGridLayout(stage);
+    stage_lay->setContentsMargins(0, 0, 0, 0);
+    stage_lay->setSpacing(0);
 
-    // 顶部浮动工具栏
-    auto* toolbar = new QWidget(canvas_host);
+    canvas_ = new shine::kit::FlowCanvas(stage);
+    canvas_->setMinimumWidth(360);
+    stage_lay->addWidget(canvas_, 0, 0);
+
+    // 左上：浮动工具栏
+    auto* tool_host = new QWidget(stage);
+    tool_host->setObjectName(QStringLiteral("floatHost"));
+    auto* tool_host_lay = new QVBoxLayout(tool_host);
+    tool_host_lay->setContentsMargins(16, 16, 16, 16);
+    tool_host_lay->setSpacing(0);
+    auto* toolbar = new QWidget(tool_host);
+    toolbar->setObjectName(QStringLiteral("floatToolbar"));
     auto* tb = new QHBoxLayout(toolbar);
-    tb->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                           theme::space::kSteps[2], theme::space::kSteps[1]);
-    tb->setSpacing(theme::space::kSteps[1]);
+    tb->setContentsMargins(12, 8, 12, 8);
+    tb->setSpacing(8);
+    auto* flow_mark = new QLabel(QStringLiteral("◈"), toolbar); // 与 kit 字符图标约定一致
+    widgets::SetKind(flow_mark, "stateicon");
     auto* flow_title = widgets::SectionTitle(QStringLiteral("出片流程 · H3 视频"), toolbar);
+    auto* sep = new QWidget(toolbar);
+    sep->setObjectName(QStringLiteral("floatSep"));
+    sep->setFixedWidth(1);
+    sep->setFixedHeight(18);
     auto* validate = new widgets::Button(QStringLiteral("提交前参数校验"), widgets::Button::Variant::Secondary,
                                          widgets::Button::Size::Sm, toolbar);
     status_ = new QLabel(QStringLiteral("等待导入视频工作流"), toolbar);
-    widgets::SetKind(status_, "statedetail");
+    widgets::SetKind(status_, "statemeta");
+    tb->addWidget(flow_mark);
     tb->addWidget(flow_title);
-    tb->addStretch(1);
+    tb->addWidget(sep);
     tb->addWidget(validate);
+    tb->addSpacing(4);
     tb->addWidget(status_);
-    host_lay->addWidget(toolbar);
-
-    canvas_ = new shine::kit::FlowCanvas(canvas_host);
-    canvas_->setMinimumWidth(480);
-    host_lay->addWidget(canvas_, 1);
+    tool_host_lay->addWidget(toolbar, 0, Qt::AlignLeft | Qt::AlignTop);
+    stage_lay->addWidget(tool_host, 0, 0, Qt::AlignLeft | Qt::AlignTop);
 
     // ── 右侧浮动面板（可折叠）：首尾帧链 · 视频任务 · 成片 ──
-    auto* split_row = new QWidget(canvas_host);
-    auto* split_lay = new QHBoxLayout(split_row);
-    split_lay->setContentsMargins(0, 0, 0, 0);
-    split_lay->setSpacing(0);
-
-    panel_ = new QWidget(split_row);
+    panel_ = new QWidget(stage);
     panel_->setObjectName(QStringLiteral("floatPanel"));
-    panel_->setMinimumWidth(320);
-    panel_->setMaximumWidth(460);
+    panel_->setFixedWidth(348);
     auto* panel_lay = new QVBoxLayout(panel_);
-    panel_lay->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                                  theme::space::kSteps[2], theme::space::kSteps[2]);
-    panel_lay->setSpacing(theme::space::kSteps[2]);
+    panel_lay->setContentsMargins(14, 12, 14, 12);
+    panel_lay->setSpacing(10);
 
     auto* panel_head = new QWidget(panel_);
     auto* ph = new QHBoxLayout(panel_head);
     ph->setContentsMargins(0, 0, 0, 0);
-    ph->setSpacing(theme::space::kSteps[1]);
+    ph->setSpacing(8);
     auto* panel_title = widgets::SectionTitle(QStringLiteral("出片参数"), panel_head);
     fold_btn_ = new QPushButton(QStringLiteral("▾"), panel_head);
     fold_btn_->setToolTip(QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
@@ -88,15 +99,20 @@ void VideoFlowWorkspace::BuildUi() {
     panel_stack_->addTab(final_, QStringLiteral("成片"));
     panel_lay->addWidget(panel_stack_, 1);
 
-    split_lay->addStretch(1);
-    split_lay->addWidget(panel_);
-    host_lay->addWidget(split_row, 1);
+    auto* panel_host = new QWidget(stage);
+    panel_host->setObjectName(QStringLiteral("floatHost"));
+    panel_host_ = panel_host;
+    auto* panel_host_lay = new QVBoxLayout(panel_host);
+    panel_host_lay->setContentsMargins(0, 16, 16, 16);
+    panel_host_lay->setSpacing(0);
+    panel_host_lay->addWidget(panel_);
+    stage_lay->addWidget(panel_host, 0, 0, Qt::AlignRight);
 
-    // ── 底部胶片条 ──
-    film_ = new FilmStrip(canvas_host);
-    host_lay->addWidget(film_);
+    // ── 底部胶片条（webui .float-strip：left16 bottom16，右侧给面板让位）──
+    film_ = new FilmStrip(stage);
+    stage_lay->addWidget(film_, 0, 0, Qt::AlignLeft | Qt::AlignBottom);
 
-    outer->addWidget(canvas_host, 1);
+    outer->addWidget(stage, 1);
 
     connect(validate, &QPushButton::clicked, this, &VideoFlowWorkspace::Validate);
     connect(fold_btn_, &QPushButton::clicked, this, &VideoFlowWorkspace::TogglePanel);
@@ -104,7 +120,9 @@ void VideoFlowWorkspace::BuildUi() {
 
 void VideoFlowWorkspace::TogglePanel() {
     panel_folded_ = !panel_folded_;
-    panel_->setVisible(!panel_folded_);
+    if (panel_host_ != nullptr) {
+        panel_host_->setVisible(!panel_folded_);
+    }
     fold_btn_->setText(panel_folded_ ? QStringLiteral("▸") : QStringLiteral("▾"));
     fold_btn_->setToolTip(panel_folded_ ? QStringLiteral("展开面板")
                                          : QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));

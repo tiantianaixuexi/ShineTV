@@ -45,26 +45,31 @@ StatTile::StatTile(QWidget* parent) : QFrame(parent) {
     widgets::SetKind(this, "card");
     widgets::SetVariant(this, "outlined");
     auto* col = new QVBoxLayout(this);
-    col->setContentsMargins(16, 12, 16, 12);
+    // webui views.css .kpi：p14 16；label 11.5 w700 muted 在上 → value 24 w800 → foot 11.5 muted
+    col->setContentsMargins(16, 14, 16, 14);
     col->setSpacing(2);
+
+    auto* label = new QLabel(this);
+    label->setObjectName(QStringLiteral("shineStatLabel"));
+    widgets::SetKind(label, "statemeta");
+    widgets::SetSemibold(label, true);
+    QFont lf = label->font();
+    lf.setPixelSize(11);
+    label->setFont(lf);
+    col->addWidget(label);
 
     auto* value = new QLabel(QStringLiteral("0"), this);
     value->setObjectName(QStringLiteral("shineStatValue"));
     widgets::SetKind(value, "statetitle");
     widgets::SetSemibold(value, true);
     QFont vf = value->font();
-    vf.setPointSize(26); // 大数字（总纲 §2.3 font size 26）
+    vf.setPixelSize(24); // webui .kpi .k-value：24px w800
     value->setFont(vf);
     col->addWidget(value);
 
-    auto* label = new QLabel(this);
-    label->setObjectName(QStringLiteral("shineStatLabel"));
-    widgets::SetKind(label, "statesub");
-    col->addWidget(label);
-
     auto* trend = new QLabel(this);
     trend->setObjectName(QStringLiteral("shineStatTrend"));
-    widgets::SetKind(trend, "statesub");
+    widgets::SetKind(trend, "statemeta");
     col->addWidget(trend);
 }
 
@@ -85,20 +90,18 @@ void StatTile::SetTrend(int percent) {
     if (l == nullptr) {
         return;
     }
-    const theme::ColorToken& t = theme::Current();
+    // 涨跌色走 QSS tone 属性（.kpi .k-delta.up/.down），不内联 setStyleSheet 写色值。
     if (percent == 0) {
         l->setText(QStringLiteral("→ 持平"));
-        l->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-                             .arg(NameOf(widgets::TokenQColor(t.textMuted))));
+        widgets::SetVariant(l, "flat");
     } else if (percent > 0) {
         l->setText(QStringLiteral("↑ %1%").arg(percent));
-        l->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-                             .arg(NameOf(widgets::TokenQColor(t.statusOk))));
+        widgets::SetVariant(l, "up");
     } else {
         l->setText(QStringLiteral("↓ %1%").arg(-percent));
-        l->setStyleSheet(QStringLiteral("color: %1; background: transparent;")
-                             .arg(NameOf(widgets::TokenQColor(t.statusDanger))));
+        widgets::SetVariant(l, "down");
     }
+    widgets::Repolish(l);
 }
 
 // ==================================================================== KeyValue

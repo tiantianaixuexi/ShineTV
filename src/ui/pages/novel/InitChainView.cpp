@@ -10,9 +10,13 @@
 #include "ui/kit/data/Table.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Feedback.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Inputs.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/layout/QtLayout.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelInit.h"
 #include "novel/NovelTypes.h"
@@ -167,9 +171,9 @@ constexpr int kImportCardMinW = 560; // 导入行：前作选择 + 预算 + 按�
 
 InitChainView::InitChainView(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[2],
-                              theme::space::kSteps[3], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     // 头部动作行（UI.md §3：空态给下一步 —— 下一步就是这两个按钮）
     auto* head = new QWidget(this);

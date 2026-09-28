@@ -4,6 +4,7 @@
 #include "ui/kit/controls/Controls.h"
 
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
@@ -21,8 +22,15 @@ BindingView::BindingView(QWidget* parent) : QWidget(parent) {
                                      widgets::Button::Size::Sm, this);
     auto* validate = new widgets::Button(QStringLiteral("校验全部"), widgets::Button::Variant::Secondary,
                                          widgets::Button::Size::Sm, this);
-    layout->addWidget(add);
-    layout->addWidget(validate);
+    // webui BindingList：操作按钮收进标题行（fp-b 顶部），不占整幅宽度
+    auto* action_row = new QWidget(this);
+    auto* action_lay = new QHBoxLayout(action_row);
+    action_lay->setContentsMargins(0, 0, 0, 0);
+    action_lay->setSpacing(8);
+    action_lay->addWidget(add);
+    action_lay->addWidget(validate);
+    action_lay->addStretch(1);
+    layout->addWidget(action_row);
     table_ = new QTableWidget(this);
     table_->setColumnCount(4);
     table_->setHorizontalHeaderLabels({QStringLiteral("节点参数"), QStringLiteral("来源"),

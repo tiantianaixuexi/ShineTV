@@ -7,10 +7,15 @@
 #include "ui/kit/data/Table.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Feedback.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Inputs.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Navigation.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/layout/QtLayout.h"
 #include "novel/NovelDb.h"
 #include "novel/NovelFields.h"
 #include "novel/NovelGraph.h"
@@ -165,9 +170,9 @@ using novelcore::FieldDefRow;
 
 WorldBoardView::WorldBoardView(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[2],
-                              theme::space::kSteps[3], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     // 页签（UI.md §2.2）：[实体][关系][剧情线][伏笔][谜][字段]
     tabs_ = new widgets::Tabs({QStringLiteral("实体"), QStringLiteral("关系"), QStringLiteral("剧情线"),

@@ -79,6 +79,7 @@ class ImageFlowWorkspace : public QWidget {
     QTabWidget* panel_stack_ = nullptr;
     QLabel* status_ = nullptr;
     QWidget* panel_ = nullptr;
+    QWidget* panel_host_ = nullptr; // 面板的 16px 外缩容器（折叠时整体隐藏）
     QPushButton* fold_btn_ = nullptr;
     bool panel_folded_ = false;
 };

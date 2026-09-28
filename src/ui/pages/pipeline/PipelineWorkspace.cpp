@@ -7,7 +7,9 @@
 #include "ui/kit/data/Panels.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/layout/QtLayout.h"
 #include "util/Random.h"
 
 #include <QGridLayout>
@@ -24,9 +26,9 @@ PipelineWorkspace::PipelineWorkspace(QWidget* parent) : QWidget(parent) { BuildU
 
 void PipelineWorkspace::BuildUi() {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[2],
-                              theme::space::kSteps[3], theme::space::kSteps[3]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     // ── 页首：标题 + 副标题 + 操作 ──
     // webui 的 vw-head：图标 + 标题/副标题 + spacer + 运行按钮
@@ -75,13 +77,14 @@ void PipelineWorkspace::BuildUi() {
     progress_->setRange(0, 100);
     progress_->setValue(0);
     progress_->setTextVisible(false);
-    widgets::SetKind(progress_, "progress");
+    widgets::SetKind(progress_, "progressbar");
     run_body->addWidget(progress_);
 
     stage_flow_ = new shine::data::StageFlow(run_card);
-    stage_flow_->setMinimumHeight(96);
-    // 不给伸展因子：阶段流按内容高度（节点 + 连线）显示，
-    // 让它拉伸会在卡片底部留出一大片空白（实测截图里就是这样）。
+    // webui .stageflow 的行高 = snode 30 + 上下留白；支线再占一行 → 84 足够。
+    // 不给伸展因子：让它拉伸会在卡片底部留出一大片空白。
+    stage_flow_->setMinimumHeight(84);
+    stage_flow_->setMaximumHeight(84);
     run_body->addWidget(stage_flow_, 0);
     outer->addWidget(run_card, 0);
 

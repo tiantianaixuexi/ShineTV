@@ -45,7 +45,7 @@ std::string Trim(std::string s) {
 constexpr std::string_view kTemplate = R"QSS(
 /* 本样式表由 shine::theme::QssBuilder 从 Token 生成（P01-S8 验收：禁止散落字面色） */
 
-QWidget { color: %9; background-color: %2; }
+QWidget { color: %9; background-color: %2; font-size: 13px; }
 QWidget:disabled { color: %11; }
 
 QMainWindow { background-color: %1; }
@@ -72,9 +72,9 @@ QToolButton:pressed { background-color: %2; }
 QToolButton:checked { background-color: %25; color: %13; }
 
 QLineEdit, QPlainTextEdit, QTextEdit {
-  background-color: %3; color: %9;
-  border: 1px solid %7; border-radius: 5px; padding: 3px 6px;
-  selection-background-color: %13; selection-color: %15;
+  background-color: %26; color: %9;
+  border: 1px solid %7; border-radius: 6px; padding: 3px 10px;
+  selection-background-color: %25; selection-color: %9;
   placeholder-text-color: %11;
 }
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus { border-color: %27; }
@@ -92,7 +92,7 @@ QSpinBox::up-arrow { image: none; border-left: 4px solid transparent; border-rig
 QSpinBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid %10; }
 
 QComboBox {
-  background-color: %3; color: %9; border: 1px solid %7; border-radius: 5px; padding: 3px 8px;
+  background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px; padding: 3px 10px;
 }
 QComboBox:hover { border-color: %8; }
 QComboBox::drop-down { border: none; width: 20px; }
@@ -119,34 +119,42 @@ QSlider::sub-page:vertical { background-color: %13; border-radius: 2px; }
 QSlider::handle:vertical { height: 14px; margin: 0 -5px; border-radius: 7px; background-color: %13; }
 
 QProgressBar {
-  background-color: %1; border: none; border-radius: 4px; text-align: center; color: %10;
+  background-color: %26; border: none; border-radius: 999px; text-align: center; color: %10;
 }
-QProgressBar::chunk { background-color: %13; border-radius: 4px; }
+QProgressBar::chunk { background-color: %13; border-radius: 999px; }
 
-QGroupBox { border: 1px solid %6; border-radius: 8px; margin-top: 8px; padding-top: 4px; color: %10; }
+QGroupBox { border: 1px solid %6; border-radius: 10px; margin-top: 8px; padding-top: 4px; color: %10; }
 QGroupBox::title { subcontrol-origin: margin; left: 8px; color: %10; }
 
-QTabWidget::pane { border: 1px solid %6; border-radius: 5px; background-color: %2; }
+QTabWidget::pane { border: none; border-radius: 10px; background-color: transparent; }
 QTabBar { background: transparent; }
+/* webui .tabs > button：p8 12 / f13 / w600 / text-muted；选中 accent + 2px 下划线 */
 QTabBar::tab {
   background-color: transparent; color: %10;
-  padding: 6px 14px; border: none; border-bottom: 2px solid transparent;
+  padding: 8px 12px; min-height: 30px; border: none;
+  font-size: 13px; font-weight: 600;
 }
 QTabBar::tab:hover { color: %9; }
-QTabBar::tab:selected { color: %9; border-bottom-color: %13; }
+QTabBar::tab:selected { color: %13; border-bottom: 2px solid %13; }
+QTabBar::close-button { subcontrol-position: right; }
 
 QListView, QTreeView, QTableView {
   background-color: %2; color: %9;
-  border: 1px solid %6; border-radius: 5px;
+  border: 1px solid %6; border-radius: 10px;
   alternate-background-color: %26;
   selection-background-color: %25; selection-color: %9;
 }
+/* webui .table：th f11.5 w600 muted p8 12 + 底部 line-normal；td p9 12 text-secondary */
 QHeaderView::section {
   background-color: %3; color: %10;
   border: none; border-bottom: 1px solid %7; border-right: 1px solid %6;
-  padding: 4px 8px;
+  padding: 6px 12px;
+  font-size: 11px; font-weight: 600;
 }
 QHeaderView::section:hover { background-color: %24; color: %9; }
+QTableView::item { padding: 5px 12px; color: %10; border-bottom: 1px solid %6; }
+QTableView::item:selected { background-color: %25; color: %9; }
+QTreeView::item { padding: 3px 8px; border-radius: 6px; }
 
 QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
 QScrollBar::handle:vertical { background-color: %7; border-radius: 5px; min-height: 24px; }
@@ -182,14 +190,20 @@ constexpr std::string_view kKitTemplate = R"QSS(
 
 /* —— kit/widgets：通用 —— */
 *[shineWeight="semibold"] { font-weight: 600; }
+*[shineWeight="bold"] { font-weight: 700; }
+/* mono / 小号：webui .mono(12px) / .tiny(12px) / .small(12.5px) */
+*[shineWeight="mono"] { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 12px; }
+*[shineSize="tiny"] { font-size: 12px; }
+*[shineSize="small"] { font-size: 12px; }
 
-/* —— Button（变体 primary/secondary/ghost/danger × sm/md/lg） —— */
+/* —— Button（变体 primary/secondary/ghost/danger × sm/md/lg） ——
+   webui ui.css .btn：h30 / p0 14 / r6 / f13 / w600；sm h24 p0 10 f12；lg h36 p0 20 f14 r10 */
 *[shineKind="button"] {
-  border: 1px solid %7; border-radius: 5px; padding: 5px 14px;
-  background-color: %3; color: %9;
+  border: 1px solid %7; border-radius: 6px; padding: 0 14px; min-height: 30px;
+  background-color: %3; color: %9; font-size: 13px; font-weight: 600;
 }
-*[shineKind="button"][shineSize="sm"] { padding: 3px 10px; }
-*[shineKind="button"][shineSize="lg"] { padding: 8px 20px; border-radius: 8px; }
+*[shineKind="button"][shineSize="sm"] { padding: 0 10px; min-height: 24px; font-size: 12px; }
+*[shineKind="button"][shineSize="lg"] { padding: 0 20px; min-height: 36px; border-radius: 10px; font-size: 14px; }
 *[shineKind="button"][shineVariant="primary"] { background-color: %13; color: %15; border-color: %13; }
 *[shineKind="button"][shineVariant="secondary"] { background-color: %4; color: %9; border-color: %7; }
 *[shineKind="button"][shineVariant="ghost"] { background-color: transparent; color: %13; border-color: %7; }
@@ -206,12 +220,13 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="button"][shineState="pressed"] { background-color: %2; border-color: %8; }
 *[shineKind="button"]:disabled { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="button"][shineState="disabled"] { background-color: %2; color: %11; border-color: %6; }
-*[shineKind="button"]:focus { border: 2px solid %27; padding: 4px 13px; }
-*[shineKind="button"][shineState="focus"] { border: 2px solid %27; padding: 4px 13px; }
-*[shineKind="button"][shineSize="sm"]:focus { padding: 2px 9px; }
-*[shineKind="button"][shineSize="sm"][shineState="focus"] { padding: 2px 9px; }
-*[shineKind="button"][shineSize="lg"]:focus { padding: 7px 19px; }
-*[shineKind="button"][shineSize="lg"][shineState="focus"] { padding: 7px 19px; }
+/* focus = 2px accent 环 + 内距各减 1px（无布局跳动） */
+*[shineKind="button"]:focus { border: 2px solid %27; padding: 0 13px; }
+*[shineKind="button"][shineState="focus"] { border: 2px solid %27; padding: 0 13px; }
+*[shineKind="button"][shineSize="sm"]:focus { padding: 0 9px; }
+*[shineKind="button"][shineSize="sm"][shineState="focus"] { padding: 0 9px; }
+*[shineKind="button"][shineSize="lg"]:focus { padding: 0 19px; }
+*[shineKind="button"][shineSize="lg"][shineState="focus"] { padding: 0 19px; }
 
 /* —— IconButton（active 高亮给活动栏） —— */
 *[shineKind="iconbutton"] {
@@ -229,8 +244,9 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="iconbutton"]:focus { border: 2px solid %27; padding: 4px; }
 *[shineKind="iconbutton"][shineState="focus"] { border: 2px solid %27; padding: 4px; }
 
-/* —— Card（flat/outlined/elevated + accent 左条；hover 抬升由 Tween 负责） —— */
-*[shineKind="card"] { background-color: %3; border: 1px solid %6; border-radius: 8px; }
+/* —— Card（flat/outlined/elevated + accent 左条；hover 抬升由 Tween 负责） ——
+   webui .card：bg-panel + line-subtle 1px + r-md(10) —— */
+*[shineKind="card"] { background-color: %3; border: 1px solid %6; border-radius: 10px; }
 *[shineKind="card"][shineVariant="flat"] { border-color: transparent; }
 *[shineKind="card"][shineVariant="outlined"] { border-color: %7; }
 *[shineKind="card"][shineVariant="elevated"] { background-color: %4; border-color: %7; }
@@ -240,8 +256,9 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="card"][shineState="disabled"] { color: %11; border-color: %6; }
 *[shineKind="cardaccent"] { background-color: %13; border-radius: 2px; }
 
-/* —— SectionCard（分区卡片：标题栏 + 内容；页面单列滚动时的分组件）—— */
-*[shineKind="sectioncard"] { background-color: %3; border: 1px solid %6; border-radius: 8px; }
+/* —— SectionCard（分区卡片：标题栏 + 内容；页面单列滚动时的分组件）——
+   标题栏对齐 webui .card-h：p12 16 + 底部发丝线 + 13.5px w600 —— */
+*[shineKind="sectioncard"] { background-color: %3; border: 1px solid %6; border-radius: 10px; }
 *[shineKind="sectionhead"] { background: transparent; border: none; text-align: left; }
 *[shineKind="sectionhead"]:hover { background-color: %24; border-radius: 6px; }
 *[shineKind="sectionhead"][shineState="hover"] { background-color: %24; border-radius: 6px; }
@@ -251,10 +268,10 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="sectionsub"] { background: transparent; color: %11; }
 *[shineKind="sectionchevron"] { background: transparent; color: %10; }
 
-/* —— Tag（色来自 status.* / accent.*） —— */
+/* —— Tag：webui .tag h20 p0 8 r-pill f11.5 w600（色来自 status.* / accent.*） —— */
 *[shineKind="tag"] {
-  border: 1px solid %7; border-radius: 999px; padding: 2px 10px;
-  background-color: %4; color: %10;
+  border: 1px solid %7; border-radius: 999px; padding: 0 8px; min-height: 20px;
+  background-color: %26; color: %10; font-size: 11px; font-weight: 600;
 }
 *[shineKind="tag"][tone="accent"] { background-color: %13; color: %15; border-color: %13; }
 *[shineKind="tag"][tone="info"] { background-color: %17; color: %12; border-color: %17; }
@@ -268,8 +285,8 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="tag"][shineState="hover"] { border-color: %8; }
 *[shineKind="tag"]:disabled { color: %11; border-color: %6; }
 *[shineKind="tag"][shineState="disabled"] { color: %11; border-color: %6; }
-*[shineKind="tag"]:focus { border: 2px solid %27; padding: 1px 9px; }
-*[shineKind="tag"][shineState="focus"] { border: 2px solid %27; padding: 1px 9px; }
+*[shineKind="tag"]:focus { border: 2px solid %27; padding: 0 7px; }
+*[shineKind="tag"][shineState="focus"] { border: 2px solid %27; padding: 0 7px; }
 
 /* —— Badge（数字/点） —— */
 *[shineKind="badge"] {
@@ -284,19 +301,20 @@ constexpr std::string_view kKitTemplate = R"QSS(
   padding: 1px 6px; background-color: %4; color: %10;
 }
 
-/* —— Segmented（2–4 段） —— */
-*[shineKind="segmented"] { background-color: %2; border: 1px solid %6; border-radius: 8px; padding: 2px; }
+/* —— Segmented：webui .seg p3 gap2 fill-muted + line-subtle + r-sm(6) —— */
+*[shineKind="segmented"] { background-color: %26; border: 1px solid %6; border-radius: 6px; padding: 3px; }
+/* .seg > button：h26 / p0 13 / r4 / f12.5 / w600 / text-muted；选中态抬到 bg-elevated */
 *[shineKind="segment"] {
-  border: 1px solid transparent; border-radius: 5px; padding: 4px 14px;
-  background-color: transparent; color: %10;
+  border: 1px solid transparent; border-radius: 4px; padding: 0 13px; min-height: 26px;
+  background-color: transparent; color: %10; font-size: 12px; font-weight: 600;
 }
-*[shineKind="segment"]:hover { color: %9; background-color: %24; }
-*[shineKind="segment"][shineState="hover"] { color: %9; background-color: %24; }
-*[shineKind="segment"][selected="true"] { background-color: %25; color: %9; border-color: %7; }
+*[shineKind="segment"]:hover { color: %9; }
+*[shineKind="segment"][shineState="hover"] { color: %9; }
+*[shineKind="segment"][selected="true"] { background-color: %4; color: %9; border-color: %7; }
 *[shineKind="segment"]:disabled { color: %11; }
 *[shineKind="segment"][shineState="disabled"] { color: %11; }
-*[shineKind="segment"]:focus { border: 2px solid %27; padding: 3px 13px; }
-*[shineKind="segment"][shineState="focus"] { border: 2px solid %27; padding: 3px 13px; }
+*[shineKind="segment"]:focus { border: 2px solid %27; padding: 0 12px; }
+*[shineKind="segment"][shineState="focus"] { border: 2px solid %27; padding: 0 12px; }
 
 /* —— Spinner（转圈自绘，颜色走 accent） —— */
 *[shineKind="spinner"] { background: transparent; }
@@ -308,27 +326,31 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="fieldhelp"] { color: %11; background: transparent; }
 *[shineKind="fielderror"] { color: %20; background: transparent; }
 
-/* —— 输入族（TextInput / NumberInput / SearchBox 共用底座） —— */
+/* —— 输入族：webui .input h30 / p0 10 / r6 / fill-muted + line-normal —— */
 *[shineKind="input"] {
-  background-color: %3; color: %9; border: 1px solid %7; border-radius: 5px; padding: 4px 8px;
+  background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px;
+  padding: 0 10px; min-height: 30px; font-size: 13px;
   placeholder-text-color: %11;
 }
 *[shineKind="input"]:hover { border-color: %8; }
 *[shineKind="input"][shineState="hover"] { border-color: %8; }
-*[shineKind="input"]:focus { border: 2px solid %27; padding: 3px 7px; }
-*[shineKind="input"][shineState="focus"] { border: 2px solid %27; padding: 3px 7px; }
+*[shineKind="input"]:focus { border: 2px solid %27; padding: 0 9px; background-color: %2; }
+*[shineKind="input"][shineState="focus"] { border: 2px solid %27; padding: 0 9px; background-color: %2; }
 *[shineKind="input"][error="true"] { border-color: %20; }
-*[shineKind="input"][error="true"][shineState="focus"] { border-color: %20; border-width: 1px; padding: 4px 8px; }
-*[shineKind="input"][error="true"]:focus { border-color: %20; border-width: 1px; padding: 4px 8px; }
+*[shineKind="input"][error="true"][shineState="focus"] { border-color: %20; border-width: 1px; padding: 0 10px; }
+*[shineKind="input"][error="true"]:focus { border-color: %20; border-width: 1px; padding: 0 10px; }
 *[shineKind="input"]:disabled { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="input"][shineState="disabled"] { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="input"][readOnly="true"] { background-color: %26; color: %10; }
+/* .textarea：p8 10 + r6 + line-height 1.6（高度随行数自适应，不设 min-height） */
 *[shineKind="textarea"] {
-  background-color: %3; color: %9; border: 1px solid %7; border-radius: 8px; padding: 6px 8px;
+  background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px; padding: 8px 10px;
+  font-size: 13px;
   placeholder-text-color: %11;
 }
-*[shineKind="textarea"]:focus { border: 2px solid %27; padding: 5px 7px; }
-*[shineKind="textarea"][shineState="focus"] { border: 2px solid %27; padding: 5px 7px; }
+*[shineKind="textarea"]:hover { border-color: %8; }
+*[shineKind="textarea"]:focus { border: 2px solid %27; padding: 7px 9px; background-color: %2; }
+*[shineKind="textarea"][shineState="focus"] { border: 2px solid %27; padding: 7px 9px; background-color: %2; }
 *[shineKind="textarea"][error="true"] { border-color: %20; }
 *[shineKind="textarea"]:disabled { background-color: %2; color: %11; }
 *[shineKind="textarea"][shineState="disabled"] { background-color: %2; color: %11; }
@@ -356,16 +378,17 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="selectbutton"]:disabled { color: %11; }
 *[shineKind="selectbutton"][shineState="disabled"] { color: %11; }
 *[shineKind="select"] {
-  background-color: %3; color: %9; border: 1px solid %7; border-radius: 5px; padding: 4px 8px;
+  background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px;
+  padding: 0 10px; min-height: 30px; font-size: 13px;
 }
 *[shineKind="select"]:hover { border-color: %8; }
 *[shineKind="select"][shineState="hover"] { border-color: %8; }
-*[shineKind="select"]:focus { border: 2px solid %27; padding: 3px 7px; }
-*[shineKind="select"][shineState="focus"] { border: 2px solid %27; padding: 3px 7px; }
+*[shineKind="select"]:focus { border: 2px solid %27; padding: 0 9px; background-color: %2; }
+*[shineKind="select"][shineState="focus"] { border: 2px solid %27; padding: 0 9px; background-color: %2; }
 *[shineKind="select"]:disabled { color: %11; border-color: %6; }
 *[shineKind="select"][shineState="disabled"] { color: %11; border-color: %6; }
 *[shineKind="selectpopup"] {
-  background-color: %5; color: %9; border: 1px solid %7; border-radius: 8px; padding: 4px;
+  background-color: %5; color: %9; border: 1px solid %7; border-radius: 10px; padding: 4px;
 }
 *[shineKind="selectgroup"] { color: %10; background: transparent; padding: 4px 8px 2px 8px; }
 *[shineKind="selectitem"] { background: transparent; color: %9; padding: 4px 8px; border-radius: 5px; }
@@ -397,28 +420,53 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="check"][shineState="disabled"] { color: %11; }
 *[shineKind="radio"][shineState="disabled"] { color: %11; }
 
-/* —— ProgressBar（内嵌文字不闪烁由实现保证） —— */
+/* —— ProgressBar：webui .prog h6 r-pill fill-muted；chunk 用 grad-accent（取 accent） —— */
 *[shineKind="progressbar"] {
-  background-color: %1; border: none; border-radius: 5px; min-height: 8px;
+  background-color: %26; border: none; border-radius: 999px;
+  min-height: 6px; max-height: 6px;
 }
-*[shineKind="progressbar"]::chunk { background-color: %13; border-radius: 5px; }
+*[shineKind="progressbar"]::chunk { background-color: %13; border-radius: 999px; }
 *[shineKind="progresslabel"] { background: transparent; color: %10; }
 *[shineKind="progressbar"][state="error"]::chunk { background-color: %20; }
 *[shineKind="progressbar"][state="ok"]::chunk { background-color: %18; }
 *[shineKind="progressbar"][state="idle"]::chunk { background-color: %22; }
 
-/* —— EmptyState / ErrorState（容器三态中的两态） —— */
+/* —— EmptyState / ErrorState（容器三态中的两态）—— */
+/* webui .empty：p40 20 居中；.glyph 52×52 r-lg + 虚线边 + fill-muted */
 *[shineKind="emptystate"] { background: transparent; }
 *[shineKind="errorstate"] { background: transparent; }
-*[shineKind="statetitle"] { background: transparent; color: %9; }
-*[shineKind="statesub"] { background: transparent; color: %10; }
+*[shineKind="statetitle"] { background: transparent; color: %9; font-weight: 600; }
+*[shineKind="statesub"] { background: transparent; color: %10; font-size: 12px; }
 *[shineKind="stateicon"] { background: transparent; color: %11; }
+/* .statesub 系列的补充字号档：页内小字统一 12px muted */
+*[shineKind="statemeta"] { background: transparent; color: %11; font-size: 11px; }
+/* 状态行：与 .tag 同族但不做胶囊底，只给文字色 */
+*[shineKind="statestatus"] { background: transparent; color: %10; font-size: 12px; font-weight: 600; }
+/* webui .kpi .k-delta：涨绿 / 跌红 / 持平灰 */
+*[shineKind="statemeta"][shineVariant="up"] { color: %18; font-weight: 700; }
+*[shineKind="statemeta"][shineVariant="down"] { color: %20; font-weight: 700; }
+*[shineKind="statemeta"][shineVariant="flat"] { color: %11; }
 *[shineKind="errorstate"] *[shineKind="stateicon"] { color: %20; }
-*[shineKind="statedetail"] { background-color: %2; color: %10; border: 1px solid %6; border-radius: 5px; }
+*[shineKind="statedetail"] {
+  background-color: %26; color: %10; border: 1px solid %6; border-radius: 6px;
+  padding: 4px 8px; font-size: 12px;
+}
 
-/* —— Toast（info/success/warning/error，右下角堆叠） —— */
+/* —— Art 占位画 / 胶片格 / 输入外框 ——
+   webui .art：r-sm(6) + fill-muted；.film-cell r-sm + line-normal + fthumb h84 —— */
+*[shineKind="art"] { background-color: %26; border: 1px solid %6; border-radius: 6px; }
+*[shineKind="filmcell"] {
+  background-color: %26; border: 1px solid %7; border-radius: 6px;
+}
+*[shineKind="filmcell"][selected="true"] { border-color: %13; }
+*[shineKind="inputframe"] {
+  background-color: %26; border: 1px solid %6; border-radius: 6px;
+}
+
+/* —— Toast：webui .toast r-md(10) / p10 14 / f12.5 / 左侧 3px 状态条 —— */
 *[shineKind="toast"] {
-  background-color: %5; color: %9; border: 1px solid %7; border-radius: 8px; padding: 8px 12px;
+  background-color: %5; color: %9; border: 1px solid %7; border-radius: 10px; padding: 10px 14px;
+  font-size: 12px;
 }
 *[shineKind="toast"][tone="info"] { border-left: 3px solid %17; }
 *[shineKind="toast"][tone="success"] { border-left: 3px solid %18; }
@@ -433,13 +481,14 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="toasticon"][tone="busy"] { color: %21; background: transparent; }
 *[shineKind="toasticon"][tone="pending"] { color: %23; background: transparent; }
 
-/* —— Dialog / Drawer / Tooltip —— */
-*[shineKind="dialog"] { background-color: %5; border: 1px solid %7; border-radius: 12px; }
+/* —— Dialog / Drawer / Tooltip：webui .modal r-lg(14)；tooltip r-sm(6) —— */
+*[shineKind="dialog"] { background-color: %5; border: 1px solid %7; border-radius: 14px; }
 *[shineKind="dialogtitle"] { background: transparent; color: %9; }
 *[shineKind="dialogbody"] { background: transparent; color: %10; }
 *[shineKind="drawer"] { background-color: %5; border-left: 1px solid %7; }
 *[shineKind="tooltip"] {
-  background-color: %5; color: %9; border: 1px solid %8; border-radius: 5px; padding: 4px 8px;
+  background-color: %5; color: %9; border: 1px solid %8; border-radius: 6px; padding: 4px 9px;
+  font-size: 11px;
 }
 *[shineKind="tooltip"] QLabel { background: transparent; color: %9; }
 *[shineKind="tooltipkbd"] { background: transparent; color: %10; }
@@ -447,21 +496,74 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 /* -- Scrim: floating-layer mask (bg.overlay is now surface-only, never a mask). -- */
 *[shineKind="scrim"] { background-color: %28; }
 
-/* —— Tabs（下划线指示条自绘） / Toolbar / Splitter —— */
+/* —— Tabs：webui .tabs > button p8 12 / f13 / w600 / text-muted；选中 accent + 2px 指示条 —— */
 *[shineKind="tabs"] { background: transparent; border-bottom: 1px solid %6; }
-*[shineKind="tab"] { background: transparent; color: %10; padding: 6px 14px; border: none; }
+*[shineKind="tab"] {
+  background: transparent; color: %10; padding: 8px 12px; min-height: 30px;
+  font-size: 13px; font-weight: 600;
+}
 *[shineKind="tab"]:hover { color: %9; }
 *[shineKind="tab"][shineState="hover"] { color: %9; }
-*[shineKind="tab"][selected="true"] { color: %9; }
+*[shineKind="tab"][selected="true"] { color: %13; border-bottom: 2px solid %13; }
 *[shineKind="tab"]:disabled { color: %11; }
 *[shineKind="tab"][shineState="disabled"] { color: %11; }
-*[shineKind="tab"]:focus { border: 2px solid %27; padding: 5px 13px; }
-*[shineKind="tab"][shineState="focus"] { border: 2px solid %27; padding: 5px 13px; }
+*[shineKind="tab"]:focus { border: 2px solid %27; padding: 7px 11px; }
+*[shineKind="tab"][shineState="focus"] { border: 2px solid %27; padding: 7px 11px; }
 *[shineKind="tabindicator"] { background-color: %13; }
 *[shineKind="toolbar"] { background-color: %3; border-bottom: 1px solid %6; }
 *[shineKind="toolseparator"] { background-color: %6; }
 *[shineKind="splitter"]::handle { background-color: %6; }
 *[shineKind="splitter"]::handle:hover { background-color: %8; }
+
+/* —— 外壳七区：数值逐条取自 webui shell.css ——
+   .topbar h46 glass + line-subtle；.rail w56 bg-surface；.crumbs h34；
+   .inspector w280 bg-surface + 左边线；.statusbar h26 f11.5；
+   .float-panel r14 + line-subtle + shadow；.float-toolbar r10 —— */
+QWidget#topBar {
+  background-color: %2; border-bottom: 1px solid %6;
+  font-size: 13px;
+}
+QWidget#breadcrumb {
+  background-color: %2; border-bottom: 1px solid %6;
+  font-size: 12px; color: %10;
+}
+QLabel#crumbSep { color: %11; background: transparent; }
+QLabel#crumbHere { color: %9; background: transparent; font-weight: 600; }
+QWidget#activityRail {
+  background-color: %2; border-right: 1px solid %6;
+}
+QWidget#rightPanel {
+  background-color: %2; border-left: 1px solid %6;
+}
+QWidget#sidePanel {
+  background-color: %2; border-right: 1px solid %6;
+}
+QWidget#bottomDock {
+  background-color: %2; border-top: 1px solid %6;
+}
+QWidget#statusBar {
+  background-color: %2; border-top: 1px solid %6;
+  font-size: 11px; color: %10;
+}
+QPushButton#statusItem {
+  background: transparent; border: none; border-radius: 4px;
+  padding: 1px 8px; min-height: 20px; color: %10; font-size: 11px;
+}
+QPushButton#statusItem:hover { background-color: %24; color: %9; }
+/* 浮动面板（出图 / 出片）：glass 底在 Qt 里退化为 bg-surface + 1px 边 + 14px 圆角 */
+QWidget#floatPanel {
+  background-color: %3; border: 1px solid %6; border-radius: 14px;
+}
+QWidget#floatPanel QTabWidget::pane { border: none; background: transparent; }
+/* 浮动工具栏：r10 + 细边 + 面板底色，避免与画布同色糊在一起 */
+QWidget#floatToolbar {
+  background-color: %4; border: 1px solid %6; border-radius: 10px;
+}
+QWidget#floatSep { background-color: %7; }
+/* 浮动面板与工具栏的外缩容器：必须完全透明，否则会在画布上留出一条底色带 */
+QWidget#floatHost { background: transparent; border: none; }
+/* 节点画布：webui .flow-canvas 的底是 fill-muted（不是 bg.void），配 22px 点阵 */
+QGraphicsView { background-color: %26; border: none; }
 )QSS";
 
 // 全部替换 %28..%1（降序，避免 %1 误伤 %10 之类）

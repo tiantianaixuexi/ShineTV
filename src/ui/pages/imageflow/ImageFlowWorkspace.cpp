@@ -16,6 +16,7 @@
 #include "novel/NovelVisual.h"
 #include "util/File.h"
 
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QFile>
 #include <QLabel>
@@ -83,19 +84,38 @@ void ImageFlowWorkspace::BuildUi() {
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
 
-    // 画布满铺整页：面板浮在它之上，不再靠 QSplitter 分栏争宽度。
-    auto* canvas_host = new QWidget(this);
-    auto* host_lay = new QVBoxLayout(canvas_host);
-    host_lay->setContentsMargins(0, 0, 0, 0);
-    host_lay->setSpacing(0);
+    // 画布满铺整页（webui .canvas-page：absolute inset 0）；浮动工具栏与浮动面板
+    // 压在画布之上（.float-toolbar / .float-panel，各自带 16px 外缩）。
+    // Qt 的等价做法：三者放进同一个 grid cell，靠对齐标志决定各自的位置 ——
+    // 上一版把面板排成了画布下方的独立横条（canvas 与 split_row 各占一半高度），
+    // 这正是"结构搬过来了但一眼不像"的典型。
+    auto* stage = new QWidget(this);
+    auto* stage_lay = new QGridLayout(stage);
+    stage_lay->setContentsMargins(0, 0, 0, 0);
+    stage_lay->setSpacing(0);
 
-    // 顶部浮动工具栏：导入 / 导出 / 提交前校验 / 批量出图 + 状态行
-    auto* toolbar = new QWidget(canvas_host);
+    canvas_ = new shine::kit::FlowCanvas(stage);
+    canvas_->setMinimumWidth(360);
+    stage_lay->addWidget(canvas_, 0, 0);
+
+    // 左上：浮动工具栏（accent 标记 + 标题 + 导入/导出/校验/批量出图 + 状态）
+    auto* tool_host = new QWidget(stage);
+    tool_host->setObjectName(QStringLiteral("floatHost"));
+    auto* tool_host_lay = new QVBoxLayout(tool_host);
+    tool_host_lay->setContentsMargins(16, 16, 16, 16);
+    tool_host_lay->setSpacing(0);
+    auto* toolbar = new QWidget(tool_host);
+    toolbar->setObjectName(QStringLiteral("floatToolbar"));
     auto* tb = new QHBoxLayout(toolbar);
-    tb->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                           theme::space::kSteps[2], theme::space::kSteps[1]);
-    tb->setSpacing(theme::space::kSteps[1]);
+    tb->setContentsMargins(12, 8, 12, 8);
+    tb->setSpacing(8);
+    auto* flow_mark = new QLabel(QStringLiteral("◈"), toolbar); // 与 kit 字符图标约定一致
+    widgets::SetKind(flow_mark, "stateicon");
     auto* flow_title = widgets::SectionTitle(QStringLiteral("出图流程 · 分镜图_v3"), toolbar);
+    auto* sep = new QWidget(toolbar);
+    sep->setObjectName(QStringLiteral("floatSep"));
+    sep->setFixedWidth(1);
+    sep->setFixedHeight(18);
     auto* import = new widgets::Button(QStringLiteral("导入"), widgets::Button::Variant::Ghost,
                                        widgets::Button::Size::Sm, toolbar);
     auto* export_button = new widgets::Button(QStringLiteral("导出"), widgets::Button::Variant::Ghost,
@@ -105,42 +125,31 @@ void ImageFlowWorkspace::BuildUi() {
     auto* run = new widgets::Button(QStringLiteral("批量出图"), widgets::Button::Variant::Primary,
                                     widgets::Button::Size::Sm, toolbar);
     status_ = new QLabel(QStringLiteral("等待导入工作流"), toolbar);
-    widgets::SetKind(status_, "statedetail");
+    widgets::SetKind(status_, "statemeta");
+    tb->addWidget(flow_mark);
     tb->addWidget(flow_title);
-    tb->addStretch(1);
+    tb->addWidget(sep);
     tb->addWidget(import);
     tb->addWidget(export_button);
     tb->addWidget(validate);
     tb->addWidget(run);
+    tb->addSpacing(4);
     tb->addWidget(status_);
-    host_lay->addWidget(toolbar);
+    tool_host_lay->addWidget(toolbar, 0, Qt::AlignLeft | Qt::AlignTop);
+    stage_lay->addWidget(tool_host, 0, 0, Qt::AlignLeft | Qt::AlignTop);
 
-    canvas_ = new shine::kit::FlowCanvas(canvas_host);
-    canvas_->setMinimumWidth(480);
-    host_lay->addWidget(canvas_, 1);
-
-    // ── 右侧浮动参数面板（webui float-panel：头 / 体 / 底） ──
-    // 折叠时整块隐藏，画布拿回整幅宽度；展开时从右侧压入，
-    // 画布自动收窄（面板是 canvas_host 的最后一个兄弟节点，走布局而非浮层，
-    // 这样窄窗口下面板会被压缩而不是盖住画布）。
-    auto* split_row = new QWidget(canvas_host);
-    auto* split_lay = new QHBoxLayout(split_row);
-    split_lay->setContentsMargins(0, 0, 0, 0);
-    split_lay->setSpacing(0);
-
-    panel_ = new QWidget(split_row);
+    // ── 右侧浮动参数面板（webui float-panel：top16 right16 bottom16 w348）──
+    panel_ = new QWidget(stage);
     panel_->setObjectName(QStringLiteral("floatPanel"));
-    panel_->setMinimumWidth(320);
-    panel_->setMaximumWidth(460);
+    panel_->setFixedWidth(348);
     auto* panel_lay = new QVBoxLayout(panel_);
-    panel_lay->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                                  theme::space::kSteps[2], theme::space::kSteps[2]);
-    panel_lay->setSpacing(theme::space::kSteps[2]);
+    panel_lay->setContentsMargins(14, 12, 14, 12);
+    panel_lay->setSpacing(10);
 
     auto* panel_head = new QWidget(panel_);
     auto* ph = new QHBoxLayout(panel_head);
     ph->setContentsMargins(0, 0, 0, 0);
-    ph->setSpacing(theme::space::kSteps[1]);
+    ph->setSpacing(8);
     auto* panel_title = widgets::SectionTitle(QStringLiteral("镜头参数"), panel_head);
     fold_btn_ = new QPushButton(QStringLiteral("▾"), panel_head);
     fold_btn_->setToolTip(QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
@@ -169,11 +178,16 @@ void ImageFlowWorkspace::BuildUi() {
     comfy_ = new ComfyPanel(panel_);
     panel_lay->addWidget(comfy_);
 
-    split_lay->addStretch(1);
-    split_lay->addWidget(panel_);
-    host_lay->addWidget(split_row, 1);
+    auto* panel_host = new QWidget(stage);
+    panel_host->setObjectName(QStringLiteral("floatHost"));
+    panel_host_ = panel_host;
+    auto* panel_host_lay = new QVBoxLayout(panel_host);
+    panel_host_lay->setContentsMargins(0, 16, 16, 16);
+    panel_host_lay->setSpacing(0);
+    panel_host_lay->addWidget(panel_);
+    stage_lay->addWidget(panel_host, 0, 0, Qt::AlignRight);
 
-    outer->addWidget(canvas_host, 1);
+    outer->addWidget(stage, 1);
 
     connect(import, &QPushButton::clicked, this, [this] {
         SetStatus(QStringLiteral("请使用 ImportApiJson() 导入工作流文本（远程入口已预留）"));
@@ -190,7 +204,9 @@ void ImageFlowWorkspace::BuildUi() {
 
 void ImageFlowWorkspace::TogglePanel() {
     panel_folded_ = !panel_folded_;
-    panel_->setVisible(!panel_folded_);
+    if (panel_host_ != nullptr) {
+        panel_host_->setVisible(!panel_folded_);
+    }
     fold_btn_->setText(panel_folded_ ? QStringLiteral("▸") : QStringLiteral("▾"));
     fold_btn_->setToolTip(panel_folded_ ? QStringLiteral("展开面板")
                                          : QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));

@@ -10,9 +10,13 @@
 #include "ui/kit/data/Panels.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Feedback.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/layout/QtLayout.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
 #include "util/Encoding.h"
@@ -160,9 +164,9 @@ AssetWorkspace::AssetWorkspace(QWidget* parent) : QWidget(parent) {
 
 void AssetWorkspace::BuildUi() {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[2],
-                              theme::space::kSteps[3], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     auto* header = new QWidget(this);
     auto* headerLayout = new QHBoxLayout(header);

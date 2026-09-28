@@ -125,9 +125,11 @@ QSize StageFlow::sizeHint() const {
 
 QRectF StageFlow::BoxOf(std::size_t i) const {
     const Node& n = nodes_[i];
-    const double x = 12.0 + static_cast<double>(i) * 172.0;
-    const double y = n.branchOf.isEmpty() ? 46.0 : 108.0; // 支线下沉一行
-    return {x, y, 148, 44};
+    // webui ui.css .stageflow：snode 高 30 / r-pill / p0 11；slink 宽 18。
+    // 这里取宽 132 + 间距 18（= slink 宽），两行布局，支线下沉一行。
+    const double x = 12.0 + static_cast<double>(i) * 150.0;
+    const double y = n.branchOf.isEmpty() ? 8.0 : 46.0;
+    return {x, y, 132, 30};
 }
 
 QString StageFlow::NodeAt(const QPointF& pos) const {
@@ -215,20 +217,28 @@ void StageFlow::paintEvent(QPaintEvent* ev) {
                 break;
         }
         p.setBrush(fill);
-        QPen pen{border, n.state == NodeState::Running ? 2.0 : 1.0};
+        QPen pen{border, n.state == NodeState::Running ? 1.5 : 1.0};
         if (dashed) {
             pen.setStyle(Qt::DashLine);
         }
         p.setPen(pen);
-        p.drawRoundedRect(r, 8, 8);
+        // r-pill：webui .stageflow .snode 是胶囊，不是 8px 圆角矩形
+        p.drawRoundedRect(r, r.height() / 2.0, r.height() / 2.0);
 
+        // 左：状态标记（webui .code 位；Node 不带阶段码，用状态符占位）
         p.setPen(glyphCol);
-        p.setFont(QFont{font().family(), 11});
-        p.drawText(QRectF(r.x() + 6, r.y(), 22, r.height()), Qt::AlignCenter, glyph);
+        QFont code_font{font().family()};
+        code_font.setPixelSize(10);
+        code_font.setWeight(QFont::DemiBold);
+        p.setFont(code_font);
+        p.drawText(QRectF(r.x() + 11, r.y(), 22, r.height()), Qt::AlignVCenter | Qt::AlignLeft, glyph);
 
         p.setPen(widgets::TokenQColor(n.state == NodeState::Skipped ? t.textMuted : t.textPrimary));
-        p.setFont(QFont{font().family(), 9});
-        p.drawText(r.adjusted(28, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft,
+        QFont name_font{font().family()};
+        name_font.setPixelSize(12);
+        name_font.setWeight(QFont::DemiBold);
+        p.setFont(name_font);
+        p.drawText(r.adjusted(36, 0, -11, 0), Qt::AlignVCenter | Qt::AlignLeft,
                    n.title + (n.branchOf.isEmpty() ? QString{} : QStringLiteral("（支线）")));
     }
 }
