@@ -12,6 +12,7 @@
 #include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Inputs.h"
+#include "ui/kit/controls/Surfaces.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelInit.h"
 #include "novel/NovelTypes.h"
@@ -143,9 +144,14 @@ struct MetaIdentity {
     return n;
 }
 
+// 三张卡的内容区最小宽（给「一行放不下必须看全」的内容兜底）。
+// 低于这些宽度时由外层滚动出横向滚动条，而不是把控件互相压扁。
+constexpr int kStageCardMinW = 720;  // 阶段表：5 列合计约 714
+constexpr int kGateCardMinW = 880;   // 门禁行：名称 + 模式 + 判定 + 三个动作钮
+constexpr int kImportCardMinW = 560; // 导入行：前作选择 + 预算 + 按钮
+
 // 前作条目的分类（决策 §7 的「前情圣经」四类）
-[[nodiscard]] QString CategoryOf(const QString& kind) {
-    if (kind == QLatin1String("person")) return QStringLiteral("人物终态卡");
+[[nodiscard]] QString CategoryOf(const QString& kind) {    if (kind == QLatin1String("person")) return QStringLiteral("人物终态卡");
     if (kind == QLatin1String("foreshadowing")) return QStringLiteral("已完结伏笔");
     if (kind == QLatin1String("event")) return QStringLiteral("结案摘要");
     for (const char* k : {"universe", "world_rule", "history", "culture", "language", "religion",
@@ -175,33 +181,49 @@ InitChainView::InitChainView(QWidget* parent) : QWidget(parent) {
                                           widgets::Button::Size::Sm, head);
     runGatesBtn_ = new widgets::Button(QStringLiteral("▶ 跑门禁 N1–N14"), widgets::Button::Variant::Secondary,
                                        widgets::Button::Size::Sm, head);
-    state_ = new QLabel(QStringLiteral("初始化链还没开跑 —— 下一步：点「一键跑骨架」建结构（书名/文风/"
-                                       "卷/主线 + 种子），再点「跑门禁 N1–N14」看还缺什么。"),
-                        head);
-    state_->setWordWrap(true);
+    state_ = new widgets::ElidedLabel(
+        QStringLiteral("初始化链还没开跑 —— 下一步：点「一键跑骨架」建结构（书名/文风/卷/主线 + 种子），"
+                       "再点「跑门禁 N1–N14」看还缺什么。"),
+        head);
+    widgets::SetKind(state_, "fieldhelp");
     hr->addWidget(runSkeletonBtn_);
     hr->addWidget(runGatesBtn_);
     hr->addWidget(state_, 1);
     outer->addWidget(head);
 
-    auto* split = new QSplitter(Qt::Vertical, this);
-    split->addWidget(BuildStagesArea());
-    split->addWidget(BuildGatesArea());
-    split->addWidget(BuildImportArea());
-    split->setSizes({260, 300, 220});
-    outer->addWidget(split, 1);
+    // —— 单列滚动 + 若干 SectionCard ——
+    // 上一版是三格 QSplitter：三个格子各占固定高度，内容一多就被压扁，
+    // 而裸控件纵向排开又没有标题栏和分组层级，视觉上是一条长带。
+    // 现在整页一根竖滚动条，每块一个 SectionCard（标题栏 + 内容 + 可折叠）。
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    auto* column = new QWidget(scroll);
+    auto* col = new QVBoxLayout(column);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(theme::space::kSteps[3]); // 卡片之间 8px：明确分组但不散
+    col->addWidget(BuildStagesArea());
+    col->addWidget(BuildGatesArea());
+    col->addWidget(BuildImportArea());
+    col->addStretch(1);
+    scroll->setWidget(column);
+    outer->addWidget(scroll, 1);
 
     connect(runSkeletonBtn_, &QPushButton::clicked, this, [this] {
         QString err;
         if (!RunSkeleton(&err)) {
-            state_->setText(err);
+            state_->SetFullText(err);
+            state_->SetExpanded(true);
             widgets::SetTextColor(state_, theme::Current().statusDanger);
         }
     });
     connect(runGatesBtn_, &QPushButton::clicked, this, [this] {
         QString report;
         (void)RunGates(&report);
-        state_->setText(report.split(QLatin1Char('\n')).value(0));
+        state_->SetFullText(report.split(QLatin1Char('\n')).value(0));
+        state_->SetExpanded(false);
         widgets::SetTextColor(state_, theme::Current().textSecondary);
     });
 
@@ -216,13 +238,13 @@ InitChainView::~InitChainView() {
 // ————————————————————————————————————————————— 布局三块
 
 QWidget* InitChainView::BuildStagesArea() {
-    auto* w = new QWidget(this);
-    auto* v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(theme::space::kSteps[1]);
-    v->addWidget(SectionLabel(w, QStringLiteral("初始化流水线 I1–I16（`10` §2.2 · 可断点续跑）")));
+    auto* card = new widgets::SectionCard(QStringLiteral("初始化流水线 I1–I16"), this);
+    card->SetSubtitle(QStringLiteral("`10` §2.2 · 可断点续跑"));
+    card->SetCollapsible(true);
+    card->SetContentMinWidth(kStageCardMinW);
+    QVBoxLayout* v = card->BodyLayout();
 
-    stageTable_ = new data::DataTable(QStringLiteral("init-chain-stages"), w);
+    stageTable_ = new data::DataTable(QStringLiteral("init-chain-stages"), card);
     stageTable_->SetColumns({{QStringLiteral("stage"), QStringLiteral("阶段"), 64},
                              {QStringLiteral("name"), QStringLiteral("名称"), 96},
                              {QStringLiteral("code"), QStringLiteral("代码"), 210},
@@ -234,9 +256,10 @@ QWidget* InitChainView::BuildStagesArea() {
             ShowArtifact(QString::fromStdString(std::string{specs[static_cast<std::size_t>(row)].artifact}));
         }
     });
-    v->addWidget(stageTable_, 3);
+    stageTable_->setMinimumHeight(260);
+    v->addWidget(stageTable_);
 
-    auto* artRow = new QWidget(w);
+    auto* artRow = new QWidget(card);
     auto* ar = new QHBoxLayout(artRow);
     ar->setContentsMargins(0, 0, 0, 0);
     ar->setSpacing(theme::space::kSteps[1]);
@@ -257,7 +280,7 @@ QWidget* InitChainView::BuildStagesArea() {
     ar->addWidget(artifactSel_, 1);
     v->addWidget(artRow);
 
-    artifactStack_ = new QStackedWidget(w);
+    artifactStack_ = new QStackedWidget(card);
     artifactEmpty_ = new widgets::EmptyState(QStringLiteral("📄"), QStringLiteral("还没看产物"),
                                              QStringLiteral("从阶段表点「看产物」，或在上面选 init/ 下的产物文件。"
                                                              "I15_gate.json 是门禁报告、I16_commit.json 是提交账。"),
@@ -267,33 +290,36 @@ QWidget* InitChainView::BuildStagesArea() {
     artifactStack_->addWidget(artifactEmpty_);
     artifactStack_->addWidget(artifactTree_);
     artifactStack_->setCurrentWidget(artifactEmpty_);
-    v->addWidget(artifactStack_, 2);
+    artifactStack_->setMinimumHeight(200);
+    v->addWidget(artifactStack_);
 
     stageNote_ = new QLabel(QStringLiteral("可断点续跑：骨架幂等（重跑不重做、已有产物保留）；"
                                            "I1–I14 由路径 C（AI 分域生成）/ 路径 A（导入）落盘（`10` §2.8 当前落盘范围），"
                                            "I15/I16 由「一键跑骨架」落盘。"),
-                            w);
+                            card);
     stageNote_->setWordWrap(true);
     widgets::SetTextColor(stageNote_, theme::Current().textMuted);
     v->addWidget(stageNote_);
-    return w;
+    return card;
 }
 
 QWidget* InitChainView::BuildGatesArea() {
-    auto* w = new QWidget(this);
-    auto* v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(theme::space::kSteps[1]);
-    v->addWidget(SectionLabel(w, QStringLiteral("门禁 N1–N14（`10` §2.3 · 全部满足才可开写第 1 章，"
-                                                "失败不允许警告后放行）")));
-    gateState_ = new QLabel(QStringLiteral("门禁还没跑 —— 下一步：点「跑门禁 N1–N14」逐条判定。"), w);
-    gateState_->setWordWrap(true);
+    auto* card = new widgets::SectionCard(QStringLiteral("门禁 N1–N14"), this);
+    card->SetSubtitle(QStringLiteral("`10` §2.3 · 全部满足才可开写第 1 章，失败不允许警告后放行"));
+    card->SetCollapsible(true);
+    // 门禁行是本页最宽的一行（名称 + 模式 + 判定 + 三个动作钮），给它兜一个最小宽，
+    // 窄窗口时由外层滚动出横向滚动条，而不是把三个动作钮顶出卡片。
+    card->SetContentMinWidth(kGateCardMinW);
+    QVBoxLayout* v = card->BodyLayout();
+
+    gateState_ = new widgets::ElidedLabel(
+        QStringLiteral("门禁还没跑 —— 下一步：点「跑门禁 N1–N14」逐条判定。"), card);
+    widgets::SetKind(gateState_, "fieldhelp");
     v->addWidget(gateState_);
 
-    auto* scroll = new QScrollArea(w);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    gateHost_ = new QWidget(scroll);
+    // 门禁区不再自带 QScrollArea：整页已经是一根竖滚动条，
+    // 嵌套滚动会让「哪根条管哪块」变糊（上一版就是这个毛病）。
+    gateHost_ = new QWidget(card);
     gateCol_ = new QVBoxLayout(gateHost_);
     gateCol_->setContentsMargins(0, 0, 0, 0);
     gateCol_->setSpacing(theme::space::kSteps[1]);
@@ -305,8 +331,9 @@ QWidget* InitChainView::BuildGatesArea() {
         auto* hl = new QHBoxLayout(line);
         hl->setContentsMargins(0, 0, 0, 0);
         hl->setSpacing(theme::space::kSteps[1]);
-        row.name = new QLabel(QString("%1　%2").arg(row.nId, QString::fromUtf8(g.name)), line);
-        row.name->setMinimumWidth(260);
+        row.name = new widgets::ElidedLabel(QString("%1　%2").arg(row.nId, QString::fromUtf8(g.name)), line);
+        row.name->SetExpandable(false); // 规则名短，纯省略位；判定文本才给点击展开
+        row.name->setMinimumWidth(240);
         row.mode = new QLabel(QStringLiteral("启用 enforce"), line);
         // 判定文本可能很长（失败详情 + 修法），普通 QLabel 既不省略也不限宽，
         // 会把同一行的按钮顶出容器并在右栏上叠字。改用 ElidedLabel：
@@ -332,12 +359,13 @@ QWidget* InitChainView::BuildGatesArea() {
         connect(row.ignoreBtn, &QPushButton::clicked, this, [this, nId] {
             QString err;
             if (!SetGateRule(nId, QStringLiteral("ignore-approved"), &err)) {
-                gateState_->setText(err);
+                gateState_->SetFullText(err);
                 widgets::SetTextColor(gateState_, theme::Current().statusDanger);
             } else {
-                gateState_->setText(QStringLiteral("「%1」已申请「忽略并人工确认」—— 还要过「人工审批」才放行"
-                                                   "（显式确认 + 记 audit_logs，不允许警告后放行）。")
-                                        .arg(nId));
+                gateState_->SetFullText(
+                    QStringLiteral("「%1」已申请「忽略并人工确认」—— 还要过「人工审批」才放行"
+                                   "（显式确认 + 记 audit_logs，不允许警告后放行）。")
+                        .arg(nId));
                 widgets::SetTextColor(gateState_, theme::Current().statusWarn);
             }
         });
@@ -354,39 +382,38 @@ QWidget* InitChainView::BuildGatesArea() {
             }
             QString err;
             if (!ApproveGate(nId, &err)) {
-                gateState_->setText(err);
+                gateState_->SetFullText(err);
                 widgets::SetTextColor(gateState_, theme::Current().statusDanger);
             } else {
-                gateState_->setText(QStringLiteral("「%1」人工审批通过：忽略并放行（已记 audit_logs）。").arg(nId));
+                gateState_->SetFullText(QStringLiteral("「%1」人工审批通过：忽略并放行（已记 audit_logs）。").arg(nId));
                 widgets::SetTextColor(gateState_, theme::Current().statusWarn);
             }
         });
         connect(row.enforceBtn, &QPushButton::clicked, this, [this, nId] {
             QString err;
             if (!SetGateRule(nId, QStringLiteral("enforce"), &err)) {
-                gateState_->setText(err);
+                gateState_->SetFullText(err);
                 widgets::SetTextColor(gateState_, theme::Current().statusDanger);
             } else {
-                gateState_->setText(QStringLiteral("「%1」恢复启用：照 `10` §2.3 判定，不再放行。").arg(nId));
+                gateState_->SetFullText(QStringLiteral("「%1」恢复启用：照 `10` §2.3 判定，不再放行。").arg(nId));
                 widgets::SetTextColor(gateState_, theme::Current().textSecondary);
             }
         });
         gateRows_.push_back(std::move(row));
     }
     gateCol_->addStretch(1);
-    scroll->setWidget(gateHost_);
-    v->addWidget(scroll, 1);
-    return w;
+    v->addWidget(gateHost_);
+    return card;
 }
 
 QWidget* InitChainView::BuildImportArea() {
-    auto* w = new QWidget(this);
-    auto* v = new QVBoxLayout(w);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(theme::space::kSteps[1]);
-    v->addWidget(SectionLabel(w, QStringLiteral("前情导入（决策 §7：写时导入为主 · 只读打开前作库）")));
+    auto* card = new widgets::SectionCard(QStringLiteral("前情导入"), this);
+    card->SetSubtitle(QStringLiteral("决策 §7：写时导入为主 · 只读打开前作库"));
+    card->SetCollapsible(true);
+    card->SetContentMinWidth(kImportCardMinW);
+    QVBoxLayout* v = card->BodyLayout();
 
-    auto* row = new QWidget(w);
+    auto* row = new QWidget(card);
     auto* hl = new QHBoxLayout(row);
     hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(theme::space::kSteps[1]);
@@ -402,13 +429,13 @@ QWidget* InitChainView::BuildImportArea() {
     hl->addWidget(importBtn_);
     v->addWidget(row);
 
-    importResult_ = new QLabel(QStringLiteral("还没有导入 —— 选前作书后点「导入前情」：抽「人物终态卡 / 世界观 / "
-                                              "已完结伏笔 / 每部结案摘要」，摘要 ≤ 上限，超限截断并明说。"),
-                               w);
-    importResult_->setWordWrap(true);
+    importResult_ = new widgets::ElidedLabel(QStringLiteral("还没有导入 —— 选前作书后点「导入前情」：抽「人物终态卡 / 世界观 / "
+                                                            "已完结伏笔 / 每部结案摘要」，摘要 ≤ 上限，超限截断并明说。"),
+                                              card);
+    widgets::SetKind(importResult_, "fieldhelp");
     v->addWidget(importResult_);
 
-    importStack_ = new QStackedWidget(w);
+    importStack_ = new QStackedWidget(card);
     importEmpty_ = new widgets::EmptyState(QStringLiteral("📥"), QStringLiteral("还没有前情导入产物"),
                                            QStringLiteral("导入后这里显示 work/init/prior_import.json（JsonTree）；"
                                                            "可追溯条目带出处「(书, 章)」+ canonical 名落本作库。"),
@@ -425,7 +452,8 @@ QWidget* InitChainView::BuildImportArea() {
     importStack_->addWidget(importEmpty_);
     importStack_->addWidget(importTree_);
     importStack_->setCurrentWidget(importEmpty_);
-    v->addWidget(importStack_, 1);
+    importStack_->setMinimumHeight(180);
+    v->addWidget(importStack_);
 
     connect(importBtn_, &QPushButton::clicked, this, [this] {
         QString report;
@@ -434,10 +462,10 @@ QWidget* InitChainView::BuildImportArea() {
             books.push_back(b);
         }
         const bool ok = ImportPriorBooks(books, static_cast<int>(budget_->Value()), &report);
-        importResult_->setText(report);
+        importResult_->SetFullText(report);
         widgets::SetTextColor(importResult_, ok ? theme::Current().textSecondary : theme::Current().statusDanger);
     });
-    return w;
+    return card;
 }
 
 // ————————————————————————————————————————————— 数据接入
@@ -468,7 +496,7 @@ void InitChainView::LoadFromRef(const project::ProjectRef& ref, const std::strin
     if (pick == nullptr) {
         openError_ = QStringLiteral("这个项目还没有任何书（db/novel.db 缺失）。下一步：新建项目后先建默认书库，"
                                     "或把书放到 books/<书名>/db/novel.db 再回来。");
-        state_->setText(openError_);
+        state_->SetFullText(openError_);
         widgets::SetTextColor(state_, theme::Current().statusWarn);
         LoadGateConfig();
         RebuildStages();
@@ -481,7 +509,7 @@ void InitChainView::LoadFromRef(const project::ProjectRef& ref, const std::strin
         openError_ = QStringLiteral("书库打不开：%1（%2）。请确认磁盘可写、文件未被其他程序独占，然后重新选书。")
                          .arg(QString::fromStdString(util::PathToUtf8(pick->dbPath)),
                               QString::fromStdString(r.error().message));
-        state_->setText(openError_);
+        state_->SetFullText(openError_);
         widgets::SetTextColor(state_, theme::Current().statusDanger);
         db_.reset();
     }
@@ -501,7 +529,7 @@ void InitChainView::LoadFromRef(const project::ProjectRef& ref, const std::strin
         util::json::OwnedDoc doc = util::json::ParseDoc(*text);
         const int k = static_cast<int>(util::json::GetI64(doc.root(), "summary_chars"));
         const int t = static_cast<int>(util::json::GetI64(doc.root(), "truncated_chars"));
-        importResult_->setText(
+        importResult_->SetFullText(
             QStringLiteral("已读回前情导入产物（work/init/prior_import.json）：摘要 %1 字%2。"
                            "重导入会按 canonical + 出处幂等，不重复落库。")
                 .arg(k)
@@ -509,7 +537,7 @@ void InitChainView::LoadFromRef(const project::ProjectRef& ref, const std::strin
         widgets::SetTextColor(importResult_, theme::Current().textSecondary);
     }
     if (openError_.isEmpty()) {
-        state_->setText(QStringLiteral("已载入《%1》的初始化链 —— 下一步：一键跑骨架 → 跑门禁 N1–N14。")
+        state_->SetFullText(QStringLiteral("已载入《%1》的初始化链 —— 下一步：一键跑骨架 → 跑门禁 N1–N14。")
                             .arg(bookTitle_));
         widgets::SetTextColor(state_, theme::Current().textSecondary);
     }
@@ -553,7 +581,7 @@ bool InitChainView::RunSkeleton(QString* err) {
     for (const std::string& c : sk.created) {
         made += made.isEmpty() ? QString::fromStdString(c) : QStringLiteral("、") + QString::fromStdString(c);
     }
-    state_->setText(QStringLiteral("骨架已建：%1。下一步：点「跑门禁 N1–N14」—— 内容类条件（主角/地点…）"
+    state_->SetFullText(QStringLiteral("骨架已建：%1。下一步：点「跑门禁 N1–N14」—— 内容类条件（主角/地点…）"
                                    "骨架不伪造，门禁会如实报缺并给修法。")
                         .arg(ElideText(made, 120)));
     widgets::SetTextColor(state_, theme::Current().statusOk);
@@ -621,7 +649,7 @@ bool InitChainView::RunGates(QString* report) {
     if (report != nullptr) {
         *report = text;
     }
-    state_->setText(text.section(QLatin1Char('\n'), 0, 0));
+    state_->SetFullText(text.section(QLatin1Char('\n'), 0, 0));
     widgets::SetTextColor(state_, bad == 0 ? theme::Current().statusOk : theme::Current().statusDanger);
     RebuildGates();
     return bad == 0;
@@ -929,7 +957,7 @@ bool InitChainView::ImportPriorBooks(const QStringList& bookTitles, int budgetCh
                 .arg(dbOk ? QStringLiteral(" 成功") : QStringLiteral(" 失败：") + persistErr);
     text += QLatin1Char('\n') + QStringLiteral("前作库只读打开，零写入（探针核对前作行数不变）");
     setReport(text);
-    importResult_->setText(text);
+    importResult_->SetFullText(text);
     widgets::SetTextColor(importResult_, (fileOk && dbOk && failedBooks == 0) ? theme::Current().textSecondary
                                                                  : theme::Current().statusDanger);
     RebuildImportBooks();
@@ -1254,7 +1282,7 @@ void InitChainView::RebuildGates() {
     // 门禁状态条（UI.md §3「门禁挡住」：列出具体哪条与修复建议；行内就是明细）
     const theme::ColorToken& t = theme::Current();
     if (!db_) {
-        gateState_->setText(openError_.isEmpty() ? QStringLiteral("书库没打开 —— 门禁无从判定。下一步：选书后点"
+        gateState_->SetFullText(openError_.isEmpty() ? QStringLiteral("书库没打开 —— 门禁无从判定。下一步：选书后点"
                                                                  "「跑门禁 N1–N14」。")
                                                  : openError_);
         widgets::SetTextColor(gateState_, t.statusWarn);
@@ -1270,12 +1298,12 @@ void InitChainView::RebuildGates() {
         }
     }
     if (badIds.isEmpty()) {
-        gateState_->setText(QStringLiteral("门禁通过：可以开写第 1 章（N1–N14 全部满足%1）。")
+        gateState_->SetFullText(QStringLiteral("门禁通过：可以开写第 1 章（N1–N14 全部满足%1）。")
                                 .arg(waived > 0 ? QStringLiteral("，其中 %1 条人工确认放行").arg(waived)
                                                 : QString{}));
         widgets::SetTextColor(gateState_, t.statusOk);
     } else {
-        gateState_->setText(QStringLiteral("门禁挡住：不能开写第 1 章 —— %1 不满足（每条的实测差额与修法见下行）。"
+        gateState_->SetFullText(QStringLiteral("门禁挡住：不能开写第 1 章 —— %1 不满足（每条的实测差额与修法见下行）。"
                                            "修完再点「跑门禁 N1–N14」复判。")
                                 .arg(badIds.join(QStringLiteral("、"))));
         widgets::SetTextColor(gateState_, t.statusDanger);
@@ -1319,7 +1347,7 @@ void InitChainView::SetRunning(const QString& step, bool on) {
     runGatesBtn_->SetLoading(on);
     importBtn_->setEnabled(!on);
     if (on) {
-        state_->setText(step);
+        state_->SetFullText(step);
         widgets::SetTextColor(state_, theme::Current().statusBusy);
     }
     QApplication::processEvents();

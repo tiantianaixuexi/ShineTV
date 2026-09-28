@@ -212,7 +212,7 @@ class WorldBoardView : public QWidget {
     widgets::Field* gwEntityKind_ = nullptr;
     widgets::Field* gwType_ = nullptr;
     widgets::Field* gwEnum_ = nullptr;
-    QLabel* fieldCount_ = nullptr;
+    widgets::ElidedLabel* fieldCount_ = nullptr;
     data::DataTable* fieldTable_ = nullptr;
 
     // —— P04-S3 四页控件组（按页聚合，避免成员平铺）——

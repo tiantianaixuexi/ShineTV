@@ -107,9 +107,10 @@ class StateDiffView : public QWidget {
 
     // 控件
     QLabel* verdict_ = nullptr;
-    QLabel* hint_ = nullptr;
+    widgets::ElidedLabel* hint_ = nullptr;
     QPlainTextEdit* diff_view_ = nullptr;
-    std::vector<std::pair<QLabel*, QLabel*>> gate_widgets_; // (✔/✘, 依据)
+    // (✔/✘, 依据)：依据是长判定文本，用 ElidedLabel（省略 + hover 全文 + 点击展开）
+    std::vector<std::pair<QLabel*, widgets::ElidedLabel*>> gate_widgets_;
     widgets::Button* commit_btn_ = nullptr;
     widgets::Button* rollback_btn_ = nullptr;
 };

@@ -74,8 +74,8 @@ ModelPromptView::ModelPromptView(QWidget* parent) : QWidget(parent) {
     auto* hl = new QHBoxLayout(head);
     hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(theme::space::kSteps[1]);
-    rule_ = new QLabel(head);
-    rule_->setWordWrap(true);
+    rule_ = new widgets::ElidedLabel(QString{}, head);
+    widgets::SetKind(rule_, "fieldhelp");
     hl->addWidget(rule_, 1);
 
     key_mask_ = new QLabel(head);
@@ -103,9 +103,8 @@ ModelPromptView::ModelPromptView(QWidget* parent) : QWidget(parent) {
     split->addWidget(BuildModels(), 1);
     split->addWidget(BuildPrompt(), 1);
 
-    hint_ = new QLabel(this);
-    hint_->setWordWrap(true);
-    widgets::SetTextColor(hint_, theme::Current().textSecondary);
+    hint_ = new widgets::ElidedLabel(QString{}, this);
+    widgets::SetKind(hint_, "fieldhelp");
 
     outer->addWidget(head);
     outer->addLayout(split, 1);
@@ -116,9 +115,11 @@ ModelPromptView::ModelPromptView(QWidget* parent) : QWidget(parent) {
 ModelPromptView::~ModelPromptView() = default;
 
 QWidget* ModelPromptView::BuildModels() {
-    auto* box = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* box = new widgets::SectionCard(QStringLiteral("模型分层"), this);
+    box->SetSubtitle(QStringLiteral("规划 / 写作 / 评审 / 提取"));
+    box->SetCollapsible(true);
+    box->SetContentMinWidth(620);
     QVBoxLayout* vl = box->BodyLayout();
-    vl->addWidget(new QLabel(QStringLiteral("模型分层（规划 / 写作 / 评审 / 提取）"), box));
 
     const std::vector<ModelRoleDef>& roles = ModelRoles();
     for (const ModelRoleDef& r : roles) {
@@ -127,12 +128,11 @@ QWidget* ModelPromptView::BuildModels() {
         rl->setContentsMargins(0, 0, 0, 0);
         rl->setSpacing(theme::space::kSteps[1]);
 
-        auto* name = new QLabel(QStringLiteral("%1（%2）")
-                                    .arg(QString::fromUtf8(r.name), QString::fromUtf8(r.tier)),
-                                row);
+        auto* name = new widgets::ElidedLabel(
+            QStringLiteral("%1（%2）").arg(QString::fromUtf8(r.name), QString::fromUtf8(r.tier)), row);
+        name->SetExpandable(false);
         name->setToolTip(QString::fromUtf8(r.note));
         name->setMinimumWidth(96);
-        widgets::SetTextColor(name, theme::Current().textPrimary);
 
         auto* sel = new widgets::Select(false, false, row);
         sel->setMinimumWidth(240);
@@ -158,7 +158,8 @@ QWidget* ModelPromptView::BuildModels() {
             (void)SetRoleModel(roleKey, picked.toStdString());
         });
 
-        auto* now = new QLabel(row);
+        auto* now = new widgets::ElidedLabel(QString{}, row);
+        now->SetExpandable(false);
         now->setToolTip(QStringLiteral("当前生效模型（`llm::ResolveModel`）"));
         widgets::SetTextColor(now, theme::Current().accentPrimary);
 
@@ -174,16 +175,16 @@ QWidget* ModelPromptView::BuildModels() {
 }
 
 QWidget* ModelPromptView::BuildPrompt() {
-    auto* box = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* box = new widgets::SectionCard(QStringLiteral("Prompt"), this);
+    box->SetSubtitle(QStringLiteral("外置查看 · 可覆盖落 `prompts/<role>.md`"));
+    box->SetCollapsible(true);
+    box->SetContentMinWidth(560);
     QVBoxLayout* vl = box->BodyLayout();
 
     auto* head = new QWidget(box);
     auto* hl = new QHBoxLayout(head);
     hl->setContentsMargins(0, 0, 0, 0);
     hl->setSpacing(theme::space::kSteps[1]);
-    auto* cap = new QLabel(QStringLiteral("Prompt（外置查看）"), head);
-    widgets::SetTextColor(cap, theme::Current().textPrimary);
-    hl->addWidget(cap);
     hl->addStretch(1);
     for (const ModelRoleDef& r : ModelRoles()) {
         auto* b = new widgets::Button(QString::fromUtf8(r.name), widgets::Button::Variant::Ghost,
@@ -242,7 +243,7 @@ void ModelPromptView::Reload() {
     for (std::size_t i = 0; i < ModelRoles().size(); ++i) {
         const ModelRoleDef& r = ModelRoles()[i];
         const std::string now = llm::ResolveModel(r.role);
-        model_now_[i]->setText(QString::fromStdString(now));
+        model_now_[i]->SetFullText(QString::fromStdString(now));
     }
     RefreshRuleLamp();
     // Key 只显掩码（`llm::MaskKey`：前后各 3 字符）
@@ -255,7 +256,7 @@ void ModelPromptView::Reload() {
 
 void ModelPromptView::RefreshRuleLamp() {
     const bool ok = AutoAllowed();
-    rule_->setText(ok ? QStringLiteral("✔ auto 可用：评审模型 ≠ 写作模型（`06` §2.7 M5 交叉评审成立）")
+    rule_->SetFullText(ok ? QStringLiteral("✔ auto 可用：评审模型 ≠ 写作模型（`06` §2.7 M5 交叉评审成立）")
                       : QStringLiteral("⛔ auto 禁用：评审模型 = 写作模型 —— 交叉评审形同自评，"
                                        "须把[评审]档改成另一个模型才能开 auto"));
     widgets::SetTextColor(rule_, ok ? theme::Current().statusOk : theme::Current().statusDanger);
@@ -338,7 +339,7 @@ void ModelPromptView::ShowRolePrompt(std::string_view role) {
     current_role_ = std::string{role};
     prompt_view_->setPlainText(EffectivePrompt(role));
     const std::string path = PromptOverridePath(project_dir_, role);
-    hint_->setText(path.empty()
+    hint_->SetFullText(path.empty()
                        ? QStringLiteral("内置 Prompt（`agent::DefaultPrompt`）—— 设工程根后可另存外置覆盖")
                        : (util::ReadFileBytes(path)
                               ? QStringLiteral("外置覆盖：%1")

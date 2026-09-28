@@ -516,6 +516,12 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
                 svc_.CurrentFile() != nullptr ? svc_.CurrentFile()->lastNovel : std::string{};
             OpenAssetForRef(*assets, *ref, lastNovel);
         }
+        // 页面不再自摆第三列：把它的详情内容挂到外壳检查器上
+        if (QWidget* body = assets->InspectorBody(); body != nullptr) {
+            right_->ClearSections();
+            right_->AddSection(QStringLiteral("资产详情"), body);
+            right_->SetSelection(QStringLiteral("选中一个资产后显示其设定集 / 一致性 / 参考图"));
+        }
         return assets;
     }
     if (title == shine::app::WorkspaceNames().value(StoryboardWorkspaceIndex())) {

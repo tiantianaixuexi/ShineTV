@@ -5,6 +5,7 @@
 #include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Inputs.h"
+#include "ui/kit/controls/Surfaces.h"
 #include "llm/OpenAIConfig.h"
 #include "novel/NovelPipeline.h"
 #include "util/Encoding.h"
@@ -84,7 +85,10 @@ void AutoRunPanel::BuildUi() {
     head_layout->addStretch(1);
     outer->addWidget(head);
 
-    auto* control_card = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* control_card = new widgets::SectionCard(QStringLiteral("运行参数"), this);
+    control_card->SetSubtitle(QStringLiteral("模式 / 预算护栏"));
+    control_card->SetCollapsible(true);
+    control_card->SetContentMinWidth(760);
     auto* control_layout = control_card->BodyLayout();
     auto* mode_row = new QHBoxLayout;
     mode_row->setSpacing(theme::space::kSteps[1]);
@@ -139,21 +143,23 @@ void AutoRunPanel::BuildUi() {
     control_layout->addLayout(action_row);
     outer->addWidget(control_card);
 
-    auto* gate_card = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* gate_card = new widgets::SectionCard(QStringLiteral("auto 启动前置"), this);
+    gate_card->SetSubtitle(QStringLiteral("逐条显示"));
+    gate_card->SetCollapsible(true);
+    gate_card->SetContentMinWidth(680);
     auto* gate_layout = gate_card->BodyLayout();
-    gate_layout->addWidget(new QLabel(QStringLiteral("auto 启动前置（逐条显示）"), gate_card));
-    precondition_ = new QLabel(gate_card);
-    precondition_->setWordWrap(true);
+    precondition_ = new widgets::ElidedLabel(QString{}, gate_card);
+    widgets::SetKind(precondition_, "fieldhelp");
     precondition_->setMinimumHeight(150);
-    precondition_->setTextFormat(Qt::PlainText);
-    widgets::SetTextColor(precondition_, theme::Current().textSecondary);
     gate_layout->addWidget(precondition_);
     outer->addWidget(gate_card);
 
-    auto* progress_card = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* progress_card = new widgets::SectionCard(QStringLiteral("进度"), this);
+    progress_card->SetCollapsible(true);
+    progress_card->SetContentMinWidth(560);
     auto* progress_layout = progress_card->BodyLayout();
-    progress_text_ = new QLabel(QStringLiteral("第 0 / 0 章 · 已用 0 次调用"), progress_card);
-    widgets::SetTextColor(progress_text_, theme::Current().textSecondary);
+    progress_text_ = new widgets::ElidedLabel(QStringLiteral("第 0 / 0 章 · 已用 0 次调用"), progress_card);
+    widgets::SetKind(progress_text_, "fieldhelp");
     progress_ = new widgets::ProgressBar(progress_card);
     progress_->setRange(0, 100);
     progress_->setValue(0);
@@ -162,21 +168,21 @@ void AutoRunPanel::BuildUi() {
     progress_layout->addWidget(progress_);
     outer->addWidget(progress_card);
 
-    auto* stop_card = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* stop_card = new widgets::SectionCard(QStringLiteral("停止条件 S1–S12"), this);
+    stop_card->SetCollapsible(true);
+    stop_card->SetContentMinWidth(680);
     auto* stop_layout = stop_card->BodyLayout();
-    stop_layout->addWidget(new QLabel(QStringLiteral("停止条件 S1–S12"), stop_card));
-    stop_text_ = new QLabel(stop_card);
-    stop_text_->setWordWrap(true);
-    stop_text_->setTextFormat(Qt::PlainText);
-    widgets::SetTextColor(stop_text_, theme::Current().textSecondary);
+    stop_text_ = new widgets::ElidedLabel(QString{}, stop_card);
+    widgets::SetKind(stop_text_, "fieldhelp");
     stop_layout->addWidget(stop_text_);
     outer->addWidget(stop_card);
 
-    auto* log_card = new widgets::Card(widgets::Card::Variant::Outlined, this);
+    auto* log_card = new widgets::SectionCard(QStringLiteral("运行日志 / 报告"), this);
+    log_card->SetContentMinWidth(680);
     auto* log_layout = log_card->BodyLayout();
-    log_layout->addWidget(new QLabel(QStringLiteral("运行日志 / 报告"), log_card));
     timeline_ = new QPlainTextEdit(log_card);
     timeline_->setReadOnly(true);
+    timeline_->setMinimumHeight(260);
     timeline_->setPlaceholderText(QStringLiteral("启动后逐事件显示；停止时报告会写 stop_report.md"));
     log_layout->addWidget(timeline_, 1);
     outer->addWidget(log_card, 1);
@@ -352,7 +358,7 @@ void AutoRunPanel::Refresh() {
         stop_btn_->setEnabled(running_);
     }
     if (precondition_ != nullptr) {
-        precondition_->setText(PreconditionText());
+        precondition_->SetFullText(PreconditionText());
         bool allOk = false;
         if (hasBook) {
             const QString text = precondition_->text();
@@ -370,7 +376,7 @@ void AutoRunPanel::Refresh() {
                         .arg(Text(novelcore::StopCodeName(code)),
                              Text(novelcore::StopCodeCondition(code)));
         }
-        stop_text_->setText(text);
+        stop_text_->SetFullText(text);
     }
     if (progress_ != nullptr && !running_) {
         progress_->SetIndeterminate(false);
@@ -379,7 +385,7 @@ void AutoRunPanel::Refresh() {
         status_->setText(last_result_);
     }
     if (progress_text_ != nullptr && last_outcome_.chapters_attempted > 0) {
-        progress_text_->setText(QStringLiteral("已完成 %1 章 · 尝试 %2 章 · LLM %3 次")
+        progress_text_->SetFullText(QStringLiteral("已完成 %1 章 · 尝试 %2 章 · LLM %3 次")
                                      .arg(last_outcome_.chapters_done)
                                      .arg(last_outcome_.chapters_attempted)
                                      .arg(last_outcome_.llm_calls_total));
@@ -443,7 +449,7 @@ void AutoRunPanel::ProgressToUi(const std::shared_ptr<RunState>& state,
                                  .arg(progress.chapters_done)
                                  .arg(progress.chapters_total));
     if (progress_text_ != nullptr) {
-        progress_text_->setText(QStringLiteral("第 %1 章 · %2 · %3")
+        progress_text_->SetFullText(QStringLiteral("第 %1 章 · %2 · %3")
                                      .arg(progress.chapter_ord)
                                      .arg(Text(progress.phase), progress.note.empty()
                                                   ? QStringLiteral("处理中")
@@ -540,7 +546,7 @@ void AutoRunPanel::Finish(const std::shared_ptr<RunState>& state, novelcore::Run
         progress_->SetInlineText(result);
     }
     if (progress_text_ != nullptr) {
-        progress_text_->setText(QStringLiteral("完成 %1 章 · 尝试 %2 章 · LLM %3 次")
+        progress_text_->SetFullText(QStringLiteral("完成 %1 章 · 尝试 %2 章 · LLM %3 次")
                                      .arg(outcome.chapters_done)
                                      .arg(outcome.chapters_attempted)
                                      .arg(outcome.llm_calls_total));

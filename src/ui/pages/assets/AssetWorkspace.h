@@ -66,6 +66,9 @@ class AssetWorkspace : public QWidget {
     void RefreshReferences();
     [[nodiscard]] QString GlobalGalleryProbe() const;
     void SelectGlobalGallerySource(gallery::SourceKind source);
+
+    // 交给外壳右侧检查器承载的详情内容（默认收起，Ctrl+I / 顶栏「检查器」打开）
+    [[nodiscard]] QWidget* InspectorBody() const { return inspector_body_; }
     bool SelectFirstGlobalGallery();
     [[nodiscard]] QStringList ReferenceUsageLabels() const;
     bool ActivateReferenceUsage(int index);
@@ -132,6 +135,8 @@ class AssetWorkspace : public QWidget {
     AssetDetailView* detail_ = nullptr;
     GalleryWorkspace* global_gallery_ = nullptr;
     QStackedWidget* detail_stack_ = nullptr;
+    // 交给外壳右侧检查器承载的详情内容（页面自己不再摆第三列，见 AssetWorkspace.cpp 布局段）
+    QWidget* inspector_body_ = nullptr;
     ConsistencyView* consistency_ = nullptr;
     RefLibraryView* references_ = nullptr;
     std::array<QPushButton*, 5> kindButtons_{};

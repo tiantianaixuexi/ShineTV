@@ -73,11 +73,11 @@ class ModelPromptView : public QWidget {
     std::filesystem::path project_dir_;
     std::string current_role_; // 当前查看的 Prompt 角色
     std::vector<widgets::Select*> model_sel_;
-    std::vector<QLabel*> model_now_;
+    std::vector<widgets::ElidedLabel*> model_now_;
     widgets::TextInput* key_input_ = nullptr;
     QLabel* key_mask_ = nullptr;
-    QLabel* rule_ = nullptr;
-    QLabel* hint_ = nullptr;
+    widgets::ElidedLabel* rule_ = nullptr;
+    widgets::ElidedLabel* hint_ = nullptr;
     QStackedWidget* prompt_stack_ = nullptr;
     QPlainTextEdit* prompt_view_ = nullptr;
     std::vector<widgets::Button*> role_btns_;

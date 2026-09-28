@@ -456,13 +456,13 @@ bool WorldBoardView::RefreshFields() {
     }
     if (!db_) {
         fieldTable_->SetRows({});
-        fieldCount_->setText(QStringLiteral("未打开小说库"));
+        fieldCount_->SetFullText(QStringLiteral("未打开小说库"));
         return false;
     }
     novelcore::NovelFields fields(*db_);
     auto defs = fields.ListFieldDefs();
     if (!defs) {
-        fieldCount_->setText(QStringLiteral("读取失败：%1")
+        fieldCount_->SetFullText(QStringLiteral("读取失败：%1")
                                  .arg(QString::fromStdString(defs.error().message)));
         return false;
     }
@@ -477,7 +477,7 @@ bool WorldBoardView::RefreshFields() {
                                             : QStringLiteral("待审 PROPOSED")});
     }
     fieldTable_->SetRows(rows);
-    fieldCount_->setText(
+    fieldCount_->SetFullText(
         QStringLiteral("已登记 %1 / %2 条（上限 `08` §2.3；PROPOSED 由检查点升格）")
             .arg(static_cast<int>(defs->size()))
             .arg(novelcore::NovelFields::kMaxFieldDefs));
@@ -539,7 +539,7 @@ QWidget* WorldBoardView::BuildEntitiesPage() {
         newBtn->setText(show ? QStringLiteral("收起表单") : QStringLiteral("+ 新建"));
     });
     tr->addWidget(search_, 1);
-    tr->addWidget(entityCount_, 0, Qt::AlignVCenter);
+    tr->addStretch(1);
     tr->addWidget(newBtn, 0);
     col->addWidget(top);
 
@@ -572,13 +572,12 @@ QWidget* WorldBoardView::BuildEntitiesPage() {
     col->addWidget(badgeHost);
 
     // [+ 新建] 表单（名称 / kind / 摘要 / 状态 / canonical / 别名 / 出处书名 / 出处章序）
-    createForm_ = new QWidget(page);
-    auto* form = new QVBoxLayout(createForm_);
-    form->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                             theme::space::kSteps[2], theme::space::kSteps[2]);
-    form->setSpacing(theme::space::kSteps[2]);
-    auto* formTitle = SectionLabel(createForm_, QStringLiteral("新建实体"));
-    form->addWidget(formTitle);
+    // 卡片壳：表单本身是一大摞裸控件，套一层 SectionCard 才有「哪块是哪块」的边界
+    auto* create_card = new widgets::SectionCard(QStringLiteral("新建实体"), page);
+    create_card->SetSubtitle(QStringLiteral("名称 / kind / 摘要 / 跨库身份"));
+    create_card->SetContentMinWidth(640);
+    createForm_ = create_card; // 变量类型不变（QWidget*），显隐路径照旧
+    auto* form = create_card->BodyLayout();
 
     fName_ = new widgets::TextInput(createForm_);
     fName_->SetPlaceholder(QStringLiteral("如：苏黎（必填）"));
@@ -665,15 +664,22 @@ QWidget* WorldBoardView::BuildEntitiesPage() {
     col->addWidget(createForm_);
 
     // 实体卡网格
-    auto* scroll = new QScrollArea(page);
+    auto* cards_card = new widgets::SectionCard(QStringLiteral("实体卡"), page);
+    cards_card->SetSubtitle(QStringLiteral("点卡看详情；空态给下一步"));
+    cards_card->SetContentMinWidth(560);
+    entityCount_->setParent(cards_card); // 计数挪进标题栏右侧
+    cards_card->BodyLayout()->addWidget(entityCount_);
+    auto* scroll = new QScrollArea(cards_card);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setMinimumHeight(280);
     cardsHost_ = new QWidget(scroll);
     cardsGrid_ = new QGridLayout(cardsHost_);
     cardsGrid_->setContentsMargins(0, 0, 0, 0);
     cardsGrid_->setSpacing(theme::space::kSteps[3]);
     scroll->setWidget(cardsHost_);
-    col->addWidget(scroll, 1);
+    cards_card->BodyLayout()->addWidget(scroll, 1);
+    col->addWidget(cards_card, 1);
     return page;
 }
 
@@ -694,18 +700,20 @@ QWidget* WorldBoardView::BuildFieldsPage() {
         ToggleRegisterForm(show);
         newBtn->setText(show ? QStringLiteral("收起表单") : QStringLiteral("+ 新建登记"));
     });
-    fieldCount_ = new QLabel(QStringLiteral("已登记 0 条"), top);
+    fieldCount_ = new widgets::ElidedLabel(QStringLiteral("已登记 0 条"), top);
+    fieldCount_->SetExpandable(false);
+    widgets::SetKind(fieldCount_, "fieldhelp");
     tr->addWidget(newBtn);
     tr->addStretch(1);
-    tr->addWidget(fieldCount_, 0, Qt::AlignVCenter);
+    tr->addWidget(fieldCount_, 1);
     col->addWidget(top);
 
     // 新建登记表单（三步校验拦下时中文原因进 Field 错误态）
-    registerForm_ = new QWidget(page);
-    auto* form = new QVBoxLayout(registerForm_);
-    form->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                             theme::space::kSteps[2], theme::space::kSteps[2]);
-    form->setSpacing(theme::space::kSteps[2]);
+    auto* register_card = new widgets::SectionCard(QStringLiteral("新建字段登记"), page);
+    register_card->SetSubtitle(QStringLiteral("三步校验：键名 → 类型 → 作用域"));
+    register_card->SetContentMinWidth(620);
+    registerForm_ = register_card; // 变量类型不变，显隐路径照旧
+    auto* form = register_card->BodyLayout();
 
     gKey_ = new widgets::TextInput(registerForm_);
     gKey_->SetPlaceholder(QStringLiteral("如：true_identity"));
@@ -784,7 +792,10 @@ QWidget* WorldBoardView::BuildFieldsPage() {
     col->addWidget(registerForm_);
 
     // field_defs 列表（key / 类型 / 状态 …）
-    fieldTable_ = new data::DataTable(QStringLiteral("worldboard.field_defs"), page);
+    auto* table_card = new widgets::SectionCard(QStringLiteral("已登记字段"), page);
+    table_card->SetSubtitle(QStringLiteral("`08` §2.4 登记表"));
+    table_card->SetContentMinWidth(730); // 6 列合计约 730
+    fieldTable_ = new data::DataTable(QStringLiteral("worldboard.field_defs"), table_card);
     fieldTable_->SetColumns({{QStringLiteral("key"), QStringLiteral("字段键"), 180},
                              {QStringLiteral("title"), QStringLiteral("展示名"), 140},
                              {QStringLiteral("type"), QStringLiteral("类型"), 110},
@@ -792,7 +803,8 @@ QWidget* WorldBoardView::BuildFieldsPage() {
                              {QStringLiteral("kind"), QStringLiteral("限定 kind"), 100},
                              {QStringLiteral("status"), QStringLiteral("状态"), 120}});
     fieldTable_->SetSelectable(data::DataTable::Select::Single);
-    col->addWidget(fieldTable_, 1);
+    table_card->BodyLayout()->addWidget(fieldTable_, 1);
+    col->addWidget(table_card, 1);
     return page;
 }
 

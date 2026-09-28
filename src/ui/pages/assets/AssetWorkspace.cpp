@@ -203,25 +203,26 @@ void AssetWorkspace::BuildUi() {
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     auto* left = new QWidget(splitter);
-    left->setMinimumWidth(260);
+    left->setMinimumWidth(240);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(theme::space::kSteps[1]);
-    auto* treeTitle = SectionLabel(left, QStringLiteral("实体树"));
+    leftLayout->addWidget(SectionLabel(left, QStringLiteral("实体树")));
     entityTree_ = new QTreeWidget(left);
     entityTree_->setColumnCount(1);
     entityTree_->setHeaderHidden(true);
     entityTree_->setSelectionMode(QAbstractItemView::SingleSelection);
     widgets::SetKind(entityTree_, "field");
-    leftLayout->addWidget(treeTitle);
     leftLayout->addWidget(entityTree_, 1);
 
-    auto* right = new QWidget(splitter);
-    auto* rightLayout = new QVBoxLayout(right);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(theme::space::kSteps[1]);
-    assetCount_ = SectionLabel(right, QStringLiteral("资产卡 · 0"));
-    auto* scroll = new QScrollArea(right);
+    // 中栏：资产卡网格（单列滚动 + 卡片网格，不带标题条）
+    auto* center = new QWidget(splitter);
+    center->setMinimumWidth(560); // 硬下限：低于此值资产卡会被压成两列残条
+    auto* centerLayout = new QVBoxLayout(center);
+    centerLayout->setContentsMargins(theme::space::kSteps[2], 0, theme::space::kSteps[2], 0);
+    centerLayout->setSpacing(theme::space::kSteps[2]);
+    assetCount_ = SectionLabel(center, QStringLiteral("资产卡 · 0"));
+    auto* scroll = new QScrollArea(center);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -232,10 +233,14 @@ void AssetWorkspace::BuildUi() {
     assetsGrid_->setVerticalSpacing(theme::space::kSteps[2]);
     assetsGrid_->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
     scroll->setWidget(assetsHost_);
-    rightLayout->addWidget(assetCount_);
-    rightLayout->addWidget(scroll, 1);
+    centerLayout->addWidget(assetCount_);
+    centerLayout->addWidget(scroll, 1);
 
-    auto* detail_pane = new QWidget(splitter);
+    // 右栏：不再由本页自摆。
+    // 上一版这里是第三列（资产详情 / 一致性 / 参考图 / 全局图库），和外壳的右侧检查器
+    // 叠在一起，一屏就变成 活动栏 + 页内左 + 页内中 + 页内右 + 外壳右 共五列。
+    // 现在页面只留「实体树 | 资产卡」两列，详情交由外壳检查器承载（InspectorBody()）。
+    auto* detail_pane = new QWidget(this);
     auto* detail_layout = new QVBoxLayout(detail_pane);
     detail_layout->setContentsMargins(0, 0, 0, 0);
     detail_layout->setSpacing(theme::space::kSteps[1]);
@@ -263,15 +268,14 @@ void AssetWorkspace::BuildUi() {
     detail_stack_->addWidget(global_gallery_);
     detail_mode->SetOnChanged([this](int index) { detail_stack_->setCurrentIndex(index); });
     detail_layout->addWidget(detail_stack_, 1);
-    detail_pane->setMinimumWidth(440);
+    detail_pane->setMinimumWidth(360);
+    inspector_body_ = detail_pane; // 交给外壳检查器（默认收起，Ctrl+I / 顶栏按钮打开）
 
     splitter->addWidget(left);
-    splitter->addWidget(right);
-    splitter->addWidget(detail_pane);
+    splitter->addWidget(center);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setStretchFactor(2, 1);
-    splitter->setSizes({280, 620, 440});
+    splitter->setSizes({280, 940});
     outer->addWidget(splitter, 1);
 
     connect(entityTree_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {

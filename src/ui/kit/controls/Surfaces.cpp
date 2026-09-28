@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QScreen>
 #include <QTimer>
 #include <QVariant>
@@ -303,6 +304,102 @@ void Tooltip::Attach(QWidget* host, const QString& richText, const QString& shor
     auto* filter = new TooltipFilter(host, richText, shortcutText);
     filter->Arm();
     host->installEventFilter(filter);
+}
+
+// =============================================================== SectionCard
+
+SectionCard::SectionCard(const QString& title, QWidget* parent) : QFrame(parent) {
+    SetKind(this, "sectioncard");
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+
+    auto* col = new QVBoxLayout(this);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(0);
+
+    // ── 标题栏：整行可点，折叠/展开 ──
+    head_ = new QPushButton(this);
+    head_->setFlat(true);
+    head_->setCheckable(true);
+    head_->setCursor(Qt::PointingHandCursor);
+    head_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    head_->setToolTip(QStringLiteral("点击折叠/展开本块"));
+    SetKind(head_, "sectionhead");
+    auto* headRow = new QHBoxLayout(head_);
+    headRow->setContentsMargins(theme::space::kSteps[4], theme::space::kSteps[2],
+                                theme::space::kSteps[4], theme::space::kSteps[2]);
+    headRow->setSpacing(theme::space::kSteps[2]);
+    chevron_ = new QLabel(head_);
+    SetKind(chevron_, "sectionchevron");
+    headRow->addWidget(chevron_);
+    title_ = new QLabel(title, head_);
+    SetKind(title_, "sectiontitle");
+    SetSemibold(title_, true);
+    headRow->addWidget(title_, 1);
+    subtitle_ = new ElidedLabel(QString{}, head_);
+    SetKind(subtitle_, "sectionsub");
+    subtitle_->SetExpandable(false); // 纯展示位：只省略 + hover 全文，不抢点击折叠
+    subtitle_->hide();
+    headRow->addWidget(subtitle_, 0);
+    col->addWidget(head_);
+
+    connect(head_, &QPushButton::clicked, this, [this] {
+        if (collapsible_) {
+            SetExpanded(!expanded_);
+        }
+    });
+
+    body_ = new QWidget(this);
+
+    // ── 内容区 ──
+    // 布局交给 body_ 的构造器安装；事后再 setLayout() 会触发
+    // "QLayout: Attempting to add QLayout to QWidget which already has a layout"。
+    body_lay_ = new QVBoxLayout(body_);
+    body_lay_->setContentsMargins(theme::space::kSteps[4], theme::space::kSteps[3],
+                                  theme::space::kSteps[4], theme::space::kSteps[4]);
+    body_lay_->setSpacing(theme::space::kSteps[2]);
+    col->addWidget(body_);
+
+    ApplyExpanded();
+}
+
+QVBoxLayout* SectionCard::BodyLayout() const { return body_lay_; }
+
+void SectionCard::SetSubtitle(const QString& text) {
+    subtitle_->SetFullText(text);
+    subtitle_->setVisible(!text.isEmpty());
+}
+
+void SectionCard::SetTitle(const QString& text) {
+    title_->setText(text);
+    head_->setToolTip(QStringLiteral("%1\n点击折叠/展开本块").arg(text));
+}
+
+void SectionCard::SetContentMinWidth(int px) {
+    if (body_ != nullptr) {
+        body_->setMinimumWidth(px);
+    }
+}
+
+void SectionCard::SetCollapsible(bool on) {
+    collapsible_ = on;
+    head_->setEnabled(true);
+    ApplyExpanded();
+}
+
+void SectionCard::SetExpanded(bool on) {
+    if (expanded_ == on) {
+        return;
+    }
+    expanded_ = on;
+    ApplyExpanded();
+}
+
+void SectionCard::ApplyExpanded() {
+    chevron_->setText(collapsible_ ? (expanded_ ? QStringLiteral("▾") : QStringLiteral("▸"))
+                                   : QString{});
+    chevron_->setVisible(collapsible_);
+    body_->setVisible(expanded_);
+    head_->setChecked(collapsible_ && expanded_);
 }
 
 } // namespace shine::widgets

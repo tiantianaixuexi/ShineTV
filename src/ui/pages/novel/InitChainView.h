@@ -143,7 +143,7 @@ class InitChainView : public QWidget {
     QHash<QString, qint64> stageMs_; // 阶段耗时（最近一次跑骨架的整链耗时，逐阶段展示用）
 
     // —— 流水线区 ——
-    QLabel* state_ = nullptr; // 空态 / 跑中 / 结果（UI.md §3）
+    widgets::ElidedLabel* state_ = nullptr; // 空态 / 跑中 / 结果（UI.md §3；长文省略 + hover 全文）
     widgets::Button* runSkeletonBtn_ = nullptr;
     widgets::Button* runGatesBtn_ = nullptr;
     data::DataTable* stageTable_ = nullptr;
@@ -154,12 +154,12 @@ class InitChainView : public QWidget {
     data::JsonTree* artifactTree_ = nullptr;
 
     // —— 门禁区（N1–N14 逐条 + 配置/审批动作）——
-    QLabel* gateState_ = nullptr;
+    widgets::ElidedLabel* gateState_ = nullptr;
     QWidget* gateHost_ = nullptr;
     QVBoxLayout* gateCol_ = nullptr;
     struct GateRowUi {
         QString nId;
-        QLabel* name = nullptr;
+        widgets::ElidedLabel* name = nullptr; // 规则名（纯省略位：hover 全文，不抢点击）
         widgets::ElidedLabel* verdict = nullptr; // 省略 + hover 全文 + 点击展开（长判定文本）
         QLabel* mode = nullptr;
         QPushButton* ignoreBtn = nullptr;  // 忽略并人工确认（申请）
@@ -172,7 +172,7 @@ class InitChainView : public QWidget {
     widgets::Select* priorSel_ = nullptr;
     widgets::NumberInput* budget_ = nullptr;
     widgets::Button* importBtn_ = nullptr;
-    QLabel* importResult_ = nullptr;
+    widgets::ElidedLabel* importResult_ = nullptr;
     QStackedWidget* importStack_ = nullptr;
     widgets::EmptyState* importEmpty_ = nullptr;
     data::JsonTree* importTree_ = nullptr;

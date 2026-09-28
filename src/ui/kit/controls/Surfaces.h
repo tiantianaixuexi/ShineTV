@@ -13,6 +13,7 @@
 
 class QHBoxLayout;
 class QVBoxLayout;
+class QPushButton;
 
 namespace shine::widgets {
 
@@ -62,6 +63,52 @@ class Tooltip {
   public:
     // hover 200ms 后显示；shortcutText 非空则右侧带 Kbd 标注
     static void Attach(QWidget* host, const QString& richText, const QString& shortcutText = QString{});
+};
+
+// SectionCard —— 分区卡片：标题栏 + 内容 + 可折叠。
+//
+// 页面内部「单列滚动 + 若干分区卡片」的标准件。页面只提供标题与 body，
+// 卡片负责统一的标题栏样式、内边距与间距（theme::space::kSteps），
+// 于是同一条竖列上的各块有同一套分组视觉，读者一眼能分清「哪块是哪块」。
+//
+// 用法：
+//   auto* card = new widgets::SectionCard(QStringLiteral("门禁 N1–N14"), this);
+//   card->SetContentMinWidth(880);                       // 内容区最小宽，防长行被压扁
+//   card->BodyLayout()->addWidget(...);
+//   column->addWidget(card);
+//
+// 标题栏整行可点（折叠/展开）；副标题用 ElidedLabel（长文本省略 + hover 全文 + 点击展开）。
+class SectionCard : public QFrame {
+  public:
+    explicit SectionCard(const QString& title, QWidget* parent = nullptr);
+
+    // 内容区布局（页面往里放自己的控件）
+    [[nodiscard]] QVBoxLayout* BodyLayout() const;
+
+    // 标题右侧的补充说明（空串 = 不显示；长文本自动省略 + hover 全文）
+    void SetSubtitle(const QString& text);
+    void SetTitle(const QString& text);
+
+    // 内容区最小宽：门禁行 / 宽表格这类「一行放不下必须看全」的内容用它兜底，
+    // 窄窗口时由外层滚动出横向滚动条，而不是把控件互相压扁。
+    void SetContentMinWidth(int px);
+
+    // 可折叠（默认不折叠；折叠时只留标题栏，内容区隐藏）
+    void SetCollapsible(bool on);
+    void SetExpanded(bool on);
+    [[nodiscard]] bool IsExpanded() const { return expanded_; }
+
+  private:
+    void ApplyExpanded();
+
+    QPushButton* head_ = nullptr;
+    QLabel* title_ = nullptr;
+    QLabel* chevron_ = nullptr;
+    ElidedLabel* subtitle_ = nullptr;
+    QWidget* body_ = nullptr;
+    QVBoxLayout* body_lay_ = nullptr;
+    bool collapsible_ = false;
+    bool expanded_ = true;
 };
 
 } // namespace shine::widgets

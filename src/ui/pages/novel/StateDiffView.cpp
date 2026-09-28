@@ -23,6 +23,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPlainTextEdit>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -147,20 +148,30 @@ StateDiffView::StateDiffView(QWidget* parent) : QWidget(parent) {
     rollback_btn_->setToolTip(QStringLiteral("按 snapshots/ch<NNN>.json 的 Before 值回滚实体（破坏性）"));
     rollback_btn_->setEnabled(false);
     connect(rollback_btn_, &widgets::Button::clicked, this, [this] { Rollback(); });
-    hint_ = new QLabel(head);
-    hint_->setWordWrap(true);
-    widgets::SetTextColor(hint_, theme::Current().textSecondary);
+    hint_ = new widgets::ElidedLabel(QString{}, head);
+    widgets::SetKind(hint_, "fieldhelp");
     hl->addWidget(verdict_);
     hl->addWidget(commit_btn_);
     hl->addWidget(rollback_btn_);
     hl->addWidget(hint_, 1);
     outer->addWidget(head);
 
+    // —— 单列滚动 + 两张 SectionCard ——
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    auto* column = new QWidget(scroll);
+    auto* col = new QVBoxLayout(column);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(theme::space::kSteps[3]);
+
     // —— 门禁 G1–G5 逐条 ——
-    auto* gateBox = new QWidget(this);
-    auto* gl = new QVBoxLayout(gateBox);
-    gl->setContentsMargins(0, 0, 0, 0);
-    gl->setSpacing(theme::space::kSteps[1]);
+    auto* gate_card = new widgets::SectionCard(QStringLiteral("提交门禁 G1–G5"), this);
+    gate_card->SetSubtitle(QStringLiteral("唯一 COMMIT 入口的前置"));
+    gate_card->SetCollapsible(true);
+    gate_card->SetContentMinWidth(680);
+    QVBoxLayout* gl = gate_card->BodyLayout();
     struct GateDef {
         const char* gate;
         const char* name;
@@ -169,7 +180,7 @@ StateDiffView::StateDiffView(QWidget* parent) : QWidget(parent) {
         {"G1", "评审结论 PASS"}, {"G2", "K01–K29 无阻断"}, {"G3", "章级快照就绪（I11）"},
         {"G4", "StateDiff 契约有效"}, {"G5", "无未解决 high issue"}};
     for (const GateDef& d : kGates) {
-        auto* row = new QFrame(gateBox);
+        auto* row = new QFrame(gate_card);
         row->setFrameShape(QFrame::StyledPanel);
         auto* rl = new QHBoxLayout(row);
         rl->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[1],
@@ -179,24 +190,34 @@ StateDiffView::StateDiffView(QWidget* parent) : QWidget(parent) {
         auto* name = new QLabel(QStringLiteral("%1 %2").arg(QString::fromLatin1(d.gate),
                                                             QString::fromUtf8(d.name)),
                                 row);
-        auto* detail = new QLabel(row);
-        detail->setWordWrap(true);
-        widgets::SetTextColor(detail, theme::Current().textSecondary);
+        name->setMinimumWidth(200);
+        auto* detail = new widgets::ElidedLabel(QString{}, row);
+        widgets::SetKind(detail, "fieldhelp");
         rl->addWidget(mark);
         rl->addWidget(name);
         rl->addWidget(detail, 1);
         gl->addWidget(row);
         gate_widgets_.push_back({mark, detail});
     }
-    outer->addWidget(gateBox);
+    col->addWidget(gate_card);
 
     // —— StateDiff 展示（原文 + 摘要）——
-    diff_view_ = new QPlainTextEdit(this);
+    auto* diff_card = new widgets::SectionCard(QStringLiteral("StateDiff"), this);
+    diff_card->SetSubtitle(QStringLiteral("`work/chNNN/12_state_diff.json`"));
+    diff_card->SetCollapsible(true);
+    diff_card->SetContentMinWidth(680);
+    diff_view_ = new QPlainTextEdit(diff_card);
     diff_view_->setReadOnly(true);
+    diff_view_->setMinimumHeight(280);
     diff_view_->setPlaceholderText(
         QStringLiteral("StateDiff（`work/chNNN/12_state_diff.json`）—— 跑完 T14 提取后在此查看；"
                        "提交走上方唯一入口（本视图不调 LLM）"));
-    outer->addWidget(diff_view_, 1);
+    diff_card->BodyLayout()->addWidget(diff_view_);
+    col->addWidget(diff_card);
+
+    col->addStretch(1);
+    scroll->setWidget(column);
+    outer->addWidget(scroll, 1);
 }
 
 StateDiffView::~StateDiffView() {
@@ -333,7 +354,7 @@ void StateDiffView::Refresh() {
         gate_widgets_[i].first->setText(gates_[i].pass ? QStringLiteral("✔") : QStringLiteral("✘"));
         widgets::SetTextColor(gate_widgets_[i].first,
                  gates_[i].pass ? theme::Current().statusOk : theme::Current().statusDanger);
-        gate_widgets_[i].second->setText(gates_[i].detail);
+        gate_widgets_[i].second->SetFullText(gates_[i].detail);
     }
     commit_btn_->setEnabled(allOk && !running_commit_ && diff_ != nullptr);
     rollback_btn_->setEnabled(snapshot_exists_ && !running_commit_);
@@ -345,7 +366,7 @@ void StateDiffView::Refresh() {
 }
 
 void StateDiffView::SetHint(const QString& text, std::uint32_t token) {
-    hint_->setText(text);
+    hint_->SetFullText(text);
     widgets::SetTextColor(hint_, token);
 }
 

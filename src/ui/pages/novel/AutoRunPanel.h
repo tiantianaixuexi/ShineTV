@@ -106,10 +106,11 @@ class AutoRunPanel : public QWidget {
     widgets::NumberInput* checkpoint_input_ = nullptr;
     widgets::Button* start_btn_ = nullptr;
     widgets::Button* stop_btn_ = nullptr;
-    QLabel* precondition_ = nullptr;
+    // 以下三处都是长判定/多行文本：ElidedLabel（单行省略 + hover 全文 + 点击展开）
+    widgets::ElidedLabel* precondition_ = nullptr;
     QLabel* status_ = nullptr;
-    QLabel* progress_text_ = nullptr;
-    QLabel* stop_text_ = nullptr;
+    widgets::ElidedLabel* progress_text_ = nullptr;
+    widgets::ElidedLabel* stop_text_ = nullptr;
     widgets::ProgressBar* progress_ = nullptr;
     QPlainTextEdit* timeline_ = nullptr;
 };

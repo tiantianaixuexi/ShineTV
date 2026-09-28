@@ -179,15 +179,31 @@ class RubricBar : public QWidget {
 
 ReviewView::ReviewView(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                              theme::space::kSteps[2], theme::space::kSteps[2]);
+    outer->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[2],
+                              theme::space::kSteps[3], theme::space::kSteps[2]);
     outer->setSpacing(theme::space::kSteps[2]);
     outer->addWidget(BuildHead());
 
+    // —— 单列滚动 + 两张 SectionCard ——
+    // 上一版是两个裸 QLabel 标题 + 两个滚动区直接纵向排开，没有卡片边界，
+    // 「哪块是哪块」要看字才分得清。
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    auto* column = new QWidget(scroll);
+    auto* col = new QVBoxLayout(column);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(theme::space::kSteps[3]);
+
     // —— rubric 区（8 维条形）——
-    rubric_scroll_ = new QScrollArea(this);
+    auto* rubric_card = new widgets::SectionCard(QStringLiteral("语义 rubric"), this);
+    rubric_card->SetSubtitle(QStringLiteral("8 维 · `06` §2.4 阈值"));
+    rubric_card->SetCollapsible(true);
+    rubric_scroll_ = new QScrollArea(rubric_card);
     rubric_scroll_->setFrameShape(QFrame::NoFrame);
     rubric_scroll_->setWidgetResizable(true);
+    rubric_scroll_->setMinimumHeight(240);
     rubric_stack_ = new QStackedWidget(rubric_scroll_);
     auto* empty = new widgets::EmptyState(
         QStringLiteral("📋"), QStringLiteral("还没评审"),
@@ -198,14 +214,18 @@ ReviewView::ReviewView(QWidget* parent) : QWidget(parent) {
     rubric_stack_->addWidget(rubric_rows_);
     rubric_stack_->setCurrentWidget(empty);
     rubric_scroll_->setWidget(rubric_stack_);
-    outer->addWidget(new QLabel(QStringLiteral("语义 rubric（8 维 · `06` §2.4 阈值）"), this));
-    outer->addWidget(rubric_scroll_, 2);
+    rubric_card->BodyLayout()->addWidget(rubric_scroll_);
+    col->addWidget(rubric_card);
 
     // —— 机器校验区（K01–K29）——
-    auto* ccap = new QLabel(QStringLiteral("机器校验 K01–K29（`06` §2.3 · low 级可记但放行）"), this);
-    check_scroll_ = new QScrollArea(this);
+    auto* check_card = new widgets::SectionCard(QStringLiteral("机器校验 K01–K29"), this);
+    check_card->SetSubtitle(QStringLiteral("`06` §2.3 · low 级可记但放行"));
+    check_card->SetCollapsible(true);
+    check_card->SetContentMinWidth(720); // 5 列详情表：低于此宽度会互相压扁
+    check_scroll_ = new QScrollArea(check_card);
     check_scroll_->setFrameShape(QFrame::NoFrame);
     check_scroll_->setWidgetResizable(true);
+    check_scroll_->setMinimumHeight(280);
     check_table_ = new data::DataTable(QStringLiteral("p04.review.checks"), check_scroll_);
     check_table_->SetColumns({{QStringLiteral("id"), QStringLiteral("编号")},
                               {QStringLiteral("name"), QStringLiteral("检查")},
@@ -213,8 +233,12 @@ ReviewView::ReviewView(QWidget* parent) : QWidget(parent) {
                               {QStringLiteral("severity"), QStringLiteral("级别")},
                               {QStringLiteral("detail"), QStringLiteral("详情")}});
     check_scroll_->setWidget(check_table_);
-    outer->addWidget(ccap);
-    outer->addWidget(check_scroll_, 3);
+    check_card->BodyLayout()->addWidget(check_scroll_);
+    col->addWidget(check_card);
+
+    col->addStretch(1);
+    scroll->setWidget(column);
+    outer->addWidget(scroll, 1);
 }
 
 ReviewView::~ReviewView() {

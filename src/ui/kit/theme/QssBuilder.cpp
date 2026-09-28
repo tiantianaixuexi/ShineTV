@@ -240,6 +240,17 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="card"][shineState="disabled"] { color: %11; border-color: %6; }
 *[shineKind="cardaccent"] { background-color: %13; border-radius: 2px; }
 
+/* —— SectionCard（分区卡片：标题栏 + 内容；页面单列滚动时的分组件）—— */
+*[shineKind="sectioncard"] { background-color: %3; border: 1px solid %6; border-radius: 8px; }
+*[shineKind="sectionhead"] { background: transparent; border: none; text-align: left; }
+*[shineKind="sectionhead"]:hover { background-color: %24; border-radius: 6px; }
+*[shineKind="sectionhead"][shineState="hover"] { background-color: %24; border-radius: 6px; }
+*[shineKind="sectionhead"]:focus { border: none; }
+*[shineKind="sectionhead"][shineState="focus"] { border: none; }
+*[shineKind="sectiontitle"] { background: transparent; color: %9; }
+*[shineKind="sectionsub"] { background: transparent; color: %11; }
+*[shineKind="sectionchevron"] { background: transparent; color: %10; }
+
 /* —— Tag（色来自 status.* / accent.*） —— */
 *[shineKind="tag"] {
   border: 1px solid %7; border-radius: 999px; padding: 2px 10px;
