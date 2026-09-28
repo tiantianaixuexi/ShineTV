@@ -23,7 +23,7 @@ last_verified: 2026-09-25
 ## 修改边界
 
 - `shine_core`（`src/core`、`src/util`、`src/net`、`src/db`、`src/llm`、`src/comfy`、`src/media`、`src/flow`、`src/visual`、`src/novel`、`src/paint`、`src/mcp`、`src/project`、`src/pipeline`、`src/gpu`）不得包含 Qt 头；`tools/check-layers.ps1` 是门禁。
-- Qt 页面在 `src/pages/`；可复用 UI 在 `src/widget/`。`src/widget` 不依赖业务模块类型。装配入口在 `src/app/`。Qt 布局助手在 `src/util/QtLayout.h`。
+- 所有 UI 收敛在唯一根目录 `src/ui/`：`kit/` 可复用套件、`pages/` 业务页、`verify/` 验收取证（checks + review + gallery）、`app/` 装配入口、`layout/` Qt 布局助手。`src/ui/kit` 不依赖业务模块类型。
 - 网络、文件扫描、图片解码、LLM 请求、ComfyUI 提交/下载和生成编译放 worker；通过 `async::PostToUi` 投递结果。UI 线程不做同步 IO/同步 HTTP。
 - 复用现有基础设施：`shine::async`、`shine::log`、`AppSettings`、`net::HttpClient`、`util::Reflect`、SQLite/Comfy 适配层。新增第二份线程池、HTTP 客户端或 JSON 约定前先证明没有现成实现。
 - 外部 C/C++ API（libhv、SQLite、Win32、yyjson、Qt）在边界转换一次；业务层接口遵循项目现有 C++ 约定，不为风格统一改动无关调用点。

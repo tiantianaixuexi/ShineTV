@@ -4,10 +4,10 @@ kind: reference
 status: current
 scope: runtime
 source_of_truth:
-  - src/app/main.cpp
-  - src/app/AppEntry.cpp
-  - src/app/StartupChecks.cpp
-  - src/app/AcceptanceChecks.cpp
+  - src/ui/app/main.cpp
+  - src/ui/app/AppEntry.cpp
+  - src/ui/app/StartupChecks.cpp
+  - src/ui/app/AcceptanceChecks.cpp
 last_verified: 2026-09-25
 ---
 
@@ -15,7 +15,7 @@ last_verified: 2026-09-25
 
 ## 启动顺序
 
-`src/app/main.cpp` 的入口非常短：初始化 `mimalloc`，然后调用 `shine::app::RunApp`。`RunApp` 的实际顺序如下：
+`src/ui/app/main.cpp` 的入口非常短：初始化 `mimalloc`，然后调用 `shine::app::RunApp`。`RunApp` 的实际顺序如下：
 
 1. `ConfigureAppDataSandbox()`：在 QApplication、设置和项目索引读取前处理 `SHINE_APPDATA_OVERRIDE` 及评审沙盒环境变量。
 2. 读取 Windows 宽字符命令行。

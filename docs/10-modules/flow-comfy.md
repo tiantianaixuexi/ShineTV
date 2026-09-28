@@ -12,7 +12,7 @@ source_of_truth:
   - src/comfy/ComfyClient.h
   - src/comfy/ComfySocket.h
   - src/comfy/ComfyNodeDef.h
-  - src/widget/canvas/FlowCanvas.h
+  - src/ui/kit/canvas/FlowCanvas.h
 last_verified: 2026-09-25
 ---
 

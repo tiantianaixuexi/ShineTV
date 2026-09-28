@@ -1,7 +1,7 @@
 #pragma once
 // shine::gallery —— 图片库模块入口（G-S5 S2）
 //
-// **`App.cpp` 只依赖本头的业务 API**；视图在 `src/app/media/`。
+// **`App.cpp` 只依赖本头的业务 API**；视图在 `src/ui/app/media/`。
 //
 // 线程模型（遵守 docs/30-engineering/coding-rules.md 的异步规范）：
 //   * 本头的所有函数都**只在 UI 线程**调用；

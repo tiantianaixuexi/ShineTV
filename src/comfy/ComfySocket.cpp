@@ -1,6 +1,7 @@
 #include "comfy/ComfySocket.h"
 
 #include "core/Log.h"
+#include "util/Strings.h"
 #include "util/Time.h"
 
 #include <WebSocketClient.h>
@@ -32,7 +33,7 @@ std::string ReadStr(yyjson_val* obj, const char* key) {
         return s ? s : "";
     }
     if (yyjson_is_num(v)) {
-        return std::to_string(yyjson_get_sint(v));
+        return util::FromInt(yyjson_get_sint(v));
     }
     return {};
 }

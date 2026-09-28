@@ -3,6 +3,7 @@
 #include "util/Time.h"
 
 #include <algorithm>
+#include <iterator>
 #include <ranges>
 
 namespace shine::comfy {
@@ -51,12 +52,8 @@ void QueueModel::ApplyQueueResult(const QueueResult& r) {
     // 保留服务端列表里已经没有、但本地仍有意义的历史行：
     // 已结束的（Done/Failed/Cancelled）留作记录；**仍在跑/排队的也必须留** —— 那正是"漏收了结果事件"的
     // 情形，S6 会用 /history 给它收尾（静默丢弃会让任务永远消失、用户看不到发生了什么）。
-    for (const auto& old : rows_) {
-        if (FindRow(next, old.promptId)) {
-            continue;
-        }
-        next.push_back(old);
-    }
+    std::ranges::copy_if(rows_, std::back_inserter(next),
+                         [&](const Row& old) { return FindRow(next, old.promptId) == nullptr; });
     if (next.size() > 64) {
         next.erase(next.begin(), next.begin() + static_cast<long>(next.size() - 64));
     }

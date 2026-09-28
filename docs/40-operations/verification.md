@@ -7,7 +7,7 @@ source_of_truth:
   - AGENTS.md
   - tools/
   - scripts/
-  - src/pages/checks/
+  - src/ui/verify/checks/
 last_verified: 2026-09-25
 ---
 

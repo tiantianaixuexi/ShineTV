@@ -13,6 +13,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <flat_map>
 #include <utility>
 #include <vector>
 
@@ -85,7 +86,8 @@ CompileResult CompileToApiJson() {
         std::size_t fromSlot = 0;
         std::size_t passedThrough = 0;
     };
-    std::map<std::pair<std::string, std::size_t>, Endpoint> incoming;
+    // 只做纯查找：插入全部先于查找完成，不迭代、不外泄迭代器 → 连续存储的 flat_map
+    std::flat_map<std::pair<std::string, std::size_t>, Endpoint, std::less<>> incoming;
     for (const GraphLink& link : EnumerateLinks()) {
         const auto fromIt = idMap.find(link.fromNodeId);
         if (fromIt == idMap.end()) {

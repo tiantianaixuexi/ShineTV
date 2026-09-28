@@ -4,9 +4,9 @@ kind: operations
 status: current
 scope: environment
 source_of_truth:
-  - src/app/AppEntry.cpp
-  - src/app/StartupChecks.cpp
-  - src/pages/checks/
+  - src/ui/app/AppEntry.cpp
+  - src/ui/app/StartupChecks.cpp
+  - src/ui/verify/checks/
   - src/novel/NovelCli.h
   - src/mcp/HttpServer.h
 last_verified: 2026-09-25
@@ -33,7 +33,7 @@ last_verified: 2026-09-25
 
 ## 验收开关
 
-`src/pages/checks/` 中存在大量按阶段命名的开关，例如：
+`src/ui/verify/checks/` 中存在大量按阶段命名的开关，例如：
 
 ```text
 SHINE_P02_REVIEW / SHINE_P02_SCREENSHOT
@@ -62,7 +62,7 @@ SHINE_SCENE_IMAGE_CHECK
 - `--novel-init`、`--novel-storyboard`、`--novel-generate`、`--novel-run`：小说 CLI；
 - `--widget-gallery`：控件画廊。
 
-CLI 参数的精确语义见 `src/novel/NovelCli.h` 和 `src/app/AcceptanceChecks.cpp`，不要在脚本中复制一份。
+CLI 参数的精确语义见 `src/novel/NovelCli.h` 和 `src/ui/app/AcceptanceChecks.cpp`，不要在脚本中复制一份。
 
 ## 外部服务前提
 

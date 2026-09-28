@@ -65,7 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-qt.ps1 `
 
 ## 编译期反射
 
-MinGW 分支为 C++ 源文件加入 `-freflection`。`src/util/Reflect.h` 和 `src/widget/theme/Theme.cpp` 使用静态反射序列化；修改设置或主题字段时，优先复用 `util::reflect`，不要新增手写 JSON 样板。
+MinGW 分支为 C++ 源文件加入 `-freflection`。`src/util/Reflect.h` 和 `src/ui/kit/theme/Theme.cpp` 使用静态反射序列化；修改设置或主题字段时，优先复用 `util::reflect`，不要新增手写 JSON 样板。
 
 ## 构建故障定位
 

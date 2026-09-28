@@ -1,13 +1,13 @@
 # check-layers.ps1 -- ShineTV Studio layering gate (P01-S7)
 #
 # Rule 1: shine_core modules must never include Qt headers
-#         (only widget/pages and util/Qt* layout helpers may use Qt).
+#         (only the src/ui tree and its layout helpers may use Qt).
 # Rule 2: no legacy-UI leftovers in C/C++ sources
 #         (imgui / ImVec / ImDraw / VisNodeSys / ImAnim / VisualNode,
 #          case-insensitive -- the S1 baseline pattern plus VisualNode).
 # Rule 3: no inline hardcoded color literals in style code
 #         (setStyleSheet("...#RRGGBB") and QColor("#...") style;
-#          colors live in theme tokens, see src/widget/theme/Token.h).
+#          colors live in theme tokens, see src/ui/kit/theme/Token.h).
 #
 # Scope: code under src/ only. Project documentation is maintained under docs/;
 # this gate intentionally scans source files only.

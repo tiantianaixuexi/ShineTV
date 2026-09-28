@@ -55,7 +55,7 @@ using util::json::HasKey;
         const double d = yyjson_get_num(v);
         const auto i = static_cast<std::int64_t>(d);
         if (static_cast<double>(i) == d) {
-            return std::to_string(i);
+            return util::FromInt(i);
         }
         return util::FromDouble(d);
     }

@@ -30,7 +30,7 @@ pwsh -File tools/check-i18n.ps1
 |---|---|---|
 | `check-layers.ps1` | core 无 Qt、旧 UI 标识、样式硬编码颜色 | 分层或 UI 规则违规 |
 | `check-colors.ps1` | `setStyleSheet`/`QColor` 颜色字面量；主题文件数 | 颜色未走 Token 或主题缺失 |
-| `check-theme.ps1` | `src/widget/theme/Themes` 至少四份且 JSON 可解析 | 主题资源损坏 |
+| `check-theme.ps1` | `src/ui/kit/theme/Themes` 至少四份且 JSON 可解析 | 主题资源损坏 |
 | `check-i18n.ps1` | C++ 源码中的 Unicode replacement glyph | 编码损坏 |
 
 `check-layers.ps1` 只扫描 `src/` 的 C/C++ 文件；文档和脚本中的说明文字不作为代码违规。
@@ -59,7 +59,7 @@ pwsh -File tools/exception-paths.ps1
 
 ## 自检模式
 
-源码中的 `Run*SelfCheck` / `Run*Check` 函数由 `src/pages/checks` 和环境变量接线。优先使用已有开关，不要创建临时测试主程序。完整变量表见 [`../40-operations/environment.md`](../40-operations/environment.md)。
+源码中的 `Run*SelfCheck` / `Run*Check` 函数由 `src/ui/pages/checks` 和环境变量接线。优先使用已有开关，不要创建临时测试主程序。完整变量表见 [`../40-operations/environment.md`](../40-operations/environment.md)。
 
 ## 结果记录
 

@@ -67,7 +67,7 @@ exec::static_thread_pool& Pool() {
         return s ? s : "";
     }
     if (yyjson_is_num(v)) {
-        return std::to_string(yyjson_get_sint(v));
+        return util::FromInt(yyjson_get_sint(v));
     }
     return {};
 }

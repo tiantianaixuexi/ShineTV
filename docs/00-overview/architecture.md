@@ -6,9 +6,9 @@ scope: architecture
 source_of_truth:
   - CMakeLists.txt
   - tools/check-layers.ps1
-  - src/pages/shell/MainWindow.h
+  - src/ui/pages/shell/MainWindow.h
   - src/core/Async.h
-last_verified: 2026-09-25
+last_verified: 2026-09-28
 ---
 
 # 架构总览
@@ -18,12 +18,9 @@ last_verified: 2026-09-25
 ```text
 ┌──────────────────────────────────────────────────────────┐
 │ ShineTVStudio：Qt 6 Widgets 应用壳、工作区、验收开关       │
-│ src/pages  src/app                                       │
-└───────────────┬──────────────────────────────────────────┘
-                │ 依赖
-┌───────────────▼──────────────────────────────────────────┐
-│ shine_kit：主题、动效、通用控件、FlowCanvas              │
-│ src/widget                                               │
+│ src/ui（唯一 UI 根目录）                                  │
+│   ui/pages 业务页   ui/verify 验收取证   ui/app 装配      │
+│   ui/kit 套件       ui/layout Qt 布局助手                  │
 └───────────────┬──────────────────────────────────────────┘
                 │ 依赖
 ┌───────────────▼──────────────────────────────────────────┐
@@ -33,16 +30,22 @@ last_verified: 2026-09-25
 └──────────────────────────────────────────────────────────┘
 ```
 
+`shine_kit` 静态库即 `src/ui/kit`（主题、动效、通用控件、FlowCanvas）；它只被 `ShineTVStudio` 链接，是 `src/ui` 内部的物理归类而非独立分层。
+
 这是**目标方向**。当前 `CMakeLists.txt` 将 `project` 和 `pipeline` 源文件登记在 `shine_core` 静态库中；它们仍应保持对业务层的单向依赖，不因物理归类而向 UI 反向泄漏。
 
 ## 目录职责
 
 | 目录 | 允许承担 | 不应承担 |
 |---|---|---|
-| `src/app` | QApplication、启动、验收开关 | 业务协议实现、页面布局 |
-| `src/pages` | 各业务页面与工作区 | 可复用控件实现 |\n| `src/widget` | 主题、动效、通用控件、FlowCanvas | 具体小说/项目业务类型和业务判断 |
+| `src/ui` | **唯一 UI 根目录**：套件、业务页、验收、装配、布局助手 | 业务协议实现、存储和网络 |
+| `src/ui/kit` | 主题、动效、通用控件、FlowCanvas | 具体小说/项目业务类型和业务判断 |
+| `src/ui/pages` | 各业务页面与工作区 | 可复用控件实现、验收脚手架 |
+| `src/ui/verify` | 阶段自检（checks）、多模态评审取证（review）、控件画廊（gallery） | 产品功能路径 |
+| `src/ui/app` | QApplication、启动、验收开关注册 | 业务协议实现、页面布局 |
+| `src/ui/layout` | Qt 布局助手（`QtLayout.h`） | 业务逻辑 |
 | `src/core` | 设置、日志、异步邮箱 | Qt 控件和业务协议 |
-| `src/util` | 纯工具和静态反射 | 状态、线程和业务副作用 |
+| `src/util` | 纯工具和静态反射 | 状态、线程和业务副作用、Qt |
 | `src/net` | libhv 出站 HTTP 薄封装 | Comfy/LLM 业务错误解释 |
 | `src/db` | SQLite/Redis 适配 | UI 状态和协议路由 |
 | `src/llm` | Provider、流式响应、AgentKit | 小说状态提交规则 |
@@ -59,7 +62,7 @@ last_verified: 2026-09-25
 ## 依赖规则
 
 1. `shine_core` 源文件不得 `#include <Q...>`；运行 `tools/check-layers.ps1` 验证。
-2. `src/widget` 只能依赖 `shine_core`、`src/util` 和 Qt，不 include `novel/`、`project/` 等业务头。
+2. `src/ui/kit` 只能依赖 `shine_core`、`src/util` 和 Qt，不 include `novel/`、`project/` 等业务头。
 3. 页面只调用业务层公开接口；业务层不回调 QWidget。
 4. 同一基础能力只保留一个实现：HTTP 用 `net`，日志用 `core/Log`，异步用 `core/Async`，反射用 `util/Reflect`。
 5. 外部协议在适配层转换；不要让 Win32/yyjson/libhv 的原始类型穿透到业务接口。

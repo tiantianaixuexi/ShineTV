@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace shine::visual {
 namespace {
@@ -37,7 +38,7 @@ struct AssetInfo {
 }
 void AddUsage(std::vector<ReferenceUsage>& out, std::unordered_set<std::string>& seen,
               ReferenceUsage usage) {
-    std::string key = std::to_string(static_cast<int>(usage.kind)) + ":" +
+    std::string key = std::to_string(std::to_underlying(usage.kind)) + ":" +
                       std::to_string(usage.asset_id) + ":" + std::to_string(usage.shot_id) + ":" +
                       std::to_string(usage.entity_id);
     if (seen.insert(key).second) {

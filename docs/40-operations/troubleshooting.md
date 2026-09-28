@@ -4,7 +4,7 @@ kind: operations
 status: current
 scope: troubleshooting
 source_of_truth:
-  - src/app/AppEntry.cpp
+  - src/ui/app/AppEntry.cpp
   - src/comfy/ComfySession.cpp
   - src/visual/VideoTaskRunner.cpp
   - src/util/Encoding.h

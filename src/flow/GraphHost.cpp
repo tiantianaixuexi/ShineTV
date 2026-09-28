@@ -563,9 +563,11 @@ void DeleteSelected() {
     if (g_selection.empty()) {
         return;
     }
-    const std::unordered_set<std::string> doomed{g_selection.begin(), g_selection.end()};
-    std::erase_if(g_links, [&](const ModelLink& l) { return doomed.contains(l.fromId) || doomed.contains(l.toId); });
-    std::erase_if(g_nodes, [&](const auto& n) { return doomed.contains(n->id); });
+    // 选中集通常只有个位数，直接线性扫即可，不必为一次 contains 额外建哈希集
+    std::erase_if(g_links, [&](const ModelLink& l) {
+        return std::ranges::contains(g_selection, l.fromId) || std::ranges::contains(g_selection, l.toId);
+    });
+    std::erase_if(g_nodes, [&](const auto& n) { return std::ranges::contains(g_selection, n->id); });
     g_selection.clear();
     log::Info("已删除选中节点");
 }

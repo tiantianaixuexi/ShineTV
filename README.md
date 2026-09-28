@@ -54,7 +54,7 @@ cmake --build build -j 8 --target ShineTVStudio
 
 ## 当前系统边界
 
-- **UI**：Qt 6 Widgets；页面在 `src/pages/`，可复用控件在 `src/widget/`，装配入口在 `src/app/`。
+- **UI**：Qt 6 Widgets；页面在 `src/ui/pages/`，可复用控件在 `src/ui/kit/`，装配入口在 `src/ui/app/`。
 - **业务核心**：`shine_core` 不得依赖 Qt；网络、存储、ComfyUI、LLM、小说和流程图均可脱离窗口使用。
 - **数据**：项目目录保存配置和产物；小说世界状态以 SQLite `novel.db` 为权威；缓存可删除。
 - **外部服务**：ComfyUI 通过 HTTP/WebSocket 接入；LLM 通过同步客户端在 worker 线程调用；MCP 默认只监听本机。
@@ -74,9 +74,9 @@ cmake --build build -j 8 --target ShineTVStudio
 ## 目录速览
 
 ```text
-src/app/       应用装配入口、启动与验收开关
-src/pages/     Qt 页面：shell/project/novel/storyboard/assets/image/videoflow/pipeline/gallery/settings/review/checks
-src/widget/    可复用 UI：controls/images/data/canvas/theme/motion
+src/ui/app/       应用装配入口、启动与验收开关
+src/ui/pages/     Qt 页面：shell/project/novel/storyboard/assets/image/videoflow/pipeline/gallery/settings/review/checks
+src/ui/kit/    可复用 UI：controls/images/data/canvas/theme/motion
 src/core/      设置、日志、异步基础设施
 src/util/      纯工具 + Qt 布局助手（QtLayout.h）
 src/net/       libhv 出站 HTTP 薄封装

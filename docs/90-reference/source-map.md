@@ -17,7 +17,7 @@ last_verified: 2026-09-25
 
 | 问题 | 先看 | 再看 |
 |---|---|---|
-| 程序如何启动/退出 | `src/app/main.cpp` | `src/app/AppEntry.cpp`, `StartupChecks.cpp` |
+| 程序如何启动/退出 | `src/ui/app/main.cpp` | `src/ui/app/AppEntry.cpp`, `StartupChecks.cpp` |
 | 项目如何创建/打开 | `src/project/Project.h` | `Project.cpp`, `ProjectTemplate.cpp`, `ProjectIndex.h` |
 | 数据库/Redis | `src/db/Db.h` | `src/db/sqlite/SqliteDb.h`, `src/db/redis/Redis.h` |
 | 小说库和 schema | `src/novel/NovelDb.h` | `NovelDb.cpp`, `NovelTypes.h` |
@@ -31,7 +31,7 @@ last_verified: 2026-09-25
 | 图保存/导入 | `src/flow/GraphHost.h` | `WorkflowIO.h`, `GraphCompiler.h` |
 | 节点定义 | `src/comfy/ComfyNodeDef.h` | `ComfySession.h`, `ComfySocket.h` |
 | Comfy HTTP/WS | `src/comfy/ComfyClient.h` | `ComfyHttp.h`, `ComfySocket.h` |
-| 出图/出片工作区 | `src/pages/imageflow/`, `src/pages/videoflow/` | `src/visual/`, `src/flow/` |
+| 出图/出片工作区 | `src/ui/pages/imageflow/`, `src/ui/pages/videoflow/` | `src/visual/`, `src/flow/` |
 | 流水线 | `src/pipeline/StageMachine.h` | `Runner.h`, `Budget.h`, `Ledger.h` |
 | LLM Provider | `src/llm/OpenAIClient.h` | `OpenAIProvider.h`, `OpenAIChat.cpp` |
 | Agent 工具 | `src/llm/AgentKit.h` | `ToolRegistry.h`, `src/novel/NovelMcpTools.h` |
@@ -39,9 +39,9 @@ last_verified: 2026-09-25
 | 图库/媒体 | `src/media/MediaLibrary.h` | `Gallery.h`, `ThumbnailService.h` |
 | 图片解码 | `src/media/decoders/IImageDecoder.h` | `PngDecoder.*`, `JpegDecoder.*`, `WebpDecoder.*` |
 | inpaint | `src/paint/PaintCanvas.h` | `PaintService.h`, `PngCodec.h` |
-| 主题/QSS | `src/widget/theme/Token.h` | `Theme.cpp`, `QssBuilder.cpp`, `ThemeService.cpp` |
-| 通用控件 | `src/widget/controls/`, `src/widget/data/`, `src/widget/images/` | `WidgetCommon.h` |\n| Qt 布局助手 | `src/util/QtLayout.h` | `widget/theme/CssColor.h` |
-| 流程画布 | `src/widget/canvas/FlowCanvas.h` | `src/pages/imageflow/`, `src/pages/videoflow/` |
+| 主题/QSS | `src/ui/kit/theme/Token.h` | `Theme.cpp`, `QssBuilder.cpp`, `ThemeService.cpp` |
+| 通用控件 | `src/ui/kit/controls/`, `src/ui/kit/data/`, `src/ui/kit/images/` | `WidgetCommon.h` |\n| Qt 布局助手 | `src/ui/layout/QtLayout.h` | `widget/theme/CssColor.h` |
+| 流程画布 | `src/ui/kit/canvas/FlowCanvas.h` | `src/ui/pages/imageflow/`, `src/ui/pages/videoflow/` |
 | 设置/路径 | `src/core/Settings.h` | `Settings.cpp`, `src/util/Encoding.h` |
 | 异步/日志 | `src/core/Async.h` | `Async.cpp`, `Log.h`, `Log.cpp` |
 | 构建目标 | `CMakeLists.txt` | `docs/30-engineering/build.md` |
@@ -53,7 +53,7 @@ last_verified: 2026-09-25
 - 先读头文件，再读对应 `.cpp`；不要从文件名猜接口。
 - 看到 `Pxx/Sxx/Vxx/Txx` 等标识时，把它当作历史验收上下文，不要在当前文档中重建开发计划。
 - `src/visual` 的主要命名空间是 `shine::video`；`src/novel` 同时有 `novelcore`、`novel`、`agent`。
-- `src/app` 的验收类不是产品 API；只有 `MainWindow` 暴露的自动化探针在需要时使用。
+- `src/ui/app` 的验收类不是产品 API；只有 `MainWindow` 暴露的自动化探针在需要时使用。
 - `third/` 是 vendored 依赖；除非任务明确要求，不要修改它。
 
 ## AI 技能入口

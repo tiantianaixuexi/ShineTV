@@ -57,7 +57,7 @@ last_verified: 2026-09-25
 
 ## UI 装配
 
-`src/pages/pipeline/PipelineWorkspace` 组合 Gantt、Ledger、StopReport 视图并调用 `Runner`。UI 只展示状态和发出运行命令；真实阶段执行器由装配层注入。
+`src/ui/pages/pipeline/PipelineWorkspace` 组合 Gantt、Ledger、StopReport 视图并调用 `Runner`。UI 只展示状态和发出运行命令；真实阶段执行器由装配层注入。
 
 ## 不变量
 

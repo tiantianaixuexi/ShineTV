@@ -4,7 +4,7 @@ kind: reference
 status: current
 scope: product-boundary
 source_of_truth:
-  - src/pages/shell/MainWindow.h
+  - src/ui/pages/shell/MainWindow.h
   - src/project/Project.h
   - src/novel/NovelPipeline.h
   - src/visual/VideoTaskRunner.h

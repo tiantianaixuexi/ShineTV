@@ -40,7 +40,10 @@ namespace detail {
     if (maxExclusive == 0) {
         return 0;
     }
-    return static_cast<std::uint32_t>(detail::Rng()() % maxExclusive);
+    // 用 uniform_int_distribution 而不是 `% maxExclusive`：后者对非 2 的幂存在模偏差，
+    // 而这里生成的正是发给 ComfyUI 的 seed。
+    std::uniform_int_distribution<std::uint32_t> dist{0, maxExclusive - 1};
+    return dist(detail::Rng());
 }
 
 // 随机种子（ComfyUI 的 seed 参数）
