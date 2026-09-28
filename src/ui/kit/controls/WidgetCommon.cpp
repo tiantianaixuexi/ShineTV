@@ -1,8 +1,11 @@
 #include "ui/kit/controls/WidgetCommon.h"
 
 #include "ui/kit/theme/CssColor.h"
+#include "ui/kit/theme/Theme.h"
 
 #include <QEvent>
+#include <QGraphicsDropShadowEffect>
+#include <QHash>
 #include <QMouseEvent>
 #include <QStyle>
 
@@ -162,6 +165,118 @@ void ElidedLabel::mouseReleaseEvent(QMouseEvent* ev) {
         return;
     }
     QLabel::mouseReleaseEvent(ev);
+}
+
+// ================================================================ 阴影实现
+namespace {
+
+// 阴影的几何参数，逐条对齐 webui/src/styles/tokens.css：
+//   --shadow-1      = 0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.30)
+//   --shadow-2      = 0 12px 40px rgba(0,0,0,.45)
+//   --shadow-accent = 0 4px 20px rgba(accent,.28)
+// 一条 CSS box-shadow 能叠多层，QGraphicsDropShadowEffect 只出一层，
+// 这里取「扩散占主导」的那一层（shadow-1 取第二层的 16px）。
+struct ShadowSpec {
+    int offsetX;
+    int offsetY;
+    int blurRadius;
+};
+
+constexpr ShadowSpec kShadowSm{0, 1, 16};
+constexpr ShadowSpec kShadowLg{0, 12, 40};
+constexpr ShadowSpec kShadowAccent{0, 4, 20};
+
+[[nodiscard]] QColor ShadowColorOf(ShadowLevel level) {
+    const theme::ColorToken& c = theme::Current();
+    switch (level) {
+        case ShadowLevel::Sm:
+            return TokenQColor(c.shadow1);
+        case ShadowLevel::Lg:
+            return TokenQColor(c.shadow2);
+        case ShadowLevel::Accent:
+            return TokenQColor(c.shadowAccent);
+        case ShadowLevel::None:
+        default:
+            return QColor{};
+    }
+}
+
+[[nodiscard]] ShadowSpec ShadowGeomOf(ShadowLevel level) {
+    switch (level) {
+        case ShadowLevel::Sm:
+            return kShadowSm;
+        case ShadowLevel::Lg:
+            return kShadowLg;
+        case ShadowLevel::Accent:
+            return kShadowAccent;
+        case ShadowLevel::None:
+        default:
+            return {0, 0, 0};
+    }
+}
+
+// 主题切换时重挂阴影：ThemeService 是纯静态类没有信号，这里靠 QApplication
+// 每次换肤会发的 ThemeChange 事件（见 ApplyQss 里的 QEvent::ThemeChange）。
+// 记住每个控件的档位，换肤后按新主题色重挂一次。
+QHash<QWidget*, ShadowLevel>& ShadowRegistry() {
+    static QHash<QWidget*, ShadowLevel> registry;
+    return registry;
+}
+
+class ShadowRefresher : public QObject {
+  public:
+    explicit ShadowRefresher(QObject* parent = nullptr) : QObject(parent) {}
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* ev) override {
+        if (ev->type() == QEvent::ThemeChange && watched == qApp) {
+            for (auto it = ShadowRegistry().begin(); it != ShadowRegistry().end(); ++it) {
+                ApplyShadow(it.key(), it.value());
+            }
+        }
+        return QObject::eventFilter(watched, ev);
+    }
+};
+
+ShadowRefresher& Refresher() {
+    static ShadowRefresher refresher;
+    return refresher;
+}
+
+} // namespace
+
+void ApplyShadow(QWidget* w, ShadowLevel level) {
+    if (w == nullptr) {
+        return;
+    }
+    if (level == ShadowLevel::None) {
+        w->setGraphicsEffect(nullptr);
+        ShadowRegistry().remove(w);
+        return;
+    }
+    // 一个控件只能挂一个 effect：先摘掉旧的再挂新的，否则 setGraphicsEffect
+    // 会让先前那个失效（Qt 只允许一个）。
+    if (auto* old = qobject_cast<QGraphicsDropShadowEffect*>(w->graphicsEffect())) {
+        old->deleteLater();
+    }
+    const ShadowSpec spec = ShadowGeomOf(level);
+    auto* effect = new QGraphicsDropShadowEffect(w);
+    effect->setColor(ShadowColorOf(level));
+    effect->setBlurRadius(spec.blurRadius);
+    effect->setOffset(spec.offsetX, spec.offsetY);
+    w->setGraphicsEffect(effect);
+    ShadowRegistry()[w] = level;
+
+    // 订阅 ThemeChange（首次调用时装一次即可）
+    static bool hooked = false;
+    if (!hooked) {
+        hooked = true;
+        Refresher().installEventFilter(qApp);
+    }
+}
+
+void ApplyShadowOnThemeChange(QWidget* w, ShadowLevel level) {
+    ApplyShadow(w, level);
 }
 
 } // namespace shine::widgets

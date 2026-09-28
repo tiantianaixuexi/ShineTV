@@ -190,6 +190,9 @@ void Card::enterEvent(QEnterEvent* ev) {
     if (!lifted_) {
         lifted_ = true;
         Lift(-1); // hover 抬升 1px
+        // webui ui.css:196 .card.hoverable:hover = shadow-1 + translateY(-2px)。
+        // QSS 无 box-shadow，这里用 QGraphicsDropShadowEffect 补上（见 ApplyShadow）。
+        ApplyShadow(this, ShadowLevel::Sm);
     }
 }
 
@@ -198,6 +201,7 @@ void Card::leaveEvent(QEvent* ev) {
     if (lifted_) {
         lifted_ = false;
         Lift(1);
+        ApplyShadow(this, ShadowLevel::None);
     }
 }
 
@@ -378,9 +382,24 @@ QSize Chip::SizeHintFromContent() const {
     if (row_ == nullptr) {
         return {0, 26};
     }
-    const QSize content = row_->sizeHint();
-    const int h = std::max(content.height() + 2, 26); // +2：上下边框
-    return {content.width() + 2, h};
+    // 不能直接用 row_->sizeHint()：布局未激活时它返回的是上一次激活时的缓存
+    // （或无效默认值），此时标签刚 setText 完、布局还没重算，宽度会偏小，
+    // 上游再按这个宽度摆放就会裁字。改成直接把两个子标签的 hint 手动累加——
+    // 它们就是全部内容，且各自 hint 永远是即时的。
+    int w = row_->contentsMargins().left() + row_->contentsMargins().right() + 2; // +2 边框
+    int h = 26;
+    for (const QWidget* child : {static_cast<const QWidget*>(label_),
+                                 static_cast<const QWidget*>(count_label_)}) {
+        if (child == nullptr || child->isHidden()) {
+            continue;
+        }
+        w += child->sizeHint().width();
+        h = std::max(h, child->sizeHint().height() + 2);
+    }
+    if (label_ != nullptr && count_label_ != nullptr && !count_label_->isHidden()) {
+        w += row_->spacing(); // 标签与计数胶囊之间有 gap
+    }
+    return {w, h};
 }
 
 QSize Chip::sizeHint() const { return SizeHintFromContent(); }

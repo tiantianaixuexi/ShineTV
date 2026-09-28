@@ -80,4 +80,25 @@ class ElidedLabel : public QLabel {
 // repolish：改动态属性后刷新 QSS
 void Repolish(QWidget* w);
 
+// ================================================================ 阴影
+// 设计稿大量使用 box-shadow（--shadow-1 / --shadow-2 / --shadow-accent）。
+// **Qt QSS 没有 box-shadow 属性**，但 Qt 有现成的 graphics effect：
+// QGraphicsDropShadowEffect（setColor / setBlurRadius / setOffset）。
+// 色值随主题变化，所以走 ColorToken 的 shadow1 / shadow2 / shadowAccent。
+//
+// ⚠️ 三条使用约束（都是踩过的坑）：
+//  1. 同一个控件**只能挂一个** graphicsEffect。要叠多层阴影只能自己继承 QWidget
+//     重写 paintEvent 画，不要试图挂两个 effect（第二个会让第一个失效）。
+//  2. 阴影会在控件四周留出 blur 半径那么宽的空间。若控件在固定尺寸的布局里，
+//     需要给父容器留够边距，否则阴影被裁掉。
+//  3. 主题切换后要重新调用（色值变了）。用 ApplyShadowOnThemeChange 可自动跟随。
+enum class ShadowLevel { None, Sm, Lg, Accent };
+
+// 给控件挂阴影（幂等：重复调用会就地更新而不是叠加）。level=None 表示摘掉阴影。
+void ApplyShadow(QWidget* w, ShadowLevel level);
+
+// 主题切换时自动重挂：内部订阅 ThemeService 的主题变更信号，
+// 让已 ApplyShadow 的控件跟随新主题的阴影色。页面不需要再管。
+void ApplyShadowOnThemeChange(QWidget* w, ShadowLevel level);
+
 } // namespace shine::widgets

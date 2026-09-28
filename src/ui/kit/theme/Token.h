@@ -49,6 +49,12 @@ struct ColorToken {
     std::uint32_t fillMuted = 0;          // fill.muted（斑马行、只读区、次要分区底）
     std::uint32_t lineFocus = 0;          // line.focus（焦点环；浅色主题下比主色更清楚）
     std::uint32_t shadowScrim = 0;        // shadow.scrim（浮层遮罩，带 alpha）
+    // 设计稿的 box-shadow 阴影（Qt QSS 无 box-shadow，改由 widgets::ApplyShadow
+    // 用 QGraphicsDropShadowEffect 落地；色值随主题变化，故进 ColorToken 而非常量）。
+    // 数值逐条对齐 webui/src/styles/tokens.css 的 --shadow-1 / --shadow-2 / --shadow-accent。
+    std::uint32_t shadow1 = 0;            // shadow.1（卡片 / 悬浮层 / 节点 hover）
+    std::uint32_t shadow2 = 0;            // shadow.2（弹窗 / 抽屉 / 命令面板 / 浮动面板）
+    std::uint32_t shadowAccent = 0;       // shadow.accent（主按钮 / 选中项的强调辉光）
 
     bool operator==(const ColorToken&) const = default;
 };
@@ -57,16 +63,17 @@ struct ColorToken {
 // ⚠️ 本表顺序 == ColorToken 字段顺序 == QSS %N 顺序，三者必须逐位一致：
 //    QssBuilder::FillTokens 按 "%N" 做位置替换，**中途插入会让整张 QSS 模板错位**。
 //    新增 token 一律追加到末尾（design/01-tokens-color.md §1.1）。
-inline constexpr std::array<std::string_view, 28> kColorTokenNames = {
+inline constexpr std::array<std::string_view, 31> kColorTokenNames = {
     "bg.void",  "bg.surface",  "bg.panel",  "bg.elevated",  "bg.overlay",
     "line.subtle",  "line.normal",  "line.strong",
     "text.primary",  "text.secondary",  "text.muted",  "text.inverse",
     "accent.primary",  "accent.primary.hover",  "accent.primary.fg",  "accent.secondary",  "accent.info",
     "status.ok",  "status.warn",  "status.danger",  "status.busy",  "status.idle",
     "status.pending",  "fill.hover",  "fill.selected",  "fill.muted",  "line.focus",  "shadow.scrim",
+    "shadow.1",  "shadow.2",  "shadow.accent",
 };
 
-// token 总数（22 → 28）。用它替代散落的字面量：值数组长度、样式编辑器行数、
+// token 总数（22 → 28 → 31）。用它替代散落的字面量：值数组长度、样式编辑器行数、
 // 主题完整性判定全部由它推导，下次追加 token 不必再全仓搜魔数。
 inline constexpr std::size_t kColorTokenCount = kColorTokenNames.size();
 

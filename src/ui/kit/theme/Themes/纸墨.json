@@ -28,6 +28,9 @@
     "fill.selected": "#D8E8E2",
     "fill.muted": "#EFEADE",
     "line.focus": "#0F9C88",
-    "shadow.scrim": "#2A241ACC"
+    "shadow.scrim": "#2A241ACC",
+    "shadow.accent": "#0C857740",
+    "shadow.2": "#3C321E29",
+    "shadow.1": "#3C321E1A"
   }
 }

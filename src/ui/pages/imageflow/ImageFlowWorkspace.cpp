@@ -106,6 +106,8 @@ void ImageFlowWorkspace::BuildUi() {
     tool_host_lay->setSpacing(0);
     auto* toolbar = new QWidget(tool_host);
     toolbar->setObjectName(QStringLiteral("floatToolbar"));
+    // webui views.css:195 .float-toolbar box-shadow: var(--shadow-1)（毛玻璃底 + shadow-1）
+    widgets::ApplyShadow(toolbar, widgets::ShadowLevel::Sm);
     auto* tb = new QHBoxLayout(toolbar);
     tb->setContentsMargins(12, 8, 12, 8);
     tb->setSpacing(8);
@@ -141,6 +143,8 @@ void ImageFlowWorkspace::BuildUi() {
     // ── 右侧浮动参数面板（webui float-panel：top16 right16 bottom16 w348）──
     panel_ = new QWidget(stage);
     panel_->setObjectName(QStringLiteral("floatPanel"));
+    // webui views.css:216 .float-panel box-shadow: var(--shadow-2)
+    widgets::ApplyShadow(panel_, widgets::ShadowLevel::Lg);
     panel_->setFixedWidth(348);
     auto* panel_lay = new QVBoxLayout(panel_);
     panel_lay->setContentsMargins(14, 12, 14, 12);

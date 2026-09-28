@@ -85,6 +85,8 @@ CommandPalette::CommandPalette(QWidget* host)
     : QWidget(host, Qt::Popup | Qt::FramelessWindowHint), host_(host) {
     setObjectName(QStringLiteral("commandPalette"));
     setFixedWidth(560);
+    // webui shell.css:109 .cmdk box-shadow: var(--shadow-2)（QSS 无 box-shadow）
+    widgets::ApplyShadow(this, widgets::ShadowLevel::Lg);
 
     // 面板本体样式：运行时取 Token 构串（QSS 零字面色是源码纪律，变量构串是正规形态）
     const theme::ColorToken& t = theme::Current();

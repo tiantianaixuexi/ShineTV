@@ -113,6 +113,8 @@ Drawer::Drawer(const QString& title, QWidget* parent) : QWidget(parent, Qt::Tool
     setProperty("shineDrawer", true); // 无 Q_OBJECT，兄弟查找走属性标记
     setAttribute(Qt::WA_DeleteOnClose, true);
     setFixedWidth(380); // 右侧 380px（UI.md §2.1）
+    // webui ui.css:655 .drawer box-shadow: var(--shadow-2)（QSS 无 box-shadow）
+    ApplyShadow(this, ShadowLevel::Lg);
 
     auto* col = new QVBoxLayout(this);
     col->setContentsMargins(16, 12, 16, 12);
@@ -180,32 +182,49 @@ void Toast::Show(const QString& text, Tone tone) {
         old->deleteLater();
     }
 
+    // 透明外壳：只负责给阴影留出绘制空间。
+    // Toast 是无边框顶层 window，若直接在承载内容的那个 widget 上挂阴影，
+    // 溢出的部分会被窗口边界裁掉（setFixedWidth 更是把两侧切平）。
+    // 所以外层 w 完全透明、内边距 = 阴影扩散半径，真正的卡片是里面的 card。
     auto* w = new QWidget(nullptr, Qt::ToolTip | Qt::FramelessWindowHint);
-    SetKind(w, "toast");
+    w->setObjectName(QStringLiteral("shineToast")); // 评审取证按此定位顶层 window
+    w->setAttribute(Qt::WA_TranslucentBackground, true); // 让阴影透出来
+    auto* wrap = new QVBoxLayout(w);
+    wrap->setContentsMargins(20, 20, 20, 20); // ≥ shadow-2 的 blur(40) 的一半
+    wrap->setSpacing(0);
+
+    auto* card = new QWidget(w);
+    SetKind(card, "toast");
+    // webui ui.css:998 .toast box-shadow: var(--shadow-2)
+    ApplyShadow(card, ShadowLevel::Lg);
     const char* toneName = tone == Tone::Info        ? "info"
                            : tone == Tone::Success   ? "success"
                            : tone == Tone::Warning   ? "warning"
                                                      : "error";
-    w->setProperty("tone", QString::fromLatin1(toneName));
+    card->setProperty("tone", QString::fromLatin1(toneName));
+    wrap->addWidget(card);
 
-    auto* row = new QHBoxLayout(w);
+    auto* row = new QHBoxLayout(card);
     row->setContentsMargins(10, 8, 10, 8);
     row->setSpacing(8);
     auto* icon = new QLabel(tone == Tone::Success ? QStringLiteral("✔")
                            : tone == Tone::Warning ? QStringLiteral("!")
                            : tone == Tone::Error   ? QStringLiteral("✕")
                                                    : QStringLiteral("ℹ"),
-                            w);
+                            card);
     SetKind(icon, "toasticon");
     icon->setProperty("tone", QString::fromLatin1(toneName));
     row->addWidget(icon);
-    auto* label = new QLabel(text, w);
+    auto* label = new QLabel(text, card);
     label->setWordWrap(true);
     label->setStyleSheet(QStringLiteral("background: transparent;"));
     row->addWidget(label, 1);
 
+    // 宽度定在**卡片**上：外壳 w 的 20px 四周留白是阴影空间，不能算进内容宽度，
+    // 否则卡片实际比预期窄 40px。
+    card->adjustSize();
+    card->setFixedWidth(std::max(240, card->sizeHint().width()));
     w->adjustSize();
-    w->setFixedWidth(std::max(240, w->sizeHint().width()));
     w->show();
     LayoutBottomRight(w);
     stack.push_back(w); // 新条目在最上（同位叠放，UI.md 只要求可堆叠 ≤3）
