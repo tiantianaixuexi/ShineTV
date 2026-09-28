@@ -140,8 +140,8 @@ const ColorToken& Current() {
     return g_themes[IndexOf(g_current)];
 }
 
-std::array<std::uint32_t, 22> TokenValues(const ColorToken& c) {
-    std::array<std::uint32_t, 22> out{};
+std::array<std::uint32_t, kColorTokenCount> TokenValues(const ColorToken& c) {
+    std::array<std::uint32_t, kColorTokenCount> out{};
     std::size_t i = 0;
     template for (constexpr auto m : FieldInfos<ColorToken>()) {
         out[i++] = c.[: m :];
@@ -170,19 +170,19 @@ std::string ColorTokenToJson(const ColorToken& c) {
     return out;
 }
 
-bool ColorTokenFromJson(std::string_view json, ColorToken& out) {
+std::size_t ColorTokenFromJsonPartial(std::string_view json, ColorToken& out) {
     yyjson_doc* doc = yyjson_read(json.data(), json.size(), 0);
     if (doc == nullptr) {
-        return false;
+        return 0;
     }
     yyjson_val* root = yyjson_doc_get_root(doc); // yyjson 硬规则：一律走 doc_get_root
     if (yyjson_val* colors = yyjson_obj_get(root, "colors"); yyjson_is_obj(colors)) {
         root = colors; // 容许主题文件形状 {"name":…,"colors":{…}}
     }
-    ColorToken parsed{};
     std::size_t hit = 0;
     if (yyjson_is_obj(root)) {
         std::size_t i = 0;
+        // 只覆盖 JSON 给到的键；out 的其余字段保留调用方预置的值（自定义主题迁移）
         template for (constexpr auto m : FieldInfos<ColorToken>()) {
             const std::string_view key = kColorTokenNames[i++];
             if (yyjson_val* v = yyjson_obj_getn(root, key.data(), key.size());
@@ -190,14 +190,19 @@ bool ColorTokenFromJson(std::string_view json, ColorToken& out) {
                 std::uint32_t rgba = 0;
                 const std::string_view s{yyjson_get_str(v), yyjson_get_len(v)};
                 if (FromHex(s, rgba)) {
-                    parsed.[: m :] = rgba;
+                    out.[: m :] = rgba;
                     ++hit;
                 }
             }
         }
     }
     yyjson_doc_free(doc);
-    if (hit != kColorTokenNames.size()) {
+    return hit;
+}
+
+bool ColorTokenFromJson(std::string_view json, ColorToken& out) {
+    ColorToken parsed{};
+    if (ColorTokenFromJsonPartial(json, parsed) != kColorTokenCount) {
         return false; // 宽容读只宽容「多键」，缺键不算完整主题
     }
     out = parsed;
@@ -258,11 +263,21 @@ bool LoadCustomThemes(const std::filesystem::path& dir) {
                 all = false;
                 continue;
             }
-            ColorToken c{};
-            if (!ColorTokenFromJson(*bytes, c)) {
-                log::Error("自定义主题解析失败（需含全部颜色 token）：{}", util::PathToUtf8(entry.path()));
+            // 缺键迁移（方案 01 加了 status.pending / fill.* / line.focus / shadow.scrim，
+            // 6 个键）：老自定义主题只有 22 个键，宽容读会整体判不完整而**整个主题加载失败**。
+            // 这里以当前内置主题为底，只覆盖文件里给到的键 —— 用户原有的 22 个值全部保留。
+            const ThemeId baseId = g_loaded[IndexOf(g_current)] ? g_current : ThemeId::DeepSpace;
+            ColorToken c = ThemeColorsOf(baseId);
+            const std::size_t hit = ColorTokenFromJsonPartial(*bytes, c);
+            if (hit == 0) {
+                log::Error("自定义主题解析失败（无有效颜色 token）：{}", util::PathToUtf8(entry.path()));
                 all = false;
                 continue;
+            }
+            if (hit != kColorTokenCount) {
+                log::Warn("自定义主题 {} 缺 {} 个 token，已用内置主题 {} 补全（存回后即为完整主题）",
+                          util::PathToUtf8(entry.path()), kColorTokenCount - hit,
+                          ThemeDisplayName(baseId));
             }
             bool dup = false;
             for (auto& [n, token] : g_customs) {

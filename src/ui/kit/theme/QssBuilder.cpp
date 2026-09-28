@@ -39,7 +39,7 @@ std::string Trim(std::string s) {
     return s;
 }
 
-// 整张 QSS 模板：**零字面颜色**（设计原则）——所有颜色是 %1..%22 占位符，
+// 整张 QSS 模板：**零字面颜色**（设计原则）——所有颜色是 %1..%28 占位符，
 // 位置与 kColorTokenNames（Token.h）一一对应，由 Build() 用当前主题的 Token 值填充。
 // 按 UI.md §2 的控件清单铺满常用 Qt 控件的每一种视觉状态。
 constexpr std::string_view kTemplate = R"QSS(
@@ -50,26 +50,26 @@ QWidget:disabled { color: %11; }
 
 QMainWindow { background-color: %1; }
 QMenuBar { background-color: %2; color: %9; border-bottom: 1px solid %6; }
-QMenuBar::item:selected { background-color: %4; color: %9; }
+QMenuBar::item:selected { background-color: %25; color: %9; }
 QMenu { background-color: %3; color: %9; border: 1px solid %7; }
-QMenu::item:selected { background-color: %4; }
+QMenu::item:selected { background-color: %25; }
 
 QPushButton {
   background-color: %3; color: %9;
   border: 1px solid %7; border-radius: 5px; padding: 5px 12px;
 }
-QPushButton:hover { background-color: %4; border-color: %8; }
+QPushButton:hover { background-color: %24; border-color: %8; }
 QPushButton:pressed { background-color: %2; }
 QPushButton:disabled { background-color: %2; color: %11; border-color: %6; }
-QPushButton:checked { background-color: %4; color: %13; }
+QPushButton:checked { background-color: %25; color: %13; }
 
 QToolButton {
   background-color: transparent; color: %9;
   border: 1px solid transparent; border-radius: 5px; padding: 4px 8px;
 }
-QToolButton:hover { background-color: %4; border-color: %7; }
+QToolButton:hover { background-color: %24; border-color: %7; }
 QToolButton:pressed { background-color: %2; }
-QToolButton:checked { background-color: %4; color: %13; }
+QToolButton:checked { background-color: %25; color: %13; }
 
 QLineEdit, QPlainTextEdit, QTextEdit {
   background-color: %3; color: %9;
@@ -77,11 +77,11 @@ QLineEdit, QPlainTextEdit, QTextEdit {
   selection-background-color: %13; selection-color: %15;
   placeholder-text-color: %11;
 }
-QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus { border-color: %13; }
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus { border-color: %27; }
 QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
   background-color: %2; color: %11;
 }
-QLineEdit[readOnly="true"] { background-color: %2; color: %10; }
+QLineEdit[readOnly="true"] { background-color: %26; color: %10; }
 
 QSpinBox, QDoubleSpinBox {
   background-color: %3; color: %9; border: 1px solid %7; border-radius: 5px; padding: 2px 4px;
@@ -99,7 +99,7 @@ QComboBox::drop-down { border: none; width: 20px; }
 QComboBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid %10; margin-right: 6px; }
 QComboBox QAbstractItemView {
   background-color: %3; color: %9;
-  border: 1px solid %7; selection-background-color: %4; selection-color: %9;
+  border: 1px solid %7; selection-background-color: %25; selection-color: %9;
 }
 
 QCheckBox, QRadioButton { color: %9; spacing: 6px; }
@@ -138,15 +138,15 @@ QTabBar::tab:selected { color: %9; border-bottom-color: %13; }
 QListView, QTreeView, QTableView {
   background-color: %2; color: %9;
   border: 1px solid %6; border-radius: 5px;
-  alternate-background-color: %3;
-  selection-background-color: %4; selection-color: %9;
+  alternate-background-color: %26;
+  selection-background-color: %25; selection-color: %9;
 }
 QHeaderView::section {
   background-color: %3; color: %10;
   border: none; border-bottom: 1px solid %7; border-right: 1px solid %6;
   padding: 4px 8px;
 }
-QHeaderView::section:hover { background-color: %4; color: %9; }
+QHeaderView::section:hover { background-color: %24; color: %9; }
 
 QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
 QScrollBar::handle:vertical { background-color: %7; border-radius: 5px; min-height: 24px; }
@@ -159,7 +159,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
 QToolTip {
-  background-color: %4; color: %9;
+  background-color: %5; color: %9;
   border: 1px solid %8; padding: 4px 8px;
 }
 
@@ -196,18 +196,18 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="button"][shineVariant="danger"] { background-color: %20; color: %12; border-color: %20; }
 *[shineKind="button"][shineVariant="primary"]:hover { background-color: %14; border-color: %14; }
 *[shineKind="button"][shineVariant="primary"][shineState="hover"] { background-color: %14; border-color: %14; }
-*[shineKind="button"][shineVariant="ghost"]:hover { background-color: %4; color: %14; }
-*[shineKind="button"][shineVariant="ghost"][shineState="hover"] { background-color: %4; color: %14; }
-*[shineKind="button"]:hover { background-color: %4; border-color: %8; }
-*[shineKind="button"][shineState="hover"] { background-color: %4; border-color: %8; }
+*[shineKind="button"][shineVariant="ghost"]:hover { background-color: %24; color: %14; }
+*[shineKind="button"][shineVariant="ghost"][shineState="hover"] { background-color: %24; color: %14; }
+*[shineKind="button"]:hover { background-color: %24; border-color: %8; }
+*[shineKind="button"][shineState="hover"] { background-color: %24; border-color: %8; }
 *[shineKind="button"][shineVariant="primary"]:pressed { background-color: %2; color: %13; border-color: %13; }
 *[shineKind="button"][shineVariant="primary"][shineState="pressed"] { background-color: %2; color: %13; border-color: %13; }
 *[shineKind="button"]:pressed { background-color: %2; border-color: %8; }
 *[shineKind="button"][shineState="pressed"] { background-color: %2; border-color: %8; }
 *[shineKind="button"]:disabled { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="button"][shineState="disabled"] { background-color: %2; color: %11; border-color: %6; }
-*[shineKind="button"]:focus { border: 2px solid %13; padding: 4px 13px; }
-*[shineKind="button"][shineState="focus"] { border: 2px solid %13; padding: 4px 13px; }
+*[shineKind="button"]:focus { border: 2px solid %27; padding: 4px 13px; }
+*[shineKind="button"][shineState="focus"] { border: 2px solid %27; padding: 4px 13px; }
 *[shineKind="button"][shineSize="sm"]:focus { padding: 2px 9px; }
 *[shineKind="button"][shineSize="sm"][shineState="focus"] { padding: 2px 9px; }
 *[shineKind="button"][shineSize="lg"]:focus { padding: 7px 19px; }
@@ -219,15 +219,15 @@ constexpr std::string_view kKitTemplate = R"QSS(
   background-color: transparent; color: %10;
 }
 *[shineKind="iconbutton"][shineSize="sm"] { padding: 3px; }
-*[shineKind="iconbutton"]:hover { background-color: %4; color: %9; }
-*[shineKind="iconbutton"][shineState="hover"] { background-color: %4; color: %9; }
+*[shineKind="iconbutton"]:hover { background-color: %24; color: %9; }
+*[shineKind="iconbutton"][shineState="hover"] { background-color: %24; color: %9; }
 *[shineKind="iconbutton"]:pressed { background-color: %2; color: %9; }
 *[shineKind="iconbutton"][shineState="pressed"] { background-color: %2; color: %9; }
-*[shineKind="iconbutton"][active="true"] { background-color: %3; color: %13; border-color: %6; }
+*[shineKind="iconbutton"][active="true"] { background-color: %25; color: %13; border-color: %6; }
 *[shineKind="iconbutton"]:disabled { color: %11; }
 *[shineKind="iconbutton"][shineState="disabled"] { color: %11; }
-*[shineKind="iconbutton"]:focus { border: 2px solid %13; padding: 4px; }
-*[shineKind="iconbutton"][shineState="focus"] { border: 2px solid %13; padding: 4px; }
+*[shineKind="iconbutton"]:focus { border: 2px solid %27; padding: 4px; }
+*[shineKind="iconbutton"][shineState="focus"] { border: 2px solid %27; padding: 4px; }
 
 /* —— Card（flat/outlined/elevated + accent 左条；hover 抬升由 Tween 负责） —— */
 *[shineKind="card"] { background-color: %3; border: 1px solid %6; border-radius: 8px; }
@@ -250,12 +250,15 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="tag"][tone="ok"] { background-color: %18; color: %12; border-color: %18; }
 *[shineKind="tag"][tone="warn"] { background-color: %19; color: %12; border-color: %19; }
 *[shineKind="tag"][tone="danger"] { background-color: %20; color: %12; border-color: %20; }
+*[shineKind="tag"][tone="busy"] { background-color: %21; color: %12; border-color: %21; }
+*[shineKind="tag"][tone="pending"] { background-color: %23; color: %12; border-color: %23; }
+*[shineKind="tag"][tone="idle"] { background-color: %22; color: %12; border-color: %22; }
 *[shineKind="tag"]:hover { border-color: %8; }
 *[shineKind="tag"][shineState="hover"] { border-color: %8; }
 *[shineKind="tag"]:disabled { color: %11; border-color: %6; }
 *[shineKind="tag"][shineState="disabled"] { color: %11; border-color: %6; }
-*[shineKind="tag"]:focus { border: 2px solid %13; padding: 1px 9px; }
-*[shineKind="tag"][shineState="focus"] { border: 2px solid %13; padding: 1px 9px; }
+*[shineKind="tag"]:focus { border: 2px solid %27; padding: 1px 9px; }
+*[shineKind="tag"][shineState="focus"] { border: 2px solid %27; padding: 1px 9px; }
 
 /* —— Badge（数字/点） —— */
 *[shineKind="badge"] {
@@ -276,13 +279,13 @@ constexpr std::string_view kKitTemplate = R"QSS(
   border: 1px solid transparent; border-radius: 5px; padding: 4px 14px;
   background-color: transparent; color: %10;
 }
-*[shineKind="segment"]:hover { color: %9; background-color: %4; }
-*[shineKind="segment"][shineState="hover"] { color: %9; background-color: %4; }
-*[shineKind="segment"][selected="true"] { background-color: %4; color: %9; border-color: %7; }
+*[shineKind="segment"]:hover { color: %9; background-color: %24; }
+*[shineKind="segment"][shineState="hover"] { color: %9; background-color: %24; }
+*[shineKind="segment"][selected="true"] { background-color: %25; color: %9; border-color: %7; }
 *[shineKind="segment"]:disabled { color: %11; }
 *[shineKind="segment"][shineState="disabled"] { color: %11; }
-*[shineKind="segment"]:focus { border: 2px solid %13; padding: 3px 13px; }
-*[shineKind="segment"][shineState="focus"] { border: 2px solid %13; padding: 3px 13px; }
+*[shineKind="segment"]:focus { border: 2px solid %27; padding: 3px 13px; }
+*[shineKind="segment"][shineState="focus"] { border: 2px solid %27; padding: 3px 13px; }
 
 /* —— Spinner（转圈自绘，颜色走 accent） —— */
 *[shineKind="spinner"] { background: transparent; }
@@ -301,20 +304,20 @@ constexpr std::string_view kKitTemplate = R"QSS(
 }
 *[shineKind="input"]:hover { border-color: %8; }
 *[shineKind="input"][shineState="hover"] { border-color: %8; }
-*[shineKind="input"]:focus { border: 2px solid %13; padding: 3px 7px; }
-*[shineKind="input"][shineState="focus"] { border: 2px solid %13; padding: 3px 7px; }
+*[shineKind="input"]:focus { border: 2px solid %27; padding: 3px 7px; }
+*[shineKind="input"][shineState="focus"] { border: 2px solid %27; padding: 3px 7px; }
 *[shineKind="input"][error="true"] { border-color: %20; }
 *[shineKind="input"][error="true"][shineState="focus"] { border-color: %20; border-width: 1px; padding: 4px 8px; }
 *[shineKind="input"][error="true"]:focus { border-color: %20; border-width: 1px; padding: 4px 8px; }
 *[shineKind="input"]:disabled { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="input"][shineState="disabled"] { background-color: %2; color: %11; border-color: %6; }
-*[shineKind="input"][readOnly="true"] { background-color: %2; color: %10; }
+*[shineKind="input"][readOnly="true"] { background-color: %26; color: %10; }
 *[shineKind="textarea"] {
   background-color: %3; color: %9; border: 1px solid %7; border-radius: 8px; padding: 6px 8px;
   placeholder-text-color: %11;
 }
-*[shineKind="textarea"]:focus { border: 2px solid %13; padding: 5px 7px; }
-*[shineKind="textarea"][shineState="focus"] { border: 2px solid %13; padding: 5px 7px; }
+*[shineKind="textarea"]:focus { border: 2px solid %27; padding: 5px 7px; }
+*[shineKind="textarea"][shineState="focus"] { border: 2px solid %27; padding: 5px 7px; }
 *[shineKind="textarea"][error="true"] { border-color: %20; }
 *[shineKind="textarea"]:disabled { background-color: %2; color: %11; }
 *[shineKind="textarea"][shineState="disabled"] { background-color: %2; color: %11; }
@@ -333,12 +336,12 @@ constexpr std::string_view kKitTemplate = R"QSS(
   background: transparent; border: none; border-radius: 5px;
   text-align: left; color: %9; padding: 4px 8px;
 }
-*[shineKind="selectbutton"]:hover { background-color: %4; }
-*[shineKind="selectbutton"][shineState="hover"] { background-color: %4; }
+*[shineKind="selectbutton"]:hover { background-color: %24; }
+*[shineKind="selectbutton"][shineState="hover"] { background-color: %24; }
 *[shineKind="selectbutton"]:pressed { background-color: %2; }
 *[shineKind="selectbutton"][shineState="pressed"] { background-color: %2; }
-*[shineKind="selectbutton"]:focus { border: 2px solid %13; padding: 3px 7px; }
-*[shineKind="selectbutton"][shineState="focus"] { border: 2px solid %13; padding: 3px 7px; }
+*[shineKind="selectbutton"]:focus { border: 2px solid %27; padding: 3px 7px; }
+*[shineKind="selectbutton"][shineState="focus"] { border: 2px solid %27; padding: 3px 7px; }
 *[shineKind="selectbutton"]:disabled { color: %11; }
 *[shineKind="selectbutton"][shineState="disabled"] { color: %11; }
 *[shineKind="select"] {
@@ -346,17 +349,17 @@ constexpr std::string_view kKitTemplate = R"QSS(
 }
 *[shineKind="select"]:hover { border-color: %8; }
 *[shineKind="select"][shineState="hover"] { border-color: %8; }
-*[shineKind="select"]:focus { border: 2px solid %13; padding: 3px 7px; }
-*[shineKind="select"][shineState="focus"] { border: 2px solid %13; padding: 3px 7px; }
+*[shineKind="select"]:focus { border: 2px solid %27; padding: 3px 7px; }
+*[shineKind="select"][shineState="focus"] { border: 2px solid %27; padding: 3px 7px; }
 *[shineKind="select"]:disabled { color: %11; border-color: %6; }
 *[shineKind="select"][shineState="disabled"] { color: %11; border-color: %6; }
 *[shineKind="selectpopup"] {
-  background-color: %4; color: %9; border: 1px solid %7; border-radius: 8px; padding: 4px;
+  background-color: %5; color: %9; border: 1px solid %7; border-radius: 8px; padding: 4px;
 }
 *[shineKind="selectgroup"] { color: %10; background: transparent; padding: 4px 8px 2px 8px; }
 *[shineKind="selectitem"] { background: transparent; color: %9; padding: 4px 8px; border-radius: 5px; }
-*[shineKind="selectitem"]:hover { background-color: %3; }
-*[shineKind="selectitem"][shineState="hover"] { background-color: %3; }
+*[shineKind="selectitem"]:hover { background-color: %24; }
+*[shineKind="selectitem"][shineState="hover"] { background-color: %24; }
 *[shineKind="selectitem"][checked="true"] { color: %13; }
 *[shineKind="selectitem"]:disabled { color: %11; }
 *[shineKind="selectitem"][shineState="disabled"] { color: %11; }
@@ -391,6 +394,7 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="progresslabel"] { background: transparent; color: %10; }
 *[shineKind="progressbar"][state="error"]::chunk { background-color: %20; }
 *[shineKind="progressbar"][state="ok"]::chunk { background-color: %18; }
+*[shineKind="progressbar"][state="idle"]::chunk { background-color: %22; }
 
 /* —— EmptyState / ErrorState（容器三态中的两态） —— */
 *[shineKind="emptystate"] { background: transparent; }
@@ -403,27 +407,34 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 
 /* —— Toast（info/success/warning/error，右下角堆叠） —— */
 *[shineKind="toast"] {
-  background-color: %4; color: %9; border: 1px solid %7; border-radius: 8px; padding: 8px 12px;
+  background-color: %5; color: %9; border: 1px solid %7; border-radius: 8px; padding: 8px 12px;
 }
 *[shineKind="toast"][tone="info"] { border-left: 3px solid %17; }
 *[shineKind="toast"][tone="success"] { border-left: 3px solid %18; }
 *[shineKind="toast"][tone="warning"] { border-left: 3px solid %19; }
 *[shineKind="toast"][tone="error"] { border-left: 3px solid %20; }
+*[shineKind="toast"][tone="busy"] { border-left: 3px solid %21; }
+*[shineKind="toast"][tone="pending"] { border-left: 3px solid %23; }
 *[shineKind="toasticon"][tone="info"] { color: %17; background: transparent; }
 *[shineKind="toasticon"][tone="success"] { color: %18; background: transparent; }
 *[shineKind="toasticon"][tone="warning"] { color: %19; background: transparent; }
 *[shineKind="toasticon"][tone="error"] { color: %20; background: transparent; }
+*[shineKind="toasticon"][tone="busy"] { color: %21; background: transparent; }
+*[shineKind="toasticon"][tone="pending"] { color: %23; background: transparent; }
 
 /* —— Dialog / Drawer / Tooltip —— */
-*[shineKind="dialog"] { background-color: %3; border: 1px solid %7; border-radius: 12px; }
+*[shineKind="dialog"] { background-color: %5; border: 1px solid %7; border-radius: 12px; }
 *[shineKind="dialogtitle"] { background: transparent; color: %9; }
 *[shineKind="dialogbody"] { background: transparent; color: %10; }
-*[shineKind="drawer"] { background-color: %3; border-left: 1px solid %7; }
+*[shineKind="drawer"] { background-color: %5; border-left: 1px solid %7; }
 *[shineKind="tooltip"] {
-  background-color: %4; color: %9; border: 1px solid %8; border-radius: 5px; padding: 4px 8px;
+  background-color: %5; color: %9; border: 1px solid %8; border-radius: 5px; padding: 4px 8px;
 }
 *[shineKind="tooltip"] QLabel { background: transparent; color: %9; }
 *[shineKind="tooltipkbd"] { background: transparent; color: %10; }
+
+/* -- Scrim: floating-layer mask (bg.overlay is now surface-only, never a mask). -- */
+*[shineKind="scrim"] { background-color: %28; }
 
 /* —— Tabs（下划线指示条自绘） / Toolbar / Splitter —— */
 *[shineKind="tabs"] { background: transparent; border-bottom: 1px solid %6; }
@@ -433,8 +444,8 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="tab"][selected="true"] { color: %9; }
 *[shineKind="tab"]:disabled { color: %11; }
 *[shineKind="tab"][shineState="disabled"] { color: %11; }
-*[shineKind="tab"]:focus { border: 2px solid %13; padding: 5px 13px; }
-*[shineKind="tab"][shineState="focus"] { border: 2px solid %13; padding: 5px 13px; }
+*[shineKind="tab"]:focus { border: 2px solid %27; padding: 5px 13px; }
+*[shineKind="tab"][shineState="focus"] { border: 2px solid %27; padding: 5px 13px; }
 *[shineKind="tabindicator"] { background-color: %13; }
 *[shineKind="toolbar"] { background-color: %3; border-bottom: 1px solid %6; }
 *[shineKind="toolseparator"] { background-color: %6; }
@@ -442,8 +453,8 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="splitter"]::handle:hover { background-color: %8; }
 )QSS";
 
-// 全部替换 %22..%1（降序，避免 %1 误伤 %10 之类）
-void FillTokens(std::string& out, const std::array<std::uint32_t, 22>& values) {
+// 全部替换 %28..%1（降序，避免 %1 误伤 %10 之类）
+void FillTokens(std::string& out, const std::array<std::uint32_t, kColorTokenCount>& values) {
     for (int n = static_cast<int>(values.size()); n >= 1; --n) {
         const std::string key = "%" + std::to_string(n);
         const std::string val = EmitColor(values[static_cast<std::size_t>(n - 1)]);
@@ -458,7 +469,7 @@ void FillTokens(std::string& out, const std::array<std::uint32_t, 22>& values) {
 } // namespace
 
 std::string QssBuilder::Build(const ColorToken& c) {
-    const std::array<std::uint32_t, 22> values = TokenValues(c);
+    const std::array<std::uint32_t, kColorTokenCount> values = TokenValues(c);
     std::string out{kTemplate};
     out += kKitTemplate; // kit/widgets 样式段（P02-S5）
     FillTokens(out, values);
@@ -467,7 +478,7 @@ std::string QssBuilder::Build(const ColorToken& c) {
 
 bool QssBuilder::SelfCheck(const ColorToken& c, std::string* detail) {
     const std::string qss = Build(c);
-    const std::array<std::uint32_t, 22> values = TokenValues(c);
+    const std::array<std::uint32_t, kColorTokenCount> values = TokenValues(c);
 
     // 所有字面颜色必须是某个 Token 的 EmitColor（禁止散落色值）
     static const std::regex kColorRe{R"((#[0-9A-Fa-f]{3,8}|rgba?\([^)]*\)))"};
@@ -504,11 +515,30 @@ bool QssBuilder::SelfCheck(const ColorToken& c, std::string* detail) {
         }
     }
 
-    // 模板占位符必须全部被替换（无残留 %N）
-    const std::size_t leftover = qss.find("%1") != std::string::npos ||
-                                         qss.find("%2") != std::string::npos
-                                     ? 1
-                                     : 0;
+    // 模板占位符必须全部被替换（无残留 %N）；扫描整个 1..N 区间而不是只看 %1/%2
+    std::string leftover;
+    for (int n = 1; n <= static_cast<int>(values.size()); ++n) {
+        if (qss.find("%" + std::to_string(n)) != std::string::npos) {
+            leftover += "%" + std::to_string(n) + " ";
+        }
+    }
+
+    // 覆盖率自检：每个 token 都必须在模板里被真正消费（方案 01 判据 5：不允许占位符空占）
+    std::string unused;
+    {
+        const std::string all{kTemplate};
+        const std::string kit{kKitTemplate};
+        for (int n = 1; n <= static_cast<int>(values.size()); ++n) {
+            const std::string key = "%" + std::to_string(n);
+            if (all.find(key) == std::string::npos && kit.find(key) == std::string::npos) {
+                if (!unused.empty()) {
+                    unused += " ";
+                }
+                unused += kColorTokenNames[static_cast<std::size_t>(n - 1)];
+            }
+        }
+    }
+    ok = ok && unused.empty();
 
     // 覆盖度自检：控件清单里的每一类 QStyle 基类都要有样式规则
     const std::array<const char*, 21> kRequiredClasses = {
@@ -527,14 +557,15 @@ bool QssBuilder::SelfCheck(const ColorToken& c, std::string* detail) {
 
     if (detail != nullptr) {
         *detail += "字面颜色数: " + std::to_string(literalCount) +
-                   "（应=Token 数 22 的倍数级出现，全部可回溯）\n";
-        *detail += "占位符残留: " + std::to_string(leftover) + "\n";
+                   "（应=Token 数 " + std::to_string(values.size()) + " 的倍数级出现，全部可回溯）\n";
+        *detail += "占位符残留: " + (leftover.empty() ? std::string{"none"} : leftover) + "\n";
+        *detail += "未被消费的 token: " + (unused.empty() ? std::string{"none"} : unused) + "\n";
         *detail += missing.empty() ? "missing selectors: none\n"
                                    : ("missing selectors: " + missing + "\n");
         const std::size_t n = qss.find("/* —— Button");
         *detail += "kit 段: " + std::string{n != std::string::npos ? "present" : "MISSING"} + "\n";
     }
-    return ok && leftover == 0 && missing.empty();
+    return ok && leftover.empty() && missing.empty();
 }
 
 bool QssBuilder::DumpToFile(const ColorToken& c, const std::filesystem::path& path) {

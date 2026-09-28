@@ -6,6 +6,7 @@
 //   §2.3 形状 / 间距 / 字体 / 阴影 / 描边 / 动效 —— 与主题无关的几何与动效。
 // 值与 4 套主题的 JSON 化在 P02-S1 落地；本文件只立结构与命名（S5 判据：与 §2 逐项对得上）。
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -40,35 +41,58 @@ struct ColorToken {
     std::uint32_t statusDanger = 0;       // status.danger
     std::uint32_t statusBusy = 0;         // status.busy
     std::uint32_t statusIdle = 0;         // status.idle
+    // §2.4 交互态专用色 + 焦点环 + 遮罩（P01 方案 01 追加；⚠️ 只许尾部追加，见 kColorTokenCount）
+    // 状态轴补到 6 态：idle 灰 / pending 蓝 / busy 紫 / ok 绿 / warn 黄 / danger 红。
+    std::uint32_t statusPending = 0;      // status.pending（排队中）
+    std::uint32_t fillHover = 0;          // fill.hover（行 / 卡片 / 列表项悬停底）
+    std::uint32_t fillSelected = 0;       // fill.selected（选中行 / 当前 tab / 选中项底）
+    std::uint32_t fillMuted = 0;          // fill.muted（斑马行、只读区、次要分区底）
+    std::uint32_t lineFocus = 0;          // line.focus（焦点环；浅色主题下比主色更清楚）
+    std::uint32_t shadowScrim = 0;        // shadow.scrim（浮层遮罩，带 alpha）
 
     bool operator==(const ColorToken&) const = default;
 };
 
 // 颜色 token 点分名（对表 / 序列化用；顺序 = ColorToken 字段顺序）
-inline constexpr std::array<std::string_view, 22> kColorTokenNames = {
+// ⚠️ 本表顺序 == ColorToken 字段顺序 == QSS %N 顺序，三者必须逐位一致：
+//    QssBuilder::FillTokens 按 "%N" 做位置替换，**中途插入会让整张 QSS 模板错位**。
+//    新增 token 一律追加到末尾（design/01-tokens-color.md §1.1）。
+inline constexpr std::array<std::string_view, 28> kColorTokenNames = {
     "bg.void",  "bg.surface",  "bg.panel",  "bg.elevated",  "bg.overlay",
     "line.subtle",  "line.normal",  "line.strong",
     "text.primary",  "text.secondary",  "text.muted",  "text.inverse",
     "accent.primary",  "accent.primary.hover",  "accent.primary.fg",  "accent.secondary",  "accent.info",
     "status.ok",  "status.warn",  "status.danger",  "status.busy",  "status.idle",
+    "status.pending",  "fill.hover",  "fill.selected",  "fill.muted",  "line.focus",  "shadow.scrim",
 };
+
+// token 总数（22 → 28）。用它替代散落的字面量：值数组长度、样式编辑器行数、
+// 主题完整性判定全部由它推导，下次追加 token 不必再全仓搜魔数。
+inline constexpr std::size_t kColorTokenCount = kColorTokenNames.size();
 
 // ---- §2.3 形状 / 间距 / 字体 / 阴影 / 描边 / 动效（与主题无关）----
 namespace radius { // radius.xs / sm / md / lg / pill
-inline constexpr int kXs = 3;
-inline constexpr int kSm = 5;
-inline constexpr int kMd = 8;
-inline constexpr int kLg = 12;
+inline constexpr int kXs = 2;   // 输入框 / 小徽标
+inline constexpr int kSm = 4;   // 按钮 / 输入 / 菜单项
+inline constexpr int kMd = 6;   // 按钮（lg）、分段控件、进度条
+inline constexpr int kLg = 10;  // 卡片 / 弹层 / 抽屉
 inline constexpr int kPill = 999;
 } // namespace radius
 
-namespace space { // space.0 … space.8
-inline constexpr std::array<int, 9> kSteps = {0, 2, 4, 8, 12, 16, 24, 32, 48};
+namespace space {
+inline constexpr std::array<int, 9> kSteps = {0, 2, 4, 8, 12, 16, 24, 32, 48}; // space.0…space.8
+// 方案 01 补的 3 档（6 / 20 / 40）。**不进 kSteps**：kSteps 的下标被 ~60 处
+// 按索引取值（kSteps[3] 等），中途插入会让全部既有取值漂移；补在数组末尾又会让
+// 序列变成 0,2,4,…,48,6,20,40（非单调，后续二分/追加都会踩坑）。
+// 因此新增档位一律用命名常量，既有下标语义保持不变。
+inline constexpr int kXs = 6;   // 细间距：图标与文字、紧凑分组内
+inline constexpr int kXl = 20;  // 大间距：区块之间（16 与 24 之间）
+inline constexpr int kXxl = 40; // 超大间距：页面级留白（32 与 48 之间）
 } // namespace space
 
 namespace font {
 inline constexpr std::string_view kFamily = "Microsoft YaHei UI, Segoe UI, sans-serif"; // font.family
-inline constexpr std::array<int, 6> kSizes = {11, 12, 13, 15, 18, 26}; // font.size.xs/sm/md/lg/xl/display
+inline constexpr std::array<int, 6> kSizes = {12, 13, 14, 16, 20, 28}; // font.size.xs/sm/md/lg/xl/display
 inline constexpr int kRegular = 400;  // font.weight.regular
 inline constexpr int kSemibold = 600; // font.weight.semibold
 } // namespace font

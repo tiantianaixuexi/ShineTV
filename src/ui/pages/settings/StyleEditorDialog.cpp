@@ -62,10 +62,10 @@ StyleEditorDialog::StyleEditorDialog(QWidget* parent)
                       widgets::Dialog::Size::Lg, parent) {
     setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
 
-    const std::array<std::uint32_t, 22> start = theme::TokenValues(theme::Current());
+    const std::array<std::uint32_t, theme::kColorTokenCount> start = theme::TokenValues(theme::Current());
     values_ = start;
 
-    // Token 行（22 个）：名字 + 色板 + hex
+    // Token 行（行数 = kColorTokenCount；改 token 数这里自动跟着走）
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -75,7 +75,7 @@ StyleEditorDialog::StyleEditorDialog(QWidget* parent)
     scroll->setWidget(host);
     BodyLayout()->addWidget(scroll);
 
-    for (int i = 0; i < 22; ++i) {
+    for (int i = 0; i < static_cast<int>(theme::kColorTokenCount); ++i) {
         auto* name = new QLabel(QString::fromLatin1(theme::kColorTokenNames[static_cast<std::size_t>(i)]),
                                 host);
         widgets::SetKind(name, "fieldlabel");
@@ -144,7 +144,7 @@ StyleEditorDialog::StyleEditorDialog(QWidget* parent)
                });
 
     // 初始色板着色
-    for (int i = 0; i < 22; ++i) {
+    for (int i = 0; i < static_cast<int>(theme::kColorTokenCount); ++i) {
         swatches_[static_cast<std::size_t>(i)]->setStyleSheet(
             QStringLiteral("background-color: %1; border: 1px solid #808080;")
                 .arg(HexOf(values_[static_cast<std::size_t>(i)])));

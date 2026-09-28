@@ -27,7 +27,7 @@ class StyleEditorDialog final : public widgets::Dialog {
     [[nodiscard]] theme::ColorToken Compose() const; // 值数组 → ColorToken
     void Preview();                                  // 实时预览（ThemeService::Preview）
 
-    std::array<std::uint32_t, 22> values_{};
+    std::array<std::uint32_t, theme::kColorTokenCount> values_{};
     std::vector<QPushButton*> swatches_;
     std::vector<QLineEdit*> hexes_;
     QLineEdit* name_ = nullptr;

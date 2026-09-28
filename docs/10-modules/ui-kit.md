@@ -21,7 +21,9 @@ last_verified: 2026-09-28
 
 ## 主题
 
-`theme::ColorToken` 有 22 个颜色 token，点分名顺序由 `kColorTokenNames` 固定；四套内置主题为 `DeepSpace`、`Dusk`、`PaperInk`、`PolarNight`。主题 JSON 位于 `src/ui/kit/theme/Themes/`，构建后复制到 exe 旁的 `themes/`。
+`theme::ColorToken` 有 28 个颜色 token（数量 = `theme::kColorTokenCount`，别再写死字面量），点分名顺序由 `kColorTokenNames` 固定；四套内置主题为 `DeepSpace`、`Dusk`、`PaperInk`、`PolarNight`。主题 JSON 位于 `src/ui/kit/theme/Themes/`，构建后复制到 exe 旁的 `themes/`。
+
+**源码事实（design/01 落地）**：token 只许在 `ColorToken` / `kColorTokenNames` 末尾追加 —— 三者顺序（结构体字段 / 点分名 / QSS `%N`）必须逐位一致，`QssBuilder::FillTokens` 按 `%N` 位置替换，中途插入会让整张 QSS 错位。`bg.overlay` 现在是**不透明浮层底**（弹层 / 抽屉 / 提示 / 下拉弹窗），浮层遮罩走 `shadow.scrim`（QSS `*[shineKind="scrim"]`）。用户自建的自定义主题缺新键时不会整体加载失败：`LoadCustomThemes` 以当前内置主题为底做缺键补全。
 
 颜色、间距、圆角、字体、阴影和动效的 Token 命名及常量在 `Token.h`。`ThemeService` 负责加载、切换、QSS 应用、持久化和减少动效；页面不能写硬编码样式色值。
 

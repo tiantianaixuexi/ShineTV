@@ -1,9 +1,9 @@
 #pragma once
 // shine::theme::QssBuilder —— Token → 整张 QSS（P02-S2）
 //
-// 约束（判据 S2）：生成的 QSS 里**没有任何字面颜色** —— 模板只含 %1..%22 占位符，
-// 与 kColorTokenNames 序一一对应（%1 bg.void … %22 status.idle）；
-// 替换按**降序**（%22→%1）进行，避免 %1 误伤 %10/%11（落点明文要求）。
+// 约束（判据 S2）：生成的 QSS 里**没有任何字面颜色** —— 模板只含 %1..%28 占位符，
+// 与 kColorTokenNames 序一一对应（%1 bg.void … %28 shadow.scrim）；
+// 替换按**降序**（%28→%1）进行，避免 %1 误伤 %10/%11（落点明文要求）。
 // 内联硬编码色值另有 tools/check-layers.ps1 rule 3 拦截。
 #include "ui/kit/theme/Token.h"
 
