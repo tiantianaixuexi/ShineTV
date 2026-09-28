@@ -15,7 +15,7 @@
 
 #include <QElapsedTimer>
 #include <QEventLoop>
-#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QTimer>
 
 #include <chrono>
@@ -554,7 +554,10 @@ shine::util::EnsureDir(root / "db");
 
             // ④ 手改后重算哈希（Sha1Hex）+ 保存落盘
             const QString h0 = dv.BodyHash();
-            dv.Edit()->appendPlainText(QStringLiteral("手改一行。"));
+            // DraftView 的正文控件是 QTextEdit（吃 textIndent，见 DraftView.h 注），
+            // 它没有 QPlainTextEdit 的 appendPlainText；insertPlainText 在光标处
+            // 插入纯文本，等价。判据本身不变：哈希变化且 == Sha1Hex(正文)。
+            dv.Edit()->insertPlainText(QStringLiteral("手改一行。"));
             const QString h1 = dv.BodyHash();
             const std::string expect =
                 shine::novelcore::Sha1Hex(dv.Edit()->toPlainText().toStdString());

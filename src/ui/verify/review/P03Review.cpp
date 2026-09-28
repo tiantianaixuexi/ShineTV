@@ -5,6 +5,7 @@
 #include "ui/pages/settings/FirstRunWizard.h"
 #include "ui/pages/shell/CommandPalette.h"
 #include "ui/pages/shell/MainWindow.h"
+#include "ui/verify/review/ReviewProbe.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/theme/ThemeService.h"
@@ -242,7 +243,32 @@ shine::util::EnsureDir(root);
             QTimer::singleShot(200, fw, [st, fw] {
                 Shot(st, fw, "firstrun-step3-llm");
                 fw->close();
-                QTimer::singleShot(200, st->window, [st] { Finish(st); });
+                // 逐工作区抓**整窗**（不是单页）：各页自检抓的是页内控件，
+                // 看不到外壳（活动栏/顶栏/底栏/状态栏）与页面留白合起来是什么样。
+                // 「像不像设计稿」只能在整窗上看。
+                const char* kNames[] = {"shell-ws0-novel", "shell-ws1-asset", "shell-ws2-storyboard",
+                                        "shell-ws3-image", "shell-ws4-video", "shell-ws5-pipeline"};
+                // 计数器必须共享所有权：外层 lambda 返回后，按引用捕获的局部 int 就悬空了。
+                auto done = std::make_shared<int>(0);
+                auto* sweep = new QTimer(st->window);
+                QObject::connect(sweep, &QTimer::timeout, st->window, [st, sweep, done, kNames] {
+                    if (*done >= 6) {
+                        sweep->stop();
+                        sweep->deleteLater();
+                        QTimer::singleShot(100, st->window, [st] { Finish(st); });
+                        return;
+                    }
+                    const int idx = (*done)++;
+                    theme::ThemeService::Switch(theme::ThemeId::DeepSpace, false);
+                    st->window->SwitchWorkspace(idx);
+                    st->window->ToggleSidePanel();  // 设计稿内容区无常驻侧栏
+                    review::Pump();
+                    review::Pump();
+                    st->window->ToggleSidePanel();
+                    review::Pump();
+                    Shot(st, st->window, kNames[idx]);
+                });
+                sweep->start(320);
             });
         });
     });

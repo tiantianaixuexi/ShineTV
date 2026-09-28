@@ -7,12 +7,17 @@ source_of_truth:
   - webui/src/styles/views.css
   - webui/src/styles/ui.css
   - webui/src/styles/shell.css
+  - webui/src/styles/tokens.css
   - src/ui/kit/theme/QssBuilder.cpp
   - src/ui/kit/theme/Token.h
+  - src/ui/kit/theme/Theme.h
+  - src/ui/kit/controls/WidgetCommon.h
   - src/ui/kit/controls/Controls.h
+  - src/ui/pages/assets/AssetDetailView.cpp
   - src/ui/pages/assets/AssetWorkspace.h
   - src/ui/pages/novel/DraftView.cpp
   - src/ui/verify/review/P05Review.cpp
+  - src/ui/verify/checks/P04ChapterChecks.cpp
 last_verified: 2026-09-29
 ---
 
@@ -35,20 +40,50 @@ Qt 样式表是 CSS 的子集，设计稿里这些属性在 QSS 中**根本没�
 
 | 设计稿属性 | webui 出处 | Qt 现状 | 替代做法 |
 |---|---|---|---|
-| `box-shadow` | `.tl-card:hover`、`shadow-1/2/3` 等 | QSS 无此属性；全仓也没有 `QGraphicsDropShadowEffect`（已核实零引用） | 用 `border` 变化 + `bg.elevated` 底色差表达层次 |
+| `box-shadow` | `.tl-card:hover`、`shadow-1/2/accent` 等 | **QSS 无此属性，但 Qt 有现成方案**：`QGraphicsDropShadowEffect`，已封装为 `widgets::ApplyShadow(w, ShadowLevel)` | 直接用，见下方「阴影」小节 |
 | `backdrop-filter: blur()` | 浮动面板毛玻璃 | QSS 无滤镜系统 | 用 `bg.overlay` 不透明底（见下方说明） |
-| `transform: translateY(-2px)` | `.tl-card:hover`、卡片 hover 抬升 | QSS 不能改几何 | 只做 `:hover` 的描边/文字色变化（已实现） |
+| `transform: translateY(-2px)` | `.tl-card:hover`、卡片 hover 抬升 | QSS 不能改几何 | 用 `motion::Tween` 主动画（`Card::Lift` 已做） |
 | `transition: all var(--dur-N)` | `.chip`、按钮、卡片全局 | QSS 无 transition | 用 `kit::motion::Tween` + `Easing` 主动画（`kDurFastMs=120` / `kDurBaseMs=200` / `kDurSlowMs=320` 三档 token 已存在） |
 | `color-mix()` | `.chip.on .cnt`、`accent-dim` | QSS 无 | 用已存在的近似 token（`fill.selected` 替 `accent-dim`、`fill.selected` 替 18% accent 混色） |
 | CSS Grid / Flex 的 `minmax()`、`auto-fit` | `.asset-grid`、`.flowwrap` | QSS 不参与布局 | `QGridLayout` + `ResizeEvent` 重算，或用 `QScrollArea` + 固定列宽 |
+
+### 阴影（已实现，不要重复造）
+
+QSS 确实没有 `box-shadow`，但 **Qt 自带 `QGraphicsDropShadowEffect`**，
+走 `widget->setGraphicsEffect()` 即可。已封装成 kit 里的一个函数：
+
+```cpp
+widgets::ApplyShadow(widget, widgets::ShadowLevel::Sm);   // 卡片 / 悬浮层
+widgets::ApplyShadow(widget, widgets::ShadowLevel::Lg);   // 弹窗 / 抽屉 / 浮动面板
+widgets::ApplyShadow(widget, widgets::ShadowLevel::Accent); // 主按钮辉光
+```
+
+几何参数硬编码在 `WidgetCommon.cpp` 的 `kShadowSm/kShadowLg/kShadowAccent`，
+逐条对齐 `webui/src/styles/tokens.css` 的 `--shadow-1/2/accent`
+（CSS 一条 box-shadow 可叠多层，effect 只出一层，取扩散占主导的那层）。
+色值随主题变化，所以走 `ColorToken` 的 `shadow1`/`shadow2`/`shadowAccent`
+（`Theme.h` 的 `Current()`），四套主题 JSON 各自一份。
+
+**已挂阴影的位置**：`Card` hover（进/出事件自动开关）、出图/出片的浮动工具栏与浮动面板、
+`CommandPalette`、`Drawer`、`Toast`。
+
+**使用约束（踩过的坑）**：
+
+- 一个控件**只能挂一个** graphics effect。重复 `ApplyShadow` 会先摘旧的再挂新的；
+  要叠多层阴影只能自己继承 QWidget 重写 `paintEvent`。
+- 阴影在控件四周占 blur 半径那么宽的空间。控件若在**固定尺寸**容器里（或本身是
+  无边框 window + `setFixedWidth`，如 Toast），溢出的部分会被裁掉——需要父容器留边距。
+- 主题切换会自动重挂（`ApplyShadow` 内部注册到 `QEvent::ThemeChange`），
+  但前提是走 `ApplyShadow` 这个入口，自己直接 `new QGraphicsDropShadowEffect`
+  挂上去的控件**不会**跟随主题。
 
 **源码事实**：`theme::bgOverlay` 现在是**不透明**浮层底（弹层/抽屉/提示/下拉），
 遮罩走 `theme::shadowScrim`（带 alpha，QSS `*[shineKind="scrim"]`）。
 这是为绕开「QSS 无法做半透明+模糊」而定的契约，不要改回半透明。
 
-阴影 token（`theme::shadow::kSm/kMd/kLg`，`Token.h:107-111`）目前**只定义未被消费**——
-QSS 里没有任何规则引用它们。可作为将来的 `QGraphicsDropShadowEffect` 数据源，
-但在那之前不要当成"已有阴影"。
+`theme::shadow::kSm/kMd/kLg`（`Token.h`）是早期定义的固定几何常量，
+与后来按主题拆分的 `shadow1/2/Accent` token **并存但互不引用**——实际生效的是后者。
+看到 `shadow::` 命名空间时别以为那就是当前阴影实现。
 
 ---
 
@@ -67,17 +102,36 @@ chip 压得只剩边框（首次实现时截图里就是「全[8]」标签被裁
 `sizeHint()`/`minimumSizeHint()`，否则尺寸一定错。QSS 的 `padding` 对子控件无效，
 若内边距由布局提供，QSS 里就别再写 `padding` 覆盖（否则边框与内容错位）。
 
-### 2. `QPlainTextEdit` 忽略 `textIndent`（小说正文首行缩进）
+### 2. `QPlainTextEdit` 忽略 `textIndent`（已绕过）
 
 **症状**：中文小说正文应有 2em 首行缩进。`QPlainTextEdit` 的渲染路径**忽略**
 `QTextBlockFormat::setTextIndent()`——已验证 `firstBlock().blockFormat().textIndent()`
-返回 `28.0`，格式确实写进了文档，但画面上无缩进。记录位置：`pages/novel/DraftView.cpp:340`。
+返回 `28.0`，格式确实写进了文档，但画面上无缩进。`views.css:576`
+`.draft p { text-indent: 2em }` 走 `QPlainTextDocumentLayout` 无解。
 
-**要做什么**：迁移到 `QTextEdit`（其 HTML-ish 富文本路径尊重 `textIndent`）。
-代价：`DraftView::Edit()` 返回类型变化，`src/ui/verify/checks/P04ChapterChecks.cpp` 等
-P04 验收代码里对 `Edit()` 的调用要同步改。**未完成**——影响面比看上去大，需单独一轮。
+**已绕过**：`DraftView` 正文控件迁到 `QTextEdit`（富文本路径尊重 `textIndent`），
+首行缩进正常渲染。连带改动只有一处——`checks/P04ChapterChecks.cpp` 里
+`appendPlainText` 换成 `QTextEdit` 的 `insertPlainText`（**断言本身未削弱**，
+哈希变化且 `== Sha1Hex` 的判据照跑）。
 
-### 3. `QTabWidget` 与设计稿的 `Segmented` 不一致
+**迁移时的坑**：`QTextEdit` 默认 `acceptRichText=true`，粘贴 HTML 会改变
+`toPlainText()` 的结果，静默破坏 P04 守的「哈希与落盘一致」不变式。
+已显式 `setAcceptRichText(false)` 堵住。**别的页面若要从
+`QPlainTextEdit` 迁过来，务必带上这一句。**
+
+### 3. 手动 `move()` 布局的三个必踩坑
+
+用「无布局容器 + `resizeEvent` 里手动 `move()`」模拟 CSS `absolute` 时（资产时间线
+`RelTimeline` 就是这么做的），有三个坑会让画面静默出错：
+
+- **必须连高度一起定死**。`QFrame` 只 `setFixedWidth(w)` 而不定高，在无布局的父里
+  会撑满剩余高度——竖线会一路画到底、压穿下方的文字。写 `setFixedSize(w, h)`。
+- **`move()` 之前必须显式 `show()`**。父控件已经显示过之后 `new` 出来的子控件默认带
+  `WA_WState_Hidden`，`grab()` / 截图不会点亮它们——表现为「一部分元素凭空消失」。
+- **`QLabel` 要先 `adjustSize()`**。默认宽度 100px，不调的话 `move(x - w/2)`
+  按错误宽度居中，文字整体偏移。
+
+### 4. `QTabWidget` 与设计稿的 `Segmented` 不一致
 
 设计稿出图/出片用的是自定义 `Segmented`（胶囊分段控件），当前实现是原生 `QTabWidget`
 （下划线页签）。
@@ -86,7 +140,7 @@ P04 验收代码里对 `Edit()` 的调用要同步改。**未完成**——影�
 用 `findChild<QTabWidget*>()` 反查并直接切换页签。换控件要连带改 P07/P08 的验收代码，
 视觉收益不抵连带成本。**这是有意识的取舍，不是遗漏。**
 
-### 4. 浮动面板用布局 overlay，不是真正的浮层
+### 5. 浮动面板用布局 overlay，不是真正的浮层
 
 设计稿的浮动工具栏/面板用 CSS `absolute inset`。当前实现（`ImageFlowWorkspace` /
 `VideoFlowWorkspace`）让 canvas / toolbar / panel / filmstrip **共享一个 grid cell +
@@ -100,38 +154,51 @@ child-over-parent 手动 `move()/resize()`，那是另一轮工作量。
 
 ## 三、数据 / 架构缺口
 
-### 1. 资产详情 `.tl` 关联时间线（未实现）
+### 1. 资产详情 `.tl` 关联时间线（已实现，记录实现方式的坑）
 
-设计稿 `webui/src/views/Assets.jsx:85-105` 有完整的事件轴：`.tl` 轴线 + `.ev` 事件点
-（`left: pct(ch) + '%'` 定位）+ `.pin` 圆点 + `.lb` 标签，下方 `.tl-below` 是
-「绑定镜头」chip 行 + 「参考图」缩略图行。
+设计稿 `webui/src/views/Assets.jsx:85-105` 的事件轴（`.tl` 轴线 + `.ev` 事件点按
+`left: pct(ch) + '%'` 定位 + `.pin` 圆点 + `.lb` 标签，下方 `.tl-below` 是「绑定镜头」
+chip 行 + 「参考图」缩略图）已在 `AssetDetailView` 的 `RelTimeline` 里实现。
+数据全部真实只读：`visual_states`（外观基线事件，最新一条为 `hot` 带「· 当前」→
+对应 `Assets.jsx:68`）、`chapters`（轴线刻度）、`shots.character_ids_json`（绑定镜头）、
+`generated_images`（参考图缩略 52×36）。
 
-**QSS 已就位但代码未用**：`QssBuilder.cpp:638-643` 已定义 `tlaxis` / `tltick` /
-`tlpin` / `tlcap` 四组规则，全仓无对应控件使用它们。
+**CSS 用 `absolute` + `%` 定位，Qt 布局表达不了**，所以子控件是在 `resizeEvent` 里
+由 `Layout()` 手动 `move()` 的。三个由此踩到的坑：
 
-**卡在哪**：`AssetWorkspace` 当前**不持有章节列表**，拿不到"按章的外观基线/绑定镜头/
-参考图"数据。要先定数据来源（候选：`src/novel/NovelStoryboard.h`、
-`src/visual/*` 的实体—镜头绑定表），再从 workspace 往 `AssetDetailView` 灌数据。
+- **无布局容器里必须连高度一起定死**。`.stem` 竖线最初只 `setFixedWidth(2)`，
+  在无布局的父里会撑满剩余高度（92px），从 `kStemTop` 一路画到底，**压穿下方
+  「第 N 章」刻度标签**。要写 `setFixedSize(2, h)`，h 取到轴线为止。
+- **`move()` 之前必须显式 `show()`**。父控件已经显示过之后 `new` 出来的子控件
+  默认带 `WA_WState_Hidden`，`grab()` 不会点亮它们——表现为「轴在、刻度和事件全没了」。
+- **`adjustSize()` 不能省**。`QLabel` 默认宽度 100px，不调的话 `move(x - w/2)`
+  按错误的宽度居中，文字整体偏移。
 
-**要做什么**：先在 `AssetWorkspace` 建立章节列表持有与查询，再在 `AssetDetailView`
-按设计稿百分比布局渲染轴线与事件点。**未完成。**
+**已知偏差**：设计稿 `.stem` 是 `top:30 h14`，会与上方 `.ev` 标签（约 26–39）重叠，
+当前实现把 stem 改到 40–44 让它正好搭上轴线、避开标签。其余数值逐条照抄 CSS。
 
-### 2. 资产详情（`.vsec` / `.derive`）没有评审抓图（验收盲区）
+### 2. `.tl-below` 不换行（`flex-wrap` 缺替身）
 
-`.vsec`（分区）和 `.derive`（派生链，108px 节点 + 22px 连接线）已实现在
-`AssetDetailView`，但它位于**折叠的检查器内**，`src/ui/verify/review/P05Review.cpp`
-只做了 `DetailProbe` 功能验证，**没有任何 harness 抓它的图**。
+`views.css:840` 的 `.tl-below` 是 `flex-wrap: wrap`，检查器变窄时 chip 会折到第二行。
+Qt Widgets 没有 flow layout。当前把 chip 钉在各自 `sizeHint` 上，窄时**溢出而不裁切**
+（安全但不是换行）。真要换行得在 `kit/layout/` 写一个流式布局，属另一轮工作量。
 
-**后果**：这部分从未与设计稿做过视觉比对，可能有偏差而无人发现。这是**验证盲区**，
-不等于已验证通过。
+### 3. 评审抓图曾覆盖不到检查器内容（已修）
 
-**要做什么**：在 `P05Review.cpp` 加一条"展开检查器 + 抓 AssetDetailView"的取证路径。
+`.vsec` / `.derive` 位于折叠的检查器内。`P05Review.cpp` 此前只把 workspace 交给宿主，
+检查器是个没布局的游离子控件——所有 `sheet-*` 截图实际只拍到了左侧卡片网格。
+现在评审宿主会按外壳的方式把 `InspectorBody()` 摆到 workspace 旁边，
+并新增 `detail-vsec` / `detail-derive-chain` / `detail-timeline` 三张取证图。
 
-### 3. 设计稿 mock 数据在 C++ 侧不存在
+**给后续改动的提醒**：新增页面级控件后，务必确认评审 harness 真的能拍到它，
+否则「没报错」会被误当成「验过了」。
 
-设计稿的 `.tl`、参考图、绑定镜头都来自 `webui/src/data/mock.js`。C++ 侧的
-`visual_assets` 表只有资产自身，没有"按章的外观基线图 / 绑定镜头 / 参考图"这些
-关联记录。**这是缺口 1 的根因**：不是渲染做不了，是没有数据可渲染。
+### 4. 设计稿 mock 数据与 C++ 侧字段的差异
+
+设计稿这些关联数据来自 `webui/src/data/mock.js`（含硬编码的 `CH=6` 章数、
+写死的"外观基线 ② · 当前"文案）。实现一律用**真实库里的数据**：刻度按实际章节数渲染
+（3 章的书只显示 3 个刻度，不会假称 6），「当前」取 `visual_states` 里最新一条而非硬编码。
+视觉上和 mock 略有出入，但不会对用户说假话。
 
 ---
 

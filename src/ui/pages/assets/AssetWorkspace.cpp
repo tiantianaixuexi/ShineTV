@@ -689,7 +689,7 @@ void AssetWorkspace::ShowSelectedAsset() {
 
     novelcore::NovelVisual visual(*db_);
     QString detail_error;
-    if (!detail_->ShowAsset(visual, found->asset, projectDir_, &detail_error)) {
+    if (!detail_->ShowAsset(*db_, visual, found->asset, found->entity.id, projectDir_, &detail_error)) {
         widgets::Toast::Show(detail_error, widgets::Toast::Tone::Error);
     }
     QString consistency_error;

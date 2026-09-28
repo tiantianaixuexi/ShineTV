@@ -20,7 +20,7 @@
 #include <vector>
 
 class QLabel;
-class QPlainTextEdit;
+class QTextEdit;
 class QTimer;
 class QVariantAnimation;
 
@@ -57,7 +57,12 @@ class DraftView : public QWidget {
     [[nodiscard]] bool Breathing() const;
     [[nodiscard]] QString BodyHash() const { return body_hash_; }
     [[nodiscard]] qint64 CurrentChapterId() const { return chapter_id_; }
-    [[nodiscard]] QPlainTextEdit* Edit() const { return edit_; }
+    // 正文控件是 **QTextEdit 而不是 QPlainTextEdit**：QPlainTextEdit 的块布局
+    // （QPlainTextDocumentLayout）不消费 `QTextBlockFormat::textIndent()`，
+    // 设计稿 views.css:576 的 `.draft p { text-indent: 2em }` 因此永远画不出来
+    // （格式确实写进了文档，firstBlock().textIndent() == 28，但渲染层忽略）。
+    // QTextEdit 走 QTextDocumentLayout，三项块格式（字号 / 行高 / 段距 / 缩进）全部生效。
+    [[nodiscard]] QTextEdit* Edit() const { return edit_; }
 
     // 阻塞式等流式结束（跑事件循环 → UI 心跳照走；超时返回 false）
     bool WaitStream(int timeoutMs);
@@ -109,7 +114,7 @@ class DraftView : public QWidget {
     agent::LlmCallFn call_;
 
     // —— 控件 ——
-    QPlainTextEdit* edit_ = nullptr;
+    QTextEdit* edit_ = nullptr;
     QLabel* state_ = nullptr;
     widgets::Button* stream_btn_ = nullptr;
     widgets::Button* stop_btn_ = nullptr;

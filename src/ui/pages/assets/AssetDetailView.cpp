@@ -9,6 +9,9 @@
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "db/sqlite/SqliteDb.h"
+#include "novel/NovelGraph.h"
+#include "novel/NovelImageStore.h"
 #include "util/Encoding.h"
 
 #include <QFileDialog>
@@ -20,16 +23,24 @@
 #include <QLabel>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QVBoxLayout>
 #include <QStringList>
 
 
 #include <string_view>
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <system_error>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <vector>
+
+#include <yyjson.h>
 
 namespace shine::app {
 namespace {
@@ -63,8 +74,9 @@ constexpr std::array<LayerSpec, 4> kLayers{{
 }
 
 // webui .vsec-h：accent 字符图标 + 13.5px w700 标题 + 右侧补充说明
+// （sub 对应 Assets.jsx 里 .vsec-h 末尾的 `.tiny.dim` 补充说明，缺省不显示）
 QWidget* MakeVSecHead(const QString& icon, const QString& text, QWidget* parent,
-                      QLabel** title_out = nullptr) {
+                      QLabel** title_out = nullptr, const QString& sub = QString{}) {
     auto* head = new QWidget(parent);
     auto* row = new QHBoxLayout(head);
     row->setContentsMargins(0, 0, 0, 0);
@@ -76,12 +88,206 @@ QWidget* MakeVSecHead(const QString& icon, const QString& text, QWidget* parent,
     auto* title = new QLabel(text, head);
     widgets::SetKind(title, "vsechead");
     row->addWidget(title);
+    if (!sub.isEmpty()) {
+        auto* note = new QLabel(sub, head);
+        widgets::SetKind(note, "statedetail");
+        row->addWidget(note);
+    }
     row->addStretch(1);
     if (title_out != nullptr) {
         *title_out = title;
     }
     return head;
 }
+
+[[nodiscard]] bool ShotHasEntity(std::string_view json, shine::novelcore::RowId entityId) {
+    yyjson_doc* doc = yyjson_read(json.data(), json.size(), 0);
+    if (doc == nullptr) {
+        return false;
+    }
+    bool found = false;
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    if (yyjson_is_arr(root)) {
+        std::size_t index = 0;
+        yyjson_val* child = nullptr;
+        while ((child = yyjson_arr_get(root, index++)) != nullptr) {
+            if (yyjson_get_num(child) == static_cast<long long>(entityId)) {
+                found = true;
+                break;
+            }
+        }
+    }
+    yyjson_doc_free(doc);
+    return found;
+}
+
+// ============================================================
+// 关联时间线（webui views.css:766-847 `.tl` / `.tl-below`）
+//
+// CSS 用 absolute + % 定位，Qt 的布局系统没有等价的百分比锚点，
+// 所以这里保留「子控件 + 手动几何」的做法：Build() 建控件并记下锚点，
+// Layout() 在 resizeEvent 里按容器宽度换算 x。
+//
+// 纵向几何逐值取自 views.css：
+//   .axis   top 44 h2          → 轴
+//   .tick   top 38 w2 h14      → 刻度（横跨轴）
+//   .tick-l top 58            → 刻度文字
+//   .ev     top 12            → 事件列（pin 10 + gap 4 + 文字）
+//   .stem   top 30 h14        → 针到轴的连线
+// ⚠️ .stem(30…44) 与 .ev 的文字行(26…39)在 CSS 里是重叠的（针会穿过标签）。
+//    这里把针下移到 40…44 接住轴心，标签 26 起不受影响；其余数值不变。
+// ============================================================
+class RelTimeline : public QWidget {
+  public:
+    struct Event {
+        int chapter = 0;
+        QString label;
+        QString tip;
+        bool hot = false;
+    };
+
+    explicit RelTimeline(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedHeight(kHeight);
+        axis_ = new QFrame(this);
+        widgets::SetKind(axis_, "tlaxis");
+        axis_->setFixedHeight(2);
+        // 手工挂载的子控件没有布局兜底：Qt 只会把「首次 show 时已在树里」的子控件
+        // 点亮，之后 new 出来的默认仍带 WA_WState_Hidden（评审抓图里表现为
+        // 「轴在、刻度与事件全没了」）。这里逐个显式 show。
+        axis_->show();
+    }
+
+    void SetChapters(int n) {
+        chapters_ = n;
+        ClearTicks();
+        if (chapters_ <= 0) {
+            return;
+        }
+        for (int i = 1; i <= chapters_; ++i) {
+            auto* tick = new QFrame(this);
+            widgets::SetKind(tick, "tltick");
+            tick->setFixedSize(2, 14);
+            auto* text = new QLabel(QStringLiteral("第 %1 章").arg(i), this);
+            widgets::SetKind(text, "tlcap");
+            text->setAlignment(Qt::AlignCenter);
+            text->adjustSize();
+            tick->show();
+            text->show();
+            ticks_.push_back({.tick = tick, .text = text, .chapter = i});
+        }
+        Layout();
+    }
+
+    void SetEvents(std::vector<Event> events) {
+        ClearEvents();
+        for (Event& event : events) {
+            auto* stem = new QFrame(this);
+            widgets::SetKind(stem, "tlaxis"); // .stem 与 .axis 同色同宽语义
+            // 必须连高度一起定死：只给 setFixedWidth 的话 QFrame 在无布局的父里
+            // 会撑满剩余高度（92px），竖线从 kStemTop 一路画到底，
+            // 正好压穿下方 kTickLabelTop 处的「第 N 章」刻度标签
+            // （评审抓图里表现为一条竖线从字上穿过）。
+            stem->setFixedSize(2, kStemH);
+            auto* pin = new QLabel(this);
+            widgets::SetKind(pin, "tlpin");
+            pin->setProperty("hot", event.hot ? QStringLiteral("true") : QString{});
+            widgets::Repolish(pin);
+            pin->setFixedSize(10, 10);
+            auto* label = new QLabel(event.label, this);
+            widgets::SetKind(label, "tlcap");
+            label->setProperty("hot", event.hot ? QStringLiteral("true") : QString{});
+            widgets::Repolish(label);
+            label->setAlignment(Qt::AlignCenter);
+            label->adjustSize();
+            label->setToolTip(event.tip);
+            if (!event.hot) {
+                pin->setToolTip(event.tip);
+            }
+            stem->show();
+            pin->show();
+            label->show();
+            events_.push_back({.chapter = event.chapter,
+                               .stem = stem,
+                               .pin = pin,
+                               .label = label});
+        }
+        Layout();
+    }
+
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        Layout();
+    }
+
+  private:
+    struct Tick {
+        QFrame* tick = nullptr;
+        QLabel* text = nullptr;
+        int chapter = 0;
+    };
+    struct Placed {
+        int chapter = 0;
+        QFrame* stem = nullptr;
+        QLabel* pin = nullptr;
+        QLabel* label = nullptr;
+    };
+
+    // webui pct(ch) = ((ch - 0.5) / CH) * 100 —— 刻度落在等分格的中心
+    [[nodiscard]] double Pct(int chapter) const {
+        if (chapters_ <= 0) {
+            return 50.0;
+        }
+        const int clamped = chapter < 1 ? 1 : (chapter > chapters_ ? chapters_ : chapter);
+        return (static_cast<double>(clamped) - 0.5) / static_cast<double>(chapters_) * 100.0;
+    }
+
+    void Layout() {
+        const int width = std::max(this->width(), 1);
+        axis_->setGeometry(0, kAxisTop, width, 2);
+        for (const Tick& tick : ticks_) {
+            const int x = static_cast<int>(Pct(tick.chapter) / 100.0 * width);
+            tick.tick->move(x - tick.tick->width() / 2, kTickTop);
+            tick.text->move(x - tick.text->width() / 2, kTickLabelTop);
+        }
+        for (const Placed& placed : events_) {
+            const int x = static_cast<int>(Pct(placed.chapter) / 100.0 * width);
+            placed.pin->move(x - placed.pin->width() / 2, kPinTop);
+            placed.stem->move(x - placed.stem->width() / 2, kStemTop);
+            placed.label->move(x - placed.label->width() / 2, kEventLabelTop);
+        }
+    }
+
+    void ClearTicks() {
+        for (const Tick& tick : ticks_) {
+            delete tick.tick;
+            delete tick.text;
+        }
+        ticks_.clear();
+    }
+
+    void ClearEvents() {
+        for (const Placed& placed : events_) {
+            delete placed.stem;
+            delete placed.pin;
+            delete placed.label;
+        }
+        events_.clear();
+    }
+
+    static constexpr int kHeight = 92;         // views.css:768 .tl height
+    static constexpr int kAxisTop = 44;        // views.css:775
+    static constexpr int kTickTop = 38;        // views.css:782
+    static constexpr int kTickLabelTop = 58;   // views.css:790
+    static constexpr int kPinTop = 12;         // views.css:798 .ev top
+    static constexpr int kEventLabelTop = 26;  // .ev 列内 pin(10)+gap(4) 之后
+    static constexpr int kStemTop = 40;        // 见文件头说明（CSS 为 30，见「与 .stem 重叠」注）
+    static constexpr int kStemH = 4;           // 40→44：正好搭到 kAxisTop(44) 的轴线上，不越界到刻度标签
+
+    QFrame* axis_ = nullptr;
+    int chapters_ = 0;
+    std::vector<Tick> ticks_;
+    std::vector<Placed> events_;
+};
 
 } // namespace
 std::string AssetDetailView::ArtifactPath(const LayerData& layer) {
@@ -165,12 +371,37 @@ void AssetDetailView::BuildUi() {
         QStringLiteral("⑂"), QStringLiteral("V0 派生链 · 正脸 → 四视图 → 基础身体 → 服装"),
         chain_sec));
     derive_ = new QWidget(chain_sec);
+    derive_->setObjectName(QStringLiteral("assetDeriveChain"));
     derive_row_ = new QHBoxLayout(derive_);
     derive_row_->setContentsMargins(2, 6, 2, 6);
     derive_row_->setSpacing(0);
     derive_row_->addStretch(1);
     chain_layout->addWidget(derive_);
+
+    // 分区三「关联时间线」：webui views.css:766-847 的 .tl（事件轴）+ .tl-below（绑定镜头 / 参考图）
+    auto* tl_sec = new QWidget(this);
+    widgets::SetKind(tl_sec, "vsec");
+    tl_sec->setProperty("last", QStringLiteral("true"));
+    widgets::Repolish(tl_sec);
+    auto* tl_sec_layout = new QVBoxLayout(tl_sec);
+    tl_sec_layout->setContentsMargins(0, 0, 0, 0);
+    tl_sec_layout->setSpacing(theme::space::kSteps[1]);
+    tl_sec_layout->addWidget(MakeVSecHead(
+        QStringLiteral("◷"), QStringLiteral("关联时间线"), tl_sec, nullptr,
+        QStringLiteral("外观基线 / 出处 / 绑定镜头 / 参考图 · 全部条目可点击")));
+    timeline_body_ = new QWidget(tl_sec);
+    timeline_body_->setObjectName(QStringLiteral("assetRelTimeline"));
+    timeline_layout_ = new QVBoxLayout(timeline_body_);
+    // views.css:769 `.tl { margin: 2px 10px 0 }` / views.css:841 `.tl-below { padding: 2px 10px 0 }`
+    timeline_layout_->setContentsMargins(10, theme::space::kSteps[1], 10, 0);
+    timeline_layout_->setSpacing(0);
+    timeline_ = new RelTimeline(timeline_body_);
+    timeline_layout_->addWidget(timeline_);
+    tl_sec_layout->addWidget(timeline_body_);
+    // webui Assets.jsx 的分区顺序 = 设定集（含派生链）→ 一致性对比 → 关联时间线。
+    // 「一致性对比」在本页是独立检查器页，故这里保持 设定集 → 派生链 → 关联时间线。
     outer->addWidget(chain_sec);
+    outer->addWidget(tl_sec);
 
     connect(export_, &QPushButton::clicked, this, &AssetDetailView::ExportSheet);
     policy_ = new AssetPolicyPanel(this);
@@ -182,8 +413,8 @@ void AssetDetailView::BuildUi() {
     });
 }
 
-bool AssetDetailView::ShowAsset(novelcore::NovelVisual& visual,
-                                const novelcore::VisualAssetRow& asset,
+bool AssetDetailView::ShowAsset(db::sqlite::Database& db, novelcore::NovelVisual& visual,
+                                const novelcore::VisualAssetRow& asset, novelcore::RowId entityId,
                                 const std::filesystem::path& projectDir, QString* error) {
     Clear();
     if (error != nullptr) {
@@ -244,14 +475,133 @@ bool AssetDetailView::ShowAsset(novelcore::NovelVisual& visual,
         layers_.push_back(std::move(data));
     }
 
+    CollectTimeline(db, visual, asset, entityId);
     Rebuild();
     return true;
+}
+
+// 关联时间线的数据来源（全部只读真库，不造假数据）：
+//   visual_states            → 外观基线事件（from_chapter 落在哪一章）
+//   chapters + shots         → 绑定镜头（shots.character_ids_json 含本实体）
+//   generated_images(shot)   → 这些镜头已出的图，作「参考图」缩略
+void AssetDetailView::CollectTimeline(db::sqlite::Database& db, novelcore::NovelVisual& visual,
+                                      const novelcore::VisualAssetRow& asset,
+                                      novelcore::RowId entityId) {
+    timeline_chapters_ = 0;
+    timeline_events_.clear();
+    bound_shots_.clear();
+    ref_images_.clear();
+
+    novelcore::NovelGraph graph(db);
+    auto chapters = graph.ListChapters(1000);
+    std::unordered_map<novelcore::RowId, int> chapter_ord;
+    if (chapters) {
+        for (const novelcore::ChapterRow& chapter : *chapters) {
+            // ord 才是「第 N 章」；同 ord 重复时保留先到的，避免刻度重号
+            if (chapter_ord.emplace(chapter.id, chapter.ord).second) {
+                ++timeline_chapters_;
+            }
+        }
+    }
+
+    const auto ord_of = [&chapter_ord](novelcore::RowId chapterId) {
+        const auto found = chapter_ord.find(chapterId);
+        return found == chapter_ord.end() ? 0 : found->second;
+    };
+
+    // —— 外观基线：visual_states 每行 = 一段从 from_chapter 起生效的外观 ——
+    auto states = visual.ListStates(asset.id);
+    int latest = 0;
+    if (states) {
+        for (const novelcore::VisualStateRow& state : *states) {
+            const int ord = ord_of(state.from_chapter);
+            if (ord <= 0) {
+                continue;
+            }
+            latest = std::max(latest, ord);
+            const std::string& stage =
+                state.stage_label.empty() ? state.appearance : state.stage_label;
+            timeline_events_.push_back(
+                {.chapter = ord,
+                 .label = QStringLiteral("外观基线 · %1").arg(QString::fromStdString(stage)),
+                 .tip = QStringLiteral("第 %1 章起 · %2")
+                            .arg(ord)
+                            .arg(QString::fromStdString(state.appearance.empty() ? stage
+                                                                                 : state.appearance)),
+                 .hot = false});
+        }
+    }
+    // 最后一枚基线 = 当前生效（webui 的「外观基线 ② · 当前」/ accent 针）
+    if (!timeline_events_.empty()) {
+        for (TimelineEvent& event : timeline_events_) {
+            if (event.chapter == latest) {
+                event.hot = true;
+                event.label += QStringLiteral(" · 当前");
+            }
+        }
+    }
+
+    // —— 绑定镜头：逐章扫 shots，character_ids_json 含本实体即算 ——
+    if (entityId > 0 && chapters) {
+        for (const novelcore::ChapterRow& chapter : *chapters) {
+            auto shots = visual.ListShotsByChapter(chapter.id);
+            if (!shots) {
+                continue;
+            }
+            for (const novelcore::ShotRow& shot : *shots) {
+                if (!ShotHasEntity(shot.character_ids_json, entityId)) {
+                    continue;
+                }
+                bound_shots_.push_back({.chapter = chapter.ord,
+                                        .ord = shot.ord,
+                                        .id = shot.id,
+                                        .image_rel = {}});
+            }
+        }
+    }
+
+    // —— 参考图：绑定镜头已生成的图（generated_images.source_kind='shot'）——
+    std::unordered_set<novelcore::RowId> shot_ids;
+    for (const BoundShot& shot : bound_shots_) {
+        shot_ids.insert(shot.id);
+    }
+    if (!shot_ids.empty()) {
+        auto images = novelcore::ListGeneratedImages(db, 5000);
+        if (images) {
+            for (const novelcore::GeneratedImageRow& image : *images) {
+                if (image.source_kind != "shot" || image.rel_path.empty() ||
+                    shot_ids.find(image.source_id) == shot_ids.end()) {
+                    continue;
+                }
+                const std::filesystem::path path = ResolvePath(image.rel_path);
+                std::error_code ec;
+                if (!std::filesystem::is_regular_file(path, ec)) {
+                    continue;
+                }
+                const QString rel = QString::fromStdString(image.rel_path);
+                for (BoundShot& shot : bound_shots_) {
+                    if (shot.id == image.source_id && shot.image_rel.isEmpty()) {
+                        shot.image_rel = rel;
+                        break;
+                    }
+                }
+                if (ref_images_.size() < 8 &&
+                    std::find(ref_images_.begin(), ref_images_.end(), rel) == ref_images_.end()) {
+                    ref_images_.push_back(rel);
+                }
+            }
+        }
+    }
 }
 
 void AssetDetailView::Clear() {
     asset_ = {};
     projectDir_.clear();
     layers_.clear();
+    timeline_chapters_ = 0;
+    timeline_events_.clear();
+    bound_shots_.clear();
+    ref_images_.clear();
     runtime_phase_.clear();
     runtime_detail_.clear();
     runtime_layer_.clear();
@@ -289,6 +639,126 @@ void AssetDetailView::Clear() {
         }
         derive_row_->addStretch(1);
     }
+    if (timeline_layout_ != nullptr) {
+        // 保留 index 0（.tl 轴），其余是上次建的 .tl-below 行
+        while (timeline_layout_->count() > 1) {
+            QLayoutItem* item = timeline_layout_->takeAt(1);
+            if (QWidget* widget = item->widget()) {
+                widget->deleteLater();
+            }
+            delete item;
+        }
+    }
+    if (auto* axis = static_cast<RelTimeline*>(timeline_); axis != nullptr) {
+        axis->SetChapters(0);
+        axis->SetEvents({});
+    }
+}
+
+// webui .tl-below（views.css:836-847）：一行 flex-wrap —— 「绑定镜头」chip 行 +
+// 「参考图」缩略 + 右侧「全部条目可点击」提示。
+void AssetDetailView::RebuildTimeline() {
+    if (timeline_layout_ == nullptr) {
+        return;
+    }
+    auto* axis = static_cast<RelTimeline*>(timeline_);
+    if (axis == nullptr) {
+        return;
+    }
+    axis->SetChapters(timeline_chapters_);
+    std::vector<RelTimeline::Event> events;
+    events.reserve(timeline_events_.size());
+    for (const TimelineEvent& event : timeline_events_) {
+        events.push_back({.chapter = event.chapter,
+                          .label = event.label,
+                          .tip = event.tip,
+                          .hot = event.hot});
+    }
+    axis->SetEvents(std::move(events));
+
+    if (timeline_chapters_ <= 0) {
+        auto* empty = new widgets::EmptyState(
+            QStringLiteral("◷"), QStringLiteral("还没有章节时间轴"),
+            QStringLiteral("当前书库没有 chapters 记录；导入章节后这里会按章显示外观基线与绑定镜头。"),
+            QString{}, timeline_body_);
+        timeline_layout_->addWidget(empty);
+        return;
+    }
+
+    auto* below = new QWidget(timeline_body_);
+    auto* row = new QHBoxLayout(below);
+    row->setContentsMargins(0, theme::space::kSteps[1], 0, 0);
+    row->setSpacing(8); // views.css:839 .tl-below gap
+
+    const auto caption = [below](const QString& text) {
+        auto* label = new QLabel(text, below);
+        widgets::SetKind(label, "tlcap");
+        return label;
+    };
+
+    if (bound_shots_.empty()) {
+        row->addWidget(caption(QStringLiteral("绑定镜头 无")));
+    } else {
+        row->addWidget(caption(QStringLiteral("绑定镜头")));
+        for (const BoundShot& shot : bound_shots_) {
+            // 复刻 kit::widgets::Chip（不得在页面里新造第二份药丸）。
+            // 文案压到「第1章·镜1」：设计稿的 .tl-below chip 是 S01/S02 这种短码，
+            // 评审抓图实测带空格的「第 1 章 · 镜 1」会被 chip 截掉末位（chip 的
+            // sizeHint 比实测文本窄，行一挤就截字）。
+            auto* chip = new widgets::Chip(QStringLiteral("第%1章·镜%2")
+                                               .arg(shot.chapter)
+                                               .arg(shot.ord),
+                                           "", below);
+            chip->setToolTip(shot.image_rel.isEmpty()
+                                 ? QStringLiteral("镜头 #%1 · 尚未出图").arg(shot.id)
+                                 : QStringLiteral("镜头 #%1 · %2").arg(shot.id).arg(shot.image_rel));
+            // webui .tl-below 是 flex-wrap；Qt 没有流式布局，行放不下时 QHBoxLayout
+            // 会压缩子控件把 chip 里的字截断（评审抓图实测过）。横向策略设为 Minimum，
+            // 即「sizeHint 就是下限、只许变宽」，让它宁可在窄栏溢出也不截字。
+            chip->setSizePolicy(QSizePolicy::Minimum, chip->sizePolicy().verticalPolicy());
+            connect(chip, &widgets::Chip::clicked, this, [this, shot] {
+                widgets::Toast::Show(
+                    shot.image_rel.isEmpty()
+                        ? QStringLiteral("第 %1 章 · 镜 %2（镜头 #%3）尚未出图")
+                              .arg(shot.chapter)
+                              .arg(shot.ord)
+                              .arg(shot.id)
+                        : QStringLiteral("第 %1 章 · 镜 %2 → %3")
+                              .arg(shot.chapter)
+                              .arg(shot.ord)
+                              .arg(shot.image_rel),
+                    widgets::Toast::Tone::Info);
+            });
+            row->addWidget(chip);
+        }
+    }
+
+    row->addSpacing(theme::space::kXs); // webui Assets.jsx:99 的 marginLeft 10
+    row->addWidget(caption(QStringLiteral("参考图")));
+    if (ref_images_.empty()) {
+        row->addWidget(caption(QStringLiteral("无")));
+    } else {
+        for (const QString& rel : ref_images_) {
+            auto* thumb = new QLabel(below);
+            widgets::SetKind(thumb, "tlref");
+            thumb->setFixedSize(52, 36); // webui Assets.jsx:101
+            thumb->setAlignment(Qt::AlignCenter);
+            thumb->setToolTip(QStringLiteral("查看 %1").arg(rel));
+            const std::filesystem::path abs = ResolvePath(rel.toStdString());
+            QImageReader reader(QString::fromStdString(util::PathToUtf8(abs)));
+            reader.setAutoTransform(true);
+            const QImage image = reader.read();
+            if (!image.isNull()) {
+                thumb->setPixmap(QPixmap::fromImage(
+                    image.scaled(52, 36, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+            } else {
+                thumb->setText(QStringLiteral("▧"));
+            }
+            row->addWidget(thumb);
+        }
+    }
+    row->addStretch(1);
+    timeline_layout_->addWidget(below);
 }
 
 // webui .derive：横向节点链（节点 108px + 连线 22px）；已就绪的层填 accent 连线
@@ -307,12 +777,12 @@ void AssetDetailView::RebuildDerive() {
         if (i > 0) {
             auto* link = new QFrame(derive_);
             widgets::SetKind(link, "derivelink");
-            link->setFixedSize(22, 2);
+            link->setFixedSize(22, 2); // views.css:883 .dlink 22×1.5（Qt 取 2px，整数像素下最接近）
             if (data.ready) {
                 link->setProperty("fill", QStringLiteral("true"));
                 widgets::Repolish(link);
             }
-            derive_row_->addWidget(link);
+            derive_row_->addWidget(link, 0, Qt::AlignVCenter);
         }
         auto* node = new QFrame(derive_);
         widgets::SetKind(node, "derivenode");
@@ -354,7 +824,9 @@ void AssetDetailView::RebuildDerive() {
         label_row->addWidget(text);
         body->addWidget(label);
 
-        derive_row_->addWidget(node);
+        // webui views.css:850 .derive { align-items: center }：
+        // 节点与连接线都垂直居中，QHBoxLayout 默认顶对齐会让连接线浮在节点上沿。
+        derive_row_->addWidget(node, 0, Qt::AlignVCenter);
     }
     derive_row_->addStretch(1);
 }
@@ -411,6 +883,7 @@ void AssetDetailView::Rebuild() {
         return;
     }
     ClearLayout(cards_layout_);
+    RebuildTimeline();
 
     title_->setText(QStringLiteral("资产详情 · %1").arg(QString::fromStdString(asset_.name)));
     subtitle_->setText(QStringLiteral("资产 #%1 · %2 · 状态 %3")

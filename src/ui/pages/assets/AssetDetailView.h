@@ -20,9 +20,14 @@
 
 class QGridLayout;
 class QHBoxLayout;
+class QVBoxLayout;
 class QLabel;
 class QPushButton;
 class QWidget;
+
+namespace shine::db::sqlite {
+class Database;
+} // namespace shine::db::sqlite
 
 namespace shine::app {
 
@@ -34,7 +39,10 @@ class AssetDetailView : public QWidget {
 
     explicit AssetDetailView(QWidget* parent = nullptr);
 
-    bool ShowAsset(novelcore::NovelVisual& visual, const novelcore::VisualAssetRow& asset,
+    // db / entityId 只读：关联时间线要按章取 visual_states 与 shots.character_ids_json，
+    // 光有 NovelVisual 拿不到章节与镜头。
+    bool ShowAsset(db::sqlite::Database& db, novelcore::NovelVisual& visual,
+                   const novelcore::VisualAssetRow& asset, novelcore::RowId entityId,
                    const std::filesystem::path& projectDir, QString* error = nullptr);
     void Clear();
     void SetOnGenerate(GenerateHandler handler) { on_generate_ = std::move(handler); }
@@ -58,9 +66,27 @@ class AssetDetailView : public QWidget {
         bool decoded = false;
     };
 
+    // webui .tl .ev：一次按章的外观/出处事件。hot = 当前生效的基线（accent 针）。
+    struct TimelineEvent {
+        int chapter = 0; // 1 基；0 = 未定位到章，落在轴首
+        QString label;
+        QString tip;
+        bool hot = false;
+    };
+    // webui .tl-below「绑定镜头」chip：一枚 = 一镜。
+    struct BoundShot {
+        int chapter = 0;
+        int ord = 0;
+        novelcore::RowId id = 0;
+        QString image_rel;
+    };
+
     void BuildUi();
     void Rebuild();
     void RebuildDerive();
+    void RebuildTimeline();
+    void CollectTimeline(db::sqlite::Database& db, novelcore::NovelVisual& visual,
+                         const novelcore::VisualAssetRow& asset, novelcore::RowId entityId);
     void ShowError(const QString& detail);
     void ExportSheet();
     [[nodiscard]] std::filesystem::path ResolvePath(std::string_view relative) const;
@@ -78,6 +104,12 @@ class AssetDetailView : public QWidget {
     bool runtime_active_ = false;
     bool runtime_degraded_ = false;
 
+    // 关联时间线（webui .tl + .tl-below）
+    int timeline_chapters_ = 0;
+    std::vector<TimelineEvent> timeline_events_;
+    std::vector<BoundShot> bound_shots_;
+    std::vector<QString> ref_images_;
+
     QLabel* title_ = nullptr;
     QLabel* subtitle_ = nullptr;
     QPushButton* export_ = nullptr;
@@ -87,6 +119,9 @@ class AssetDetailView : public QWidget {
     QPushButton* generate_all_ = nullptr;
     QWidget* derive_ = nullptr;       // webui .derive 派生链容器
     QHBoxLayout* derive_row_ = nullptr;
+    QWidget* timeline_ = nullptr;     // webui .tl 事件轴容器
+    QWidget* timeline_body_ = nullptr; // 轴 + .tl-below 的列容器
+    QVBoxLayout* timeline_layout_ = nullptr;
     AssetPolicyPanel* policy_ = nullptr;
 };
 

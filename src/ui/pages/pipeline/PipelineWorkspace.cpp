@@ -143,14 +143,33 @@ void PipelineWorkspace::BuildUi() {
     info_ = new shine::data::KeyValue(info_card);
     info_card->BodyLayout()->addWidget(info_);
 
-    // 左列 2/3、右列 1/3；右列固定在顶部，不随左列滚动错位
-    grid->addWidget(gantt_card, 0, 0);
-    grid->addWidget(ledger_card, 1, 0);
-    grid->addWidget(stop_card, 0, 1);
-    grid->addWidget(info_card, 1, 1);
-    grid->setColumnStretch(0, 2);
-    grid->setColumnStretch(1, 1);
-    grid->setRowStretch(1, 1);
+    // webui Overview.jsx:72-169 是 `.grid-3-1` 包两个 `col gap-3` 竖列：
+    //   左 = 甘特 + 账本，右 = 停止条件 + 最近产物 + 运行信息。
+    // CSS：`grid-template-columns: minmax(0,1fr) 300px; gap:16; align-items:start`
+    //      （views.css:153-158）—— 右列**定宽 300**，两列都**按内容高度**、顶端对齐。
+    // 此处照此搭两个列容器：
+    //   * 列容器固定 300 宽，还原定宽右列（此前按 1/3 比例分配，右列被拉得又宽又空）；
+    //   * 每列内部是 VBox + 12 间距，卡片只占内容高（此前 setRowStretch(1,1) 把富余
+    //     高度全喂给第二行，账本卡被撑到半屏高、卡内留出大片死白 —— 这是「不像」的主因）。
+    auto* left_col = new QWidget(body);
+    auto* left_col_layout = new QVBoxLayout(left_col);
+    left_col_layout->setContentsMargins(0, 0, 0, 0);
+    left_col_layout->setSpacing(theme::space::kSteps[4]); // .col gap-3
+    left_col_layout->addWidget(gantt_card, 0, Qt::AlignTop);
+    left_col_layout->addWidget(ledger_card, 0, Qt::AlignTop);
+
+    auto* right_col = new QWidget(body);
+    right_col->setFixedWidth(300);
+    auto* right_col_layout = new QVBoxLayout(right_col);
+    right_col_layout->setContentsMargins(0, 0, 0, 0);
+    right_col_layout->setSpacing(theme::space::kSteps[4]); // .col gap-3
+    right_col_layout->addWidget(stop_card, 0, Qt::AlignTop);
+    right_col_layout->addWidget(info_card, 0, Qt::AlignTop);
+
+    grid->addWidget(left_col, 0, 0, Qt::AlignTop);
+    grid->addWidget(right_col, 0, 1, Qt::AlignTop);
+    grid->setColumnStretch(0, 1);
+    grid->setAlignment(Qt::AlignTop);
     // 宽表在窄窗口下横向滚动，而不是被右列挤成残条
     gantt_card->SetContentMinWidth(560);
     ledger_card->SetContentMinWidth(560);

@@ -641,6 +641,8 @@ QGraphicsView { background-color: %26; border: none; }
 *[shineKind="tlpin"][hot="true"] { background-color: %13; }
 *[shineKind="tlcap"] { background: transparent; border: none; color: %10; font-size: 11px; }
 *[shineKind="tlcap"][hot="true"] { color: %13; font-weight: 700; }
+/* .tl-below .art：52×36 参考图缩略（views.css 无独立框线，用 line-subtle + r-xs 兜一个边） */
+*[shineKind="tlref"] { background-color: %1; border: 1px solid %6; border-radius: 2px; color: %11; font-size: 11px; }
 
 /* —— 小说 .ntab 模式页签：p8 12 / f13 / w600 / text-muted；选中 accent + 2px 下划线 —— */
 *[shineKind="ntabbar"] { background: transparent; border: none; border-bottom: 1px solid %6; }

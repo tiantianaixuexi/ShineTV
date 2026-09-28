@@ -73,6 +73,8 @@ class AssetWorkspace : public QWidget {
 
     // 交给外壳右侧检查器承载的详情内容（默认收起，Ctrl+I / 顶栏「检查器」打开）
     [[nodiscard]] QWidget* InspectorBody() const { return inspector_body_; }
+    // 检查器「设定集」页本体（评审取证按 objectName 取更细的分区，见 AssetDetailView）
+    [[nodiscard]] AssetDetailView* DetailView() const { return detail_; }
     // 借给外壳左侧栏的导航（实体树）。所有权仍在本页；外壳换工作区时收回。
     [[nodiscard]] QWidget* NavWidget() const { return nav_host_; }
     // 导航在页面里的原宿主（分栏容器）：外壳归还导航时挂回这里的第一格

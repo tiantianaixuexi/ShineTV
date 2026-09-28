@@ -2,11 +2,13 @@
 #include "ui/verify/review/ReviewProbe.h"
 
 #include "ui/pages/assets/AssetWorkspace.h"
+#include "ui/pages/assets/AssetDetailView.h"
 #include "ui/verify/gallery/GalleryWorkspace.h"
 #include "core/Async.h"
 #include "core/Settings.h"
 #include "db/sqlite/SqliteDb.h"
 #include "ui/kit/images/Viewer.h"
+#include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/theme/ThemeService.h"
 #include "media/Gallery.h"
@@ -52,8 +54,9 @@ struct ReviewState {
     std::vector<std::string> expected{
         "assets-grid", "assets-empty", "assets-card-states",
         "sheet-full", "sheet-missing-layers", "consistency-compare",
+        "detail-vsec", "detail-derive-chain", "detail-timeline",
         "gallery-grid", "gallery-viewer-zoom", "gallery-context-menu",
-        "assets-mixed-theme"};
+        "assets-mixed-theme", "toast-shadow"};
     std::vector<std::string> manifest;
 };
 
@@ -308,10 +311,18 @@ void RunReview(ReviewState* st) {
     shine::gallery::Init();
     auto* host = new QWidget;
     st->host = host;
-    auto* layout = new QVBoxLayout(host);
+    // 评审窗口按外壳的真实两列摆：工作区 | 检查器。
+    // 检查器默认交外壳承载，评审里若不摆出来，.vsec / .derive / .tl 三块
+    // 就是不可见的 —— 之前 sheet-* 系列抓到的其实只有左边的卡片网格。
+    auto* layout = new QHBoxLayout(host);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
     st->assets = new AssetWorkspace(host);
-    layout->addWidget(st->assets);
-    host->resize(1500, 900);
+    layout->addWidget(st->assets, 3);
+    if (QWidget* inspector = st->assets->InspectorBody(); inspector != nullptr) {
+        layout->addWidget(inspector, 2);
+    }
+    host->resize(1600, 980);
     host->show();
     QString error;
     if (!st->assets->OpenBook(st->root / "db" / "novel.db", st->root, &error)) {
@@ -334,6 +345,19 @@ void RunReview(ReviewState* st) {
     st->assets->SelectEntity(st->full_entity);
     st->assets->ShowDetailPage(1);
     review::Grab(st->assets, st->dir, "consistency-compare", st->manifest);
+
+    // 回到「设定集」页，逐块取证：整页 / 派生链 / 关联时间线。
+    st->assets->ShowDetailPage(0);
+    AssetDetailView* detail = st->assets->DetailView();
+    review::Grab(detail, st->dir, "detail-vsec", st->manifest);
+    review::Grab(detail != nullptr
+                     ? detail->findChild<QWidget*>(QStringLiteral("assetDeriveChain"))
+                     : nullptr,
+                 st->dir, "detail-derive-chain", st->manifest);
+    review::Grab(detail != nullptr
+                     ? detail->findChild<QWidget*>(QStringLiteral("assetRelTimeline"))
+                     : nullptr,
+                 st->dir, "detail-timeline", st->manifest);
 
     st->assets->ShowDetailPage(3);
     st->assets->GlobalGallery()->SetLocalDirectory(st->root / "gallery");
@@ -365,6 +389,29 @@ void RunReview(ReviewState* st) {
     shine::theme::ThemeService::Switch(shine::theme::ThemeId::Dusk, false);
     st->assets->ShowDetailPage(0);
     review::Grab(st->assets, st->dir, "assets-mixed-theme", st->manifest);
+
+    // Toast 取证：Toast 是独立顶层 window（Qt::ToolTip），页面 grab 抓不到它，
+    // 而它的阴影恰恰最容易出问题（无边框 window 会裁掉溢出的阴影）。
+    // 这里按 topLevelWidgets 找到最新的 toast 单独抓图。
+    shine::widgets::Toast::Show(QStringLiteral("已提交渲染队列（阴影取证）"),
+                                shine::widgets::Toast::Tone::Success);
+    review::Pump();
+    review::Pump();
+    {
+        QWidget* toast = nullptr;
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (w->objectName() == QStringLiteral("shineToast") && w->isVisible()) {
+                toast = w;
+            }
+        }
+        if (toast != nullptr) {
+            review::Grab(toast, st->dir, "toast-shadow", st->manifest);
+            toast->close();
+            toast->deleteLater();
+        } else {
+            st->manifest.push_back("toast-shadow 0 FAILED no-toast-widget");
+        }
+    }
     Finish(st);
 }
 

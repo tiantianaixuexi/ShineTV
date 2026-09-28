@@ -16,7 +16,7 @@
 #include <QEventLoop>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPlainTextEdit>
+#include <QTextEdit>
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QTextBlockFormat>
@@ -80,7 +80,13 @@ DraftView::DraftView(QWidget* parent) : QWidget(parent) {
     hl->addWidget(state_, 1);
 
     // —— 正文区（可编辑；流式只追加末段 + 新增高亮 + 呼吸光边框）——
-    edit_ = new QPlainTextEdit(this);
+    // 用 QTextEdit 而非 QPlainTextEdit：后者不消费 textIndent，设计稿的
+    // `.draft p { text-indent: 2em }`（views.css:576）渲染不出来。
+    edit_ = new QTextEdit(this);
+    // 保持「纯文本」语义：QTextEdit 默认 acceptRichText=true，粘贴 HTML 会把
+    // 富文本格式灌进文档，toPlainText() 的结果就不再等于 chapters.body，
+    // 会连带影响手改哈希与落盘一致性（P04-S6 edit-hash 判据）。
+    edit_->setAcceptRichText(false);
     widgets::SetKind(edit_, "draftbody");
     // webui .draft：f14 / line-height 1.9 / 段距 14px / text-indent 2em
     ApplyDraftTypography();
@@ -89,7 +95,7 @@ DraftView::DraftView(QWidget* parent) : QWidget(parent) {
     edit_->setPlaceholderText(
         QStringLiteral("正文（P04-S6 DraftView）：流式生成时只追加末段并高亮新增；"
                        "手改后哈希实时重算，中断/失败的已收内容都会落盘。"));
-    connect(edit_, &QPlainTextEdit::textChanged, this, [this] {
+    connect(edit_, &QTextEdit::textChanged, this, [this] {
         if (applying_ || streaming_) {
             return;
         }
@@ -327,7 +333,7 @@ void DraftView::StartBreathing() {
         connect(breath_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
             const double a = 0.3 + 0.5 * std::fabs(std::sin(v.toDouble() * 3.14159265358979));
             const QColor c = shine::widgets::TokenQColor(theme::Current().accentPrimary);
-            edit_->setStyleSheet(QStringLiteral("QPlainTextEdit { border: 2px solid rgba(%1,%2,%3,%4); }")
+            edit_->setStyleSheet(QStringLiteral("QTextEdit { border: 2px solid rgba(%1,%2,%3,%4); }")
                                      .arg(c.red())
                                      .arg(c.green())
                                      .arg(c.blue())
@@ -341,10 +347,10 @@ void DraftView::StartBreathing() {
 // QSS 管不到 line-height / text-indent，这三项落在 QTextBlockFormat 上；
 // 流式追加与手改都会改块集合，所以统一由 contentsChange → 全文重刷（章节级文本，代价可忽略）。
 //
-// 已知边界（截图实证，2026-09-28）：QPlainTextEdit 的块格式会正确写进文档
-// （firstBlock().blockFormat().textIndent() == 28），但渲染层不消费 textIndent，
-// 首行缩进因此看不见；行高 / 段间距 / 14px 字号正常。要真正吃到 2em 缩进，
-// 只能换成富文本 QTextEdit（会改动 DraftView::Edit() 的类型与 P04 自检），本轮不做。
+// 已解决（2026-09-29）：此前用 QPlainTextEdit，其块格式虽正确写进文档
+// （firstBlock().blockFormat().textIndent() == 28），但 QPlainTextDocumentLayout
+// 不消费 textIndent，2em 首行缩进渲染不出来。改为 QTextEdit 后四项全部生效；
+// 连带把 acceptRichText 关掉，保证粘贴仍是纯文本（否则手改哈希会与落盘正文不一致）。
 void DraftView::ApplyDraftTypography() {
     if (edit_ == nullptr || typing_) {
         return; // setFormat 自身也会发 contentsChange —— 用 typing_ 掐断递归
