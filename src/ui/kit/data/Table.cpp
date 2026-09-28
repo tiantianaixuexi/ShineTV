@@ -117,6 +117,10 @@ void DataTable::SetRows(const std::vector<std::vector<QString>>& rows) {
                                                ? row[static_cast<std::size_t>(c)]
                                                : QString{});
             item->setEditable(false);
+            // 居中：QHeaderView 的表头默认就是居中，表体保持默认左对齐会让
+            // "表头居中 / 数据靠左"看起来像没对齐。两者统一为居中。
+            // 冻结窗格（frozen_）与本表共享 model，改 item 即两边同时生效。
+            item->setTextAlignment(Qt::AlignCenter);
             model_->setItem(r, c, item);
         }
     }
