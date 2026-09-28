@@ -11,6 +11,7 @@
 #include <QVariant>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -327,7 +328,7 @@ void Segmented::Select(int index) {
 
 // ======================================================================= Chip
 
-Chip::Chip(const QString& text, const char* tone, QWidget* parent) : QPushButton(text, parent) {
+Chip::Chip(const QString& text, const char* tone, QWidget* parent) : QPushButton(parent) {
     SetKind(this, "chip");
     if (tone != nullptr && *tone != '\0') {
         setProperty("tone", QString::fromLatin1(tone));
@@ -337,6 +338,24 @@ Chip::Chip(const QString& text, const char* tone, QWidget* parent) : QPushButton
     setFocusPolicy(Qt::StrongFocus);
     setToolTip(text);
     base_text_ = text;
+    // webui .chip 是 inline-flex + gap 6 的**双元素**结构：
+    //   {文字}<span className="cnt">{计数}</span>
+    // QPushButton 会自绘 text()，一旦再挂子控件，两者抢同一块矩形
+    // （按钮文字被布局裁掉、计数压在文字上）。所以按钮自身文字必须清空，
+    // 全部内容交给内部布局的两个 QLabel 承载。
+    row_ = new QHBoxLayout(this);
+    row_->setContentsMargins(11, 0, 11, 0); // webui .chip padding: 0 11px
+    row_->setSpacing(6);                     // webui .chip gap: 6px
+    label_ = new QLabel(text, this);
+    SetKind(label_, "chiplabel");
+    row_->addWidget(label_, 0, Qt::AlignVCenter);
+    count_label_ = new QLabel(this);
+    SetKind(count_label_, "chipcount");
+    count_label_->hide();
+    row_->addWidget(count_label_, 0, Qt::AlignVCenter);
+    setText(QString{});
+    // 无障碍/自动化取值：findChild 与 tooltip 仍能拿到完整文案
+    setAccessibleName(text);
     connect(this, &QPushButton::clicked, this, [this] {
         on_ = !on_;
         Apply();
@@ -351,7 +370,22 @@ void Chip::Apply() {
     setChecked(on_);
     setProperty("on", on_ ? QStringLiteral("true") : QString{});
     Repolish(this);
+    updateGeometry(); // 标签/计数文字变化后让父布局重排
 }
+
+// 尺寸取内部布局（标签 + 计数胶囊）+ 边框，QSS min-height:26 保证药丸高度。
+QSize Chip::SizeHintFromContent() const {
+    if (row_ == nullptr) {
+        return {0, 26};
+    }
+    const QSize content = row_->sizeHint();
+    const int h = std::max(content.height() + 2, 26); // +2：上下边框
+    return {content.width() + 2, h};
+}
+
+QSize Chip::sizeHint() const { return SizeHintFromContent(); }
+
+QSize Chip::minimumSizeHint() const { return SizeHintFromContent(); }
 
 void Chip::SetOn(bool on) {
     if (on_ == on) {
@@ -363,19 +397,30 @@ void Chip::SetOn(bool on) {
 
 void Chip::SetBaseText(const QString& text) {
     base_text_ = text;
-    setToolTip(text);
+    setToolTip(count_ < 0 ? text : QStringLiteral("%1 · %2 项").arg(text).arg(count_));
+    setAccessibleName(text);
+    if (label_ != nullptr) {
+        label_->setText(text);
+    }
     SetCount(count_);
 }
 
-// 计数直接进按钮文字：QPushButton 一旦挂 QLayout，子控件会和它自绘的文字抢位置
-// （文字被布局裁掉、计数压在文字上）。webui 的 .chip .cnt 是独立小胶囊，
-// Qt 这里退化为「标签 + 空格 + 计数」，语义一致、外观略简。
+// 计数独立成胶囊（webui .chip .cnt），与标签并列而非并入文字。
 void Chip::SetCount(int n) {
     count_ = n;
-    setText(n < 0 ? base_text_
-                  : QStringLiteral("%1 %2").arg(base_text_).arg(n));
+    if (count_label_ == nullptr) {
+        return;
+    }
+    if (n < 0) {
+        count_label_->setText(QString{});
+        count_label_->hide();
+    } else {
+        count_label_->setText(QString::number(n));
+        count_label_->show();
+    }
     setToolTip(n < 0 ? base_text_
                      : QStringLiteral("%1 · %2 项").arg(base_text_).arg(n));
+    updateGeometry();
 }
 
 } // namespace shine::widgets

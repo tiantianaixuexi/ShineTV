@@ -10,6 +10,7 @@
 #include <QFrame>
 #include <QLabel>
 #include <QPushButton>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -169,13 +170,27 @@ class Chip : public QPushButton {
 
     // 只换标签、不动计数（计数单独调 SetCount）
     void SetBaseText(const QString& text);
-    // 尾部计数（webui .chip .cnt；负数 = 不显示）。计数并入按钮文字，
-    // 不用子 QLabel —— QPushButton 挂布局后自绘文字会被布局裁掉。
+    // 尾部计数（webui .chip .cnt：独立小胶囊 / f10.5→11px / p0 6 / r-pill /
+    // fill-muted 底 / text-muted 字；负数 = 不显示）。
+    // 实现：按钮自身文字置空，改由内部 label_ + count_ 两个 QLabel 承载
+    // （webui .chip 是 inline-flex + gap 6 的双元素结构）。按钮自绘文字会与
+    // 子控件抢位置，必须走「空文字 + 子标签」这一条路。
     void SetCount(int n);
 
   private:
     void Apply();
 
+    // 按钮自绘文字已清空，QPushButton::sizeHint 只按「无文字 + focus 框」算，
+    // 完全不含内部布局的两个标签 —— 直接用会把 chip 压得只剩边框
+    // （截图里「全[8]」标签被裁、计数压住文字）。必须交回布局尺寸 + 左右留白。
+    [[nodiscard]] QSize SizeHintFromContent() const;
+
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+    class QHBoxLayout* row_ = nullptr;
+    class QLabel* label_ = nullptr;
+    class QLabel* count_label_ = nullptr;
     bool on_ = false;
     int count_ = -1;
     QString base_text_;

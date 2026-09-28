@@ -578,8 +578,11 @@ QGraphicsView { background-color: %26; border: none; }
 *[shineKind="chip"][on="true"] { background-color: %25; border-color: %13; color: %13; }
 *[shineKind="chip"]:disabled { color: %11; border-color: %6; }
 *[shineKind="chip"][shineState="disabled"] { color: %11; border-color: %6; }
-*[shineKind="chip"]:focus { border: 2px solid %27; padding: 0 10px; }
-*[shineKind="chip"][shineState="focus"] { border: 2px solid %27; padding: 0 10px; }
+/* 焦点态只改边框粗细，不动 padding：chip 的文字由内部 QLabel 承载，
+   内边距来自 Chip 的 QHBoxLayout（固定 11px），QSS padding 对子控件无效，
+   改它会让边框与内容错位。 */
+*[shineKind="chip"]:focus { border: 2px solid %27; }
+*[shineKind="chip"][shineState="focus"] { border: 2px solid %27; }
 /* 连续性 / 校验清单语义色：webui 用 ok / danger 描边加同色文字 */
 *[shineKind="chip"][tone="ok"] { color: %18; border-color: %18; }
 *[shineKind="chip"][tone="danger"] { color: %20; border-color: %20; }
@@ -592,6 +595,15 @@ QGraphicsView { background-color: %26; border: none; }
 /* .chip .cnt：计数小胶囊（f10.5 → 11px） */
 *[shineKind="chipcount"] { border-radius: 999px; padding: 0 6px; background-color: %26; color: %11; font-size: 11px; }
 *[shineKind="chip"][on="true"] *[shineKind="chipcount"] { background-color: %25; }
+/* .chip 的文字段：按钮自绘文字已清空，改由子 QLabel 承载，字号字重随 chip 走。
+   不设背景/边框，避免在胶囊内部再画一层底。 */
+*[shineKind="chiplabel"] { background: transparent; border: none; font-size: 12px; font-weight: 600; color: %10; }
+*[shineKind="chip"][on="true"] *[shineKind="chiplabel"] { color: %13; }
+*[shineKind="chip"][tone="ok"] *[shineKind="chiplabel"] { color: %18; }
+*[shineKind="chip"][tone="danger"] *[shineKind="chiplabel"] { color: %20; }
+*[shineKind="chip"][tone="warn"] *[shineKind="chiplabel"] { color: %19; }
+*[shineKind="chip"][tone="idle"] *[shineKind="chiplabel"] { color: %11; }
+*[shineKind="chip"]:disabled *[shineKind="chiplabel"] { color: %11; }
 
 /* —— .vsec 详情分区：无卡片框，靠发丝线分隔（p14 2 + border-bottom line-subtle） —— */
 *[shineKind="vsec"] { background: transparent; border: none; border-bottom: 1px solid %6; padding: 14px 2px; }
