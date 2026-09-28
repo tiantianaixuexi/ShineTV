@@ -56,12 +56,19 @@ EmptyState::EmptyState(const QString& icon, const QString& title, const QString&
     SetKind(t, "statetitle");
     SetSemibold(t, true);
     t->setAlignment(Qt::AlignCenter);
+    t->setWordWrap(true);
+    t->setMaximumWidth(360); // 同 subtitle：宽度上限让折行点可预期
     col->addWidget(t, 0, Qt::AlignCenter);
 
     auto* s = new QLabel(subtitle, this);
     SetKind(s, "statesub");
     s->setAlignment(Qt::AlignCenter);
     s->setWordWrap(true);
+    // ⚠️ 必须给宽度上限：wordWrap 的 QLabel 在 Qt::AlignCenter 下会按
+    // 「父容器当前宽度」折行，若父容器此刻还没完成布局（宽度接近 0 或过大），
+    // 换行位置算错就会把整行文字挤成乱码（实测截图里「检测片段默认
+    // 校验状态」压成不可读的一团）。给固定上限让折行点可预期。
+    s->setMaximumWidth(360);
     col->addWidget(s, 0, Qt::AlignCenter);
 
     // 主行动按钮：必须给出下一步（UI.md §2.1）

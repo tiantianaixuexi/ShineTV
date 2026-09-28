@@ -32,7 +32,7 @@ GenShotBridgeView::GenShotBridgeView(QWidget* parent) : QWidget(parent) {
     auto* run = new widgets::Button(QStringLiteral("生成 / 导出 shots.json"),
                                     widgets::Button::Variant::Primary,
                                     widgets::Button::Size::Sm, this);
-    outer->addWidget(run);
+    outer->addWidget(run, 0, Qt::AlignLeft); // 同上：不做通栏按钮
     preview_ = new QPlainTextEdit(this);
     preview_->setReadOnly(true);
     preview_->setPlaceholderText(QStringLiteral("ToGenShot 结果会在这里显示"));

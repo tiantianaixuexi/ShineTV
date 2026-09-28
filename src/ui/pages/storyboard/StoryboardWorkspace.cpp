@@ -26,8 +26,10 @@
 #include "novel/NovelStoryboard.h"
 #include "novel/NovelPromptGen.h"
 
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QScrollArea>
 #include <QStandardItem>
 #include <QSplitter>
 #include <QPlainTextEdit>
@@ -52,10 +54,20 @@ StoryboardWorkspace::StoryboardWorkspace(QWidget* parent) : QWidget(parent) {
 StoryboardWorkspace::~StoryboardWorkspace() = default;
 
 void StoryboardWorkspace::BuildUi() {
-    auto* outer = new QVBoxLayout(this);
-    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    // 本页区块数多（阶段条 / 场景详情 / 镜头表 / 时间线 / 镜头详情 /
+    // 连续性 / ToGenShot），内容天然超过一屏。上一版把它们竖排进同一个
+    // QVBoxLayout 并给 splitter 伸展因子，结果下面的时间线/详情全被压扁
+    // （实测截图里 .tl-card 只剩缩略图、镜头表行被裁一半）。
+    // 改成：整体放进滚动区，各区块按内容高度排布，splitter 不再抢伸展。
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    auto* body = new QWidget(scroll);
+    auto* outer = new QVBoxLayout(body);
     util::PageMargins(outer);
     util::PageSpacing(outer);
+    scroll->setWidget(body);
 
     status_ = widgets::SectionTitle(QStringLiteral("分镜 · 未打开书库"), this);
     outer->addWidget(status_);
@@ -107,7 +119,11 @@ void StoryboardWorkspace::BuildUi() {
     detail_layout->addStretch();
     splitter->addWidget(detail_);
     splitter->setSizes({420, 900});
-    outer->addWidget(splitter, 1);
+    // 整页已改成滚动区：splitter 不再抢伸展因子，按内容高度排布，
+    // 否则它会把下面的时间线 / 镜头详情压扁（实测截图就是这个问题）。
+    detail_->setMinimumHeight(220);
+    splitter->setStretchFactor(0, 0);
+    outer->addWidget(splitter, 0);
     // 章节/场景树交给外壳左侧栏（SidePanel::AdoptNav 借走）。
     // 所有权留在本页：RebuildTree / SelectScene 直接刷新 tree_，侧栏只负责摆放；
     // 导航不再占页内一列，阶段条与内容区拿到整幅宽度。
@@ -125,7 +141,13 @@ void StoryboardWorkspace::BuildUi() {
     shot_table_->SetOnBatchMood([this](const std::vector<novelcore::RowId>& ids, const QString& mood) {
         (void)ApplyMoodBatch(ids, mood);
     });
+    // 镜头表给 260（表头 + 若干行），时间线给 196（标题 22 + 卡片 148 + 余量），
+    // 其余区块交各自 sizeHint。
+    shot_table_->setMinimumHeight(200);
+    shot_table_->setMaximumHeight(320);
     outer->addWidget(shot_table_);
+    timeline_->setMinimumHeight(196);
+    timeline_->setMaximumHeight(260);
     outer->addWidget(timeline_);
     shot_detail_ = new ShotDetailView(this);
     shot_detail_->SetTimelineHandler([this](std::string json) {
@@ -136,6 +158,13 @@ void StoryboardWorkspace::BuildUi() {
     outer->addWidget(continuity_);
     gen_shot_ = new GenShotBridgeView(this);
     outer->addWidget(gen_shot_);
+    // 末尾留白：滚动区底部不至于紧贴内容
+    outer->addStretch();
+
+    // 滚动区挂到页面本体（原来的 outer 布局已被 body 取代）
+    auto* page_lay = new QVBoxLayout(this);
+    page_lay->setContentsMargins(0, 0, 0, 0);
+    page_lay->addWidget(scroll);
 
     connect(tree_, &QTreeView::clicked, this, [this](const QModelIndex& index) {
         if (!index.isValid()) {

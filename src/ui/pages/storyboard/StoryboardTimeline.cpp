@@ -52,8 +52,9 @@ StoryboardTimeline::StoryboardTimeline(QWidget* parent) : QWidget(parent) {
     row_->addStretch(1);
     scroll->setWidget(host_);
     outer->addWidget(scroll, 1);
-    // .tl-card 高约 128px（缩略 72 + 正文 p7/9/9 + 三行）；给下限避免被父布局压到只剩缩略图
-    setMinimumHeight(168);
+    // 标题行 ~22 + 间距 4 + 卡片 148 + 滚动条余量 8 ≈ 182
+    // 不给下限的话卡片会被压到底部时长行只剩一半（实测截图）。
+    setMinimumHeight(186);
     setAcceptDrops(true);
 }
 
@@ -79,6 +80,12 @@ void StoryboardTimeline::Rebuild() {
         auto* card = new QFrame(host_);
         widgets::SetKind(card, "tlcard");
         card->setFixedWidth(128);
+        // 内容高度下限（设计稿 .tl-card 高度由内容撑开）：
+        //   缩略 72 + tinfo(上7 下9) + tcode ~15 + gap2 + taction ~17 + gap2
+        //        + tdur(mt6 + ~15) + 上下边框 2 ≈ 147
+        // 宿主滚动区在窄窗口下会把卡片压到 sizeHint 以下，底部时长行被裁掉，
+        // 这里显式兜底。
+        card->setMinimumHeight(148);
         card->setAcceptDrops(true);
         card->setProperty("shotOrd", shot.ord);
         card->installEventFilter(this);
@@ -109,13 +116,18 @@ void StoryboardTimeline::Rebuild() {
         // 时长行：细进度条（按秒数 / 6s 归一）+ 时长文字
         auto* dur_row = new QWidget(info);
         auto* dr = new QHBoxLayout(dur_row);
-        dr->setContentsMargins(0, 4, 0, 0);
+        dr->setContentsMargins(0, 6, 0, 0); // webui .tdur margin-top: 6px
         dr->setSpacing(6);
         const QString duration = shot.duration_note.empty()
                                      ? QStringLiteral("—")
                                      : QString::fromStdString(shot.duration_note);
         auto* bar = new widgets::ProgressBar(dur_row);
         bar->setMinimumWidth(30);
+        // webui .tdur 是「纯条 + 时长文字」：<div className="prog thin grow"> 里
+        // 只有填充色块，没有 %p 文本。ProgressBar 默认 setTextVisible(true)，
+        // 在 6px 高的条里会画出 "11%" 并把行撑高、把卡片底边顶出去（实测截图
+        // 里时长条被卡片下沿裁掉一半）。这里显式关掉。
+        bar->setTextVisible(false);
         bar->setValue(SecondsOf(shot.duration_note));
         dr->addWidget(bar, 1);
         auto* dur = new QLabel(duration, dur_row);

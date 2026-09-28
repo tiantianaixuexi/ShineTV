@@ -35,7 +35,9 @@ ShotDetailView::ShotDetailView(QWidget* parent) : QWidget(parent) {
     auto* save = new widgets::Button(QStringLiteral("保存 Beat 时间轴"),
                                      widgets::Button::Variant::Primary,
                                      widgets::Button::Size::Sm, this);
-    outer->addWidget(save);
+    // 不加伸展因子：外层是竖排布局，直接 addWidget 会吃满整行宽度，
+    // 按钮被拉成一条通栏（截图里就是这样）。设计稿里它是内容宽的小按钮。
+    outer->addWidget(save, 0, Qt::AlignLeft);
     connect(save, &QPushButton::clicked, this, &ShotDetailView::SaveTimeline);
     Rebuild();
 }
