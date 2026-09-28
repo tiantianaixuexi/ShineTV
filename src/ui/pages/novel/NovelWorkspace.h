@@ -58,6 +58,10 @@ class NovelWorkspace : public QWidget {
     [[nodiscard]] QListWidget* CardList() const { return cards_; }
     // 交给外壳右侧检查器承载的属性内容（页面自己不再摆右栏，见 NovelWorkspace.cpp 布局段）
     [[nodiscard]] QWidget* InspectorBody() const { return inspector_body_; }
+    // 借给外壳左侧栏的导航（书→卷→章 树 + 章节卡片）。所有权仍在本页；外壳换工作区时收回。
+    [[nodiscard]] QWidget* NavWidget() const { return nav_host_; }
+    // 导航在页面里的原宿主（分栏容器）：外壳归还导航时挂回这里的第一格
+    [[nodiscard]] QWidget* NavHostBox() const { return nav_box_; }
     // 设定台（P04-S2）：模式行 [设定] 的内容页；S3+ 的关系/伏笔页也落在这里
     [[nodiscard]] WorldBoardView* WorldBoard() const { return world_; }
     // 初始化链（P04-S4）：模式行 [初始化] 的内容页（I1–I16 流水线 + 门禁 N1–N14 + 前情导入）
@@ -126,6 +130,9 @@ class NovelWorkspace : public QWidget {
     DraftView* draft_ = nullptr; // 正文草稿（P04-S6 DraftView：流式/中断/重试/哈希）
     data::KeyValue* props_ = nullptr;
     QWidget* inspector_body_ = nullptr;
+    // 借给外壳左侧栏的导航容器（章节树 + 章节卡片）；外壳收回时重新挂回 nav_box_
+    QWidget* nav_host_ = nullptr;
+    QWidget* nav_box_ = nullptr;
     QStackedWidget* centerStack_ = nullptr; // 中栏：[章节]/[设定]/[初始化]/[流水线]/[评审]/[模型]/[状态]/[自动] 八页
     WorldBoardView* world_ = nullptr;
     InitChainView* init_ = nullptr;

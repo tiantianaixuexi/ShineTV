@@ -14,8 +14,8 @@ LedgerView::LedgerView(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("账本 · 成本 / 调用 / 降级"), this);
-    layout->addWidget(title);
+    title_ = widgets::SectionTitle(QStringLiteral("账本 · 成本 / 调用 / 降级"), this);
+    layout->addWidget(title_);
     summary_ = new QLabel(QStringLiteral("暂无账本"), this);
     widgets::SetKind(summary_, "statedetail");
     layout->addWidget(summary_);
@@ -25,6 +25,12 @@ LedgerView::LedgerView(QWidget* parent) : QWidget(parent) {
     table_->horizontalHeader()->setStretchLastSection(true);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(table_, 1);
+}
+
+void LedgerView::SetOwnTitle(bool on) {
+    if (title_ != nullptr) {
+        title_->setVisible(on);
+    }
 }
 
 void LedgerView::SetLedger(const pipeline::Ledger& ledger, const pipeline::Budget& budget) {

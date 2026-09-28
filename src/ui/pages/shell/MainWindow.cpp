@@ -9,6 +9,7 @@
 #include "ui/pages/shell/Breadcrumb.h"
 #include "ui/pages/shell/CommandPalette.h"
 #include "ui/pages/shell/RightPanel.h"
+#include "ui/pages/shell/SidePanel.h"
 #include "ui/pages/novel/NovelWorkspace.h"
 #include "ui/pages/assets/AssetWorkspace.h"
 #include "ui/pages/imageflow/ImageFlowWorkspace.h"
@@ -17,6 +18,7 @@
 #include "ui/pages/storyboard/StoryboardWorkspace.h"
 #include "ui/pages/shell/TopBar.h"
 #include "core/Settings.h"
+#include "core/Log.h"
 #include "ui/kit/data/Panels.h"
 #include "ui/kit/motion/Easing.h"
 #include "ui/kit/theme/Theme.h"
@@ -193,7 +195,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     BuildWorkshop();
     BuildPaletteCommands();
 
-    // 快捷键（UI.md §2.3）：Ctrl+I 检查器 / Ctrl+J 底栏 / Ctrl+K 命令面板
+    // 快捷键（UI.md §2.3）：Ctrl+B 侧栏 / Ctrl+I 检查器 / Ctrl+J 底栏 / Ctrl+K 命令面板
+    connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+B")), this), &QShortcut::activated,
+            this, &MainWindow::ToggleSidePanel);
     connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+I")), this), &QShortcut::activated,
             this, &MainWindow::ToggleInspector);
     connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+J")), this), &QShortcut::activated,
@@ -265,6 +269,12 @@ void MainWindow::ShowHubPage() {
 
 void MainWindow::ShowWorkshop() {
     pages_->setCurrentWidget(workshop_);
+    // 首次进入工坊：workshop_ 到这一刻才第一次被布局，splitter 拿到真实宽度。
+    // 在此之前算默认三格宽度只能用构造期的中间值（实测 100），会把中央区压没。
+    if (!applied_after_show_) {
+        applied_after_show_ = true;
+        ApplyDefaultSizes();
+    }
 }
 
 void MainWindow::EnterProject(const project::ProjectRef& ref) {
@@ -507,6 +517,10 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
             right_->AddSection(QStringLiteral("章节属性"), body);
             right_->SetSelection(QStringLiteral("选中一个章节后显示其属性"));
         }
+        // 章节导航借进左侧栏（所有权仍在页面，见 NovelWorkspace::NavWidget）
+        if (QWidget* nav = nw->NavWidget(); nav != nullptr) {
+            side_->AdoptNav(WorkspaceNames().value(NovelWorkspaceIndex()), nav, nw->NavHostBox(), nw);
+        }
         return nw;
     }
     if (title == shine::app::WorkspaceNames().value(AssetWorkspaceIndex())) {
@@ -522,12 +536,22 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
             right_->AddSection(QStringLiteral("资产详情"), body);
             right_->SetSelection(QStringLiteral("选中一个资产后显示其设定集 / 一致性 / 参考图"));
         }
+        // 实体树借进左侧栏（所有权仍在页面）
+        if (QWidget* nav = assets->NavWidget(); nav != nullptr) {
+            side_->AdoptNav(WorkspaceNames().value(AssetWorkspaceIndex()), nav, assets->NavHostBox(),
+                            assets);
+        }
         return assets;
     }
     if (title == shine::app::WorkspaceNames().value(StoryboardWorkspaceIndex())) {
         auto* storyboard = new StoryboardWorkspace(doc_stack_);
         if (auto ref = svc_.Current()) {
             OpenStoryboardForRef(*storyboard, *ref);
+        }
+        // 章节/场景树借进左侧栏（所有权仍在页面）
+        if (QWidget* nav = storyboard->NavWidget(); nav != nullptr) {
+            side_->AdoptNav(WorkspaceNames().value(StoryboardWorkspaceIndex()), nav,
+                            storyboard->NavHostBox(), storyboard);
         }
         return storyboard;
     }
@@ -579,6 +603,7 @@ void MainWindow::BuildWorkshop() {
         }
     });
     top_bar_->SetOnOpenPalette([this] { palette_->OpenPalette(); });
+    top_bar_->SetOnToggleSidePanel([this] { ToggleSidePanel(); });
     top_bar_->SetOnToggleInspector([this] { ToggleInspector(); });
     top_bar_->SetOnRun([] {
         shine::widgets::Toast::Show(QStringLiteral("全流程运行由 P09 接入（当前为占位按钮）"),
@@ -641,6 +666,11 @@ void MainWindow::BuildWorkshop() {
             return; // 至少留一页
         }
         if (QWidget* page = doc_stack_->widget(i); page != nullptr) {
+            // 页面要销毁了，先把它借在侧栏里的导航取回来（不销毁导航本体 ——
+            // 它是页面的子控件，跟着页面一起走即可，但不能留悬空指针在侧栏里）
+            if (side_->CurrentNavOwner() == page) {
+                side_->ReturnNavTo(nullptr);
+            }
             doc_stack_->removeWidget(page);
             page->deleteLater();
         }
@@ -681,8 +711,9 @@ void MainWindow::BuildWorkshop() {
         }
     });
     right_ = new RightPanel(workshop_); // 右侧检查器（默认收起，Ctrl+I / 顶栏按钮开合）
+    side_ = new SidePanel(workshop_);   // 左侧导航栏（Ctrl+B 开合）
 
-    // 三区骨架：活动栏（固定 56）│ 中央工作区（吃掉全部剩余宽度）│ 右侧检查器（可收起）
+    // 四区骨架：活动栏（固定 56）│ 侧栏 │ 中央工作区 │ 右侧检查器
     // 上一版是 56/240/900/280 四列常驻且中央区没有最小宽度，左中右一起抢空间，
     // 章节树被压成残条；这里把中央区设为唯一可拉伸项并给硬下限，检查器默认收起。
     auto* row = new QHBoxLayout();
@@ -693,10 +724,12 @@ void MainWindow::BuildWorkshop() {
 
     hsplit_ = new shine::widgets::Splitter(Qt::Horizontal, workshop_);
     center->setMinimumWidth(kCenterMinW);
-    hsplit_->addWidget(center);
-    hsplit_->addWidget(right_);
-    hsplit_->setStretchFactor(0, 1);   // 只有中央区可拉伸
-    hsplit_->setCollapsible(1, true);  // 检查器可收到 0
+    hsplit_->addWidget(side_);   // 第 0 格：侧栏
+    hsplit_->addWidget(center);  // 第 1 格：中央区
+    hsplit_->addWidget(right_);  // 第 2 格：检查器
+    hsplit_->setStretchFactor(1, 1);   // 只有中央区可拉伸
+    hsplit_->setCollapsible(0, true);  // 侧栏可收到 0
+    hsplit_->setCollapsible(2, true);  // 检查器可收到 0
     row->addWidget(hsplit_, 1);
     lay->addLayout(row, 1);
 
@@ -713,10 +746,42 @@ void MainWindow::BuildWorkshop() {
 
 // ────────────────────────────── 折叠（Ctrl+I / Ctrl+J）──────────────────────────────
 
-void MainWindow::ToggleInspector() {
-    // 检查器是最后一格：收起 = 宽度归零（sizes{*,0}），展开 = 回到上次宽度
+void MainWindow::ToggleSidePanel() {
+    // 侧栏是第一格：收起 = 宽度归零，展开 = 回到上次宽度。中央区（格 1）永不低于下限。
     const QList<int> sizes = hsplit_->sizes();
-    const int cur = sizes.size() >= 2 ? sizes[1] : 0;
+    const int cur = sizes.size() >= 3 ? sizes[0] : 0;
+    const bool collapsed = cur <= 0;
+    const int target = collapsed ? (side_last_w_ > 0 ? side_last_w_ : 260) : 0;
+    if (!collapsed) {
+        side_last_w_ = std::max(220, cur);
+    } else {
+        side_->show();
+    }
+    if (side_tween_ == nullptr) {
+        side_tween_ = new shine::motion::Tween(theme::motion::kStandard, this);
+    }
+    side_tween_->Run(cur, target, theme::motion::kDurBaseMs, [this](const QVariant& v) {
+        QList<int> s = hsplit_->sizes();
+        if (s.size() < 3) {
+            return;
+        }
+        const int val = std::max(0, v.toInt());
+        const int delta = val - s[0];
+        s[0] = val;
+        s[1] = std::max(kCenterMinW, s[1] - delta); // 中央区永不低于下限
+        hsplit_->setSizes(s);
+    });
+    if (shine::motion::ReduceMotion()) {
+        side_tween_->Settle();
+    }
+    side_visible_ = target > 0;
+    top_bar_->SetSidePanelActive(side_visible_);
+}
+
+void MainWindow::ToggleInspector() {
+    // 检查器是最后一格（格 2）：收起 = 宽度归零（sizes{*,*,0}），展开 = 回到上次宽度
+    const QList<int> sizes = hsplit_->sizes();
+    const int cur = sizes.size() >= 3 ? sizes[2] : 0;
     const bool collapsed = cur <= 0;
     const int target = collapsed ? (inspector_last_w_ > 0 ? inspector_last_w_ : 320) : 0;
     if (!collapsed) {
@@ -729,13 +794,13 @@ void MainWindow::ToggleInspector() {
     }
     inspector_tween_->Run(cur, target, theme::motion::kDurBaseMs, [this](const QVariant& v) {
         QList<int> s = hsplit_->sizes();
-        if (s.size() < 2) {
+        if (s.size() < 3) {
             return;
         }
         const int val = std::max(0, v.toInt());
-        const int delta = val - s[1];
-        s[1] = val;
-        s[0] = std::max(kCenterMinW, s[0] - delta); // 中央区永不低于下限
+        const int delta = val - s[2];
+        s[2] = val;
+        s[1] = std::max(kCenterMinW, s[1] - delta); // 中央区永不低于下限
         hsplit_->setSizes(s);
     });
     if (shine::motion::ReduceMotion()) {
@@ -990,6 +1055,8 @@ void MainWindow::SaveLayout() {
     o[QStringLiteral("windowState")] = QString::fromLatin1(saveState().toBase64());
     o[QStringLiteral("inspectorVisible")] = inspector_visible_;
     o[QStringLiteral("bottomVisible")] = bottom_visible_;
+    o[QStringLiteral("sideVisible")] = side_visible_;
+    o[QStringLiteral("sideLastW")] = side_last_w_;
     o[QStringLiteral("inspectorLastW")] = inspector_last_w_;
     o[QStringLiteral("bottomLastH")] = bottom_last_h_;
     QJsonArray hs;
@@ -1017,7 +1084,15 @@ void MainWindow::RestoreLayout() {
     layout_restored_ = true;
     const auto bytes = shine::util::ReadFileBytes(LayoutFile());
     if (!bytes) {
-        return; // 首次启动：默认布局，不算损坏
+        // 首次启动：走默认布局。同样要置 pending_default_sizes_，
+        // 否则三格保持 0,0,0 —— 中央区没有任何起始宽度（实测探针 hSizes=0,0,0）。
+        pending_default_sizes_ = true;
+        side_visible_ = true;
+        side_->setVisible(true);
+        top_bar_->SetSidePanelActive(true);
+        right_->setVisible(false);
+        top_bar_->SetInspectorActive(false);
+        return; // 不算损坏
     }
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(*bytes), &err);
@@ -1034,6 +1109,11 @@ void MainWindow::RestoreLayout() {
     const bool has_new = o.contains(QStringLiteral("inspectorVisible"));
     inspector_visible_ = has_new ? o[QStringLiteral("inspectorVisible")].toBool(false) : false;
     bottom_visible_ = o[QStringLiteral("bottomVisible")].toBool(true);
+    // 侧栏：键缺失 = 上一版没有这一区。这不是「用户选择收起」，而是格式更旧，
+    // 所以按**显示**处理（webui 默认侧栏展开）；用户按 Ctrl+B 收起后
+    // 下次就带上 sideVisible=false，语义仍然区分得开。
+    side_visible_ = o.contains(QStringLiteral("sideVisible")) ? o[QStringLiteral("sideVisible")].toBool(true) : true;
+    side_last_w_ = o[QStringLiteral("sideLastW")].toInt(260);
     inspector_last_w_ = o[QStringLiteral("inspectorLastW")].toInt(320);
     bottom_last_h_ = o[QStringLiteral("bottomLastH")].toInt(220);
 
@@ -1041,12 +1121,18 @@ void MainWindow::RestoreLayout() {
     for (const QJsonValue& v : o[QStringLiteral("hSizes")].toArray()) {
         sizes.append(v.toInt());
     }
-    if (has_new && sizes.size() >= 2) {
+    if (has_new && sizes.size() >= 3) {
         hsplit_->setSizes(sizes);
     } else {
-        // 首次 / 旧版：检查器收起，中央区吃掉除活动栏外的全部宽度
-        hsplit_->setSizes({std::max(kCenterMinW, hsplit_->width() - 56), 0});
+        // 首次 / 旧版：按当前 side_visible_ 决定三格 {侧栏, 中央区, 检查器}。
+        // ⚠️ 构造期窗口还没 show，hsplit_->width() 尚未拿到真实宽度，
+        // 这里算出的 total 会偏小，随后首次 resize 会把中央区挤扁
+        // （实测探针 hSizes=0,92,0：中央区只剩 92px，远低于 kCenterMinW）。
+        // 所以只记下「要显示哪几格」，真实尺寸交给 showEvent 后的 ApplyDefaultSizes()。
+        pending_default_sizes_ = true;
     }
+    side_->setVisible(side_visible_);
+    top_bar_->SetSidePanelActive(side_visible_);
     right_->setVisible(inspector_visible_);
     top_bar_->SetInspectorActive(inspector_visible_);
     bottom_->setVisible(bottom_visible_);
@@ -1090,9 +1176,14 @@ QString MainWindow::LayoutProbe() const {
     QStringList out;
     out << QStringLiteral("project=%1").arg(CurrentProjectName());
     out << QStringLiteral("window=%1x%2").arg(width()).arg(height());
+    out << QStringLiteral("hsplitW=%1").arg(hsplit_->width());
+    out << QStringLiteral("sideVisible=%1").arg(side_visible_ ? 1 : 0);
+    out << QStringLiteral("pending=%1").arg(pending_default_sizes_ ? 1 : 0);
     out << QStringLiteral("workspace=%1").arg(rail_->Current());
     out << QStringLiteral("bottomTab=%1").arg(bottom_->CurrentTab());
-    out << QStringLiteral("inspector=%1").arg(hsplit_->sizes().value(1, 0) > 0 ? 1 : 0);
+    out << QStringLiteral("side=%1").arg(hsplit_->sizes().value(0, 0) > 0 ? 1 : 0);
+    out << QStringLiteral("sideNav=%1").arg(side_->HasNav() ? QStringLiteral("yes") : QStringLiteral("no"));
+    out << QStringLiteral("inspector=%1").arg(hsplit_->sizes().value(2, 0) > 0 ? 1 : 0);
     out << QStringLiteral("bottom=%1").arg(bottom_->isHidden() ? 0 : 1);
     out << QStringLiteral("hSizes=%1").arg(sizes.join(QLatin1Char(',')));
     out << QStringLiteral("docTabs=%1").arg(doc_tabs_->count());
@@ -1104,16 +1195,87 @@ void MainWindow::SetTestLayout() {
     // 固定的非默认布局（验收：重启后逐项还原，全默认值比不出「还原」）
     resize(1400, 880);
     rail_->SetCurrent(2, false);
+    side_->setVisible(true);
+    side_visible_ = true;
+    side_last_w_ = 260;
+    top_bar_->SetSidePanelActive(true);
     right_->setVisible(true);
     inspector_visible_ = true;
     inspector_last_w_ = 300;
-    hsplit_->setSizes({std::max(kCenterMinW, 1400 - 56 - 300), 300});
+    hsplit_->setSizes({260, std::max(kCenterMinW, 1400 - 56 - 260 - 300), 300});
     bottom_->setVisible(true);
     bottom_->SetCurrentTab(1);
     if (QWidget* page = doc_stack_->widget(0); page != nullptr) {
         doc_tabs_->setTabText(0, QStringLiteral("分镜草稿"));
     }
     UpdateBreadcrumb();
+}
+
+void MainWindow::showEvent(QShowEvent* ev) {
+    QMainWindow::showEvent(ev);
+    if (pending_default_sizes_) {
+        // ⚠️ 不能在这里直接落地：showEvent 阶段 splitter 的子项还没完成
+        // 首次布局，width() 拿到的是中间值，setSizes 会被随后的布局覆盖
+        // （实测 hSizes=92,0,0：宽度全给了侧栏，中央区为 0）。
+        // 推迟到事件循环的下一拍，那时布局已经稳定。
+        pending_default_sizes_ = false;
+        QTimer::singleShot(0, this, &MainWindow::ApplyDefaultSizes);
+    }
+    // 工坊被真正显示后才落地一次：MainWindow 构造结束时可能仍停在项目列表页，
+    // 那时 workshop_ 及其 splitter 尚未布局，width() 只有构造期的中间值
+    // （实测 100），据此算出来的三格会把中央区压没。
+    if (!applied_after_show_ && isVisible()) {
+        applied_after_show_ = true;
+        ApplyDefaultSizes();
+    }
+}
+
+void MainWindow::ApplyDefaultSizes() {
+    // 到这里窗口已经 show，splitter 的宽度才是可信的。
+    //
+    // 为什么不用 setSizes：QSplitter 只在 stretchFactor 相同或子项没有最小宽
+    // 约束时才严格尊重显式 sizes。本页三格里中央区有 720 硬下限、侧栏 220、
+    // 检查器 280，setSizes 会被这些约束重算，结果是中央区被压到几十像素
+    // （实测 hSizes=46,46,0 / 0,92,0）。
+    //
+    // 所以走 stretch 比例：按各区「期望宽 : 中央区兜底宽」定比例，
+    // 让 Qt 自己在满足最小宽度的前提下分配。中央区是唯一带大 stretch 的，
+    // 窗口越宽它拿到越多。
+    auto apply = [this](bool side_on, bool insp_on) {
+        const int side_w = side_on ? side_last_w_ : 0;
+        const int insp_w = insp_on ? inspector_last_w_ : 0;
+        // 中央区给一个大数当"兜底权重"：剩余空间几乎全归它
+        hsplit_->setStretchFactor(0, side_w);
+        hsplit_->setStretchFactor(1, 1);
+        hsplit_->setStretchFactor(2, insp_w);
+        // 再用 setSizes 给一个符合当前比例的初值，Qt 只在子项 minimum 冲突时才会重算
+        const int total = hsplit_->width();
+        if (total > 0) {
+            int rest = total;
+            int s = 0;
+            int r = 0;
+            if (side_on && rest > kCenterMinW) {
+                s = std::min(side_w, rest - kCenterMinW);
+                rest -= s;
+            }
+            if (insp_on && rest > kCenterMinW) {
+                r = std::min(insp_w, rest - kCenterMinW);
+                rest -= r;
+            }
+            hsplit_->setSizes({s, rest, r});
+        }
+    };
+    apply(side_visible_, inspector_visible_);
+
+    // 落地后自检：中央区必须拿到 ≥ kCenterMinW，否则这屏没法用。
+    // 不满足就记日志 —— 这是布局回归的早期信号，别等到用户说"中央被挤扁"。
+    const QList<int> got = hsplit_->sizes();
+    if (got.size() >= 3 && got[1] > 0 && got[1] < kCenterMinW) {
+        QStringList parts;
+        for (const int v : got) parts << QString::number(v);
+        shine::log::Warn("ApplyDefaultSizes 中央区过窄：{}px < {}px（hSizes={}）", got[1],
+                         kCenterMinW, parts.join(QLatin1Char(',')).toStdString());
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent* ev) {

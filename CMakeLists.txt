@@ -515,6 +515,8 @@ add_executable(ShineTVStudio
   src/ui/pages/shell/ActivityRail.cpp
   src/ui/pages/shell/RightPanel.h
   src/ui/pages/shell/RightPanel.cpp
+  src/ui/pages/shell/SidePanel.h
+  src/ui/pages/shell/SidePanel.cpp
   src/ui/pages/shell/BottomDock.h
   src/ui/pages/shell/BottomDock.cpp
   src/ui/pages/shell/StatusBar.h
@@ -548,6 +550,8 @@ add_executable(ShineTVStudio
   src/ui/pages/videoflow/ChainView.cpp
   src/ui/pages/videoflow/VideoTaskView.h
   src/ui/pages/videoflow/VideoTaskView.cpp
+  src/ui/pages/videoflow/FilmStrip.h
+  src/ui/pages/videoflow/FilmStrip.cpp
   src/ui/pages/videoflow/FinalCutView.h
   src/ui/pages/videoflow/FinalCutView.cpp
   src/ui/pages/videoflow/VideoFlowWorkspace.h
@@ -556,6 +560,8 @@ add_executable(ShineTVStudio
   src/ui/pages/imageflow/BatchRenderView.cpp
   src/ui/pages/imageflow/ImageReviewView.h
   src/ui/pages/imageflow/ImageReviewView.cpp
+  src/ui/pages/imageflow/RenderResultView.h
+  src/ui/pages/imageflow/RenderResultView.cpp
   src/ui/pages/imageflow/ImageFlowWorkspace.h
   src/ui/pages/imageflow/ImageFlowWorkspace.cpp
   src/ui/verify/review/P05Review.h

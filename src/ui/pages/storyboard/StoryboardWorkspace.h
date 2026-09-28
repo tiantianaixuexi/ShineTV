@@ -62,6 +62,10 @@ class StoryboardWorkspace : public QWidget {
     [[nodiscard]] QString PersistenceProbe() const;
     [[nodiscard]] QString SceneProbe() const;
     [[nodiscard]] QString StageProbe() const;
+    // 借给外壳左侧栏的导航（章节/场景树）。所有权仍在本页；外壳换工作区时收回。
+    [[nodiscard]] QWidget* NavWidget() const { return nav_host_; }
+    // 导航在页面里的原宿主（分栏容器）：外壳归还导航时挂回这里的第一格
+    [[nodiscard]] QWidget* NavHostBox() const { return nav_box_; }
 
   private:
     struct ChapterScenes {
@@ -112,6 +116,9 @@ class StoryboardWorkspace : public QWidget {
     QLabel* status_ = nullptr;
     shine::data::DataTree* tree_ = nullptr;
     QWidget* detail_ = nullptr;
+    // 借给外壳左侧栏的导航（章节/场景树）；外壳收回时重新挂回 nav_box_
+    QWidget* nav_host_ = nullptr;
+    QWidget* nav_box_ = nullptr;
     shine::data::StageFlow* stage_flow_ = nullptr;
     shine::widgets::Button* run_stages_ = nullptr;
     QPlainTextEdit* artifact_view_ = nullptr;

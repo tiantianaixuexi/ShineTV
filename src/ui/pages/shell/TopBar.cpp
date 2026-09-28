@@ -57,6 +57,17 @@ TopBar::TopBar(QWidget* parent) : QFrame(parent) {
     });
     lay->addWidget(palette);
 
+    // 左侧导航开合（Ctrl+B）—— 工作区导航（章节树 / 实体树 / 镜头树）的归属栏
+    side_btn_ = new shine::widgets::Button(QStringLiteral("导航"),
+                                           shine::widgets::Button::Variant::Ghost,
+                                           shine::widgets::Button::Size::Md, this);
+    shine::widgets::Tooltip::Attach(side_btn_, QStringLiteral("显示 / 隐藏左侧导航栏"),
+                                    QStringLiteral("Ctrl+B"));
+    connect(side_btn_, &shine::widgets::Button::clicked, this, [this] {
+        if (on_toggle_side_panel_) on_toggle_side_panel_();
+    });
+    lay->addWidget(side_btn_);
+
     // 右侧检查器开合（Ctrl+I）—— 检查器默认收起，这里是它的显式入口，
     // 免得用户不知道有这个东西可以打开
     inspector_btn_ = new shine::widgets::Button(QStringLiteral("检查器"),
@@ -114,11 +125,21 @@ void TopBar::SetOnShowHub(std::function<void()> cb) { on_show_hub_ = std::move(c
 void TopBar::SetOnCloseProject(std::function<void()> cb) { on_close_project_ = std::move(cb); }
 void TopBar::SetOnRevealProject(std::function<void()> cb) { on_reveal_project_ = std::move(cb); }
 void TopBar::SetOnOpenPalette(std::function<void()> cb) { on_open_palette_ = std::move(cb); }
+void TopBar::SetOnToggleSidePanel(std::function<void()> cb) { on_toggle_side_panel_ = std::move(cb); }
 void TopBar::SetOnToggleInspector(std::function<void()> cb) { on_toggle_inspector_ = std::move(cb); }
 void TopBar::SetOnRun(std::function<void()> cb) { on_run_ = std::move(cb); }
 void TopBar::SetOnStop(std::function<void()> cb) { on_stop_ = std::move(cb); }
 void TopBar::SetOnSettings(std::function<void()> cb) { on_settings_ = std::move(cb); }
 void TopBar::SetOnThemeChanged(std::function<void()> cb) { on_theme_changed_ = std::move(cb); }
+
+void TopBar::SetSidePanelActive(bool on) {
+    if (side_btn_ == nullptr) {
+        return;
+    }
+    side_btn_->setText(on ? QStringLiteral("导航 ◧") : QStringLiteral("导航"));
+    side_btn_->setCheckable(true);
+    side_btn_->setChecked(on);
+}
 
 void TopBar::SetInspectorActive(bool on) {
     if (inspector_btn_ == nullptr) {

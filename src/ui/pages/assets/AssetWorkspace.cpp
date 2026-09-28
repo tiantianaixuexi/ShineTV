@@ -276,6 +276,11 @@ void AssetWorkspace::BuildUi() {
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({280, 940});
+    // 实体树交给外壳左侧栏（SidePanel::AdoptNav 借走，本页仍持有 entityTree_ 指针）。
+    // 所有权留在本页：RebuildEntityTree / ApplyKindFilter 直接刷新 entityTree_，
+    // 侧栏只负责摆放。导航不再占页内一列，内容区因此拿到整幅宽度。
+    nav_host_ = left;
+    nav_box_ = splitter;
     outer->addWidget(splitter, 1);
 
     connect(entityTree_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {

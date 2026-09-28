@@ -37,6 +37,7 @@ class VideoFlowWorkspace;
 class PipelineWorkspace;
 class StoryboardWorkspace;
 class RightPanel;
+class SidePanel;
 class TopBar;
 
 class MainWindow : public QMainWindow {
@@ -60,8 +61,9 @@ class MainWindow : public QMainWindow {
     void ShowWorkshop();
     void SetTestLayout(); // 固定的非默认布局（验收：重启后逐项还原）
     void PersistNow() { SaveLayout(); }
-    // 验收设施：折叠判定（Ctrl+I / Ctrl+J 同路径）与状态栏详情抽屉（S8 判据）。
+    // 验收设施：折叠判定（Ctrl+B / Ctrl+I / Ctrl+J 同路径）与状态栏详情抽屉（S8 判据）。
     // 返回抽屉本体（Drawer 是独立顶层，外部抓帧须抓它；导航型项返回 nullptr）。
+    void ToggleSidePanel();
     void ToggleInspector();
     void ToggleBottomDock();
     [[nodiscard]] widgets::Drawer* ShowStatusDetail(StatusItem item);
@@ -73,6 +75,7 @@ class MainWindow : public QMainWindow {
 
   protected:
     void closeEvent(QCloseEvent* ev) override;
+    void showEvent(QShowEvent* ev) override;
 
   private:
     void BuildHub();
@@ -83,6 +86,8 @@ class MainWindow : public QMainWindow {
     void UpdateBreadcrumb();
     void SaveLayout();
     void RestoreLayout();
+    // 首次显示后按真实 splitter 宽度落地三格默认尺寸（构造期宽度不可信，见 RestoreLayout）
+    void ApplyDefaultSizes();
     [[nodiscard]] std::filesystem::path LayoutFile() const;
     // P04：文档页装配（标题「小说」→ NovelWorkspace；其余仍为占位页）
     void EnsureAssetDocTab();
@@ -106,25 +111,32 @@ class MainWindow : public QMainWindow {
 
     TopBar* top_bar_ = nullptr;
     ActivityRail* rail_ = nullptr;
+    SidePanel* side_ = nullptr;
     RightPanel* right_ = nullptr;
     BottomDock* bottom_ = nullptr;
     StatusBar* status_bar_ = nullptr;
     Breadcrumb* crumb_ = nullptr;
     CommandPalette* palette_ = nullptr;
 
-    // 三区：hsplit_ 只有两格 = [中央区, 右侧检查器]；活动栏是固定宽的兄弟节点。
+    // 四区：hsplit_ 三格 = [侧栏, 中央区, 右侧检查器]；活动栏是固定宽的兄弟节点。
+    // 侧栏与检查器都可折叠（宽度归零），中央区是唯一可拉伸项且有硬下限。
     static constexpr int kCenterMinW = 720; // 中央区硬下限：低于此值左中右会互相压扁
     QSplitter* hsplit_ = nullptr;
     QTabBar* doc_tabs_ = nullptr;
     QStackedWidget* doc_stack_ = nullptr;
 
+    shine::motion::Tween* side_tween_ = nullptr;
     shine::motion::Tween* inspector_tween_ = nullptr;
     shine::motion::Tween* bottom_tween_ = nullptr;
+    bool side_visible_ = true;
     bool inspector_visible_ = false; // 检查器默认收起
     bool bottom_visible_ = true;
+    int side_last_w_ = 260;
     int inspector_last_w_ = 320;
     int bottom_last_h_ = 220;
     bool layout_restored_ = true;
+    bool pending_default_sizes_ = false; // 首次显示后需要落地三格尺寸
+    bool applied_after_show_ = false;    // 首次进入工坊时已落地过默认尺寸
     std::filesystem::path last_project_root_;
 };
 

@@ -12,11 +12,14 @@ class LedgerView : public QWidget {
   public:
     explicit LedgerView(QWidget* parent = nullptr);
     void SetLedger(const pipeline::Ledger& ledger, const pipeline::Budget& budget);
+    // 自带标题开关：装进 SectionCard 时关掉，避免标题出现两次（同 GanttView）
+    void SetOwnTitle(bool on);
     [[nodiscard]] QString Probe() const;
 
   private:
     int entries_ = 0;
     int calls_ = 0;
+    QLabel* title_ = nullptr;
     QTableWidget* table_ = nullptr;
     QLabel* summary_ = nullptr;
 };

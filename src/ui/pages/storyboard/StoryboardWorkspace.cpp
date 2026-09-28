@@ -105,6 +105,11 @@ void StoryboardWorkspace::BuildUi() {
     splitter->addWidget(detail_);
     splitter->setSizes({420, 900});
     outer->addWidget(splitter, 1);
+    // 章节/场景树交给外壳左侧栏（SidePanel::AdoptNav 借走）。
+    // 所有权留在本页：RebuildTree / SelectScene 直接刷新 tree_，侧栏只负责摆放；
+    // 导航不再占页内一列，阶段条与内容区拿到整幅宽度。
+    nav_host_ = tree_;
+    nav_box_ = splitter;
     timeline_ = new StoryboardTimeline(this);
     timeline_->SetOnReorder([this](const std::vector<novelcore::RowId>& ids) {
         (void)ReorderTimeline(ids);

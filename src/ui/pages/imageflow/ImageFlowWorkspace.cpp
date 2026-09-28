@@ -4,6 +4,7 @@
 #include "ui/pages/imageflow/BindingView.h"
 #include "ui/pages/imageflow/ComfyPanel.h"
 #include "ui/pages/imageflow/ImageReviewView.h"
+#include "ui/pages/imageflow/RenderResultView.h"
 #include "db/sqlite/SqliteDb.h"
 #include "flow/GraphCompiler.h"
 #include "flow/GraphHost.h"
@@ -80,44 +81,99 @@ ImageFlowWorkspace::~ImageFlowWorkspace() { flow::Shutdown(); }
 void ImageFlowWorkspace::BuildUi() {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("出图流程 · 分镜图_v3"), this);
-    outer->addWidget(title);
-    auto* toolbar = new QHBoxLayout;
-    auto* import = new widgets::Button(QStringLiteral("导入 API JSON"), widgets::Button::Variant::Secondary,
-                                       widgets::Button::Size::Sm, this);
-    auto* export_button = new widgets::Button(QStringLiteral("导出"), widgets::Button::Variant::Secondary,
-                                              widgets::Button::Size::Sm, this);
-    auto* validate = new widgets::Button(QStringLiteral("提交前校验"), widgets::Button::Variant::Secondary,
-                                         widgets::Button::Size::Sm, this);
-    auto* run = new widgets::Button(QStringLiteral("运行 / 批量出图"), widgets::Button::Variant::Primary,
-                                    widgets::Button::Size::Sm, this);
-    toolbar->addWidget(import);
-    toolbar->addWidget(export_button);
-    toolbar->addWidget(validate);
-    toolbar->addWidget(run);
-    status_ = new QLabel(QStringLiteral("等待导入工作流"), this);
-    widgets::SetKind(status_, "statedetail");
-    toolbar->addWidget(status_, 1);
-    outer->addLayout(toolbar);
+    outer->setSpacing(0);
 
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    canvas_ = new shine::kit::FlowCanvas(splitter);
-    splitter->addWidget(canvas_);
-    canvas_->setMinimumWidth(560);
-    auto* tabs = new QTabWidget(splitter);
-    binding_ = new BindingView(tabs);
-    batch_ = new BatchRenderView(tabs);
-    review_ = new ImageReviewView(tabs);
-    tabs->addTab(binding_, QStringLiteral("绑定"));
-    tabs->addTab(batch_, QStringLiteral("批量出图"));
-    tabs->addTab(review_, QStringLiteral("图评审"));
-    splitter->addWidget(tabs);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
-    outer->addWidget(splitter, 1);
-    comfy_ = new ComfyPanel(this);
-    outer->addWidget(comfy_);
+    // 画布满铺整页：面板浮在它之上，不再靠 QSplitter 分栏争宽度。
+    auto* canvas_host = new QWidget(this);
+    auto* host_lay = new QVBoxLayout(canvas_host);
+    host_lay->setContentsMargins(0, 0, 0, 0);
+    host_lay->setSpacing(0);
+
+    // 顶部浮动工具栏：导入 / 导出 / 提交前校验 / 批量出图 + 状态行
+    auto* toolbar = new QWidget(canvas_host);
+    auto* tb = new QHBoxLayout(toolbar);
+    tb->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
+                           theme::space::kSteps[2], theme::space::kSteps[1]);
+    tb->setSpacing(theme::space::kSteps[1]);
+    auto* flow_title = widgets::SectionTitle(QStringLiteral("出图流程 · 分镜图_v3"), toolbar);
+    auto* import = new widgets::Button(QStringLiteral("导入"), widgets::Button::Variant::Ghost,
+                                       widgets::Button::Size::Sm, toolbar);
+    auto* export_button = new widgets::Button(QStringLiteral("导出"), widgets::Button::Variant::Ghost,
+                                              widgets::Button::Size::Sm, toolbar);
+    auto* validate = new widgets::Button(QStringLiteral("提交前校验"), widgets::Button::Variant::Secondary,
+                                         widgets::Button::Size::Sm, toolbar);
+    auto* run = new widgets::Button(QStringLiteral("批量出图"), widgets::Button::Variant::Primary,
+                                    widgets::Button::Size::Sm, toolbar);
+    status_ = new QLabel(QStringLiteral("等待导入工作流"), toolbar);
+    widgets::SetKind(status_, "statedetail");
+    tb->addWidget(flow_title);
+    tb->addStretch(1);
+    tb->addWidget(import);
+    tb->addWidget(export_button);
+    tb->addWidget(validate);
+    tb->addWidget(run);
+    tb->addWidget(status_);
+    host_lay->addWidget(toolbar);
+
+    canvas_ = new shine::kit::FlowCanvas(canvas_host);
+    canvas_->setMinimumWidth(480);
+    host_lay->addWidget(canvas_, 1);
+
+    // ── 右侧浮动参数面板（webui float-panel：头 / 体 / 底） ──
+    // 折叠时整块隐藏，画布拿回整幅宽度；展开时从右侧压入，
+    // 画布自动收窄（面板是 canvas_host 的最后一个兄弟节点，走布局而非浮层，
+    // 这样窄窗口下面板会被压缩而不是盖住画布）。
+    auto* split_row = new QWidget(canvas_host);
+    auto* split_lay = new QHBoxLayout(split_row);
+    split_lay->setContentsMargins(0, 0, 0, 0);
+    split_lay->setSpacing(0);
+
+    panel_ = new QWidget(split_row);
+    panel_->setObjectName(QStringLiteral("floatPanel"));
+    panel_->setMinimumWidth(320);
+    panel_->setMaximumWidth(460);
+    auto* panel_lay = new QVBoxLayout(panel_);
+    panel_lay->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
+                                  theme::space::kSteps[2], theme::space::kSteps[2]);
+    panel_lay->setSpacing(theme::space::kSteps[2]);
+
+    auto* panel_head = new QWidget(panel_);
+    auto* ph = new QHBoxLayout(panel_head);
+    ph->setContentsMargins(0, 0, 0, 0);
+    ph->setSpacing(theme::space::kSteps[1]);
+    auto* panel_title = widgets::SectionTitle(QStringLiteral("镜头参数"), panel_head);
+    fold_btn_ = new QPushButton(QStringLiteral("▾"), panel_head);
+    fold_btn_->setToolTip(QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
+    widgets::SetKind(fold_btn_, "iconbutton");
+    widgets::SetSizeAttr(fold_btn_, "sm");
+    ph->addWidget(panel_title, 1);
+    ph->addWidget(fold_btn_, 0, Qt::AlignVCenter);
+    panel_lay->addWidget(panel_head);
+
+    // 页签：绑定 · 批量出图 · 图评审 · 结果（与 webui 顺序一致）
+    // 用 QTabWidget 承载内容栈：kit::Tabs 只是无内容的指示条，
+    // 浮动面板需要「标签 + 页面」一体，所以这里保留 QTabWidget。
+    panel_stack_ = new QTabWidget(panel_);
+    binding_ = new BindingView(panel_stack_);
+    batch_ = new BatchRenderView(panel_stack_);
+    review_ = new ImageReviewView(panel_stack_);
+    result_ = new RenderResultView(panel_stack_);
+    panel_stack_->addTab(binding_, QStringLiteral("绑定"));
+    panel_stack_->addTab(batch_, QStringLiteral("批量出图"));
+    panel_stack_->addTab(review_, QStringLiteral("图评审"));
+    panel_stack_->addTab(result_, QStringLiteral("结果"));
+    panel_lay->addWidget(panel_stack_, 1);
+
+    // 面板底部常驻 ComfyUI 健康条（webui fp-f）：连接状态常驻可见，
+    // 不再单独占页面底部一整行。
+    comfy_ = new ComfyPanel(panel_);
+    panel_lay->addWidget(comfy_);
+
+    split_lay->addStretch(1);
+    split_lay->addWidget(panel_);
+    host_lay->addWidget(split_row, 1);
+
+    outer->addWidget(canvas_host, 1);
 
     connect(import, &QPushButton::clicked, this, [this] {
         SetStatus(QStringLiteral("请使用 ImportApiJson() 导入工作流文本（远程入口已预留）"));
@@ -129,6 +185,21 @@ void ImageFlowWorkspace::BuildUi() {
     });
     connect(validate, &QPushButton::clicked, this, &ImageFlowWorkspace::Validate);
     connect(run, &QPushButton::clicked, this, &ImageFlowWorkspace::RunMock);
+    connect(fold_btn_, &QPushButton::clicked, this, &ImageFlowWorkspace::TogglePanel);
+}
+
+void ImageFlowWorkspace::TogglePanel() {
+    panel_folded_ = !panel_folded_;
+    panel_->setVisible(!panel_folded_);
+    fold_btn_->setText(panel_folded_ ? QStringLiteral("▸") : QStringLiteral("▾"));
+    fold_btn_->setToolTip(panel_folded_ ? QStringLiteral("展开面板")
+                                         : QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
+}
+
+void ImageFlowWorkspace::SwitchPanelTab(int index) {
+    if (panel_stack_ != nullptr && index >= 0 && index < panel_stack_->count()) {
+        panel_stack_->setCurrentIndex(index);
+    }
 }
 
 void ImageFlowWorkspace::SetContext(std::filesystem::path db_path, std::filesystem::path project_dir) {
@@ -187,6 +258,17 @@ void ImageFlowWorkspace::LoadMock() {
         return std::optional<flow::ImageReviewReport>{std::move(report)};
     });
     review_->Run();
+    // 结果页签：演示镜头「已出图、未出片」。成图路径指向项目产物，
+    // 真实解码走 media 层；演示数据不塞假图，缺失时就显示空态。
+    RenderResultView::Entry entry;
+    entry.code = QStringLiteral("S05");
+    entry.chapter = QStringLiteral("第 3 章 · 风起");
+    entry.scene = QStringLiteral("12 场 · 长街雨幕");
+    entry.status = QStringLiteral("评审未过");
+    entry.prompt = QStringLiteral("v7（重生成 +1）");
+    entry.imagePath = QStringLiteral("visual/generated/S05.png");
+    entry.videoPath.clear();
+    result_->SetEntry(entry);
     SetStatus(QStringLiteral("演示图：节点四态、绑定、批量降级与图评审均已加载"));
 }
 
@@ -271,9 +353,11 @@ void ImageFlowWorkspace::RunMock() { LoadMock(); }
 void ImageFlowWorkspace::SetStatus(const QString& text) { status_->setText(text); }
 
 QString ImageFlowWorkspace::Probe() const {
-    return QStringLiteral("graph=%1; binding=%2; batch=%3; review=%4; comfy=%5")
-        .arg(GraphProbe(), BindingProbe(), BatchProbe(), ReviewProbe(), ComfyProbe());
+    return QStringLiteral("graph=%1; binding=%2; batch=%3; review=%4; comfy=%5; result=%6")
+        .arg(GraphProbe(), BindingProbe(), BatchProbe(), ReviewProbe(), ComfyProbe(), ResultProbe());
 }
+
+QString ImageFlowWorkspace::ResultProbe() const { return result_ != nullptr ? result_->Probe() : QString{}; }
 
 QString ImageFlowWorkspace::GraphProbe() const { return canvas_->Probe(); }
 QString ImageFlowWorkspace::ReviewProbe() const { return review_->Probe(); }

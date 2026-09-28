@@ -58,6 +58,32 @@ void RegisterP03WindowChecks(MainWindow& window) {
             poll->start();
         });
     }
+    // 侧栏折叠（Ctrl+B）判定：与 Ctrl+I / Ctrl+J 同路径，判据 = 中央区拿到侧栏让出的宽度。
+    // 单独开一个开关，因为「侧栏收起」和「检查器收起」是两件事，混在一个探针里
+    // 会出现「检查器已收、侧栏仍开」被误判成通过。
+    if (const std::filesystem::path sideOut = EnvironmentPath(L"SHINE_P03_SIDE"); !sideOut.empty()) {
+        QTimer::singleShot(800, &window, [&window, sideOut] {
+            window.ToggleSidePanel();
+            auto* elapsed = new QElapsedTimer();
+            elapsed->start();
+            auto* poll = new QTimer(&window);
+            poll->setInterval(10);
+            QObject::connect(poll, &QTimer::timeout, &window,
+                             [&window, sideOut, elapsed, poll] {
+                const QString probe = window.LayoutProbe();
+                if (probe.contains(QStringLiteral("side=0")) || elapsed->elapsed() > 3000) {
+                    poll->stop();
+                    const std::string report =
+                        "side-fold-ms=" + std::to_string(elapsed->elapsed()) + "\n" +
+                        probe.toStdString();
+                    (void)shine::util::WriteFileBytes(sideOut, report);
+                    std::fflush(nullptr);
+                    std::_Exit(0);
+                }
+            });
+            poll->start();
+        });
+    }
 }
 
 void RegisterP03Probe(MainWindow& window) {

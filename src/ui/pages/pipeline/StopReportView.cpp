@@ -12,12 +12,18 @@ StopReportView::StopReportView(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("停止报告 · stop_report.md"), this);
-    layout->addWidget(title);
+    title_ = widgets::SectionTitle(QStringLiteral("停止报告 · stop_report.md"), this);
+    layout->addWidget(title_);
     status_ = new QLabel(QStringLiteral("当前未触发停止条件"), this);
     status_->setWordWrap(true);
     widgets::SetKind(status_, "statedetail");
     layout->addWidget(status_);
+}
+
+void StopReportView::SetOwnTitle(bool on) {
+    if (title_ != nullptr) {
+        title_->setVisible(on);
+    }
 }
 
 void StopReportView::SetDecision(pipeline::StopDecision decision) {

@@ -1,5 +1,6 @@
 #include "ui/pages/videoflow/VideoFlowWorkspace.h"
 
+#include "ui/pages/videoflow/FilmStrip.h"
 #include "ui/pages/videoflow/ChainView.h"
 #include "ui/pages/videoflow/FinalCutView.h"
 #include "ui/pages/videoflow/VideoTaskView.h"
@@ -22,31 +23,91 @@ VideoFlowWorkspace::VideoFlowWorkspace(QWidget* parent) : QWidget(parent) { Buil
 void VideoFlowWorkspace::BuildUi() {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("出片流程 · H3 视频"), this);
-    outer->addWidget(title);
+    outer->setSpacing(0);
+
+    auto* canvas_host = new QWidget(this);
+    auto* host_lay = new QVBoxLayout(canvas_host);
+    host_lay->setContentsMargins(0, 0, 0, 0);
+    host_lay->setSpacing(0);
+
+    // 顶部浮动工具栏
+    auto* toolbar = new QWidget(canvas_host);
+    auto* tb = new QHBoxLayout(toolbar);
+    tb->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
+                           theme::space::kSteps[2], theme::space::kSteps[1]);
+    tb->setSpacing(theme::space::kSteps[1]);
+    auto* flow_title = widgets::SectionTitle(QStringLiteral("出片流程 · H3 视频"), toolbar);
     auto* validate = new widgets::Button(QStringLiteral("提交前参数校验"), widgets::Button::Variant::Secondary,
-                                         widgets::Button::Size::Sm, this);
-    outer->addWidget(validate);
-    status_ = new QLabel(QStringLiteral("等待导入视频工作流"), this);
+                                         widgets::Button::Size::Sm, toolbar);
+    status_ = new QLabel(QStringLiteral("等待导入视频工作流"), toolbar);
     widgets::SetKind(status_, "statedetail");
-    outer->addWidget(status_);
-    auto* splitter = new QSplitter(Qt::Horizontal, this);
-    canvas_ = new shine::kit::FlowCanvas(splitter);
-    canvas_->setMinimumWidth(560);
-    splitter->addWidget(canvas_);
-    auto* tabs = new QTabWidget(splitter);
-    chain_ = new ChainView(tabs);
-    tasks_ = new VideoTaskView(tabs);
-    final_ = new FinalCutView(tabs);
-    tabs->addTab(chain_, QStringLiteral("首尾帧链"));
-    tabs->addTab(tasks_, QStringLiteral("视频任务"));
-    tabs->addTab(final_, QStringLiteral("成片"));
-    splitter->addWidget(tabs);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
-    outer->addWidget(splitter, 1);
+    tb->addWidget(flow_title);
+    tb->addStretch(1);
+    tb->addWidget(validate);
+    tb->addWidget(status_);
+    host_lay->addWidget(toolbar);
+
+    canvas_ = new shine::kit::FlowCanvas(canvas_host);
+    canvas_->setMinimumWidth(480);
+    host_lay->addWidget(canvas_, 1);
+
+    // ── 右侧浮动面板（可折叠）：首尾帧链 · 视频任务 · 成片 ──
+    auto* split_row = new QWidget(canvas_host);
+    auto* split_lay = new QHBoxLayout(split_row);
+    split_lay->setContentsMargins(0, 0, 0, 0);
+    split_lay->setSpacing(0);
+
+    panel_ = new QWidget(split_row);
+    panel_->setObjectName(QStringLiteral("floatPanel"));
+    panel_->setMinimumWidth(320);
+    panel_->setMaximumWidth(460);
+    auto* panel_lay = new QVBoxLayout(panel_);
+    panel_lay->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
+                                  theme::space::kSteps[2], theme::space::kSteps[2]);
+    panel_lay->setSpacing(theme::space::kSteps[2]);
+
+    auto* panel_head = new QWidget(panel_);
+    auto* ph = new QHBoxLayout(panel_head);
+    ph->setContentsMargins(0, 0, 0, 0);
+    ph->setSpacing(theme::space::kSteps[1]);
+    auto* panel_title = widgets::SectionTitle(QStringLiteral("出片参数"), panel_head);
+    fold_btn_ = new QPushButton(QStringLiteral("▾"), panel_head);
+    fold_btn_->setToolTip(QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
+    widgets::SetKind(fold_btn_, "iconbutton");
+    widgets::SetSizeAttr(fold_btn_, "sm");
+    ph->addWidget(panel_title, 1);
+    ph->addWidget(fold_btn_, 0, Qt::AlignVCenter);
+    panel_lay->addWidget(panel_head);
+
+    panel_stack_ = new QTabWidget(panel_);
+    chain_ = new ChainView(panel_stack_);
+    tasks_ = new VideoTaskView(panel_stack_);
+    final_ = new FinalCutView(panel_stack_);
+    panel_stack_->addTab(chain_, QStringLiteral("首尾帧链"));
+    panel_stack_->addTab(tasks_, QStringLiteral("视频任务"));
+    panel_stack_->addTab(final_, QStringLiteral("成片"));
+    panel_lay->addWidget(panel_stack_, 1);
+
+    split_lay->addStretch(1);
+    split_lay->addWidget(panel_);
+    host_lay->addWidget(split_row, 1);
+
+    // ── 底部胶片条 ──
+    film_ = new FilmStrip(canvas_host);
+    host_lay->addWidget(film_);
+
+    outer->addWidget(canvas_host, 1);
+
     connect(validate, &QPushButton::clicked, this, &VideoFlowWorkspace::Validate);
+    connect(fold_btn_, &QPushButton::clicked, this, &VideoFlowWorkspace::TogglePanel);
+}
+
+void VideoFlowWorkspace::TogglePanel() {
+    panel_folded_ = !panel_folded_;
+    panel_->setVisible(!panel_folded_);
+    fold_btn_->setText(panel_folded_ ? QStringLiteral("▸") : QStringLiteral("▾"));
+    fold_btn_->setToolTip(panel_folded_ ? QStringLiteral("展开面板")
+                                         : QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
 }
 
 void VideoFlowWorkspace::LoadMock() {
@@ -66,6 +127,15 @@ void VideoFlowWorkspace::LoadMock() {
     tasks_->EnqueueAll();
     tasks_->ShowRunning();
     final_->SetVideos({{1, QStringLiteral("output/videos/S01.mp4")}, {2, QStringLiteral("output/videos/S02.mp4")}});
+    // 胶片条：S01/S02 已出片（演示，不塞假缩略图 —— 首帧缺失时显示空态），
+    // S03 待出片。连播列表最忌讳拿别的镜头的图凑数。
+    film_->SetCells({
+        {.code = QStringLiteral("S01"), .duration = QStringLiteral("48fps"), .ready = true,
+         .videoPath = QStringLiteral("output/videos/S01.mp4")},
+        {.code = QStringLiteral("S02"), .duration = QStringLiteral("48fps"), .ready = true,
+         .videoPath = QStringLiteral("output/videos/S02.mp4")},
+        {.code = QStringLiteral("S03"), .duration = QString(), .ready = false, .videoPath = QString()},
+    });
     status_->setText(QStringLiteral("H3 / RIFE / Encode 节点已加载；链式断点与任务状态可见"));
 }
 
@@ -87,9 +157,11 @@ void VideoFlowWorkspace::Validate() {
 }
 
 QString VideoFlowWorkspace::Probe() const {
-    return QStringLiteral("canvas=%1; chain=%2; tasks=%3; final=%4")
-        .arg(canvas_->Probe(), chain_->Probe(), tasks_->Probe(), final_->Probe());
+    return QStringLiteral("canvas=%1; chain=%2; tasks=%3; final=%4; film=%5")
+        .arg(canvas_->Probe(), chain_->Probe(), tasks_->Probe(), final_->Probe(), FilmProbe());
 }
+
+QString VideoFlowWorkspace::FilmProbe() const { return film_ != nullptr ? film_->Probe() : QString{}; }
 
 QString VideoFlowWorkspace::ChainProbe() const { return chain_->Probe(); }
 QString VideoFlowWorkspace::TaskProbe() const { return tasks_->Probe(); }

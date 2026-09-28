@@ -235,6 +235,11 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     split->setCollapsible(0, true);
     split->setSizes({300, 1200});
     outer->addWidget(split, 1);
+    // 章节导航（书→卷→章 树 + 章节卡片）交给外壳左侧栏（SidePanel::AdoptNav 借走）。
+    // 所有权留在本页：RebuildTree / RebuildCards / SelectChapterAt 直接刷新 tree_/cards_，
+    // 侧栏只负责摆放；导航不再占页内一列，模式行与内容区拿到整幅宽度。
+    nav_host_ = left;
+    nav_box_ = split;
 
     // 属性内容交给外壳检查器承载（默认收起，Ctrl+I / 顶栏「检查器」打开）。
     // 仍然在本页构建：RefreshProps 一类的更新路径不用改，只是父级换成了检查器。

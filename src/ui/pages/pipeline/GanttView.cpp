@@ -14,13 +14,19 @@ GanttView::GanttView(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("全书甘特 · 章节 × 阶段"), this);
-    layout->addWidget(title);
+    title_ = widgets::SectionTitle(QStringLiteral("全书甘特 · 章节 × 阶段"), this);
+    layout->addWidget(title_);
     table_ = new QTableWidget(this);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     layout->addWidget(table_, 1);
     SetChapters(3);
+}
+
+void GanttView::SetOwnTitle(bool on) {
+    if (title_ != nullptr) {
+        title_->setVisible(on);
+    }
 }
 
 void GanttView::SetChapters(int count) {

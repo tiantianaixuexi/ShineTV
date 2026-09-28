@@ -69,6 +69,10 @@ class AssetWorkspace : public QWidget {
 
     // 交给外壳右侧检查器承载的详情内容（默认收起，Ctrl+I / 顶栏「检查器」打开）
     [[nodiscard]] QWidget* InspectorBody() const { return inspector_body_; }
+    // 借给外壳左侧栏的导航（实体树）。所有权仍在本页；外壳换工作区时收回。
+    [[nodiscard]] QWidget* NavWidget() const { return nav_host_; }
+    // 导航在页面里的原宿主（分栏容器）：外壳归还导航时挂回这里的第一格
+    [[nodiscard]] QWidget* NavHostBox() const { return nav_box_; }
     bool SelectFirstGlobalGallery();
     [[nodiscard]] QStringList ReferenceUsageLabels() const;
     bool ActivateReferenceUsage(int index);
@@ -137,6 +141,9 @@ class AssetWorkspace : public QWidget {
     QStackedWidget* detail_stack_ = nullptr;
     // 交给外壳右侧检查器承载的详情内容（页面自己不再摆第三列，见 AssetWorkspace.cpp 布局段）
     QWidget* inspector_body_ = nullptr;
+    // 借给外壳左侧栏的导航容器（实体树）；外壳收回时重新挂回 nav_box_
+    QWidget* nav_host_ = nullptr;
+    QWidget* nav_box_ = nullptr;
     ConsistencyView* consistency_ = nullptr;
     RefLibraryView* references_ = nullptr;
     std::array<QPushButton*, 5> kindButtons_{};
