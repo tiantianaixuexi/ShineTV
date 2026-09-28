@@ -4,7 +4,9 @@
 #include "core/Settings.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
+#include "util/File.h"
 #include "util/Encoding.h"
+#include "visual/GenerationLedger.h"
 #include "util/Time.h"
 
 #include <fmt/format.h>
@@ -326,6 +328,27 @@ std::expected<PipelineResult, DbError> RunAssetLayer(db::sqlite::Database& db, R
         out.notes.push_back(fmt::format("asset#{} {}：{}", assetId, spec->name, note));
         LogAuditQuiet(db, "asset_degrade", assetId, spec->name, note);
         log::Warn("V0 资产降级：asset#{} {} — {}", assetId, spec->name, note);
+
+        if (!db.Path().empty()) {
+            const std::vector<video::GenerationDegradation> entries{{
+                .kind = std::string{video::kDegradeNoReference},
+                .detail = note,
+                .shotIndex = video::kDegradeNoShot,
+            }};
+            const int written = video::AppendDegradationLedger(
+                ProjectDirOfDb(db.Path()) / "assets",
+                fmt::format("asset#{}:{}", assetId, spec->name), entries);
+            if (written != 1) {
+                const std::string ledger_error = fmt::format(
+                    "降级已发生，但 assets/degradations.jsonl 记账失败（{}）", written);
+                out.notes.push_back(ledger_error);
+                out.detail = ledger_error;
+                LogAuditQuiet(db, "asset_degrade_ledger_failed", assetId, spec->name,
+                              ledger_error);
+                log::Error("V0 资产降级记账失败：asset#{} {} — {}", assetId, spec->name,
+                           ledger_error);
+            }
+        }
     } else {
         out.outcome = PipelineOutcome::Ready;
     }
@@ -597,6 +620,12 @@ bool RunAssetPipelineSelfCheck() {
         if (degJson.find("\"wardrobe\"") == std::string::npos ||
             degJson.find("\"count\":1") == std::string::npos) {
             log::Error("V0 资产编排自检：降级清单 JSON 不符：{}", degJson);
+            return false;
+        }
+        const auto ledger = util::ReadFileBytes(root / "assets" / "degradations.jsonl");
+        if (!ledger || ledger->find("\"kind\":\"no_reference\"") == std::string::npos ||
+            ledger->find("\"task\":\"asset#") == std::string::npos) {
+            log::Error("V0 资产编排自检：降级未写入 assets/degradations.jsonl");
             return false;
         }
         jobs = ListGeneratedImages(db, 50);

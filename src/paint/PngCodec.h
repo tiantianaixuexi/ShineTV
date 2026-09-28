@@ -1,6 +1,6 @@
 #pragma once
 // shine::paint::PngCodec —— RGBA8 ↔ PNG（P6.3 S1）
-// libpng 符号只允许出现在本 .cpp 与 gallery/decoders/PngDecoder.cpp
+// libpng 符号只允许出现在本 .cpp 与 media/decoders/PngDecoder.cpp
 #include <cstddef>
 #include <cstdint>
 #include <expected>

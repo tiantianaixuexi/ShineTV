@@ -17,7 +17,7 @@
 //                      正文 `GET /userdata/workflows%2F<相对路径>`
 //                      ⚠️ 斜杠必须转义成 `%2F`（aiohttp 的 `{file}` 不跨 `/`）；本机返回 `[]` 属正常
 //
-// 取回来的文本**不在这里解析成图**：交给 `graph/WorkflowIO.h` 的
+// 取回来的文本**不在这里解析成图**：交给 `flow/WorkflowIO.h` 的
 // `DetectFormat` + `ImportApiJson` / `ImportWorkflowJson`（P3.6 已就位，两种格式都能吃）。
 #include <functional>
 #include <string>
@@ -52,7 +52,7 @@ struct RemoteWorkflowList {
 };
 using RemoteWorkflowListCb = std::function<void(RemoteWorkflowList)>;
 
-// 拉目录：worker 线程做 3 个 GET，回调在 UI 线程（MEMORY.md 异步任务规范）
+// 拉目录：worker 线程做 3 个 GET，回调在 UI 线程（规则见 docs/30-engineering/coding-rules.md）
 void FetchWorkflowListAsync(std::string_view baseUrl, RemoteWorkflowListCb cb);
 
 struct RemoteWorkflowText {

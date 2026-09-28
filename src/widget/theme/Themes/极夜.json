@@ -1,0 +1,27 @@
+{
+  "name": "极夜",
+  "colors": {
+    "bg.void": "#000000",
+    "bg.surface": "#0A0A0A",
+    "bg.panel": "#111111",
+    "bg.elevated": "#1A1A1A",
+    "bg.overlay": "#000000CC",
+    "line.subtle": "#222222",
+    "line.normal": "#333333",
+    "line.strong": "#555555",
+    "text.primary": "#FFFFFF",
+    "text.secondary": "#CCCCCC",
+    "text.muted": "#888888",
+    "text.inverse": "#000000",
+    "accent.primary": "#3ECFB2",
+    "accent.primary.hover": "#57DCC2",
+    "accent.primary.fg": "#06231D",
+    "accent.secondary": "#FFB84D",
+    "accent.info": "#6FA8FF",
+    "status.ok": "#6BCB8A",
+    "status.warn": "#FFD166",
+    "status.danger": "#FF6B6B",
+    "status.busy": "#3ECFB2",
+    "status.idle": "#888888"
+  }
+}

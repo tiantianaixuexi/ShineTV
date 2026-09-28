@@ -9,7 +9,7 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "core/Settings.h"
-#include "gallery/decoders/PngDecoder.h"
+#include "media/decoders/PngDecoder.h"
 #include "gpu/GpuTextureCache.h"
 #include "gpu/GpuTextureManager.h"
 #include "media/VideoThumb.h"
@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <span>
 #include <system_error>
@@ -399,6 +400,20 @@ void MediaLibrary::UploadPreview(gallery::Image&& image, bool fromWs) {
         gpu::Textures().Release(previewTexture_);
         previewTexture_ = {};
     }
+    // CPU 快照先行：Qt 前端没有 GPU 纹理显示路径（读这份 RGBA8）；也保证 GPU 上传失败时
+    // 预览状态照常前进（有设备与否行为一致）。
+    {
+        auto snap = std::make_shared<PreviewFrameCpu>();
+        snap->width = image.width;
+        snap->height = image.height;
+        auto buf = std::make_shared<std::vector<std::uint8_t>>(image.bytes);
+        std::memcpy(buf->data(), image.data, image.bytes);
+        snap->rgba = std::move(buf);
+        previewFrameCpu_ = std::move(snap);
+    }
+    previewActive_ = true;
+    previewFromWs_ = fromWs;
+    lastPreviewUiMs_ = util::MonotonicMillis();
     const std::span<const std::byte> bytes{image.data, image.bytes};
     auto handle = gpu::Textures().Upload(image.width, image.height, bytes);
     if (!handle.has_value()) {
@@ -406,9 +421,6 @@ void MediaLibrary::UploadPreview(gallery::Image&& image, bool fromWs) {
         return;
     }
     previewTexture_ = *handle;
-    previewActive_ = true;
-    previewFromWs_ = fromWs;
-    lastPreviewUiMs_ = util::MonotonicMillis();
     log::Info("preview: {} 已上屏 {}x{}", fromWs ? "ws-frame" : "fallback", image.width, image.height);
 }
 
@@ -417,11 +429,12 @@ void MediaLibrary::ClearPreview() {
         gpu::Textures().Release(previewTexture_);
         previewTexture_ = {};
     }
+    previewFrameCpu_.reset();
     previewActive_ = false;
 }
 
 void MediaLibrary::OnBinaryFrame(const comfy::BinaryFrame& frame) {
-    // **WS 线程**：节流（≤2 次/秒）→ 拷贝字节 → worker 解码（不在这里碰 ImGui/DX11）
+    // **WS 线程**：节流（≤2 次/秒）→ 拷贝字节 → worker 解码（不在这里碰 UI/DX11）
     const std::int64_t now = util::MonotonicMillis();
     const std::int64_t last = lastWsPreviewMs_.load(std::memory_order_relaxed);
     if (now - last < kWsPreviewThrottleMs) {

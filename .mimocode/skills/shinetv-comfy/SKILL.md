@@ -1,72 +1,40 @@
 ---
 name: shinetv-comfy
-description: ShineTV ComfyCore（src/comfy）架构：HTTP/WS 客户端、ComfySession、队列模型、线程与事件。当用户改连接/队列/进度/prompt 提交或问 ComfyUI API 怎么接时使用。
+description: ShineTV 当前 ComfyUI HTTP/WebSocket 会话、节点定义、队列健康、提交校验与线程边界。
 ---
 
-# ComfyCore（P1）架构
+# ComfyUI 接入
 
-路径：`src/comfy/`。对齐 UE 版 `FShineComfyClient` / `FShineComfySocket` 语义。
+先读：[流程/Comfy 模块](../../../docs/10-modules/flow-comfy.md)、[协议契约](../../../docs/20-contracts/protocols.md)。
 
-## 文件职责
+## 代码入口
 
-| 文件 | 职责 |
-|------|------|
-| `ComfyTypes.h/.cpp` | 结果/事件类型；`NormalizeBaseUrl` / `BuildApiUrl` / `BuildWebSocketUrl` / `MakeClientId` |
-| `ComfyHttp.h/.cpp` | libhv 同步 GET/POST/multipart；**仅 worker 线程调用** |
-| `ComfyClient.h/.cpp` | REST 封装 + yyjson 解析；`*Async` 走 stdexec → UI 回调 |
-| `ComfySocket.h/.cpp` | `/ws` 单例；libhv `WebSocketClient` + `EventLoopThread`；自动重连 |
-| `ComfySession.h/.cpp` | 进程内会话：baseUrl、clientId、状态灯、Tick 轮询、统一 API |
-| `ComfyQueueModel.h/.cpp` | 线程安全本地队列视图（行 + 进度 + 状态） |
+| 符号 | 作用 |
+|---|---|
+| `comfy::ComfySession` | 进程级 base URL、WS、队列、节点目录门面 |
+| `comfy::ComfyClient` | REST 与 yyjson 解析；异步回调回 UI |
+| `comfy::ComfySocket` | WebSocket 事件、二进制预览、重连 |
+| `comfy::ComfyNodeDef` | 节点定义 v2 优先、v1 只读兼容 |
+| `flow::GraphHost` | 图模型、节点目录、导入/编译 |
+| `video::VideoTaskRunner` | 任务状态、上传、提交、历史和落盘 |
 
-## 线程模型
+## 线程
 
-```
-UI 线程                     Worker (stdexec pool)           WS 线程 (libhv loop)
-   |                              |                              |
-   |-- Session::Tick ------------>|                              |
-   |-- RefreshQueue (Async) ----->| HttpGet /queue               |
-   |                              |-- PostToUi(result) -------->|
-   |<-- DrainUiQueue -------------|                              |
-   |                                                              |-- PromptEvent
-   |                                                              |-- ApplyPromptEvent (QueueModel)
-```
+`ComfyHttp`/`ComfyClient` 同步函数只在 worker；WS 回调只在网络线程触碰会话数据，UI 状态通过 `async::PostToUi` 更新。页面使用 Session/Client Async，不直接调用同步 HTTP。
 
-- HTTP：`comfy::FetchQueueAsync` 等，`RunPipeline` = `schedule(pool) | then | PostToUi`
-- UI 邮箱：`async::PostToUi` / 每帧 `async::DrainUiQueue`（`App.cpp DrawFrame`）
-- WS：`ComfySocket::EnsureConnected(baseUrl, clientId)`；回调在 WS 线程，Session 直接改 `QueueModel`（内部有锁）
+## 判定规则
 
-## 对外入口（UI 应只用这个）
+- WS：`ws://<host>/ws?clientId=<uuid>`；`/prompt` 的 `client_id` 必须相同。
+- 完成：匹配的 `prompt_id` 收到 `executing` 且 `data.node == null`。
+- 错误：WS `execution_error` → `/history/{prompt_id}` → `/prompt` 400 `node_errors`。
+- 忙碌不是卡死；只有 WS 静默、运行队列未变且达到阈值才标记 `Stalled`。
+- `/object_info` 未就绪时拒绝提交；不能把未校验当通过。
+- 节点/工作流字段以本机原始响应验证；解析器宽容未知字段但记录未知事件。
 
-```cpp
-auto& s = comfy::ComfySession::Instance();
-s.Init(settings.comfyBaseUrl);   // App::Init
-s.Tick(dt);                      // 每帧
-s.SetBaseUrl(url);               // 设置页「保存并连接」
-s.RefreshQueue();
-s.RefreshObjectInfo();
-s.SubmitPromptJson(apiJson, cb); // P3 图编译后调用
-s.Interrupt(cb);
-s.FreeVram(cb);
-s.FetchSystemStats(cb);
-s.Queue().Snapshot();            // 底栏表格
-```
+## 关键端点
 
-## REST 端点（P1）
+`/queue`、`/object_info`、`/history`、`/prompt`、`/interrupt`、`/view`、`/api/system_stats`、`/api/free`。
 
-`/system_stats` ping · `/object_info` · `/queue` · `/history` · `/prompt` · `/interrupt` · `/api/free` · `/api/system_stats` · `/upload/image`
+## 诊断顺序
 
-## WS 事件
-
-`status` · `execution_start` · `executing` · `progress` · `executed` · `execution_success` · `execution_error` · `execution_interrupted` · `execution_cached`
-
-## 约定
-
-1. **UI 不直接调 ComfyHttp**；只通过 Session / Client Async
-2. 提交 prompt 必须带 `client_id`，与 WS 连接一致，事件才会回来
-3. 完整产出清单用 `/history`（executed 事件往往只有第一个媒体）
-4. 字符串格式化用 fmt：`log::Info("已提交 prompt {}", id)`，禁止 `vsnprintf`
-5. 改解析逻辑时同步检查 UE 版 `ShineComfyClient.cpp` / `ShineComfySocket.cpp` 注释中的坑
-
-## 相关 skill
-
-`shinetv-thirdparty`（libhv/yyjson/stdexec）、`shinetv-ui-layout`（队列 UI）。
+先读 `HealthSummary()`、`Busy()`、`LastErrorDetail()` 和最近日志，再决定重连、重提交或中断；不要用一次探活超时推断连接失败。

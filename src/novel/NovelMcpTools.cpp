@@ -1,6 +1,6 @@
 #include "novel/NovelMcpTools.h"
 
-#include "agent/AgentKit.h"
+#include "llm/AgentKit.h"
 #include "core/Log.h"
 #include "core/Settings.h"
 #include "db/Db.h"

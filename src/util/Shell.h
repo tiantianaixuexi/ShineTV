@@ -3,7 +3,7 @@
 //
 // 为什么单独一份：`app/output/OutputView.cpp`（双击 / 右键打开）与 `app/shots/ShotTableView.cpp`
 // （分镜行「播放」）都要"交给系统默认程序"（视频 = 系统播放器，**不内嵌播放器**），
-// 错误文案必须一致且是中文可操作的（`Doc/RULES-LANG.md`：A 版 API 文本要先转 UTF-8）。
+// 错误文案必须一致且是中文可操作的（A 版 API 文本要先转 UTF-8；见 docs/30-engineering/coding-rules.md）。
 #include "util/Encoding.h" // 顺带拿到 <windows.h>（目标里已全局定义 NOMINMAX / WIN32_LEAN_AND_MEAN）
 
 #include <shellapi.h> // WIN32_LEAN_AND_MEAN 不会带进来，必须显式包含

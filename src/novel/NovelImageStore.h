@@ -72,7 +72,7 @@ SetGeneratedImageStatus(db::sqlite::Database& db, RowId id, std::string_view sta
 [[nodiscard]] std::expected<int, DbError>
 ReapStaleImageJobs(db::sqlite::Database& db, std::int64_t staleSeconds = 1800);
 
-// 工程目录：db 路径的父目录
+// 工程目录：兼容 <root>/novel.db 与 <root>/db/novel.db 两种布局。
 [[nodiscard]] std::filesystem::path ProjectDirOfDb(const std::filesystem::path& dbPath);
 
 // 工程相对路径 → 绝对路径

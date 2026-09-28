@@ -1,7 +1,8 @@
 #include "novel/NovelInit.h"
 
-#include "agent/AgentKit.h" // 15 个内置 Agent（`10` §2.3 N13）
+#include "llm/AgentKit.h" // 15 个内置 Agent（`10` §2.3 N13）
 #include "core/Log.h"
+#include "novel/NovelChecks.h" // N15 复用 KinshipFamily / EntityMetaStr（与 K30 同一份词表）
 #include "novel/NovelDb.h" // ApplyCanonicalSchema（自检）
 #include "novel/NovelFields.h"
 #include "novel/NovelGraph.h"
@@ -248,6 +249,64 @@ InitReport CheckInitGate(db::sqlite::Database& db) {
         } else if (dangling > 0) {
             fail("N14", fmt::format("有 {} 处悬空引用（指向不存在的实体）", dangling),
                  "补实体或改引用（`06` K02/K03 同口径）");
+        }
+    }
+    // N15 机器校验所依赖的**声明式属性**必须齐备（`K30` 的前置）。
+    //
+    // 为什么要有这条：`K30`（亲属称谓一致性）只认 `entities.meta_json.kinship_term`，
+    // 没声明就整体 n/a。实测踩过 —— 建书时没写这个键，检查一路"全绿"跑到第 500 章才发现
+    // 它从来没生效过。**检查静默失效比检查报错危险得多**，所以在 init 阶段就挡住。
+    //
+    // 口径与 K30 完全一致（同一套判据，不在这里另抄一份）：
+    //   ① 有 `family` 关系边的 person 必须声明 `meta_json.gender`；
+    //   ② 声明了 `kinship_term` 的必须落在 K30 认识的那两组词表里（防拼错/防自造词）。
+    // 这两条对**任何一本**书都成立，不含任何具体书的名字或角色。
+    {
+        // ① family 关系边上的 person 缺 gender
+        std::int64_t noGender = 0;
+        const bool qg = QueryI64(
+            db,
+            "SELECT COUNT(DISTINCT e.id) FROM entities e "
+            "JOIN relations r ON (r.from_id=e.id OR r.to_id=e.id) "
+            "WHERE e.kind='person' AND r.rel_type='family' "
+            "AND (COALESCE(e.meta_json,'') NOT LIKE '%\"gender\"%')",
+            &noGender);
+        if (!qg) {
+            fail("N15", "查询 person.meta_json 失败", "检查 entities.meta_json");
+        } else if (noGender > 0) {
+            fail("N15",
+                 fmt::format("{} 名有 family 关系边的 person 没在 meta_json 声明 gender",
+                             noGender),
+                 "给这些 person 的 meta_json 加 \"gender\":\"male\"|\"female\"（`K30` 依赖它）");
+        }
+        // ② kinship_term 拼错 / 自造词 ⇒ K30 认不出，整条静默 n/a。
+        //    判据用 `KinshipFamily`（与 K30 同一份词表），**不在 SQL 里做字符串替换** ——
+        //    早先那版用嵌套 REPLACE 拼词表，又长又不可读，改一个词就得改两处。
+        {
+            novelcore::NovelGraph g(db);
+            std::string badNames;
+            int badCount = 0;
+            if (auto persons = g.ListEntities(novelcore::kind::person)) {
+                for (const auto& p : *persons) {
+                    const std::string term =
+                        novelcore::EntityMetaStr(p.meta_json, "kinship_term");
+                    if (term.empty()) {
+                        continue; // 没声明不算错，由 ① 或 K30 的 n/a 负责
+                    }
+                    if (novelcore::KinshipFamily(term) < 0) {
+                        ++badCount;
+                        if (badCount <= 3) {
+                            badNames += fmt::format("{}({}) ", p.name, term);
+                        }
+                    }
+                }
+            }
+            if (badCount > 0) {
+                fail("N15",
+                     fmt::format("{} 名 person 的 kinship_term 不在 K30 词表内：{}",
+                                 badCount, badNames),
+                     "用 K30 认识的亲属称谓（姐姐/妹妹/母亲/… 或 兄长/哥哥/弟弟/…）");
+            }
         }
     }
     rep.passed = rep.failures.empty();

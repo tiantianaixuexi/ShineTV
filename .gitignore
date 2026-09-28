@@ -1,5 +1,10 @@
 # ---- ShineTV Studio .gitignore ----
 
+# 本地打包/运行时/索引（不提交）
+/dist/
+/runtime/
+/.codegraph/
+
 # 构建输出（不提交二进制与中间文件）
 /build/
 /build-release/
@@ -34,7 +39,6 @@ libhv*.log
 %TEMP%/
 
 # 运行时本地状态（各人机器不同）
-imgui.ini
 *.ini
 !**/CMake*.ini
 

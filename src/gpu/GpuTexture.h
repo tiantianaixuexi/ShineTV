@@ -10,7 +10,6 @@
 #include <span>
 
 #include <d3d11.h>
-#include <imgui.h>
 
 namespace shine::gpu {
 
@@ -38,10 +37,6 @@ public:
     [[nodiscard]] std::uint32_t height() const noexcept { return height_; }
     [[nodiscard]] std::size_t bytes() const noexcept {
         return static_cast<std::size_t>(width_) * height_ * 4u; // RGBA8
-    }
-    // ImGui 1.93：ImTextureID = ImU64 → 直接放进 SRV 指针值
-    [[nodiscard]] ImTextureID imgui_id() const noexcept {
-        return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(view_));
     }
     [[nodiscard]] bool valid() const noexcept { return view_ != nullptr; }
 

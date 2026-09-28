@@ -31,13 +31,13 @@ public:
 
     [[nodiscard]] std::expected<void, SqliteError> Open(const OpenOptions& opt);
     void Close() noexcept;
+    [[nodiscard]] const std::filesystem::path& Path() const noexcept { return path_; }
     [[nodiscard]] bool isOpen() const noexcept { return db_ != nullptr; }
 
     // 执行无结果集 SQL（可多语句，分号分隔）
     [[nodiscard]] std::expected<void, SqliteError> Exec(std::string_view sql);
 
     [[nodiscard]] std::expected<Statement, SqliteError> Prepare(std::string_view sql);
-
     [[nodiscard]] std::expected<void, SqliteError> Begin();
     [[nodiscard]] std::expected<void, SqliteError> Commit();
     [[nodiscard]] std::expected<void, SqliteError> Rollback();
@@ -46,6 +46,7 @@ public:
     [[nodiscard]] std::int64_t LastInsertRowId() const noexcept;
 
 private:
+    std::filesystem::path path_;
     sqlite3* db_ = nullptr;
 };
 

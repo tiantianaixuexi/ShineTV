@@ -17,7 +17,7 @@
 #include <vector>
 
 // 节点定义 JSON 的解析实现（v2.0 优先 / v1.0 只读兼容）
-// 规范：Doc/RULES-COMFY.md §12.6 A（V2 字段）/ §12.6 B（V1 字段）/ §12.6 D（形状自动识别、必须实测）
+// 规范与兼容策略见 docs/20-contracts/protocols.md；形状必须以本机 `/object_info` 实测。
 //
 // 宽容原则（§12.7）：未知字段忽略、缺失字段取默认值、类型不符不抛异常；坏 JSON 只 Warn 不崩。
 
@@ -138,7 +138,7 @@ void ReadCommonInputFlags(yyjson_val* src, InputDef& in) {
 }
 
 // 动态输入模板（AUTOGROW 的 prefix/max、DYNAMICCOMBO 的选项 key）——
-// 校验器靠它算"哪些子键合法"，见 `video/ApiGraphValidator.*`
+// 校验器靠它算"哪些子键合法"，见 `visual/ApiGraphValidator.*`
 void ReadDynamicFields(yyjson_val* src, InputDef& in) {
     if (in.type == "COMFY_AUTOGROW_V3") {
         if (yyjson_val* tpl = GetObj(src, "template")) {

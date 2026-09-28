@@ -1,7 +1,7 @@
 #pragma once
 // shine::media::FetchAndDecodeAsync —— 「下载 → 解码」异步流水线（P4.1 S5–S7，P4.2/P4.3 复用）
 //
-// 异步规范（见 `MEMORY.md`「异步任务规范」）：**下载与解码都在 worker 线程**，
+// 异步规范（见 docs/30-engineering/coding-rules.md）：**下载与解码都在 worker 线程**，
 // 结果 `PostToUi` 后回调在 UI 线程执行；上传 GPU 纹理由调用方在 UI 线程做（`gpu::Textures().Upload`）。
 // 同一 key 的重复请求会被合并（in-flight 去重），避免滚动列表时重复下载。
 #include <cstdint>
@@ -10,7 +10,7 @@
 #include <string>
 #include <string_view>
 
-#include "gallery/Image.h"
+#include "media/Image.h"
 
 namespace shine::media {
 

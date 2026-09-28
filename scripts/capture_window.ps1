@@ -56,7 +56,7 @@ Start-Sleep -Seconds $WaitSec
 $proc.Refresh()
 
 # Pick the window by TITLE (main.cpp sets "ShineTV Studio"), not MainWindowHandle:
-# ImGui floating/viewport windows or other desktop windows can make MainWindowHandle point at the
+# floating tool windows or other desktop windows can make MainWindowHandle point at the
 # wrong HWND -> the shot shows the wrong window and CloseMainWindow closes the wrong thing.
 $hwnd = [Win32Capture]::FindWindow($null, $WindowTitle)
 if ($hwnd -eq [IntPtr]::Zero) {

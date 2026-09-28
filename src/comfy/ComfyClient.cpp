@@ -349,7 +349,7 @@ bool ParsePromptSubmitJson(std::string_view json, PromptSubmitResult& out) {
             out.rawNodeErrorsJson.assign(s, len);
             free(s);
         }
-        // P3.0 S7：node_errors → 节点级中文错误（`Doc/RULES-COMFY.md` §12.3 第 3 条的结构）
+        // P3.0 S7：node_errors → 节点级中文错误（规则见 docs/10-modules/flow-comfy.md）
         if (yyjson_is_obj(err)) {
             yyjson_obj_iter it;
             yyjson_obj_iter_init(err, &it);

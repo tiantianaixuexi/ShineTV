@@ -5,10 +5,10 @@
 //   * Win32 的 **A 版** API（`FormatMessageA`、CRT `strerror`、libhv `socket_strerror()`）返回的是
 //     **当前 ANSI 代码页**（本机 `GetACP()==936`/GBK）字节；
 //   * Win32 的 **W 版** API / `std::filesystem::path` 用的是 **UTF-16**；
-//   * ImGui / 我们自己的 `std::string` 用 **UTF-8**。
+//   * UI 层 / 我们自己的 `std::string` 用 **UTF-8**。
 //
 // 乱码/失败长什么样：
-//   * GBK 字节塞进 UTF-8 的 `std::string` → **ImGui 把每个非法字节渲染成一个 `?`**
+//   * GBK 字节塞进 UTF-8 的 `std::string` → **UI 把每个非法字节渲染成一个 `?`**
 //     （实测 UI 显示「网络错误: ?????????」，其实是 GBK「函数不正确。 」9 字节）；
 //   * `std::string(w.begin(), w.end())` 这种"逐字符截断"→ 中文路径直接报废（设置文件路径踩过）；
 //   * `std::filesystem::path{std::string}`（窄字符构造）按 **ANSI 代码页**解释 UTF-8 → 中文目录名错；

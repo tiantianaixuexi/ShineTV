@@ -1,0 +1,27 @@
+{
+  "name": "薄暮",
+  "colors": {
+    "bg.void": "#16101A",
+    "bg.surface": "#1E1622",
+    "bg.panel": "#271C2E",
+    "bg.elevated": "#322439",
+    "bg.overlay": "#00000099",
+    "line.subtle": "#2C2135",
+    "line.normal": "#3B2B45",
+    "line.strong": "#4E3A5B",
+    "text.primary": "#F2E9F5",
+    "text.secondary": "#C4B4CE",
+    "text.muted": "#9A87A6",
+    "text.inverse": "#16101A",
+    "accent.primary": "#F2A65A",
+    "accent.primary.hover": "#F7B97A",
+    "accent.primary.fg": "#2A1A08",
+    "accent.secondary": "#E86A8B",
+    "accent.info": "#9C8CE8",
+    "status.ok": "#7FCB9A",
+    "status.warn": "#E8C56A",
+    "status.danger": "#F07178",
+    "status.busy": "#F2A65A",
+    "status.idle": "#9A87A6"
+  }
+}

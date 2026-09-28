@@ -198,7 +198,7 @@ CREATE INDEX IF NOT EXISTS idx_gimg_source ON generated_images(source_kind, sour
 )SQL";
 
 // v7（S1）：视觉资产的生产状态机 + 形象层产物表（V0 ASSET_PIPELINE 的承载）。
-// 规格：Doc/小说系统/11 §2.6.1（status 8 值）/ §2.6.3（表）；契约 02 §2.14。
+// 规格：docs/10-modules/visual-storyboard.md；表结构与状态契约见 docs/20-contracts/novel-state.md。
 // 注意：visual_assets.status 的加列不在这里 —— SQLite 的 ALTER TABLE ADD COLUMN 不支持
 // IF NOT EXISTS，旧库要单独走 Migrate 里的 ALTER（列已存在则失败并忽略）。
 constexpr std::string_view kSchemaV7VisualArtifacts = R"SQL(

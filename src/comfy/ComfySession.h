@@ -24,7 +24,7 @@ public:
     void Tick(float dtSec);
 
     void SetBaseUrl(std::string_view baseUrl);
-    // 注：BaseUrl()/ClientId() 保持 const std::string& —— 下游是 ImGui 的 "%s"/.c_str()，需要 NUL 结尾（Doc/RULES-LANG.md §13.5 例外 5）
+    // 注：BaseUrl()/ClientId() 保持 const std::string& —— 下游 UI 需要 NUL 结尾；边界规则见 docs/30-engineering/coding-rules.md。
     [[nodiscard]] const std::string& BaseUrl() const;
     [[nodiscard]] const std::string& ClientId() const;
     [[nodiscard]] ConnectionState State() const;
@@ -50,7 +50,7 @@ public:
     [[nodiscard]] const NodeTypeDef* FindNodeDef(std::string_view className) const noexcept; // 找不到返回 nullptr
     [[nodiscard]] NodeDefFormat ObjectInfoFormat() const noexcept;  // 本机给的是 V1 还是 V2（日志/诊断用）
 
-    // —— P3.0 S4：忙碌状态与健康摘要（判定规则见 `Doc/RULES-COMFY.md` §12.4）——
+    // —— 忙碌状态与健康摘要（判定规则见 docs/10-modules/flow-comfy.md）——
     // 注：内部要锁 QueueModel / ComfySocket，锁可能抛 std::system_error，故**不加 noexcept**
     //（与 `core/Log.h` 的快照函数同一理由）。
     [[nodiscard]] BusyState Busy() const;

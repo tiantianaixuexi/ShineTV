@@ -1,0 +1,27 @@
+{
+  "name": "纸墨",
+  "colors": {
+    "bg.void": "#F4F1EA",
+    "bg.surface": "#FFFFFF",
+    "bg.panel": "#FBF9F4",
+    "bg.elevated": "#FFFFFF",
+    "bg.overlay": "#00000033",
+    "line.subtle": "#E4DED2",
+    "line.normal": "#D3CBBB",
+    "line.strong": "#B7AC97",
+    "text.primary": "#211E19",
+    "text.secondary": "#5B5346",
+    "text.muted": "#8A8071",
+    "text.inverse": "#FFFFFF",
+    "accent.primary": "#0E8C7A",
+    "accent.primary.hover": "#0FA28C",
+    "accent.primary.fg": "#FFFFFF",
+    "accent.secondary": "#C2691B",
+    "accent.info": "#2F6FD0",
+    "status.ok": "#2E8B57",
+    "status.warn": "#B8860B",
+    "status.danger": "#C0392B",
+    "status.busy": "#0E8C7A",
+    "status.idle": "#8A8071"
+  }
+}

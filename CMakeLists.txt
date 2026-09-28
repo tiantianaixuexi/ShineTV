@@ -10,8 +10,12 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(THIRD ${CMAKE_SOURCE_DIR}/third)
-set(IMGUI_DIR ${THIRD}/imgui)
-set(VNS_DIR ${THIRD}/VisualNodeSystem)
+
+# --- Qt 6（MSYS2 MinGW64 自带；与 GCC 16 同源，ABI 一致）---
+# UI 使用 Qt 6 Widgets；模块边界见 docs/00-overview/architecture.md。
+list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+set(CMAKE_AUTOMOC ON)
 
 # --- libhv: HTTP + WebSocket client (static only, no server/examples) ---
 set(BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -194,42 +198,46 @@ if(WIN32 OR MINGW)
   target_link_libraries(shine_sqlite PUBLIC ws2_32)
 endif()
 
-add_executable(ShineTVStudio WIN32
-  src/main.cpp
-  src/app/App.cpp
-  src/app/UiState.cpp
-  # R-S0：从 App.cpp 搬出的窗口（一窗口一文件，声明见 app/AppInternal.h）
-  src/app/ui/DrawConnectionStatus.cpp
-  src/app/ui/Widgets.cpp
-  src/app/ui/ThumbGrid.cpp
-  src/theme/ThemeTokens.cpp
-  src/app/shell/DrawMenuBar.cpp
-  src/app/shell/DrawActivityBar.cpp
-  src/app/shell/SideViewTitle.cpp
-  src/app/shell/DrawSideBar.cpp
-  src/app/shell/DrawDockedPanels.cpp
-  src/app/shell/DrawStatusBar.cpp
-  src/app/panels/assets/DrawAssetsPanel.cpp
-  src/app/panels/nodes/DrawNodesPanel.cpp
-  src/app/panels/workflows/DrawWorkflowsPanel.cpp
-  src/app/panels/comfy/DrawComfySidePanel.cpp
-  src/app/views/graph/DrawGraphPanel.cpp
-  src/app/views/inspector/DrawInspectorPanel.cpp
-  src/app/views/preview/DrawPreviewPanel.cpp
-  src/app/views/bottom/DrawBottomPanel.cpp
-  src/app/views/bottom/queue/DrawQueueTab.cpp
-  src/app/views/bottom/log/DrawLogTab.cpp
-  src/app/dialogs/DrawSettingsWindow.cpp
-  src/app/dialogs/DrawTemplateWindow.cpp
-  src/app/dialogs/DrawNodeWindow.cpp
-  src/app/DockLayout.cpp
-  src/app/Fonts.cpp
-  src/app/FileDialog.cpp
-  src/theme/Theme.cpp
+# ============================================================================
+# shine_core —— 业务层静态库（零 Qt include；Qt 套件与前端共用）
+#
+# P01-S3 三目标重组：模块按 API.md 归位表落位
+#   （graph→flow、openai→llm、gallery 并入 media、video→visual 与 flow、
+#     agent 拆 novel/llm、app 非可视编排→novel、theme→shine_kit）。
+# 分层方向只准向下：util ← core ← net/db ← llm/comfy/media ← flow/visual/novel/paint/mcp ← project ← pipeline
+# ============================================================================
+add_library(shine_core STATIC
+  # core / util（util 为纯头文件库，无源文件登记）
   src/core/Settings.cpp
   src/core/Log.cpp
   src/core/Async.cpp
 
+  # net：libhv 就绪 + 出站 HTTP（comfy/llm 共用）
+  src/net/LibhvReady.cpp
+  src/net/HttpClient.cpp
+
+  # db：sqlite + redis
+  src/db/Db.cpp
+  src/db/redis/Redis.cpp
+  src/db/redis/RedisValue.cpp
+  src/db/redis/RedisClient.cpp
+  src/db/redis/RedisPool.cpp
+  src/db/redis/RedisAsync.cpp
+  src/db/sqlite/SqliteDb.cpp
+  src/db/sqlite/SqliteStmt.cpp
+
+  # llm：LLM 网关（多供应商，原 openai 模块）+ Agent 工具循环（自 agent 归位）
+  src/llm/OpenAIHttp.cpp
+  src/llm/OpenAIClient.cpp
+  src/llm/OpenAIStream.cpp
+  src/llm/OpenAIProvider.cpp
+  src/llm/OpenAIChat.cpp
+  src/llm/OpenAIAnthropic.cpp
+  src/llm/ToolRegistry.cpp
+  src/llm/BuiltinTools.cpp
+  src/llm/AgentKit.cpp
+
+  # comfy：ComfyUI 桥
   src/comfy/ComfyTypes.cpp
   src/comfy/ComfyNodeDef.cpp
   src/comfy/ComfyHttp.cpp
@@ -239,55 +247,59 @@ add_executable(ShineTVStudio WIN32
   src/comfy/ComfyQueueModel.cpp
   src/comfy/ComfyWorkflows.cpp
 
-  src/graph/GraphHost.cpp
-  src/graph/ComfyNode.cpp
-  src/graph/GraphCompiler.cpp
-  src/graph/WorkflowIO.cpp
-
+  # gpu：DX11 纹理（媒体缩略图共用）
   src/gpu/GpuDevice.cpp
   src/gpu/GpuTexture.cpp
   src/gpu/GpuTextureManager.cpp
   src/gpu/GpuTextureCache.cpp
 
+  # media：媒体库 + 图库（原 gallery 并入：解码/缓存/扫描）
   src/media/ImageFetch.cpp
   src/media/MediaLibrary.cpp
   src/media/VideoThumb.cpp
-  src/app/output/OutputView.cpp
+  src/media/Image.cpp
+  src/media/MetaProbe.cpp
+  src/media/ImageLoader.cpp
+  src/media/decoders/PngDecoder.cpp
+  src/media/decoders/JpegDecoder.cpp
+  src/media/decoders/WebpDecoder.cpp
+  src/media/ExifOrientation.cpp
+  src/media/ImageScanner.cpp
+  src/media/GalleryModel.cpp
+  src/media/Gallery.cpp
+  src/media/ThumbnailService.cpp
+  src/media/Viewer.cpp
+  src/media/FileActions.cpp
+  src/media/cache/CpuThumbCache.cpp
+  src/media/cache/DiskThumbCache.cpp
+  src/media/Resize.cpp
+  src/media/GalleryLayout.cpp
 
-  src/video/VideoProject.cpp
-  src/video/CharacterAsset.cpp
-  src/video/MentionResolver.cpp
-  src/video/H3WorkflowBuilder.cpp
-  src/video/ApiGraphValidator.cpp
-  src/video/VideoTaskRunner.cpp
-  src/video/SceneToImageBuilder.cpp
-  src/video/NovelShotBridge.cpp
-  src/paint/PaintCanvas.cpp
-  src/paint/PngCodec.cpp
-  src/paint/PaintService.cpp
-  src/app/paint/PaintCanvasView.cpp
-  src/app/Shortcuts.cpp
-  src/app/shots/ShotTableView.cpp
-  src/gallery/Image.cpp
-  src/gallery/MetaProbe.cpp
-  src/gallery/ImageLoader.cpp
-  src/gallery/decoders/PngDecoder.cpp
-  src/gallery/decoders/JpegDecoder.cpp
-  src/gallery/decoders/WebpDecoder.cpp
-  src/gallery/ExifOrientation.cpp
-  src/gallery/ImageScanner.cpp
-  src/gallery/GalleryModel.cpp
-  src/gallery/Gallery.cpp
-  src/gallery/ThumbnailService.cpp
-  src/gallery/Viewer.cpp
-  src/gallery/FileActions.cpp
-  src/gallery/cache/CpuThumbCache.cpp
-  src/gallery/cache/DiskThumbCache.cpp
-  src/gallery/Resize.cpp
-  src/gallery/GalleryLayout.cpp
-  src/app/gallery/FolderPicker.cpp
-  src/app/gallery/GalleryView.cpp
+  # flow：纯图模型（原 graph）+ workflow 构造（自 video 归位）
+  src/flow/GraphHost.cpp
+  src/flow/ComfyNode.cpp
+  src/flow/GraphCompiler.cpp
+  src/flow/WorkflowIO.cpp
+  src/flow/H3WorkflowBuilder.cpp
+  src/flow/ApiGraphValidator.cpp
+  src/flow/FlowBinder.cpp
+  src/flow/FlowValidator.cpp
+  src/flow/BatchRender.cpp
+  src/flow/ImageReview.cpp
+  src/flow/VideoCatalog.cpp
+  src/flow/VideoChain.cpp
 
+  # visual：视觉生成模型与桥（自 video 归位）
+  src/visual/VideoProject.cpp
+  src/visual/CharacterAsset.cpp
+  src/visual/MentionResolver.cpp
+  src/visual/VideoTaskRunner.cpp
+  src/visual/SceneToImageBuilder.cpp
+  src/visual/NovelShotBridge.cpp
+  src/visual/ReferenceLibrary.cpp
+  src/visual/ReferenceChain.cpp
+
+  # novel：小说生产（含 Director/Stage 自 agent 归位；NovelCli/NovelPipeline 自 app 归位）
   src/novel/NovelProjects.cpp
   src/novel/NovelDb.cpp
   src/novel/NovelGraph.cpp
@@ -306,79 +318,41 @@ add_executable(ShineTVStudio WIN32
   src/novel/NovelContinuity.cpp
   src/novel/NovelGeneration.cpp
   src/novel/NovelPromptGen.cpp
-  src/agent/ContextBuilder.cpp
-  src/agent/ToolRegistry.cpp
-  src/agent/BuiltinTools.cpp
-  src/agent/NovelDirector.cpp
-  src/agent/NovelStoryboard.cpp
-  src/agent/NovelVisualStages.cpp
-  src/agent/AgentKit.cpp
-  src/app/novel/NovelCli.cpp
-  src/app/novel/NovelPipeline.cpp
-  src/app/novel/NovelView.cpp
+  src/novel/ContextBuilder.cpp
+  src/novel/NovelDirector.cpp
+  src/novel/NovelStoryboard.cpp
+  src/novel/NovelVisualStages.cpp
+  src/novel/NovelCli.cpp
+  src/novel/NovelPipeline.cpp
 
-  # P1：OpenAI Responses 客户端（RULES-HOOK 特例允许 libhv）
-  src/openai/OpenAIHttp.cpp
-  src/openai/OpenAIClient.cpp
-  src/openai/OpenAIStream.cpp
-  src/openai/OpenAIProvider.cpp
-  src/openai/OpenAIChat.cpp
-  src/openai/OpenAIAnthropic.cpp
+  # paint
+  src/paint/PaintCanvas.cpp
+  src/paint/PngCodec.cpp
+  src/paint/PaintService.cpp
 
-  src/db/Db.cpp
-  src/db/redis/Redis.cpp
-  src/db/redis/RedisValue.cpp
-  src/db/redis/RedisClient.cpp
-  src/db/redis/RedisPool.cpp
-  src/db/redis/RedisAsync.cpp
-  src/db/sqlite/SqliteDb.cpp
-  src/db/sqlite/SqliteStmt.cpp
-
-  # P7.1：MCP 工具注册地基（分模块注册；HTTP/协议层见 P7.2/P7.3）
+  # mcp：工具注册 / 传输 / 协议
   src/mcp/Schema.cpp
   src/mcp/ToolRegistry.cpp
   src/mcp/McpBootstrap.cpp
-  # P7.2：libhv HTTP Server（MCP 传输层骨架）
   src/mcp/HttpServer.cpp
-  # P7.3/P7.4：JSON-RPC 协议 + 内置工具
   src/mcp/MCPServer.cpp
   src/mcp/McpSse.cpp
   src/mcp/McpHttpClient.cpp
   src/mcp/McpRemoteAgent.cpp
   src/mcp/BuiltinTools.cpp
-  # net：libhv 就绪 + 出站 HTTP（comfy/openai 共用）
-  src/net/LibhvReady.cpp
-  src/net/HttpClient.cpp
 
-  ${IMGUI_DIR}/imgui.cpp
-  ${IMGUI_DIR}/imgui_demo.cpp
-  ${IMGUI_DIR}/imgui_draw.cpp
-  ${IMGUI_DIR}/imgui_tables.cpp
-  ${IMGUI_DIR}/imgui_widgets.cpp
-  ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
-  ${IMGUI_DIR}/backends/imgui_impl_dx11.cpp
-  ${IMGUI_DIR}/misc/cpp/imgui_stdlib.cpp
+  # project：项目模型 / 索引 / 模板（P03-S1..S3；只依赖 core/util/db）
+  src/project/Project.cpp
+  src/pipeline/StageMachine.cpp
+  src/pipeline/Checkpoint.cpp
+  src/pipeline/Budget.cpp
+  src/pipeline/StopPolicy.cpp
+  src/pipeline/Ledger.cpp
+  src/pipeline/Runner.cpp
+  src/project/ProjectIndex.cpp
+  src/project/ProjectTemplate.cpp
 
-  # VisualNodeSystem core (compiled into app)
-  ${VNS_DIR}/VisualNodeSystem.cpp
-  ${VNS_DIR}/VisualNode.cpp
-  ${VNS_DIR}/VisualNodeSocket.cpp
-  ${VNS_DIR}/VisualNodeCore.cpp
-  ${VNS_DIR}/VisualNodeFactory.cpp
-  ${VNS_DIR}/GroupComment.cpp
-  ${VNS_DIR}/SubSystems/TextInputPopup.cpp
-  ${VNS_DIR}/SubSystems/VisualNodeArea/VisualNodeArea.cpp
-  ${VNS_DIR}/SubSystems/VisualNodeArea/VisualNodeAreaLogic.cpp
-  ${VNS_DIR}/SubSystems/VisualNodeArea/VisualNodeAreaInput.cpp
-  ${VNS_DIR}/SubSystems/VisualNodeArea/VisualNodeAreaRendering.cpp
-  ${VNS_DIR}/StandardNodes/BoundaryNodes/SocketMirrorNode.cpp
-  ${VNS_DIR}/StandardNodes/BoundaryNodes/LinkNode/LinkNode.cpp
-  ${VNS_DIR}/StandardNodes/BoundaryNodes/SubAreaNode/SubAreaNode.cpp
-  ${VNS_DIR}/StandardNodes/BoundaryNodes/SubAreaNode/SubAreaInputNode.cpp
-  ${VNS_DIR}/StandardNodes/BoundaryNodes/SubAreaNode/SubAreaOutputNode.cpp
-  ${VNS_DIR}/ThirdParty/jsoncpp/json_reader.cpp
-  ${VNS_DIR}/ThirdParty/jsoncpp/json_value.cpp
-  ${VNS_DIR}/ThirdParty/jsoncpp/json_writer.cpp
+  # pipeline：阶段/预算/账本/检查点（已登记于上方 StageMachine/Runner 等）
 
   # mimalloc amalgamation
   ${THIRD}/mimalloc/src/static.c
@@ -387,17 +361,8 @@ add_executable(ShineTVStudio WIN32
   ${THIRD}/yyjson/yyjson.c
 )
 
-target_include_directories(ShineTVStudio PRIVATE
+target_include_directories(shine_core PUBLIC
   ${CMAKE_SOURCE_DIR}/src
-  ${IMGUI_DIR}
-  ${IMGUI_DIR}/backends
-  ${IMGUI_DIR}/misc/cpp
-  ${VNS_DIR}
-  ${VNS_DIR}/SubSystems
-  ${VNS_DIR}/SubSystems/VisualNodeArea
-  ${VNS_DIR}/ThirdParty
-  ${VNS_DIR}/ThirdParty/glm
-  ${VNS_DIR}/ThirdParty/jsoncpp
   ${THIRD}/yyjson
   ${THIRD}/zmij
   ${THIRD}/fmt
@@ -422,12 +387,11 @@ target_include_directories(ShineTVStudio PRIVATE
   ${THIRD}/libhv/http/client
 )
 
-target_compile_definitions(ShineTVStudio PRIVATE
+target_compile_definitions(shine_core PUBLIC
   UNICODE
   _UNICODE
   NOMINMAX
   WIN32_LEAN_AND_MEAN
-  IMGUI_DEFINE_MATH_OPERATORS
   FMT_HEADER_ONLY
   SPDLOG_FMT_EXTERNAL
   HV_STATICLIB
@@ -436,17 +400,16 @@ target_compile_definitions(ShineTVStudio PRIVATE
 )
 
 if(MINGW)
-  target_compile_options(ShineTVStudio PRIVATE -O2 -Wno-unknown-pragmas)
+  target_compile_options(shine_core PRIVATE -O2 -Wno-unknown-pragmas)
 
   # C++26 静态反射（P2996）：GCC 16 必须显式开启，否则 <meta>/^^T 不可用。
   # 只对 C++ 源文件生效（C 源文件如 mimalloc/yyjson 不需要）。
-  # 实测用法（define_static_array + template for + splice）见 Doc/RULES-LANG.md §13.2 / §13.6。
-  target_compile_options(ShineTVStudio PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-freflection>)
-
-  target_link_options(ShineTVStudio PRIVATE -municode -static -static-libgcc -static-libstdc++)
+  # 静态反射写法与边界见 docs/30-engineering/coding-rules.md。
+  # PUBLIC：Qt 前端（src/app）同样需要反射（设置/主题序列化）。
+  target_compile_options(shine_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 endif()
 
-target_link_libraries(ShineTVStudio PRIVATE
+target_link_libraries(shine_core PUBLIC
   hv_static
   shine_png
   shine_jpeg
@@ -469,3 +432,204 @@ target_link_libraries(ShineTVStudio PRIVATE
   iphlpapi
   ws2_32
 )
+
+# ============================================================================
+# shine_kit —— UI 套件（Theme/Qss 与控件；只被前端使用，允许依赖 Qt）
+#
+# P01-S3：只收编 theme（Token/QssBuilder 骨架见 S5，控件实现 P02）。
+# 方向：shine_core ← shine_kit ← ShineTVStudio；kit 不许 include 业务类型头。
+# ============================================================================
+add_library(shine_kit STATIC
+  src/widget/theme/Theme.cpp
+  src/widget/theme/ThemeService.cpp
+  src/widget/theme/QssBuilder.cpp
+  src/widget/motion/Easing.cpp
+  src/widget/motion/Tween.cpp
+  src/widget/motion/Transition.cpp
+  src/widget/motion/MotionScope.cpp
+  src/widget/controls/WidgetCommon.cpp
+  src/widget/controls/Controls.cpp
+  src/widget/controls/Inputs.cpp
+  src/widget/controls/Surfaces.cpp
+  src/widget/controls/Feedback.cpp
+  src/widget/controls/Navigation.cpp
+  src/widget/canvas/FlowCanvas.cpp
+  src/widget/data/Table.cpp
+  src/widget/data/Flow.cpp
+  src/widget/data/Panels.cpp
+  src/widget/images/Grid.cpp
+  src/widget/images/Viewer.cpp
+  src/widget/images/Sheet.cpp
+)
+
+target_link_libraries(shine_kit PUBLIC shine_core Qt6::Widgets)
+
+# ============================================================================
+# ShineTVStudio —— Qt Widgets 前端（P01-S6 空壳主窗口；P03 起为项目中心外壳）
+# ============================================================================
+add_executable(ShineTVStudio
+  src/app/main.cpp
+  src/app/AppEntry.h
+  src/app/AppEntry.cpp
+  src/app/AppEnvironment.h
+  src/app/AppEnvironment.cpp
+  src/app/StartupChecks.h
+  src/app/StartupChecks.cpp
+  src/app/AcceptanceChecks.h
+  src/app/AcceptanceChecks.cpp
+  src/pages/checks/P02Checks.h
+  src/pages/checks/P02Checks.cpp
+  src/pages/checks/P03Checks.h
+  src/pages/checks/P03Checks.cpp
+  src/pages/checks/P04WorldChecks.h
+  src/pages/checks/P09Checks.h
+  src/pages/checks/P09Checks.cpp
+  src/pages/review/P09Review.h
+  src/pages/review/P09Review.cpp
+  src/pages/checks/P10Checks.h
+  src/pages/checks/P10Checks.cpp
+  src/pages/review/P10Review.h
+  src/pages/review/P10Review.cpp
+  src/pages/checks/P04WorldChecks.cpp
+  src/pages/checks/P04InitChainChecks.h
+  src/pages/checks/P04InitChainChecks.cpp
+  src/pages/checks/P04ChapterChecks.h
+  src/pages/checks/P08Checks.h
+  src/pages/checks/P08Checks.cpp
+  src/pages/review/P08Review.h
+  src/pages/review/P08Review.cpp
+  src/pages/checks/P07Checks.h
+  src/pages/checks/P07Checks.cpp
+  src/pages/review/P07Review.h
+  src/pages/review/P07Review.cpp
+  src/pages/checks/P04ChapterChecks.cpp
+  src/pages/checks/P04ReviewChecks.h
+  src/pages/checks/P04ReviewChecks.cpp
+  src/pages/checks/P05Checks.h
+  src/pages/checks/P05Checks.cpp
+  src/pages/shell/MainWindow.h
+  src/pages/shell/MainWindow.cpp
+  src/pages/shell/TopBar.h
+  src/pages/shell/TopBar.cpp
+  src/pages/shell/ActivityRail.h
+  src/pages/shell/ActivityRail.cpp
+  src/pages/shell/SidePanel.h
+  src/pages/shell/SidePanel.cpp
+  src/pages/shell/RightPanel.h
+  src/pages/shell/RightPanel.cpp
+  src/pages/shell/BottomDock.h
+  src/pages/shell/BottomDock.cpp
+  src/pages/shell/StatusBar.h
+  src/pages/shell/StatusBar.cpp
+  src/pages/shell/Breadcrumb.h
+  src/pages/shell/Breadcrumb.cpp
+  src/pages/shell/CommandPalette.h
+  src/pages/shell/CommandPalette.cpp
+  src/pages/settings/FirstRunWizard.h
+  src/pages/settings/FirstRunWizard.cpp
+  src/pages/project/ProjectHubView.h
+  src/pages/project/ProjectHubView.cpp
+  src/pages/project/ProjectWizardDialog.h
+  src/pages/project/ProjectWizardDialog.cpp
+  src/pages/review/P03Review.h
+  src/pages/review/P04Review.h
+  src/pages/review/P04Review.cpp
+  src/pages/imageflow/ComfyPanel.h
+  src/pages/imageflow/ComfyPanel.cpp
+  src/pages/imageflow/BindingView.h
+  src/pages/imageflow/BindingView.cpp
+  src/pages/pipeline/GanttView.h
+  src/pages/pipeline/GanttView.cpp
+  src/pages/pipeline/LedgerView.h
+  src/pages/pipeline/LedgerView.cpp
+  src/pages/pipeline/StopReportView.h
+  src/pages/pipeline/StopReportView.cpp
+  src/pages/pipeline/PipelineWorkspace.h
+  src/pages/pipeline/PipelineWorkspace.cpp
+  src/pages/videoflow/ChainView.h
+  src/pages/videoflow/ChainView.cpp
+  src/pages/videoflow/VideoTaskView.h
+  src/pages/videoflow/VideoTaskView.cpp
+  src/pages/videoflow/FinalCutView.h
+  src/pages/videoflow/FinalCutView.cpp
+  src/pages/videoflow/VideoFlowWorkspace.h
+  src/pages/videoflow/VideoFlowWorkspace.cpp
+  src/pages/imageflow/BatchRenderView.h
+  src/pages/imageflow/BatchRenderView.cpp
+  src/pages/imageflow/ImageReviewView.h
+  src/pages/imageflow/ImageReviewView.cpp
+  src/pages/imageflow/ImageFlowWorkspace.h
+  src/pages/imageflow/ImageFlowWorkspace.cpp
+  src/pages/review/P05Review.h
+  src/pages/review/P05Review.cpp
+  src/pages/review/P06Review.h
+  src/pages/review/P06Review.cpp
+  src/pages/review/P03Review.cpp
+  src/pages/assets/AssetWorkspace.h
+  src/pages/assets/AssetWorkspace.cpp
+  src/pages/assets/AssetDetailView.h
+  src/pages/assets/AssetDetailView.cpp
+  src/pages/assets/AssetPolicyPanel.h
+  src/pages/assets/AssetPolicyPanel.cpp
+  src/pages/assets/ConsistencyView.h
+  src/pages/assets/ConsistencyView.cpp
+  src/pages/storyboard/StoryboardWorkspace.h
+  src/pages/storyboard/StoryboardWorkspace.cpp
+  src/pages/storyboard/StoryboardTimeline.h
+  src/pages/storyboard/StoryboardTimeline.cpp
+  src/pages/storyboard/ShotTableView.h
+  src/pages/storyboard/ShotTableView.cpp
+  src/pages/storyboard/ShotDetailView.h
+  src/pages/storyboard/ShotDetailView.cpp
+  src/pages/storyboard/ContinuityView.h
+  src/pages/storyboard/ContinuityView.cpp
+  src/pages/storyboard/GenShotBridgeView.h
+  src/pages/storyboard/GenShotBridgeView.cpp
+  src/pages/assets/RefLibraryView.h
+  src/pages/assets/RefLibraryView.cpp
+  src/pages/novel/NovelWorkspace.h
+  src/pages/novel/NovelWorkspace.cpp
+  src/pages/novel/WorldBoardView.h
+  src/pages/novel/WorldBoardView.cpp
+  src/pages/novel/WorldBoardS3.cpp
+  src/pages/novel/InitChainView.h
+  src/pages/novel/InitChainView.cpp
+  src/pages/novel/ChapterFlowView.h
+  src/pages/novel/ChapterFlowView.cpp
+  src/pages/novel/DraftView.h
+  src/pages/novel/DraftView.cpp
+  src/pages/novel/ReviewView.h
+  src/pages/novel/ReviewView.cpp
+  src/pages/novel/ModelPromptView.h
+  src/pages/novel/ModelPromptView.cpp
+  src/pages/novel/StateDiffView.h
+  src/pages/novel/StateDiffView.cpp
+  src/pages/novel/AutoRunPanel.h
+  src/pages/novel/AutoRunPanel.cpp
+  src/pages/gallery/WidgetGalleryView.h
+  src/pages/gallery/WidgetGalleryView.cpp
+  src/pages/gallery/GalleryWorkspace.h
+  src/pages/checks/P06Checks.h
+  src/pages/checks/P06Checks.cpp
+  src/pages/gallery/GalleryWorkspace.cpp
+  src/pages/gallery/QssStateProbe.h
+  src/pages/gallery/QssStateProbe.cpp
+  src/pages/gallery/Bench.h
+  src/pages/gallery/Bench.cpp
+  src/pages/settings/StyleEditorDialog.h
+  src/pages/settings/StyleEditorDialog.cpp
+)
+
+target_compile_options(ShineTVStudio PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-freflection>)
+
+target_link_libraries(ShineTVStudio PRIVATE
+  shine_core
+  shine_kit
+  Qt6::Widgets
+)
+
+# 主题 JSON 随程序分发（P02-S1）：拷到 <exe目录>/themes
+add_custom_command(TARGET ShineTVStudio POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${CMAKE_SOURCE_DIR}/src/widget/theme/Themes"
+          "$<TARGET_FILE_DIR:ShineTVStudio>/themes")

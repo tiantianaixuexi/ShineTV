@@ -46,6 +46,8 @@ struct AppSettings {
     std::string openaiModelPlanner;
     std::string openaiModelWriter;
     std::string openaiModelCritic;
+    // P04-S8：提取档模型（`09` §2.4 档位=low；空 = 跟随默认模型）
+    std::string openaiModelExtractor;
     // Xiaomi MiMo
     // 按量：https://api.xiaomimimo.com/v1（sk-）
     // Token Plan：https://token-plan-cn.xiaomimimo.com/v1（tp-，另有 sgp/ams 集群）

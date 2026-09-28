@@ -19,6 +19,23 @@ namespace {
 
 [[nodiscard]] DbError Err(std::string_view msg) { return DbError{0, std::string{msg}}; }
 
+[[nodiscard]] CharacterStatusRow ReadCharacterStatus(db::sqlite::Statement& st) {
+    CharacterStatusRow row;
+    row.id = st.ColumnInt(0);
+    row.entity_id = st.ColumnInt(1);
+    row.chapter_id = st.ColumnInt(2);
+    row.location_id = st.ColumnInt(3);
+    row.body_state = st.ColumnText(4);
+    row.mind_state = st.ColumnText(5);
+    row.emotion_json = st.ColumnText(6);
+    row.goal = st.ColumnText(7);
+    row.relation_note = st.ColumnText(8);
+    row.resource_note = st.ColumnText(9);
+    row.secret_note = st.ColumnText(10);
+    row.updated = st.ColumnInt(11);
+    return row;
+}
+
 // 自检用最小 schema（列名与 v3 对齐）
 } // namespace
 
@@ -282,20 +299,28 @@ NovelGraph::GetLatestCharacterStatus(RowId entityId, RowId chapterId) const {
     if (*s == db::sqlite::StepResult::Done) {
         return CharacterStatusRow{.entity_id = entityId};
     }
-    CharacterStatusRow r;
-    r.id = st->ColumnInt(0);
-    r.entity_id = st->ColumnInt(1);
-    r.chapter_id = st->ColumnInt(2);
-    r.location_id = st->ColumnInt(3);
-    r.body_state = st->ColumnText(4);
-    r.mind_state = st->ColumnText(5);
-    r.emotion_json = st->ColumnText(6);
-    r.goal = st->ColumnText(7);
-    r.relation_note = st->ColumnText(8);
-    r.resource_note = st->ColumnText(9);
-    r.secret_note = st->ColumnText(10);
-    r.updated = st->ColumnInt(11);
-    return r;
+    return ReadCharacterStatus(*st);
+}
+
+std::expected<std::vector<CharacterStatusRow>, DbError>
+NovelGraph::ListCharacterStatuses(RowId entityId) const {
+    std::vector<CharacterStatusRow> out;
+    if (entityId <= 0) {
+        return out;
+    }
+    auto st = db_->Prepare(
+        "SELECT id,entity_id,chapter_id,location_id,body_state,mind_state,emotion_json,goal,"
+        "relation_note,resource_note,secret_note,updated FROM character_status "
+        "WHERE entity_id=?1 ORDER BY chapter_id, id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, entityId);
+    while (auto s = st->Step()) {
+        if (*s == db::sqlite::StepResult::Done) {
+            break;
+        }
+        out.push_back(ReadCharacterStatus(*st));
+    }
+    return out;
 }
 
 std::expected<RowId, DbError> NovelGraph::UpsertVolume(const VolumeRow& row) {

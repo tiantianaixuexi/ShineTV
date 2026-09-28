@@ -17,7 +17,7 @@ std::string ShortId(std::string_view id) {
     return id.size() > 8 ? std::string{id.substr(0, 8)} : std::string{id};
 }
 
-// `Doc/RULES-COMFY.md` §12.5 的多行错误块：异常类型 / 消息 / 回溯前 3 行 / 中文 hint / 来源
+// 多行错误块格式见 docs/10-modules/flow-comfy.md：异常类型 / 消息 / 回溯前 3 行 / 中文 hint / 来源
 void LogErrorDetail(const ErrorDetail& d) {
     log::Error("exec failed prompt={} node={} type={}", ShortId(d.promptId),
                d.nodeId.empty() ? std::string{"-"} : d.nodeId,

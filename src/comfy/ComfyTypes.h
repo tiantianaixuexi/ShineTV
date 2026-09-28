@@ -66,7 +66,7 @@ struct PromptSubmitResult {
     std::vector<NodeError> nodeErrors; // 节点级中文错误（S7 填充）
 };
 
-// —— P3.0：忙碌状态与错误详情（对应 `Doc/RULES-COMFY.md` §12.4 / §12.3）——
+// —— P3.0：忙碌状态与错误详情（契约见 docs/20-contracts/protocols.md）——
 enum class BusyState { Idle, Queued, Running, Interrupted, Stalled };
 
 [[nodiscard]] const char* BusyStateLabel(BusyState s) noexcept;
@@ -161,7 +161,7 @@ struct PromptEvent {
 
 // —— P4.5：WS 二进制预览帧 ——
 // 官方示例用 `out[8:]` 取图（前 8 字节头），但**头内字段划分官方未给出** → 我们**不解析头**，
-// 只用魔数判断格式；`format` 仅供诊断（详见 Doc/RULES-COMFY.md §12.1）。
+// 只用魔数判断格式；`format` 仅供诊断（详见 docs/10-modules/flow-comfy.md）。
 struct BinaryFrame {
     std::vector<std::byte> payload; // PNG / JPEG 字节
     std::string format;             // "png" / "jpeg" / ""（未知）

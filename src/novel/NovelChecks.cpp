@@ -6,6 +6,7 @@
 #include "novel/NovelGraph.h"
 #include "novel/NovelVisual.h"
 #include "util/Encoding.h"
+#include "util/Json.h"
 #include "util/File.h"
 #include "util/Time.h"
 
@@ -81,6 +82,16 @@ constexpr CheckSpec kCatalog[] = {
      "visual_artifacts + degradations.jsonl", "`04` §2.4「降级必须可见」"},
     {"K29", "asset.status_gate", "high", CheckAvailability::Library, "visual_assets + visual_artifacts",
      "`11` §2.6.1 S1"},
+    // —— 正文文本层的机械校验（`06` §2.1「凡是能用代码判定的，禁止交给 LLM」）——
+    // 这三条来自三章实跑的真实故障：评审 LLM 对它们一律 `passed:true`，因为它们不在
+    // critic 的 system prompt 清单里，且规则塞在 user message 的一千多 token 之前会被稀释。
+    // 改成产出后判定：零 token 成本，且不依赖模型注意力。
+    {"K30", "text.kinship_consistent", "high", CheckAvailability::Library,
+     "chapters.body + entity_personas + relations", "亲属称谓与设定表一致（姐姐不能写成兄长）"},
+    {"K31", "entity.person_form_consistent", "high", CheckAvailability::Library,
+     "chapters.body + entities", "kind=person 不得被写成非人形态"},
+    {"K32", "text.no_meta_narration", "high", CheckAvailability::Library,
+     "chapters.body", "正文不得出现「第N章」等元叙事"},
 };
 
 // —— 31 种 kind（`01` §1.1.2）：**从 NovelTypes.h 的 kind:: 常量列**，不另抄字面量表 ——
@@ -744,6 +755,11 @@ struct Ref {
 }
 
 // ———— K10 ————
+// 只判**已埋设**（PLANTED/DEVELOPING）的伏笔是否超期未收。
+// ⚠️ 原先是 `status<>'RESOLVED' AND setup_ch>0`，把尚未埋设的 `PLANNED` 行也算了进来 ——
+// 于是「计划在第 430 章回收」被当成「埋了 429 章还没收」而在第 1 章就阻断。这与 N11
+// （`NovelInit.cpp:214` 要求 `PLANNED` 行 `setup_ch>=1` 且 `payoff_ch>setup_ch`）直接冲突：
+// 满足 N11 就会被 K10 判死，长线伏笔计划根本没法表达。PLANNED = 还没埋，不该谈超期。
 [[nodiscard]] CheckResult CheckK10(const ReadCtx& c) {
     const int totalOrd = static_cast<int>(IntSql1(*c.db, "SELECT COALESCE(MAX(ord),0) FROM chapters", 0));
     struct Fs {
@@ -755,7 +771,7 @@ struct Ref {
     };
     std::vector<Fs> open;
     if (auto st = c.db->Prepare("SELECT id,title,setup_ch,payoff_ch,importance FROM foreshadowings "
-                                "WHERE status<>'RESOLVED' AND setup_ch>0");
+                                "WHERE status IN ('PLANTED','DEVELOPING')");
         st) {
         while (true) {
             auto s = st->Step();
@@ -767,7 +783,7 @@ struct Ref {
         }
     }
     if (open.empty()) {
-        return Mk("K10", CheckOutcome::Pass, "无未回收伏笔（不变式 I8 平凡成立）");
+        return Mk("K10", CheckOutcome::Pass, "无已埋设未回收伏笔（不变式 I8 平凡成立）");
     }
     std::string blocked;
     std::string warned;
@@ -1317,7 +1333,11 @@ struct Ref {
     }
     yyjson_doc* doc = yyjson_read(text->data(), text->size(), 0);
     if (doc == nullptr) {
-        return in; // 坏文件按"没跑过"处理（与 K12 的宽容读取同款：不误报）
+        // 文件在、但解析不了（写一半 / 被截断 / 编码坏了）。这**不是**「没跑过」：
+        // 流水线跑过、结论读不出来。标成 corrupt，让 K19–K21 报 Missing（Missing 不放行），
+        // 早先按「没跑过」处理，一个写坏的文件会把三条检查一起静默关掉。
+        in.artifact_corrupt = true;
+        return in;
     }
     yyjson_val* root = yyjson_doc_get_root(doc);
     const auto getBool = [&](const char* key, bool fallback) {
@@ -1373,7 +1393,11 @@ struct PromptHashSource {
 // ———— K19–K21（ContractInput：生成侧结论由 video 侧回填，规则不在这里重复实现）————
 [[nodiscard]] std::vector<CheckResult> ImplGeneration(const GenerationCheckInput& gen) {
     std::vector<CheckResult> out;
-    if (!gen.has_graph) {
+    if (gen.artifact_corrupt) {
+        // Missing 而非 NotApplicable：`CheckPassed` 放行 NotApplicable，但**不放行** Missing。
+        out.push_back(Mk("K19", CheckOutcome::Missing,
+                         "generation_checks.json 存在但不是合法 JSON（图校验结论读不出来）"));
+    } else if (!gen.has_graph) {
         out.push_back(Mk("K19", CheckOutcome::NotApplicable, "本次没有提交 API 图（无受检对象）"));
     } else if (gen.graph_ok) {
         out.push_back(Mk("K19", CheckOutcome::Pass,
@@ -1679,6 +1703,313 @@ struct PromptHashSource {
     return Mk("K29", CheckOutcome::Pass, fmt::format("{} 条参考图产物的资产均已就绪", total));
 }
 
+// ═══════════════ K30–K32：正文文本层的机械校验 ═══════════════
+// 三章实跑（2026-09-26）暴露的三个真实故障，critic LLM 全部 `passed:true` 放过：
+//   · 第 2 章把设定为「姐姐」的沈昭写成「兄长」
+//   · 第 2/3 章把设定为 17 岁人类的角色写成有翅膀/喙/羽毛的飞行体
+//   · 第 3 章正文出现「他已经在**第一章**献掉了…」——模型把自己的章号写进了叙事
+// 三条都能用代码判定，按 `06` §2.1「凡是能用代码判定的，禁止交给 LLM」移到这里：
+// 零 token 成本、不依赖模型注意力、换一本书同样生效。
+//
+// ⚠️ 取数一律走 `NovelGraph` 的类型化接口 + `util::json` 读 `meta_json`，
+//    **不写裸 SQL 也不把 JSON 当字符串硬拼**（`util/Json.h` 开头的告诫）。
+//    性别/亲属称谓由设定侧显式声明在 `entities.meta_json`，检查侧只读不猜 ——
+//    早先版本是把 persona+summary 拼成一大坨再 `find()` 29 个称谓词来反推性别，
+//    既脆弱（列表拼接、字节/字符下标、中文数字）又在换书时必然失准。
+
+// 本章正文（走 GetChapter，不裸查 SQL；空 = 无正文可判，如实 NotApplicable）
+[[nodiscard]] std::string ChapterBody(const ReadCtx& c) {
+    novelcore::NovelGraph g(*c.db);
+    if (auto ch = g.GetChapter(c.chapter)) {
+        return ch->body;
+    }
+    return {};
+}
+
+
+// 段落里是否出现 term（UTF-8 安全：子串匹配不会切到多字节中间）
+[[nodiscard]] bool Has(std::string_view hay, std::string_view needle) {
+    return !needle.empty() && hay.find(needle) != std::string_view::npos;
+}
+
+// 逐句回调：在**同一句**内同时出现 A 和 B 才算数。
+//
+// 为什么不用固定字节窗口：「这个角色是不是被写成禽/虫」不是局部性质 ——
+// 「一只萤火虫大小的青光落在他肩头。阿岑。它嘴里衔着一截麻绳，飞起来时
+// 尾部的光闪了两下，翅膀收得很紧。」里，体征词距人名 80+ 字节，按窗口切必然漏；
+// 而按句切就没有魔数：同句共现 = 同一句在描述同一个对象。
+template <class Fn>
+void ForEachSentence(std::string_view body, Fn&& fn) {
+    std::size_t start = 0;
+    for (std::size_t i = 0; i <= body.size(); ++i) {
+        const bool atEnd = i == body.size();
+        if (!atEnd) {
+            // 句读：。！？；\n（UTF-8 三字节，取尾字节判定即可）
+            const unsigned char c = static_cast<unsigned char>(body[i]);
+            const bool isBreak = (c == 0x0A) || (c >= 0xE0 && i + 2 < body.size() &&
+                                                 static_cast<unsigned char>(body[i + 1]) >= 0x80 &&
+                                                 static_cast<unsigned char>(body[i + 2]) >= 0x80);
+            if (!isBreak) {
+                continue;
+            }
+            // 需确认这个 3 字节序列确实是句号类标点
+            static const char* kBreaks[] = {"。", "！", "？", "；", "…", "”", "」"};
+            bool punct = false;
+            for (const char* b : kBreaks) {
+                const std::size_t bl = std::char_traits<char>::length(b);
+                if (bl == 3 && body.compare(i, 3, b) == 0) {
+                    punct = true;
+                    break;
+                }
+            }
+            if (!punct) {
+                continue;
+            }
+        }
+        fn(body.substr(start, i - start));
+        start = i + 1;
+    }
+}
+
+// ———— K30 亲属称谓一致性 ————
+// 判据：`meta_json.kinship_term` 显式声明的亲属称谓（如「姐姐」）与正文里
+// 紧邻该角色姓名出现的称谓，必须属于**同一性别族**。
+// 例：沈昭声明 `{"gender":"female","kinship_term":"姐姐"}`，正文却写
+// 「是沈昭的笔迹——兄长在灯室里写字手总是抖」⇒ Fail。
+// 没声明 `kinship_term` 的角色**跳过**（n/a），不做性别猜测。
+[[nodiscard]] CheckResult CheckK30(const ReadCtx& c) {
+    const std::string body = ChapterBody(c);
+    if (body.empty()) {
+        return Mk("K30", CheckOutcome::NotApplicable, "本章无正文");
+    }
+    // 词表来自 `KinshipTermsFemale/Male`（`NovelChecks.h` 公开给 N15 门禁共用），
+    // **不在这里另抄一份** —— 抄一份就意味着词表一漂，K30 静默 n/a 而没人知道。
+    const std::span<const std::string_view> kFemaleTerms = KinshipTermsFemale();
+    const std::span<const std::string_view> kMaleTerms = KinshipTermsMale();
+    auto familyOf = [](std::string_view term) { return KinshipFamily(term); };
+
+    novelcore::NovelGraph g(*c.db);
+    auto persons = g.ListEntities(novelcore::kind::person);
+    if (!persons) {
+        return Mk("K30", CheckOutcome::Missing, "读 entities 失败：" + persons.error().message);
+    }
+
+    struct Declared {
+        RowId id;
+        std::string name;
+        std::string term;
+        int family = -1;
+    };
+    std::vector<Declared> declared;
+    for (const auto& p : *persons) {
+        const std::string term = EntityMetaStr(p.meta_json, "kinship_term");
+        const int fam = familyOf(term);
+        if (fam >= 0) {
+            declared.push_back(Declared{p.id, p.name, term, fam});
+        }
+    }
+    if (declared.empty()) {
+        return Mk("K30", CheckOutcome::NotApplicable,
+                  "没有角色在 meta_json 里声明 kinship_term（如 {\"kinship_term\":\"姐姐\"}）");
+    }
+
+    // 亲属边：只有真的有关系边的角色才判（避免拿无关称谓硬套）
+    std::string bad;
+    int n = 0;
+    for (const Declared& d : declared) {
+        auto rels = g.GetRelations(d.id, true);
+        if (!rels || rels->empty()) {
+            continue; // 库里没有该角色的关系边 → 无从判定其亲属称谓
+        }
+        // 按**句**判定：称谓常在名前（「沈砚的姐姐」）也常在名后（「沈昭的笔迹——兄长」），
+        // 固定字节窗口两头都会漏（汉字 3 字节，且插入语长度不定）。同句共现才作数。
+        ForEachSentence(body, [&](std::string_view sent) {
+            if (!Has(sent, d.name)) {
+                return;
+            }
+            int said = -1;
+            std::string_view saidTerm;
+            for (const std::string_view t : kFemaleTerms) {
+                if (Has(sent, t)) { said = 1; saidTerm = t; break; }
+            }
+            if (said < 0) {
+                for (const std::string_view t : kMaleTerms) {
+                    if (Has(sent, t)) { said = 0; saidTerm = t; break; }
+                }
+            }
+            if (said >= 0 && said != d.family) {
+                ++n;
+                if (n <= 3) {
+                    bad += fmt::format("{}(设定{}「{}」/正文「{}」)", d.name,
+                                       d.family == 1 ? "女" : "男", d.term, saidTerm);
+                }
+            }
+        });
+    }
+    if (n > 0) {
+        return Mk("K30", CheckOutcome::Fail,
+                  fmt::format("亲属称谓与 meta_json 声明矛盾 {} 处：{}", n, bad));
+    }
+    return Mk("K30", CheckOutcome::Pass,
+              fmt::format("{} 名已声明 kinship_term 的角色，称谓与设定一致", declared.size()));
+}
+
+// ———— K31 kind=person 不得被写成非人形态 ————
+// 实跑故障：17 岁的人类角色在第 2/3 章被写成有「翅膀/喙/羽毛」的飞行体，
+// 而第 1 章是正常的人。`ListEntities(kind::person)` 取人，人名附近出现禽/虫/兽
+// 体征词即判 Fail。
+[[nodiscard]] CheckResult CheckK31(const ReadCtx& c) {
+    const std::string body = ChapterBody(c);
+    if (body.empty()) {
+        return Mk("K31", CheckOutcome::NotApplicable, "本章无正文");
+    }
+    // 体征词表：**含单字**（虫/蚁/蛾/蜂/禽/兽/爪/鳞）—— 实测的故障原文是
+    // 「一只**萤火虫**大小的青光」，只收「昆虫」会漏掉它。
+    const std::string_view kMarkers =
+        "翅膀 羽翼 羽毛 喙 爪 鳞 鳞片 虫 蚁 蛾 蜂 禽 兽 毛茸茸 尾羽 扑棱 昆虫 飞禽 爪子";
+
+    novelcore::NovelGraph g(*c.db);
+    auto persons = g.ListEntities(novelcore::kind::person);
+    if (!persons) {
+        return Mk("K31", CheckOutcome::Missing, "读 entities 失败：" + persons.error().message);
+    }
+    if (persons->empty()) {
+        return Mk("K31", CheckOutcome::NotApplicable, "库里没有 kind=person 实体");
+    }
+
+    // ⚠️ 这一条**只能是启发式**，不是可判定的：缺陷原文是
+    //   「…一只萤火虫大小的青光落在他肩头。<换行><换行>阿岑。<换行><换行>它嘴里衔着…
+    //     …翅膀收得很紧。」
+    // 人名独占一句，体征词在它前后**不同的句/段**里 —— 句子作用域连不上，
+    // 固定小窗口也够不着。可判定的做法是拿分镜/出场表做结构化对照，但正文生成
+    // 阶段 scenes 为空，没有可比对的结构化对象。
+    // 因此这里取一个**足够宽的双向窗口**（128 字节 ≈ 42 个汉字，覆盖实测的全部距离），
+    // severity 记 medium（记录但不单独阻断），detail 里带人名与命中的体征词供人工复核。
+    // 不要把它当成硬门禁 —— 它的召回靠窗口宽度，精度靠人眼。
+    std::string bad;
+    int n = 0;
+    constexpr std::size_t kWin = 128;
+    for (const auto& p : *persons) {
+        std::size_t at = body.find(p.name);
+        while (at != std::string::npos) {
+            const std::size_t lo = at >= kWin ? at - kWin : 0;
+            const std::size_t hi = std::min(body.size(), at + p.name.size() + kWin);
+            const std::string win = body.substr(lo, hi - lo);
+            for (std::size_t m = kMarkers.find(' '); m != std::string_view::npos;) {
+                const std::string_view marker = kMarkers.substr(0, m);
+                m = kMarkers.find(' ', m + 1);
+                if (marker.empty()) {
+                    continue;
+                }
+                if (win.find(marker) != std::string::npos) {
+                    ++n;
+                    if (n <= 3) {
+                        bad += fmt::format("{}({})", p.name, marker);
+                    }
+                    break;
+                }
+            }
+            at = body.find(p.name, at + p.name.size());
+        }
+
+    }
+    if (n > 0) {
+        // 启发式：记录但不阻断（medium 不进 G5 的 high 账，`CheckPassed` 仍放行）
+        CheckResult r = Mk("K31", CheckOutcome::Fail,
+                           fmt::format("kind=person 疑似被写成非人形态 {} 处（启发式，"
+                                       "禽/虫/兽体征词落在姓名 ±128 字节内）：{}",
+                                       n, bad));
+        r.severity = "medium";
+        return r;
+    }
+    return Mk("K31", CheckOutcome::Pass,
+              fmt::format("{} 名人物在正文中均未出现非人体征词", persons->size()));
+}
+
+// ———— K32 正文不得出现元叙事 ————
+// 实跑故障：第 3 章正文写「他已经在第一章献掉了…」「沈砚在第一章的献祭里」——
+// 模型把自己的章号泄漏进叙事。纯文本判定，零歧义。
+[[nodiscard]] CheckResult CheckK32(const ReadCtx& c) {
+    const std::string raw = ChapterBody(c);
+    if (raw.empty()) {
+        return Mk("K32", CheckOutcome::NotApplicable, "本章无正文");
+    }
+    // 跳过开头那行 markdown 标题（`# 第3章 二段副本`）——那是章标题本身。
+    // **必须整行跳过**：只吃掉 `# ` 会把「第3章」留在正文开头，每章都被自己标题判失败。
+    std::size_t start = 0;
+    if (raw.front() == '#') {
+        const std::size_t nl = raw.find('\n');
+        start = (nl == std::string::npos) ? raw.size() : nl + 1;
+    }
+    const std::string body = raw.substr(start);
+
+    // 「第N章」：N 可能是阿拉伯数字（落库标题）也可能是中文数字（正文里写「第一章」）。
+    // 只认阿拉伯数字会漏掉后者，而模型泄漏章号时用的恰恰是中文数字。
+    const std::string_view kMeta = "上一章 下一章 本章 前一章 后一章 上一节 下一节 本节";
+    // 中文数字的 UTF-8 逐字节匹配（一二三四五六七八九十 各 3 字节）
+    const std::string_view kCjkNum = "零一二三四五六七八九十百两";
+    // `pos` 是**正文**里的下标，`k` 是词表里的下标 —— 两个不同的坐标空间，
+    // 必须用 compare(s, pos, len, kCjkNum, k, len) 跨串比较；
+    // 早先写成 kCjkNum.substr(pos, len) 等于拿正文偏移去切词表，越界即抛 out_of_range。
+    auto cjkNumLenAt = [&](const std::string& s, std::size_t pos) -> std::size_t {
+        for (std::size_t k = 0; k < kCjkNum.size();) {
+            const unsigned char c = static_cast<unsigned char>(kCjkNum[k]);
+            const std::size_t len = (c >= 0xE0) ? 3 : ((c >= 0xC0) ? 2 : 1);
+            if (k + len <= kCjkNum.size() && pos + len <= s.size() &&
+                s.compare(pos, len, kCjkNum, k, len) == 0) {
+                return len;
+            }
+            k += len;
+        }
+        return 0;
+    };
+
+    std::string bad;
+    int n = 0;
+    for (std::size_t i = 0; i + 3 <= body.size();) {
+        if (body.compare(i, 3, "第") == 0) {
+            std::size_t j = i + 3;
+            while (j < body.size() && (body[j] == ' ' || body[j] == '\n')) {
+                ++j;
+            }
+            std::size_t numLen = 0;
+            while (j + numLen < body.size() &&
+                   std::isdigit(static_cast<unsigned char>(body[j + numLen]))) {
+                ++numLen;
+            }
+            if (numLen == 0) {
+                numLen = cjkNumLenAt(body, j);
+            }
+            if (numLen > 0) {
+                std::size_t k = j + numLen;
+                while (k < body.size() && (body[k] == ' ' || body[k] == '\n')) {
+                    ++k;
+                }
+                if (k + 3 <= body.size() && body.compare(k, 3, "章") == 0) {
+                    ++n;
+                    if (n <= 3) {
+                        bad += fmt::format("第{}…章@{} ", numLen, i);
+                    }
+                }
+            }
+            i = j + numLen;
+            continue;
+        }
+        ++i;
+    }
+    for (std::size_t at = body.find(kMeta); at != std::string::npos && n < 4;
+         at = body.find(kMeta, at + kMeta.size())) {
+        ++n;
+        bad += fmt::format("{}[{}] ", std::string(kMeta.substr(0, 6)), at);
+    }
+    if (n > 0) {
+        return Mk("K32", CheckOutcome::Fail,
+                  fmt::format("正文出现元叙事 {} 处（「第N章」或章节指代词）：{}", n, bad));
+    }
+    return Mk("K32", CheckOutcome::Pass, "正文无元叙事泄漏");
+}
+
+
 // ———— `04` §2.5 的 sha1（K23 的算法）————
 [[nodiscard]] std::uint32_t Rotl32(std::uint32_t v, int bits) noexcept {
     return (v << bits) | (v >> (32 - bits));
@@ -1690,6 +2021,48 @@ struct PromptHashSource {
 }
 
 } // namespace
+
+// ———— 公开：亲属称谓词表 + meta_json 读取（N15 init 门禁与 K30 共用）————
+// 放在 `shine::novelcore`（不在匿名 namespace 里）：N15 要用，必须有外部链接。
+// 两组互斥；只认**恰好相等**，不做子串包含（「女儿」既是亲属也是描述，不收）。
+std::string EntityMetaStr(std::string_view meta_json, std::string_view key) {
+    if (meta_json.empty()) {
+        return {};
+    }
+    yyjson_doc* doc = yyjson_read(meta_json.data(), meta_json.size(), 0);
+    if (doc == nullptr) {
+        return {};
+    }
+    const std::string out(util::json::GetStrCopy(yyjson_doc_get_root(doc), key));
+    yyjson_doc_free(doc);
+    return out;
+}
+
+std::span<const std::string_view> KinshipTermsFemale() noexcept {
+    static const std::string_view kTerms[] = {
+        "姐姐", "妹妹", "母亲", "姑妈", "姑母", "婶娘", "婶婶", "姨妈", "姨母", "姥姥", "外婆"};
+    return kTerms;
+}
+
+std::span<const std::string_view> KinshipTermsMale() noexcept {
+    static const std::string_view kTerms[] = {"兄长", "哥哥", "弟弟", "父亲", "伯父", "叔父",
+                                              "舅舅", "伯伯", "叔叔", "爷爷", "外公"};
+    return kTerms;
+}
+
+int KinshipFamily(std::string_view term) noexcept {
+    for (const std::string_view t : KinshipTermsFemale()) {
+        if (term == t) {
+            return 1;
+        }
+    }
+    for (const std::string_view t : KinshipTermsMale()) {
+        if (term == t) {
+            return 0;
+        }
+    }
+    return -1;
+}
 
 // ═══════════════════════ 公开接口 ═══════════════════════
 
@@ -1728,15 +2101,16 @@ std::vector<std::string_view> AllCheckIds() {
         ids.push_back(spec.check_id);
     }
     return ids;
+
 }
 
 bool VerifiersComplete() noexcept {
-    if (std::size(kCatalog) != 29) {
+    if (std::size(kCatalog) != 32) {
         return false;
     }
     for (std::size_t i = 0; i < std::size(kCatalog); ++i) {
         if (kCatalog[i].check_id != fmt::format("K{:02}", i + 1)) {
-            return false; // 目录必须正好是 K01…K29，无缺号无占位
+            return false; // 目录必须正好是 K01…K32，无缺号无占位
         }
     }
     return true;
@@ -1793,7 +2167,7 @@ std::vector<std::string> ValidationReport::SkippedIds() const {
 }
 
 std::string ValidationReport::Describe() const {
-    std::string out = fmt::format("K01–K29 校验（章 #{}）：{} 条，{} 不通过", chapter_id, checks.size(),
+    std::string out = fmt::format("K01–K32 校验（章 #{}）：{} 条，{} 不通过", chapter_id, checks.size(),
                                   FailedIds().size());
     for (const CheckResult& r : checks) {
         if (CheckPassed(r)) {
@@ -1896,7 +2270,7 @@ std::string Sha1Hex(std::string_view data) {
 
 std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, std::string_view chain,
                                   std::string_view stage) {
-    // `04` §2.5 的输入清单是**封闭列表**，顺序固定。⚠️ 与规格的两处偏差（已在 `Plan/证据.md` 记账）：
+    // `04` 的输入清单是**封闭列表**，顺序固定；当前实现偏差与验证记录见 docs/40-operations/verification.md：
     //   ① `writing_style` / `author_rules` 表**没有 `updated` 列** → 用整行内容代替时间戳；
     //   ② 「相关 entity ids」的**相关性打分**（`04` §2.3）尚未落地 → 用 `created_chapter<=N` 全量排序代替。
     std::string canon;
@@ -2005,7 +2379,7 @@ std::string ComputeInputStateHash(db::sqlite::Database& db, RowId chapter_id, st
 
 CheckResult CheckStateHashMatch(std::string_view stored_hash, std::string_view current_hash) {
     if (stored_hash.empty()) {
-        return Mk("K23", CheckOutcome::NotApplicable, "产物没有记录 input_state_hash");
+        return Mk("K23", CheckOutcome::NotApplicable, "无 input_state_hash 可比");
     }
     if (stored_hash == current_hash) {
         return Mk("K23", CheckOutcome::Pass,
@@ -2116,6 +2490,9 @@ ValidationReport RunChapterChecks(db::sqlite::Database& db, const CheckInputs& i
     report.checks.push_back(CheckK27(c));
     report.checks.push_back(CheckK28(c));
     report.checks.push_back(CheckK29(c));
+    report.checks.push_back(CheckK30(c));
+    report.checks.push_back(CheckK31(c));
+    report.checks.push_back(CheckK32(c));
     return report;
 }
 
@@ -2130,11 +2507,11 @@ int RunChecksSelfCheck() {
     };
 
     // ① 目录完整性 + `auto` 前置②
-    expect(CheckCatalog().size() == 29, "目录必须是 29 条");
-    expect(VerifiersComplete(), "VerifiersComplete 必须为真（29/29）");
+    expect(CheckCatalog().size() == 32, "目录必须是 32 条");
+    expect(VerifiersComplete(), "VerifiersComplete 必须为真（32/32）");
     for (std::size_t i = 0; i < CheckCatalog().size(); ++i) {
         const CheckSpec& spec = CheckCatalog()[i];
-        expect(spec.check_id == fmt::format("K{:02}", i + 1), "check_id 必须是 K01…K29 顺序");
+        expect(spec.check_id == fmt::format("K{:02}", i + 1), "check_id 必须是 K01…K32 顺序");
         expect(!spec.name.empty() && !spec.severity.empty() && !spec.scope.empty() &&
                    !spec.data_source.empty(),
                "每条都必须有 name/severity/scope/data_source（`06` §4 判据）");
@@ -2176,7 +2553,7 @@ int RunChecksSelfCheck() {
 
     {
         ValidationReport r = RunChapterChecks(mem, in);
-        expect(r.checks.size() == 29, "报告必须含 29 条（含空真）");
+        expect(r.checks.size() == 32, "报告必须含 32 条（含空真）");
         expect(r.Ok(), "干净工程 + 空库不得阻断（NotApplicable 空真放行）");
         expect(r.Find("K02") != nullptr &&
                    r.Find("K02")->outcome == CheckOutcome::NotApplicable,
@@ -2455,7 +2832,7 @@ int RunChecksSelfCheck() {
     std::filesystem::remove_all(tmp, ec);
 
     if (fails == 0) {
-        log::Info("K 校验自检通过（K01–K29 目录 29/29 + sha1 向量 + 空真不阻断 + 逐条触发）");
+        log::Info("K 校验自检通过（K01–K32 目录 32/32 + sha1 向量 + 空真不阻断 + 逐条触发）");
     }
     return fails;
 }

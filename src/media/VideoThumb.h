@@ -4,7 +4,7 @@
 // 为什么走 Windows Shell 缩略图，而不是自己解码：
 //   * ComfyUI 服务端**没有**视频首帧接口 —— core `/view?preview=` 只对 PIL 能打开的文件有效
 //     （`server.py` 里是 `Image.open(file)`），VHS 3.x 也删掉了 `/vhs/get_thumbnail`（只剩 `/vhs/viewvideo`）；
-//   * 本项目里没有视频解码器（不引 ffmpeg / 不引预编译 dll，见 `MEMORY.md` §2）。
+//   * 本项目里没有视频解码器；媒体边界见 docs/10-modules/media-paint.md。
 //   → 用系统的缩略图提供程序（资源管理器里视频能出图就是它）：`IShellItemImageFactory`；
 //     分辨率用 Shell 属性 `System.Video.FrameWidth/FrameHeight`。
 //
@@ -17,7 +17,7 @@
 #include <functional> // std::move_only_function
 #include <string>
 
-#include "gallery/Image.h"
+#include "media/Image.h"
 
 namespace shine::media {
 

@@ -25,13 +25,14 @@ public:
     // P4.5：二进制预览帧（帧内数据已是拥有型，可直接搬走）
     using BinaryListener = fu2::function<void(const BinaryFrame&)>;
 
+
     static ComfySocket& Instance();
 
     void EnsureConnected(std::string_view baseUrl, std::string_view clientId);
     void Shutdown();
     [[nodiscard]] bool IsConnected() const;
 
-    // —— P3.0 S3：帧静默计时（`Doc/RULES-COMFY.md` §12.1）——
+    // —— P3.0 S3：帧静默计时（协议判定见 docs/10-modules/flow-comfy.md）——
     // 记录"最近一次收到任何 WS 帧"的单调时间（**含二进制预览帧**）；连接从未收到帧时返回到连接建立的间隔。
     [[nodiscard]] std::chrono::milliseconds SinceLastFrame() const noexcept;
     [[nodiscard]] std::int64_t LastFrameMonotonicMs() const noexcept;
@@ -83,5 +84,11 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// 离线可测的协议解析入口：与 WS OnMessage 使用同一实现。
+[[nodiscard]] bool ParsePromptEventJson(std::string_view json, PromptEvent& out,
+                                        int* node_kind = nullptr);
+[[nodiscard]] bool ParseStatusJson(std::string_view json, StatusEvent& out);
+[[nodiscard]] BinaryFrame ParseBinaryPreview(std::string_view payload);
 
 } // namespace shine::comfy

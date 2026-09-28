@@ -85,7 +85,7 @@ std::vector<std::string> ReadStrArray(yyjson_val* obj, const char* key) {
     return out;
 }
 
-// 日志里只显示 promptId 前 8 位（`Doc/RULES-COMFY.md` §12.5 的日志模板）
+// 日志里只显示 promptId 前 8 位（日志约定见 docs/10-modules/flow-comfy.md）
 std::string_view ShortId(std::string_view id) noexcept {
     return id.size() > 8 ? id.substr(0, 8) : id;
 }
@@ -149,6 +149,113 @@ void LogPromptEvent(const PromptEvent& ev, int nodeKind) {
 }
 
 } // namespace
+
+bool ParsePromptEventJson(std::string_view json, PromptEvent& out, int* node_kind) {
+    out = PromptEvent{};
+    yyjson_doc* doc = yyjson_read(json.data(), json.size(), 0);
+    if (doc == nullptr) return false;
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    const std::string type = ReadStr(root, "type");
+    yyjson_val* data = yyjson_obj_get(root, "data");
+    static constexpr const char* kHandled[] = {
+        "execution_start", "executing", "progress", "progress_state", "executed",
+        "execution_success", "execution_error", "execution_interrupted", "execution_cached"};
+    bool handled = false;
+    for (const char* h : kHandled) handled = handled || type == h;
+    if (!handled || data == nullptr) {
+        yyjson_doc_free(doc);
+        return false;
+    }
+    out.type = type;
+    out.promptId = ReadStr(data, "prompt_id");
+    const int kind = NodeFieldKind(data, "node");
+    if (node_kind != nullptr) *node_kind = kind;
+    out.nodeId = kind == kNodeValue ? ReadStr(data, "node") : std::string{};
+    if (type == "progress") {
+        out.progressValue = ReadInt(data, "value");
+        out.progressMax = ReadInt(data, "max");
+        out.currentNodeType = ReadStr(data, "node_type");
+    } else if (type == "progress_state") {
+        yyjson_val* nodes = yyjson_obj_get(data, "nodes");
+        if (nodes != nullptr && yyjson_is_obj(nodes)) {
+            yyjson_obj_iter iter;
+            yyjson_obj_iter_init(nodes, &iter);
+            while (yyjson_val* key = yyjson_obj_iter_next(&iter)) {
+                yyjson_val* value = yyjson_obj_iter_get_val(key);
+                const int v = ReadInt(value, "value");
+                const int m = ReadInt(value, "max");
+                if (m > 0 && (m > out.progressMax || (m == out.progressMax && v > out.progressValue))) {
+                    out.nodeId = yyjson_get_str(key) == nullptr ? "" : yyjson_get_str(key);
+                    out.progressValue = v;
+                    out.progressMax = m;
+                }
+            }
+        }
+    } else if (type == "executing") {
+        out.currentNodeType = ReadStr(data, "node_type");
+    } else if (type == "execution_cached") {
+        out.cachedNodeIds = ReadStrArray(data, "nodes");
+        out.cachedNodeCount = static_cast<int>(out.cachedNodeIds.size());
+    } else if (type == "executed") {
+        out.currentNodeType = ReadStr(data, "node_type");
+        yyjson_val* output = yyjson_obj_get(data, "output");
+        yyjson_val* images = output == nullptr ? nullptr : yyjson_obj_get(output, "images");
+        if (images != nullptr && yyjson_is_arr(images) && yyjson_arr_size(images) > 0) {
+            yyjson_val* image = yyjson_arr_get(images, 0);
+            out.imageFileName = ReadStr(image, "filename");
+            out.imageSubfolder = ReadStr(image, "subfolder");
+            out.imageType = ReadStr(image, "type");
+        }
+    } else if (type == "execution_error") {
+        out.failed = true;
+        out.errorNodeId = ReadStr(data, "node_id");
+        out.errorNodeType = ReadStr(data, "node_type");
+        out.nodeId = out.errorNodeId;
+        out.currentNodeType = out.errorNodeType;
+        out.exceptionType = ReadStr(data, "exception_type");
+        out.exceptionMessage = ReadStr(data, "exception_message");
+        out.traceback = ReadStrArray(data, "traceback");
+        out.executedNodes = ReadStrArray(data, "executed");
+        out.errorMessage = out.exceptionMessage.empty() ? out.exceptionType : out.exceptionMessage;
+    } else if (type == "execution_interrupted") {
+        out.errorNodeId = ReadStr(data, "node_id");
+        out.errorNodeType = ReadStr(data, "node_type");
+        out.nodeId = out.errorNodeId;
+        out.currentNodeType = out.errorNodeType;
+        out.executedNodes = ReadStrArray(data, "executed");
+        out.errorMessage = "任务被中断";
+    }
+    yyjson_doc_free(doc);
+    return true;
+}
+
+bool ParseStatusJson(std::string_view json, StatusEvent& out) {
+    out = StatusEvent{};
+    yyjson_doc* doc = yyjson_read(json.data(), json.size(), 0);
+    if (doc == nullptr) return false;
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    yyjson_val* data = yyjson_obj_get(root, "data");
+    yyjson_val* exec = data == nullptr ? nullptr : yyjson_obj_get(data, "exec_info");
+    if (exec != nullptr) out.execInfoQueueRemaining = ReadInt(exec, "queue_remaining");
+    yyjson_doc_free(doc);
+    return true;
+}
+
+BinaryFrame ParseBinaryPreview(std::string_view payload) {
+    BinaryFrame frame;
+    constexpr std::size_t kHeaderBytes = 8;
+    if (payload.size() <= kHeaderBytes) return frame;
+    const auto view = payload.substr(kHeaderBytes);
+    frame.payload.resize(view.size());
+    std::memcpy(frame.payload.data(), view.data(), view.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(view.data());
+    if (view.size() > 8 && p[0] == 0x89 && p[1] == 0x50 && p[2] == 0x4E && p[3] == 0x47) {
+        frame.format = "png";
+    } else if (view.size() > 3 && p[0] == 0xFF && p[1] == 0xD8) {
+        frame.format = "jpeg";
+    }
+    return frame;
+}
 
 struct ComfySocket::Impl {
     std::unique_ptr<hv::EventLoopThread> loopThread;
@@ -428,7 +535,7 @@ void ComfySocket::OnMessage(std::string_view msg) {
     }
     if (!handled) {
         // 未识别类型：每种只报一次（自定义节点会发很多私有事件，不能刷屏）；
-        // `Doc/RULES-COMFY.md` §12「版本差异提醒」要求这些类型可诊断，便于按本机版本补齐。
+        // `docs/10-modules/flow-comfy.md` 要求未识别类型可诊断，便于按本机版本补齐。
         if (!type.empty()) {
             EventLogState& st = LogState();
             if (st.unknownTypes.size() < 32 && st.unknownTypes.insert(type).second) {

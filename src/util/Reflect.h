@@ -2,7 +2,7 @@
 // shine::util::reflect —— C++26 静态反射 × yyjson 的序列化助手（header-only）
 //
 // 需要编译选项 -freflection（CMakeLists.txt 已加，仅对 C++ 生效）。
-// 用法（Doc/RULES-LANG.md §13.6）：
+// 用法与边界见 docs/30-engineering/coding-rules.md：
 //     const std::string json = util::reflect::ToJsonString(settings);
 //     util::reflect::FromJsonString(json, settings);            // 宽容读：键缺失/类型不符取原值
 //
@@ -28,7 +28,7 @@ namespace detail {
 
 template <class> inline constexpr bool kAlwaysFalse = false;
 
-// 反射得到的字段表（consteval-only 值，只能在编译期上下文使用 —— 见 Doc/RULES-LANG.md §13.6）
+// 反射得到的字段表（consteval-only 值，只能在编译期上下文使用；见 docs/30-engineering/coding-rules.md）
 template <class T>
 consteval auto FieldInfos() {
     return std::define_static_array(

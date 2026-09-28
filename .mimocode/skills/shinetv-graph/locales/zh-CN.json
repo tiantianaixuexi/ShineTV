@@ -1,4 +1,4 @@
 {
-  "displayName": "ShineTV 节点图 GraphHost",
-  "brief": "VNS 集成、节点工厂、选中信息与图 JSON 存盘"
+  "displayName": "ShineTV 流程图",
+  "brief": "当前流程模型、Comfy API 编译、工作流导入导出与 FlowCanvas 边界"
 }

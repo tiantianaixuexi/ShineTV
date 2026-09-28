@@ -1,5 +1,5 @@
 #pragma once
-// shine::novelcore —— **无人值守运行循环**（规格 `Doc/小说系统/09-无人值守运行规范.md`）
+// shine::novelcore —— **无人值守运行循环**（接口契约见 docs/10-modules/novel.md；数据约束见 docs/20-contracts/novel-state.md）
 //
 // 「连跑几百章不停」的主线。本模块收口 `09` 的六件事：
 //   ① 运行模式 `manual` / `semi` / `auto`（§2.1）—— 每次运行写 `audit_logs(action='run_mode')`；
@@ -13,7 +13,7 @@
 //   ⑥ 可观测性（§2.7）：`cost_report.json` / `_manifest.json` / `checkpoint_*.md` / `stop_report.md`。
 //
 // ⚠️ 本步（S9-auto-run）**不做**：模型分层路由（09-7/09-8）、并发限流（09-11）、全书预算估算（09-12）。
-// ⚠️ 粒度偏差（已在 `Plan/证据.md` 记明）：`03` 的 T1–T17 细阶段机在本仓尚不存在，`GenerateChapter`
+// ⚠️ 当前实现与历史阶段规格可能有粒度差异；以 `NovelRunLoop`/`NovelPipeline` 的头文件和运行验证为准，旧差异记录不再作为计划。
 //    只报 11 个粗阶段 → 本循环的**记账 / 续跑粒度是"章"**，`_manifest.json` 的"产物文件"列当前为空
 //    （`03` §2.7 的 `01_outline.json` 那套阶段产物未落地）。续跑只保证"不从头重跑全书"。
 #include <cstdint>
@@ -26,7 +26,7 @@
 #include <string_view>
 #include <vector>
 
-#include "agent/NovelDirector.h"
+#include "novel/NovelDirector.h"
 #include "db/sqlite/SqliteDb.h"
 #include "novel/NovelDb.h"
 #include "novel/NovelFields.h"

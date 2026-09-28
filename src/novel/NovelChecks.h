@@ -86,6 +86,15 @@ struct CheckSpec {
 // 「K01–K29 全部 pass」判定（`07` §2.3 G2）：`low` 可记但放行
 [[nodiscard]] bool AllChecksPass(std::span<const CheckResult> results) noexcept;
 
+
+// ———— 亲属称谓词表（K30 正文检查与 N15 init 门禁**共用同一份**）————
+// 放在头文件里是为了不让两边各抄一份：词表一漂，检查就会静默 n/a（实测踩过）。
+// 1 = 女侧，0 = 男侧，-1 = 不在词表内。
+[[nodiscard]] int KinshipFamily(std::string_view term) noexcept;
+[[nodiscard]] std::span<const std::string_view> KinshipTermsFemale() noexcept;
+[[nodiscard]] std::span<const std::string_view> KinshipTermsMale() noexcept;
+// 从 `entities.meta_json` 取字符串属性（宽容：缺键/非字符串/非法 JSON 一律空）
+[[nodiscard]] std::string EntityMetaStr(std::string_view meta_json, std::string_view key);
 // ———— ContractInput 三组只读对象 ————
 
 // K09（`12` §2.7）：相邻镜的 `end_state` 与 `start_state` **逐字段比对**。
@@ -108,6 +117,10 @@ struct BeatSpan {
 // `VideoProject::Sanitize` / `NovelShotBridge`）跑完后回填；不重复实现那三套规则。
 struct GenerationCheckInput {
     bool has_graph = false;      // 是否提交了 API 图（K19 的受检对象）
+    // 产物文件**存在但解析失败**（写一半/被截断）。与「没跑过」必须分开记：
+    // 两者都让 `has_graph`/`has_sanitize` 为 false，若不区分，一个写坏的文件会
+    // 把 K19–K21 三条一起静默关成 n/a（CheckPassed 放行）——「检查静默失效」最危险的一种。
+    bool artifact_corrupt = false;
     bool graph_ok = false;       // `ValidateApiGraph` 的结论
     std::string graph_detail;
     bool has_sanitize = false;   // 是否跑过 `Sanitize`（K20/K21 的受检对象）

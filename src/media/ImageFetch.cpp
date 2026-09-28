@@ -6,7 +6,7 @@
 #include "comfy/ComfyHttp.h"
 #include "core/Async.h"
 #include "core/Log.h"
-#include "gallery/decoders/PngDecoder.h"
+#include "media/decoders/PngDecoder.h"
 
 #include <chrono>
 #include <fstream>

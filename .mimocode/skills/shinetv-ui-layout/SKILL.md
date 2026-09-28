@@ -1,83 +1,42 @@
 ---
 name: shinetv-ui-layout
-description: ShineTV ImGui 布局（活动栏/侧栏/图/右栏/底栏/状态栏）与高性能列表、快捷键约定。当用户改 Dock、面板、状态栏、主题应用到 UI，或日志/队列卡顿时使用。
+description: ShineTV 当前 Qt Widgets 七区工作区、主题控件、FlowCanvas、快捷键和 UI 线程/性能约定。
 ---
 
-# UI 布局与性能
+# Qt UI 布局
 
-实现：`src/app/App.cpp` + `src/app/DockLayout.cpp`。
+先读：[UI 套件](../../../docs/10-modules/ui-kit.md)、[运行时](../../../docs/00-overview/runtime.md)。
 
-## 七区
+## 外壳
 
-```
-① 菜单栏（Host MenuBar）
-② 活动栏 46px（Dock 外）
-③ 侧栏「侧栏」（SideView 切换）
-④ 中央「图」（VNS，见 shinetv-graph）
-⑤ 右栏「属性」「预览」
-⑥ 底栏「队列」（Tab：队列/日志/输出）
-⑦ 状态栏 24px（Dock 外，整行）
-```
+`src/app/shell/MainWindow` 有项目中心两态：ProjectHub 与工坊。工坊七区：
 
-### 活动栏 `SideView`
+1. 顶栏 `TopBar`
+2. 活动栏 `ActivityRail`
+3. 侧栏 `SidePanel`
+4. 中央文档页/工作区
+5. 右侧检查器 `RightPanel`
+6. 底部队列 `BottomDock`
+7. 状态栏 `StatusBar`
 
-| 图标 | 枚举 | 侧栏 |
-|------|------|------|
-| 资 | `Assets` | 资源树 |
-| 节 | `Nodes` | 节点搜索/点击/拖放 |
-| 流 | `Workflows` | 存盘/加载 graph.json |
-| C | `Comfy` | 连接与 REST |
-| ⚙ | — | 设置 |
+活动栏入口为总控、小说、资产、分镜、出图、出片。`Ctrl+B` 折叠侧栏，`Ctrl+J` 折叠底栏，`Ctrl+K` 打开命令面板。
 
-- 再点当前项收起侧栏；`Ctrl+B` 同
-- 选中：左侧 2.5px Accent 条
+## 套件
 
-### 状态栏 `DrawStatusBar`
+- `src/kit/theme`：`theme::Current`、Token、QSS、主题切换；
+- `src/kit/widgets/data/images`：通用控件、数据展示、图片查看；
+- `src/kit/canvas/FlowCanvas`：共享节点画布；
+- `src/kit/motion`：统一动效。
 
-左：连接灯 · 队列 · 图 n/m · 缩放 · 选中名  
-右：主题名 · `ShineTV 0.2.0 · P2`  
-背景 = `menuBar` Token。
+页面从套件取控件，不复制颜色/按钮/表格/状态反馈实现。颜色只能来自 Token，主题切换由全局 QSS 完成。
 
-### Dock 分割
+## 线程与性能
 
-```
-left 18% 侧栏 | right 22% 属性+预览 | bottom 26% 队列 | center 图
-```
+- 15ms UI 定时器执行 `DrainUiQueue` 和图库 tick；
+- 扫描、解码、下载、LLM、生成在 worker；结果回 UI 后才改模型；
+- 大列表使用模型/虚拟化，图片不在 UI 线程解码；
+- 画布消费 DTO，不直接访问 flow 内部对象。
 
-`BuildDefaultLayout(dockspaceId, dockSize)` — 尺寸是**活动栏右侧、状态栏上方**。
+## 验证
 
-## Host 骨架
-
-```cpp
-DrawMenuBar();
-workH = content.y - 24;          // 状态栏
-DrawActivityBar(workH);
-SameLine(0,0);
-DrawDockedPanels({content.x-46, workH});
-DrawStatusBar(content.x, 24);
-```
-
-每帧：`Session::Tick` + `async::DrainUiQueue`；`Ctrl+B` / `Ctrl+S`（存图）。
-
-## 性能约定（硬性）
-
-1. 长列表必须 `ImGuiListClipper`
-2. 日志用 `log::Version()` 缓存快照
-3. 画布：屏外 AABB 剔除（VNS 自带渲染；占位画布时代规则仍适用）
-4. 正式日志用 fmt `{}`，禁止 printf
-
-## 主题
-
-`theme::Current()` 是 `float[4]` 数组，用下标构造 `ImVec4`。
-
-## 中文字体
-
-`Fonts.cpp` / msyh.ttc；UI 默认中文。
-
-## 新增侧栏视图
-
-`SideView` + `kActivities[]` + `DrawXxxPanel` + `DrawSideBar` switch + 更新本文件与 PLAN 布局图。
-
-## 相关 skill
-
-`shinetv-graph` · `shinetv-structure` · `shinetv-comfy` · `shinetv-build`
+UI 改动要实际启动程序、走对应工作区并检查截图/状态；`tools/check-colors.ps1` 与 `tools/check-layers.ps1` 是静态门禁。

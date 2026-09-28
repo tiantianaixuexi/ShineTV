@@ -1,5 +1,5 @@
 ﻿#pragma once
-// 小说知识图谱行类型（契约 docs/compose/spec/novel-agent.md S2.3）
+// 小说知识图谱行类型（数据契约见 docs/20-contracts/novel-state.md）
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -197,7 +197,7 @@ struct OwnershipRow {
 };
 
 // —— P0 八表（S2）：原先只有表、没有 API，是闭环的阻断点 ——
-// 规格：`Doc/小说系统/01` §2.4.2（事件参与）/ §2.4.5（知情）/ §2.5（叙事结构、剧情线）/ §2.3.4（谜团）。
+// 规格与表关系见 docs/20-contracts/novel-state.md；本头中的结构体是当前 C++ 映射。
 // `CharacterKnowledgeRow` 见上方（本组沿用），其余 7 个结构体在此定义。
 
 // event_participants：谁参与了哪个事件（01 §2.4.2）

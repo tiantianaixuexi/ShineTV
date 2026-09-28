@@ -47,7 +47,7 @@ void LoadSettings() {
         log::Warn("settings.json 为空，使用默认值");
         return;
     }
-    // 字段名 ↔ JSON 键由 C++26 静态反射自动映射（util/Reflect.h，见 Doc/RULES-LANG.md §13.6）
+    // 字段名 ↔ JSON 键由 C++26 静态反射自动映射（util/Reflect.h；规则见 docs/30-engineering/coding-rules.md）
     // 宽容语义：键缺失或类型不符 → 保留结构体里的默认值
     const std::size_t hit = util::reflect::FromJsonString(content, g_settings);
     if (hit == 0) {

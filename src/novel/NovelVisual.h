@@ -24,14 +24,14 @@ struct VisualAssetRow {
     std::string permanent_tags_json = "[]";
     std::string sheet_rel_path;
     std::string canon_status = "DRAFT";
-    // 生产状态机（8 值，**与 canon_status 正交**，见 Doc/小说系统/11 §2.6.1）：
+    // 生产状态机（8 值，**与 canon_status 正交**，契约见 docs/10-modules/visual-storyboard.md）：
     // PENDING | PROMPTING | REF_READY | SHEET_READY | WARDROBE_READY | READY | FAILED | STALE
     // 下游只以 status 判断「能不能用」，不等 canon_status（否则无人值守会永远等不到）。
     std::string status = "PENDING";
     std::string note;
 };
 
-// 形象层产物：V0 ASSET_PIPELINE 的承载表（契约 Doc/小说系统/02 §2.14、表结构 11 §2.6.3）。
+// 形象层产物：V0 ASSET_PIPELINE 的承载表（状态契约见 docs/20-contracts/visual-generation.md）。
 // 与 generated_images（单次出图任务的账）分工不同：本结构回答「这个角色的形象建到哪一层了」。
 struct VisualArtifactRow {
     RowId id = 0;
@@ -215,6 +215,8 @@ public:
     // 按剧情章解析当前阶段：from_ch≤N 且 (to_ch=0 或 to_ch≥N)，取 from_ch 最大者
     [[nodiscard]] std::expected<VisualStateRow, DbError>
     ResolveVisualState(RowId assetId, RowId chapterId) const;
+    [[nodiscard]] std::expected<std::vector<VisualStateRow>, DbError>
+    ListStates(RowId assetId) const;
 
     // —— 镜头/光/构图 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertCamera(std::string_view name,

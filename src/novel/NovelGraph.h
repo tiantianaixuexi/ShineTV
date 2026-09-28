@@ -31,6 +31,8 @@ public:
     [[nodiscard]] std::expected<RowId, DbError> UpsertCharacterStatus(const CharacterStatusRow& row);
     [[nodiscard]] std::expected<CharacterStatusRow, DbError>
     GetLatestCharacterStatus(RowId entityId, RowId chapterId = 0) const;
+    [[nodiscard]] std::expected<std::vector<CharacterStatusRow>, DbError>
+    ListCharacterStatuses(RowId entityId) const;
 
     // —— 章 / 卷 / 场 ——
     [[nodiscard]] std::expected<RowId, DbError> UpsertVolume(const VolumeRow& row);
@@ -59,7 +61,7 @@ public:
     GetSecretsFor(RowId entityId, RowId chapterId = 0) const;
 
     // —— P0 八表（S2）：原先只有表、没有 API，是闭环的阻断点 ——
-    // 规格 `Doc/小说系统/01` §2.4.2 / §2.4.5 / §2.5 / §2.3.4；判据见 `00` §6.2 的 S2 行。
+    // 规格与表关系见 docs/20-contracts/novel-state.md；本文件 API 是当前实现入口。
 
     // 知情（character_knowledge）：不变式 I2 与 `06` K05 的数据来源
     [[nodiscard]] std::expected<RowId, DbError> UpsertKnowledge(const CharacterKnowledgeRow& row);

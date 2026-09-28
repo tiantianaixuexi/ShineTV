@@ -2,7 +2,7 @@
 // shine::gpu::GpuTextureManager —— 纹理生命周期归口（P4.1 S3）
 //
 // **仅 UI 线程调用**（DX11 immediate context 非线程安全）：worker 只负责产出 RGBA8 字节，
-// 上传一律 `PostToUi` 后在本类完成 —— 见 `MEMORY.md` 的「异步任务规范」。
+// 上传一律 `PostToUi` 后在本类完成 —— 线程边界见 docs/30-engineering/coding-rules.md。
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -18,7 +18,7 @@ class GpuTextureManager {
 public:
     static GpuTextureManager& Instance();
 
-    // RGBA8 用 span 传；失败用 expected 表达（Doc/RULES-LANG.md §13.3）
+    // RGBA8 用 span 传；失败用 expected 表达（docs/30-engineering/coding-rules.md）
     [[nodiscard]] std::expected<GpuTextureHandle, GpuError> Upload(std::uint32_t w, std::uint32_t h,
                                                                    std::span<const std::byte> rgba8) noexcept;
 

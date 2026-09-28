@@ -3,8 +3,8 @@
 #include "comfy/ComfySession.h"
 #include "comfy/ComfyTypes.h"
 #include "core/Log.h"
-#include "graph/GraphCompiler.h"
-#include "graph/GraphHost.h"
+#include "flow/GraphCompiler.h"
+#include "flow/GraphHost.h"
 #include "mcp/McpBootstrap.h"
 #include "mcp/Schema.h"
 #include "util/Json.h"
@@ -178,7 +178,7 @@ void RegisterShineTvBuiltinTools(ToolRegistry& reg) {
         .moduleId = "shinetv",
         .schemaJson = EmptySchema(),
         .handler = [](yyjson_val*) -> CallOutcome {
-            const auto r = graph::CompileToApiJson();
+            const auto r = flow::CompileToApiJson();
             if (!r.ok) {
                 std::string msg = "图编译失败";
                 for (const auto& e : r.errors) {
@@ -212,7 +212,7 @@ void RegisterShineTvBuiltinTools(ToolRegistry& reg) {
                 return CallOutcome::Fail(CallStatus::InternalError,
                                          "ComfyUI 未连接：请先在设置里配置服务地址并连接");
             }
-            const auto r = graph::CompileToApiJson();
+            const auto r = flow::CompileToApiJson();
             if (!r.ok) {
                 std::string msg = "图编译失败";
                 for (const auto& e : r.errors) {

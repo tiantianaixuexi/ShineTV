@@ -1,46 +1,39 @@
-# scripts/studio.ps1 -- ShineTV Studio process + progress control for AI automation.
+#!/usr/bin/env pwsh
+# scripts/studio.ps1 -- ShineTV Studio process and build control.
 #
-# MUST stay pure ASCII: Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI and
-# will break on Chinese source (see scripts/capture_window.ps1).
-# Progress files are UTF-8 Chinese; this script reads them as UTF8 and matches
-# ASCII-only patterns (table pipes, P-ids, checkboxes).
+# MUST stay pure ASCII: Windows PowerShell 5.1 reads BOM-less UTF-8 as ANSI.
+# This script does not read or create development plans.
 #
-# Usage (from project root E:\c++\ShineTV):
+# Usage (from project root):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 status
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 start
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 stop
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 restart
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 progress
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 build
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\studio.ps1 all
 #
 # Commands:
-#   status    - print RUNNING/STOPPED + exe/build/progress one-liners
+#   status    - print RUNNING/STOPPED + exe/build state
 #   start     - start ShineTVStudio.exe if not running (idempotent)
 #   stop      - CloseMainWindow then Stop-Process -Force if needed
 #   restart   - stop + start
-#   progress  - parse Plan/PROGRESS.md + novel PROGRESS.md
 #   build     - cmake configure (if needed) + incremental build
-#   all       - status + progress
+#   all       - status + build state
+#   help      - show this text
 #
 # Exit codes:
 #   status: 0 = RUNNING, 1 = STOPPED
 #   start/restart: 0 = running after call, 1 = failed
 #   stop: 0 = not running after call, 1 = still running
-#   progress/build/all/help: 0 on success, 1 on failure
+#   build/all/help: 0 on success, 1 on failure
 #
 # Output tokens (stable for automation):
-#   STATUS RUNNING|STOPPED pid=... responding=...
-#   EXE path=... exists=... size=... mtime=...
-#   BUILD configured=... gcc=...
-#   PROGRESS ...
-#   NEXT ...
-#   NOVEL ...
-#   ACTION start|stop|restart result=...
+#   ROOT ... / CMD ... / EXE ...
+#   STATUS ... / BUILD ... / ACTION ...
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("status", "start", "stop", "restart", "progress", "build", "all", "help")]
+    [ValidateSet("status", "start", "stop", "restart", "build", "all", "help")]
     [string]$Cmd = "status",
 
     [string]$Exe = "",
@@ -55,8 +48,6 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $ScriptDir
 $WindowTitle = "ShineTV Studio"
 $ProcessName = "ShineTVStudio"
-$ProgressPath = Join-Path $Root "Plan\PROGRESS.md"
-$NovelProgressPath = Join-Path $Root "docs\compose\plans\novel-agent\PROGRESS.md"
 $MinGwBin = "C:\msys64\mingw64\bin"
 $Gcc = Join-Path $MinGwBin "gcc.exe"
 $Gxx = Join-Path $MinGwBin "g++.exe"
@@ -105,96 +96,6 @@ function Get-ExeInfo {
     }
 }
 
-function Get-ProgressSummary {
-    $overview = New-Object System.Collections.Generic.List[string]
-    $next = New-Object System.Collections.Generic.List[string]
-
-    if (-not (Test-Path -LiteralPath $ProgressPath)) {
-        $overview.Add("missing path=" + $ProgressPath)
-        return @{ Overview = $overview; Next = $next }
-    }
-
-    # Force UTF8 so Chinese table cells in PROGRESS.md are not mojibake.
-    $text = [System.IO.File]::ReadAllLines($ProgressPath, [System.Text.Encoding]::UTF8)
-
-    # PROGRESS.md structure (ASCII-safe section index):
-    #   first  ## heading  -> overview
-    #   second ## heading  -> "now do which" / next tasks
-    #   later  ## headings -> per-category detail
-    $section = -1
-    foreach ($raw in $text) {
-        if ($raw -match '^##\s+') {
-            $section++
-            continue
-        }
-
-        if ($section -eq 0) {
-            # Overview table rows start with | **P3** / | **G** / | **novel-ish**
-            if ($raw -match '^\|\s*\*\*(P\d|G)\*\*') {
-                $cells = @($raw -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                if ($cells.Count -ge 5) {
-                    $overview.Add(($cells -join " | "))
-                }
-            }
-            elseif ($raw -match '^\|.*\*\*G\*\*') {
-                $cells = @($raw -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                if ($cells.Count -ge 5) { $overview.Add(($cells -join " | ")) }
-            }
-            continue
-        }
-
-        if ($section -eq 1) {
-            $t = $raw.Trim()
-            if ($t -eq '') { continue }
-            if ($t -match '^-{3,}') { continue }
-            if ($t -match '^\d+\.' -or $t -match '^-' -or $t -match 'P\d' -or $t -match 'G-S' -or $t -match 'P10') {
-                if ($next.Count -lt 12) { $next.Add($t) }
-            }
-            continue
-        }
-    }
-
-    # Fallback if section parse missed overview rows.
-    if ($overview.Count -eq 0) {
-        foreach ($raw in $text) {
-            if ($raw -match '^\|\s*\*\*(P\d|G)\*\*') {
-                $cells = @($raw -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-                if ($cells.Count -ge 5) { $overview.Add(($cells -join " | ")) }
-            }
-        }
-    }
-
-    if ($next.Count -eq 0) {
-        foreach ($raw in $text) {
-            if ($raw -match 'P5\.7|P10\.4|task/P6|task/P8|P6-|P8-') {
-                $t = $raw.Trim()
-                if ($t -ne '' -and $next.Count -lt 8) { $next.Add($t) }
-            }
-        }
-    }
-
-    return @{ Overview = $overview; Next = $next }
-}
-
-function Get-NovelProgressSummary {
-    $out = New-Object System.Collections.Generic.List[string]
-    if (-not (Test-Path -LiteralPath $NovelProgressPath)) {
-        $out.Add("missing path=" + $NovelProgressPath)
-        return $out
-    }
-    $text = [System.IO.File]::ReadAllLines($NovelProgressPath, [System.Text.Encoding]::UTF8)
-    foreach ($raw in $text) {
-        if ($raw -match '^\|\s*P10\.') {
-            $cells = @($raw -split '\|' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
-            if ($cells.Count -ge 3) { $out.Add(($cells -join " | ")) }
-        }
-        elseif ($raw -match 'Garnet|LLM Key|P10\.4') {
-            $t = $raw.Trim()
-            if ($t -ne '' -and $out.Count -lt 12) { $out.Add($t) }
-        }
-    }
-    return $out
-}
 
 function Show-Status {
     $procs = Get-StudioProcesses
@@ -221,16 +122,6 @@ function Show-Status {
         $exeInfo.Path, $exeInfo.Exists, $exeInfo.Size, $exeInfo.MTime)
     Write-KV "BUILD" ("configured={0} gcc={1} mingw={2}" -f $configured, $gccOk, $MinGwBin)
 
-    $sum = Get-ProgressSummary
-    if ($sum.Overview.Count -gt 0) {
-        foreach ($l in $sum.Overview) { Write-KV "PROGRESS" $l }
-    } else {
-        Write-KV "PROGRESS" "(no overview rows parsed)"
-    }
-    if ($sum.Next.Count -gt 0) {
-        $max = [Math]::Min(4, $sum.Next.Count - 1)
-        foreach ($i in 0..$max) { Write-KV "NEXT" $sum.Next[$i] }
-    }
 
     exit 1
 }
@@ -397,20 +288,6 @@ function Restart-Studio {
     exit 0
 }
 
-function Show-Progress {
-    $sum = Get-ProgressSummary
-    Write-KV "PROGRESS_PATH" $ProgressPath
-    foreach ($l in $sum.Overview) { Write-KV "PROGRESS" $l }
-    foreach ($l in $sum.Next) { Write-KV "NEXT" $l }
-
-    Write-KV "NOVEL_PATH" $NovelProgressPath
-    foreach ($l in (Get-NovelProgressSummary)) { Write-KV "NOVEL" $l }
-
-    if ($sum.Overview.Count -eq 0 -and $sum.Next.Count -eq 0) {
-        exit 1
-    }
-    exit 0
-}
 
 function Build-Studio {
     if (-not (Test-Path -LiteralPath $Gcc)) {
@@ -475,15 +352,11 @@ function Show-All {
         $exeInfo.Path, $exeInfo.Exists, $exeInfo.Size, $exeInfo.MTime)
     Write-KV "BUILD" ("configured={0} gcc={1}" -f $configured, $gccOk)
 
-    $sum = Get-ProgressSummary
-    foreach ($l in $sum.Overview) { Write-KV "PROGRESS" $l }
-    foreach ($l in $sum.Next) { Write-KV "NEXT" $l }
-    foreach ($l in (Get-NovelProgressSummary)) { Write-KV "NOVEL" $l }
     exit 0
 }
 
 function Show-Help {
-    Write-Output "ShineTV studio.ps1 -- process + progress control"
+    Write-Output "ShineTV studio.ps1 -- process and build control"
     Write-Output "Root: $Root"
     Write-Output "Exe:  $Exe"
     Write-Output ""
@@ -492,9 +365,8 @@ function Show-Help {
     Write-Output "  start     launch studio if not running"
     Write-Output "  stop      graceful close, then force"
     Write-Output "  restart   stop + start"
-    Write-Output "  progress  parse Plan/PROGRESS.md + novel PROGRESS"
     Write-Output "  build     cmake configure (if needed) + build -j $Jobs"
-    Write-Output "  all       status + progress"
+    Write-Output "  all       status + build state"
     Write-Output "  help      this text"
     Write-Output ""
     Write-Output "Example:"
@@ -511,7 +383,6 @@ switch ($Cmd) {
     "start"    { Start-Studio }
     "stop"     { Stop-Studio }
     "restart"  { Restart-Studio }
-    "progress" { Show-Progress }
     "build"    { Build-Studio }
     "all"      { Show-All }
     "help"     { Show-Help }

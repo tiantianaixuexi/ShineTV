@@ -9,7 +9,7 @@
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Strings.h"
-#include "video/NovelShotBridge.h"
+#include "visual/NovelShotBridge.h"
 
 #include <yyjson.h>
 

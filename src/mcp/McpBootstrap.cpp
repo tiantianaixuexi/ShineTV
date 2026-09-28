@@ -1,6 +1,6 @@
 #include "mcp/McpBootstrap.h"
 
-#include "app/novel/NovelPipeline.h" // S18：注入生成一章的实现（与 UI/CLI 同一条路）
+#include "novel/NovelPipeline.h" // S18：注入生成一章的实现（与 UI/CLI 同一条路）
 #include "core/Log.h"
 #include "mcp/BuiltinTools.h"
 #include "mcp/Schema.h"
@@ -115,7 +115,7 @@ void RegisterAllModules(ToolRegistry& reg) {
         if (auto& inst = novelcore::NovelDb::Instance(); inst.isOpen()) {
             projectDir = inst.path().parent_path();
         }
-        return app::novel::GenerateOneChapter(db, chapter_id, projectDir, 2, nullptr, nullptr)
+        return novel::GenerateOneChapter(db, chapter_id, projectDir, 2, nullptr, nullptr)
             .Describe();
     });
 

@@ -1,37 +1,51 @@
-# AGENTS.md（入口指针）
+---
+id: root.agents
+kind: instruction
+status: current
+scope: repository
+source_of_truth:
+  - README.md
+  - docs/README.md
+  - CMakeLists.txt
+  - src/
+last_verified: 2026-09-25
+---
 
-> 本仓库的规则与计划文档**按功能分类**放进 `Doc/`（规则与参考）与 `Plan/`（计划与施工图），根目录不再堆放。开工前按需读：
+# ShineTV Studio AI 协作规则
 
-## 规则（`Doc/`）
+## 开始工作前
 
-| 文档 | 作用 |
-|------|------|
-| `Doc/AGENTS.md` | 工具链 / 字体 / 布局 / 技术栈 / 语言特性 —— **硬性规则总入口（含完整文档地图）** |
-| `Doc/RULES-AI.md` | AI 执行规则（一次一步、验收纪律、线程纪律）+ 项目 Skill 索引 |
-| `Doc/RULES-LANG.md` | C++26 语言特性与代码风格、能力探测结论、API 边界例外、反射与 `util` 用法 |
-| `Doc/RULES-COMFY.md` | ComfyUI 错误捕获与连接健康（WS 事件、"忙碌 ≠ 卡死"、日志模板） |
-| `Doc/STYLE-UI.md` | 默认视觉方向（色板 token，禁止硬编码颜色） |
-| `Doc/BASELINE.md` | 现状盘点 / 技术栈与目录 / 已完成基线事实 / **明确不做清单** |
-| `Doc/BUILD.md` | 构建方式（工具链、configure / build 命令） |
+1. 先读根目录 `README.md`、`docs/README.md`，再读与任务对应的一个模块文档；不要从历史计划推断当前实现。
+2. 先检查工作区已有改动。 unexpected changes 属于用户，不能回滚、覆盖或顺手整理。
+3. 用源码符号和路径定位事实。文档只做导航；源码、CMake 和可执行检查优先。
+4. 本仓库不维护开发计划、进度表或阶段交接文档；不要用计划壳替代实现和验证。
 
-## 计划（`Plan/`）
+## 修改边界
 
-| 文档 | 作用 |
-|------|------|
-| `Plan/PLAN.md` | **总纲 + 文档地图 + 大类/小类总表 + 依赖顺序**（领任务先看） |
-| `Plan/任务/<大类>.md` | **施工图**：每个小类的 S 做什么 / 判据（`P3-节点与图` … `G-图片库`，7 个） |
-| `Plan/PROGRESS.md` | **唯一勾选入口**：小任务 `[ ]` / `[x]` 与状态 |
-| `Plan/证据.md` | 实测证据（每个小类汇总 + 每个 S 的 ✅ 逐条记录） |
-| `Plan/坑与手法.md` | 踩过的坑、事故、验收手法（截图 / 离线 / 无头） |
-| `Plan/归档-已完成.md` | 已完成的旧线（P0 / P1 / P2 / P2.9 / R） |
-| `Plan/HANDOFF.md` | 新会话交接（开场白 + 现状 + 基础设施 + 本机环境） |
+- `shine_core`（`src/core`、`src/util`、`src/net`、`src/db`、`src/llm`、`src/comfy`、`src/media`、`src/flow`、`src/visual`、`src/novel`、`src/paint`、`src/mcp`、`src/project`、`src/pipeline`、`src/gpu`）不得包含 Qt 头；`tools/check-layers.ps1` 是门禁。
+- Qt 页面在 `src/pages/`；可复用 UI 在 `src/widget/`。`src/widget` 不依赖业务模块类型。装配入口在 `src/app/`。Qt 布局助手在 `src/util/QtLayout.h`。
+- 网络、文件扫描、图片解码、LLM 请求、ComfyUI 提交/下载和生成编译放 worker；通过 `async::PostToUi` 投递结果。UI 线程不做同步 IO/同步 HTTP。
+- 复用现有基础设施：`shine::async`、`shine::log`、`AppSettings`、`net::HttpClient`、`util::Reflect`、SQLite/Comfy 适配层。新增第二份线程池、HTTP 客户端或 JSON 约定前先证明没有现成实现。
+- 外部 C/C++ API（libhv、SQLite、Win32、yyjson、Qt）在边界转换一次；业务层接口遵循项目现有 C++ 约定，不为风格统一改动无关调用点。
 
-## 开工标准流程
+## 文档任务
 
-1. 读 `Plan/PLAN.md`（文档地图 + 大类/小类总表）与 `Doc/AGENTS.md`、`Doc/RULES-AI.md`；
-2. 打开 `Plan/任务/<大类>.md`，**只挑一个 S**（写码照 `Doc/RULES-LANG.md`，动 ComfyUI 照 `Doc/RULES-COMFY.md`）；
-3. 做完 `configure → build → 运行`，逐条对 S 里的判据；
-4. 回 `Plan/PROGRESS.md` 勾选 + 在 `Plan/证据.md` 写证据，再挑下一个 S。
+- 文档按职责分类：总览、模块、契约、工程、运行参考、源码索引。
+- 每个文件头部写 YAML 元数据：`id`、`kind`、`status`、`source_of_truth`、`last_verified`。
+- 只记录可证实事实；把“源码事实”“项目约定”“外部前提”“待运行验证”分开。
+- 不保留旧路径的兼容文档或计划壳；删除文档后，搜索并修复代码、脚本和检查中的旧路径引用。
+- 文档链接只指向仓库内仍存在的参考文件；删除文档后不留失效路径或兼容壳。
 
-> 历史文档里出现的 `PLAN.md §x`、`RULES-LANG.md §x`、`Plan/Pn/Px.y-*.md`、`Plan/G/G-S*` 等旧写法，
-> 一律对应上表的新路径（旧路径已不存在）。
+## 验证顺序
+
+1. 文档变更：检查 Markdown 文件、相对链接、源码路径和脚本中的路径。
+2. C++ 变更：先运行相关自检/门禁，再 `cmake --build build -j 8 --target ShineTVStudio`，最后按变更路径启动程序或运行 headless 模式。
+3. UI 变更：实际启动 `ShineTVStudio.exe`，走对应工作区；截图验收使用 `scripts/capture_window.ps1`，不要只看编译结果。
+4. 外部服务变更：先做离线 mock/协议自检，再在 ComfyUI 或 LLM 可用时联调；报告未执行的部分，不把推断写成通过。
+
+## 常用入口
+
+- 构建：[`docs/30-engineering/build.md`](docs/30-engineering/build.md)
+- 分层/主题/i18n 门禁：[`docs/30-engineering/checks.md`](docs/30-engineering/checks.md)
+- 环境变量和自检：[`docs/40-operations/environment.md`](docs/40-operations/environment.md)
+- 源码定位：[`docs/90-reference/source-map.md`](docs/90-reference/source-map.md)

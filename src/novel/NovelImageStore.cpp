@@ -203,7 +203,8 @@ std::vector<ImageChecklistItem> EvaluateImageChecklist(const GeneratedImageRow& 
 }
 
 std::filesystem::path ProjectDirOfDb(const std::filesystem::path& dbPath) {
-    return dbPath.parent_path();
+    const std::filesystem::path parent = dbPath.parent_path();
+    return util::PathToUtf8(parent.filename()) == "db" ? parent.parent_path() : parent;
 }
 
 std::filesystem::path ResolveImageAbsPath(const std::filesystem::path& projectDir,
@@ -427,18 +428,16 @@ std::expected<GeneratedImageRow, ImageGenError> RunImageJob(db::sqlite::Database
     }
     job.id = rowId;
 
-    // 生成：需要工程目录 = db 路径父目录
+    // 生成：需要工程目录。Database 持有真实打开路径；内存库才退到临时目录。
     std::filesystem::path projectDir;
-    {
-        // Database 不暴露 path；用 Settings novelRoot + project 或调用方写入 rel
-        // 这里：若 NovelDb 单例打开且同库，用其 path；否则用 temp
-        if (NovelDb::Instance().isOpen() &&
-            NovelDb::Instance().raw().isOpen() &&
-            &NovelDb::Instance().raw() == &db) {
-            projectDir = ProjectDirOfDb(NovelDb::Instance().path());
-        } else {
-            projectDir = std::filesystem::temp_directory_path() / "shine_novel_imggen";
-        }
+    if (!db.Path().empty()) {
+        projectDir = ProjectDirOfDb(db.Path());
+    } else if (NovelDb::Instance().isOpen() &&
+               NovelDb::Instance().raw().isOpen() &&
+               &NovelDb::Instance().raw() == &db) {
+        projectDir = ProjectDirOfDb(NovelDb::Instance().path());
+    } else {
+        projectDir = std::filesystem::temp_directory_path() / "shine_novel_imggen";
     }
     const auto absPath = ResolveImageAbsPath(projectDir, job.rel_path);
 

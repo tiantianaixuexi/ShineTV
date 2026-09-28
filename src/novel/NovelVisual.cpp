@@ -32,6 +32,26 @@ constexpr std::size_t kArtifactLayerOrderN =
     return kArtifactLayerOrderN;
 }
 
+[[nodiscard]] VisualStateRow ReadVisualState(db::sqlite::Statement& st) {
+    VisualStateRow row;
+    row.id = st.ColumnInt(0);
+    row.asset_id = st.ColumnInt(1);
+    row.stage_key = st.ColumnText(2);
+    row.stage_label = st.ColumnText(3);
+    row.ord = static_cast<int>(st.ColumnInt(4));
+    row.from_chapter = st.ColumnInt(5);
+    row.to_chapter = st.ColumnInt(6);
+    row.appearance = st.ColumnText(7);
+    row.materials_colors = st.ColumnText(8);
+    row.clothing_asset_id = st.ColumnInt(9);
+    row.item_asset_ids_json = st.ColumnText(10);
+    row.effects = st.ColumnText(11);
+    row.environment_hint = st.ColumnText(12);
+    row.canon_status = st.ColumnText(13);
+    row.note = st.ColumnText(14);
+    return row;
+}
+
 } // namespace
 
 std::expected<RowId, DbError> NovelVisual::UpsertAsset(const VisualAssetRow& row) {
@@ -348,23 +368,29 @@ NovelVisual::ResolveVisualState(RowId assetId, RowId chapterId) const {
         st = std::move(*st2);
         s = s2;
     }
-    VisualStateRow r;
-    r.id = st->ColumnInt(0);
-    r.asset_id = st->ColumnInt(1);
-    r.stage_key = st->ColumnText(2);
-    r.stage_label = st->ColumnText(3);
-    r.ord = static_cast<int>(st->ColumnInt(4));
-    r.from_chapter = st->ColumnInt(5);
-    r.to_chapter = st->ColumnInt(6);
-    r.appearance = st->ColumnText(7);
-    r.materials_colors = st->ColumnText(8);
-    r.clothing_asset_id = st->ColumnInt(9);
-    r.item_asset_ids_json = st->ColumnText(10);
-    r.effects = st->ColumnText(11);
-    r.environment_hint = st->ColumnText(12);
-    r.canon_status = st->ColumnText(13);
-    r.note = st->ColumnText(14);
-    return r;
+    return ReadVisualState(*st);
+}
+
+std::expected<std::vector<VisualStateRow>, DbError>
+NovelVisual::ListStates(RowId assetId) const {
+    std::vector<VisualStateRow> out;
+    if (assetId <= 0) {
+        return out;
+    }
+    auto st = db_->Prepare(
+        "SELECT id,asset_id,stage_key,stage_label,ord,from_chapter,to_chapter,appearance,"
+        "materials_colors,clothing_asset_id,item_asset_ids_json,effects,environment_hint,"
+        "canon_status,note FROM visual_states WHERE asset_id=?1 "
+        "ORDER BY from_chapter, ord, id");
+    if (!st) return std::unexpected(st.error());
+    (void)st->BindInt(1, assetId);
+    while (auto s = st->Step()) {
+        if (*s == db::sqlite::StepResult::Done) {
+            break;
+        }
+        out.push_back(ReadVisualState(*st));
+    }
+    return out;
 }
 
 std::expected<RowId, DbError> NovelVisual::UpsertCamera(std::string_view name,

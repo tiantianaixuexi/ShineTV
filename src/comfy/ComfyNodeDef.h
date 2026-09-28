@@ -4,7 +4,7 @@
 // 规范基线（**新代码按新版本写，旧版本只做读取兼容**）：
 //   - 目标格式：节点定义 JSON **v2.0**（`ComfyNodeDefV2`）—— 顶层 `inputs` 是**映射**、`outputs` 是数组（每项含 `index`/`is_list`）
 //   - 只读兼容：节点定义 JSON **v1.0**（`ComfyNodeDefV1`）—— 顶层 `input{required,optional,hidden}`，单个输入是定长二元数组 `[类型标识, 选项对象]`
-// 字段对照与出处：`Doc/RULES-COMFY.md` §12.6 A / B（获取方式与"自动识别形状"的实测要求见 §12.6 D）
+// 字段对照与出处见 docs/20-contracts/protocols.md；解析入口自动识别形状。
 //
 // 解析入口**自动识别形状**（V2 判据：顶层有 `inputs` 对象，且 `outputs[]` 项含 `index`/`is_list`），不依赖外部开关。
 #include <optional>
@@ -74,7 +74,7 @@ struct OutputDef {
 };
 
 struct NodeTypeDef {
-    std::string className;                // v2: name（同时作为 VNS 工厂 type）
+    std::string className;                // v2: name（同时作为节点类型 key）
     std::string displayName;              // v2: display_name
     std::string description;              // v2: description
     std::string category;                 // v2: category，用于节点面板分组

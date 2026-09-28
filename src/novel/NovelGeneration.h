@@ -8,7 +8,7 @@
 //      失败只有"单镜隔离"。
 //   3. **单镜失败不阻断其余镜**（`09` §2.2 的隔离），失败的镜留在 `out.shots` 里带 error。
 //
-// 与**桥**的分工（`11` §2.5 / `video/NovelShotBridge.h`）：提示词 → `VideoProject` 的转换、
+// 与**桥**的分工（`11` §2.5 / `visual/NovelShotBridge.h`）：提示词 → `VideoProject` 的转换、
 // K20/K21 的纠正记账由 `video::ToGenShot` 做（那座桥**不自动出图**）；本模块负责
 // 「读账 → 组桥的输入 → 提交出图队列 → 写回关联（`prompt_artifact_id` / `generation_ref`）」。
 //

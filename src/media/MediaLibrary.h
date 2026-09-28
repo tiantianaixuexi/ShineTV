@@ -1,20 +1,21 @@
 #pragma once
 // shine::media::MediaLibrary —— ComfyUI 历史产物清单 + 本地缓存 + 纹理获取（P4.2 / P4.3 / P4.5）
 //
-// 异步规范（`MEMORY.md`「异步任务规范」）：下载/解码/读盘一律在 worker；UI 线程只做
+// 异步规范（见 docs/30-engineering/coding-rules.md）：下载/解码/读盘一律在 worker；UI 线程只做
 // 状态与纹理（`gpu::Textures().Upload`）。WS 回调（二进制预览帧 / prompt 事件）在 **WS 线程**，
 // 本类里只做节流 + 投递，不直接改 UI 状态。
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include "comfy/ComfyTypes.h"
-#include "gallery/Image.h"
+#include "media/Image.h"
 #include "gpu/GpuTexture.h"
 #include "media/ImageFetch.h"
 
@@ -71,6 +72,17 @@ public:
     [[nodiscard]] std::int64_t LastPreviewMs() const noexcept { return lastPreviewUiMs_; }
     void ClearPreview();
 
+    // —— 预览帧 CPU 快照（Qt 前端显示路径：无 GPU 纹理可读，读这份 RGBA8）——
+    // 与 PreviewTexture 同源（UploadPreview 落两份），仅 UI 线程读写。
+    struct PreviewFrameCpu {
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        std::shared_ptr<const std::vector<std::uint8_t>> rgba; // stride = width*4
+    };
+    [[nodiscard]] std::shared_ptr<const PreviewFrameCpu> PreviewFrame() const noexcept {
+        return previewFrameCpu_;
+    }
+
     [[nodiscard]] std::size_t CachedBytes() const;
     void ClearCache();
     void MarkUncached(std::uint64_t key); // 用户删掉本地缓存后调用（条目仍保留、标为“未缓存”）
@@ -98,6 +110,7 @@ private:
     bool selectLatestWhenMerged_ = false; // P5.6 S3：本次历史合并完要自动选中最近输出
     std::string pendingSelectName_;       // 优先按文件名匹配（生成器刚落盘的文件名）
     gpu::GpuTextureHandle previewTexture_;
+    std::shared_ptr<const PreviewFrameCpu> previewFrameCpu_;
     bool previewActive_ = false;
     bool previewFromWs_ = false;
     std::int64_t lastPreviewUiMs_ = 0;

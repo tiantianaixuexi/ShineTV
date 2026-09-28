@@ -1,16 +1,19 @@
 ---
 name: shinetv-build
-description: ShineTV 使用 GCC 16.1.0 MinGW 构建、CMake 选项、常见编译错误。当用户要编译、配置 build、改 CMakeLists、或报「找不到编译器/链接错误」时使用。
+description: ShineTV 当前 GCC/MSYS2/CMake/Qt 构建、目标划分、编译故障定位与打包。
 ---
 
-# ShineTV 构建（GCC 16.1.0）
+# ShineTV 构建
 
-## 硬性工具链
+先读：[构建说明](../../../docs/30-engineering/build.md)、[检查脚本](../../../docs/30-engineering/checks.md)。
 
-- **只用** MSYS2 MinGW64 GCC 16.1.0，路径 `C:/msys64/mingw64/bin`
-- 禁止 Clang / MSVC / 外部 Ninja（除非用户明确要求）
+## 工具链
 
-## 一键构建
+- CMake 3.20+；C++26，C 源文件 C17。
+- MSYS2 MinGW64 GCC/G++ 16.1，路径 `C:/msys64/mingw64/bin`。
+- Qt 6 Widgets；CMake 生成 `shine_core`、`shine_kit`、`ShineTVStudio`。
+
+## 命令
 
 ```powershell
 $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
@@ -19,39 +22,22 @@ cmake -S . -B build -G "MinGW Makefiles" `
   -DCMAKE_CXX_COMPILER=C:/msys64/mingw64/bin/g++.exe `
   -DCMAKE_MAKE_PROGRAM=C:/msys64/mingw64/bin/mingw32-make.exe `
   -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j 8
-# 输出: build\ShineTVStudio.exe
+cmake --build build -j 8 --target ShineTVStudio
 ```
 
-增量：直接 `cmake --build build -j 8`。改 CMakeLists 后需重新 configure。
+`powershell -File scripts/studio.ps1 build` 是同一构建流程的包装。修改 `CMakeLists.txt` 后先 configure；新增 `.cpp` 必须登记到对应 target。
 
-## CMake 要点（根 `CMakeLists.txt`）
+## 依赖边界
 
-| 项 | 值 |
-|----|-----|
-| 标准 | C++26 / C17 |
-| 宏 | `UNICODE` `NOMINMAX` `WIN32_LEAN_AND_MEAN` `FMT_HEADER_ONLY` `SPDLOG_FMT_EXTERNAL` `HV_STATICLIB` `MI_MALLOC_OVERRIDE=0` |
-| 链接 | `hv_static` + d3d11/dxgi/dwmapi + secur32/crypt32/winmm/iphlpapi/ws2_32 |
-| 链接选项 | `-municode -static -static-libgcc -static-libstdc++` |
-| libhv | `add_subdirectory(third/libhv)`，`BUILD_SHARED=OFF`，`WITH_HTTP_SERVER=OFF`，`SHINE_SKIP_LIBHV_RC=ON` |
-| mimalloc | 直接编 `third/mimalloc/src/static.c`，**不要**再 add_subdirectory |
+- 业务层只用 `net::HttpClient`、`core/Log`、`core/Async`、`util/Reflect` 等适配入口。
+- `shine_core` 不链接 Qt；`shine_kit` 和可执行程序才使用 Qt。
+- C++ 源文件由 MinGW 分支加 `-freflection`；第三方 C 文件不需要。
+- 静态库源清单逐项写在根 CMake，不凭记忆补第三方文件。
 
-## 常见错误
+## 故障定位
 
-| 现象 | 处理 |
-|------|------|
-| `spdlog/xxx.h: No such file` | include 需含 `third/`（父目录），不是 `third/spdlog` |
-| `hv::HttpRequest` 不存在 | libhv 的 `HttpRequest`/`HttpResponse` 在**全局命名空间** |
-| `stdexec::start_detached` 废弃 | `#include <exec/start_detached.hpp>`，用 `exec::start_detached` |
-| `yyjson_write(val)` 参数错 | 写值用 `yyjson_val_write` |
-| ImGui 中文方框 | 检查 `Fonts.cpp` 是否加载 msyh + Chinese glyph range |
-| libhv RC 规则炸 | 必须保持 `SHINE_SKIP_LIBHV_RC ON` |
-| `ImMin`/`ImMax` 未定义 | 用 `std::min`/`std::max`，或 include `imgui_internal.h` |
-
-## 新源文件
-
-在 `add_executable(ShineTVStudio ...)` 列表追加；头文件目录已含 `src/`、`third/`、libhv 各子目录。
-
-## 相关 skill
-
-`shinetv-thirdparty` — 库接入细节；`shinetv-structure` — 文件放哪。
+1. 先跑 `tools/check-layers.ps1` 区分分层错误。
+2. 检查 Qt `find_package`、GCC 版本和 CMake cache。
+3. 检查新增源文件是否在 CMake 列表。
+4. 中文路径/编码问题查 `util::Encoding.h`、`util::File.h`。
+5. 运行真实目标或对应自检；编译成功不等于交互成功。

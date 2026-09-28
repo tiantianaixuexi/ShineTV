@@ -1,6 +1,6 @@
 #pragma once
 // V0 ASSET_PIPELINE 编排骨架：正脸 → 四视图 → 基础身体 → 服装
-// 规格：Doc/小说系统/11 §2.6（生产状态机 + 派生链）、§2.7（依赖等待 C 为主 + B 兜底）。
+// 规格与状态契约见 docs/10-modules/visual-storyboard.md、docs/20-contracts/visual-generation.md。
 // 契约：02 §2.14（VisualArtifact）、03 §2.3（ASSET_PIPELINE 进入/退出条件）。
 //
 // 本 S 的边界（明确不做）：

@@ -5,8 +5,8 @@
 #include "mcp/McpBootstrap.h"
 #include "mcp/ToolRegistry.h"
 #include "novel/NovelMcpTools.h"
-#include "openai/OpenAIClient.h"
-#include "openai/OpenAIProvider.h"
+#include "llm/OpenAIClient.h"
+#include "llm/OpenAIProvider.h"
 
 #include <fmt/format.h>
 #include <yyjson.h>
@@ -17,9 +17,9 @@
 namespace shine::mcp {
 namespace {
 
-[[nodiscard]] std::vector<openai::ChatToolDef> NovelMcpToolDefs() {
+[[nodiscard]] std::vector<llm::ChatToolDef> NovelMcpToolDefs() {
     RegisterAllModules(ToolRegistry::Instance());
-    std::vector<openai::ChatToolDef> out;
+    std::vector<llm::ChatToolDef> out;
     for (const char* name : {
              "novel_route_task",
              "novel_get_agent",
@@ -36,7 +36,7 @@ namespace {
          }) {
         const Tool* t = ToolRegistry::Instance().Find(name);
         if (!t) continue;
-        out.push_back(openai::ChatToolDef{
+        out.push_back(llm::ChatToolDef{
             .json = fmt::format(
                 R"({{"type":"function","function":{{"name":"{}","description":"{}","parameters":{}}}}})",
                 t->name, t->description, t->schemaJson.empty() ? "{}" : t->schemaJson)});
@@ -93,7 +93,7 @@ std::expected<RemoteAgentOutcome, std::string> RunMcpBridgedAgent(std::string_vi
     if (tools.empty()) {
         return std::unexpected(std::string{"MCP 注册表无 novel 工具"});
     }
-    const auto profile = openai::ResolveActiveProfile();
+    const auto profile = llm::ResolveActiveProfile();
     if (profile.apiKey.empty()) {
         return std::unexpected(fmt::format(
             "未配置 LLM API Key（设置 Provider=MiMo/… 或环境变量）。model={}", profile.model));
@@ -110,7 +110,7 @@ std::expected<RemoteAgentOutcome, std::string> RunMcpBridgedAgent(std::string_vi
     };
 
     auto result =
-        openai::RunChatToolLoop(system, std::string{task}, tools, exec, 20, &out.callLog, nullptr);
+        llm::RunChatToolLoop(system, std::string{task}, tools, exec, 20, &out.callLog, nullptr);
     if (!result) {
         return std::unexpected(
             fmt::format("{}：{}", result.error().code, result.error().message));
@@ -120,7 +120,7 @@ std::expected<RemoteAgentOutcome, std::string> RunMcpBridgedAgent(std::string_vi
 }
 
 bool RunMcpBridgedAgentLiveCheck() {
-    const auto profile = openai::ResolveActiveProfile();
+    const auto profile = llm::ResolveActiveProfile();
     if (profile.apiKey.empty()) {
         log::Warn("McpBridgedAgent 实联调跳过：无 API Key（Provider={}）", profile.model);
         return true;

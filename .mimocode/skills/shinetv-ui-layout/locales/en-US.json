@@ -1,4 +1,4 @@
 {
-  "displayName": "ShineTV UI Layout",
-  "brief": "VS Code-style six-region dock, activity bar, and ImGui performance rules"
+  "displayName": "ShineTV Qt UI Layout",
+  "brief": "Current Qt Widgets seven-region workspace, theme controls, shortcuts, and UI thread rules"
 }

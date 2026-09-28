@@ -55,7 +55,7 @@ public:
     ListFieldDefs(std::string_view scope = {}, std::string_view entityKind = {}) const;
     [[nodiscard]] std::expected<void, DbError> DeleteFieldDef(RowId id, bool force = false);
 
-    // —— S2b 字段门禁（规格 `Doc/小说系统/08` §2.2 / §2.4 / §2.6）——
+    // —— 字段门禁（规则见 docs/20-contracts/novel-state.md）——
     // 键归一化：trim → lower → 空白/连字符转下划线 → 折叠连续下划线 → 去首尾下划线
     [[nodiscard]] static std::string NormalizeKey(std::string_view raw);
     // ^[a-z][a-z0-9_]{1,39}$（长度 2..40，首字符小写字母）

@@ -10,6 +10,7 @@
 #endif
 
 #include <string>
+#include <utility>
 
 namespace shine::db::sqlite {
 namespace {
@@ -41,15 +42,19 @@ Database::~Database() {
     Close();
 }
 
-Database::Database(Database&& other) noexcept : db_(other.db_) {
+Database::Database(Database&& other) noexcept
+    : db_(other.db_), path_(std::move(other.path_)) {
     other.db_ = nullptr;
+    other.path_.clear();
 }
 
 Database& Database::operator=(Database&& other) noexcept {
     if (this != &other) {
         Close();
         db_ = other.db_;
+        path_ = std::move(other.path_);
         other.db_ = nullptr;
+        other.path_.clear();
     }
     return *this;
 }
@@ -59,6 +64,7 @@ void Database::Close() noexcept {
         sqlite3_close(db_);
         db_ = nullptr;
     }
+    path_.clear();
 }
 
 std::expected<void, SqliteError> Database::Open(const OpenOptions& opt) {
@@ -89,6 +95,7 @@ std::expected<void, SqliteError> Database::Open(const OpenOptions& opt) {
         return std::unexpected(std::move(err));
     }
     db_ = raw;
+    path_ = opt.memory ? std::filesystem::path{} : opt.path;
     // 忙等待：单进程内多连接写同一文件时更稳
     sqlite3_busy_timeout(db_, 3000);
     return {};

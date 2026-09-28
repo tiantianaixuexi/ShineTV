@@ -1,0 +1,27 @@
+{
+  "name": "深空",
+  "colors": {
+    "bg.void": "#0B0E14",
+    "bg.surface": "#121A24",
+    "bg.panel": "#182230",
+    "bg.elevated": "#1C2733",
+    "bg.overlay": "#00000099",
+    "line.subtle": "#1F2937",
+    "line.normal": "#2A3644",
+    "line.strong": "#3A4A5C",
+    "text.primary": "#E8EEF6",
+    "text.secondary": "#B7C2D2",
+    "text.muted": "#8B96A8",
+    "text.inverse": "#0B0E14",
+    "accent.primary": "#3ECFB2",
+    "accent.primary.hover": "#57DCC2",
+    "accent.primary.fg": "#06231D",
+    "accent.secondary": "#F2A65A",
+    "accent.info": "#6FA8FF",
+    "status.ok": "#6BCB8A",
+    "status.warn": "#E8C56A",
+    "status.danger": "#F07178",
+    "status.busy": "#3ECFB2",
+    "status.idle": "#8B96A8"
+  }
+}

@@ -48,12 +48,12 @@ using BinaryCb = std::move_only_function<void(BinaryResult)>;
 // `/view?filename=…&subfolder=…&type=output`（文件名做百分号转义）
 [[nodiscard]] std::string BuildViewUrl(std::string_view baseUrl, std::string_view fileName,
                                        std::string_view subfolder, std::string_view type);
-// worker 下载 → PostToUi 回调（MEMORY.md 异步任务规范）
+// worker 下载 → PostToUi 回调（线程规则见 docs/30-engineering/coding-rules.md）
 void FetchViewAsync(std::string_view baseUrl, std::string_view fileName, std::string_view subfolder,
                     std::string_view type, BinaryCb cb);
 
 // Synchronous parse helpers (yyjson), used by WS and HTTP paths.
-// 注：保留 bool + 出参的"形状"，只现代化参数类型 —— 存量 API 不重构形状，避免连锁改动（Plan/PLAN.md §5.0）。
+// 注：保留 bool + 出参的"形状"，只现代化参数类型 —— 存量 API 不重构形状；规则见 docs/30-engineering/coding-rules.md。
 [[nodiscard]] bool ParseQueueJson(std::string_view json, QueueResult& out);
 [[nodiscard]] bool ParseHistoryJson(std::string_view json, int maxItems, HistoryResult& out);
 [[nodiscard]] bool ParseObjectInfoJson(std::string_view json, ObjectInfoResult& out);
