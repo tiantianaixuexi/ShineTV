@@ -19,6 +19,8 @@ RunResult Runner::RunNext() {
     result.stage = current_;
     const auto index = static_cast<int>(current_);
     if (index >= static_cast<int>(AllStages().size())) {
+        // 已跑完：越界不再前进，停在上一个合法阶段（"已完成"由调用方判断）
+        current_ = static_cast<StageId>(static_cast<int>(AllStages().size()) - 1);
         result.ok = true;
         return result;
     }
@@ -78,6 +80,13 @@ RunResult Runner::RunAll() {
             aggregate.reason = one.reason;
             return aggregate;
         }
+    }
+    // 全部阶段跑完后 current_ 会递增到 AllStages().size()（越界），
+    // StageCode() 于是返回 "UNKNOWN"，UI 上就出现「当前阶段 UNKNOWN」。
+    // 这里把它收敛回最后一个合法阶段，"已完成"由调用方看 aggregate.ok 判断。
+    const auto last = static_cast<int>(AllStages().size()) - 1;
+    if (static_cast<int>(current_) > last) {
+        current_ = static_cast<StageId>(last);
     }
     aggregate.ok = true;
     return aggregate;

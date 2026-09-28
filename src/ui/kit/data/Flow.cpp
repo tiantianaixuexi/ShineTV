@@ -82,6 +82,14 @@ void Timeline::Rebuild() {
 
 namespace {
 
+// webui ui.css .stageflow：.snode 高 30；主链 y=8；支线（branchOf 非空）下沉到 y=46。
+// 这两个常量被 sizeHint 和 BoxOf 共用，避免"画出来的高度"和"占位的高度"对不上。
+constexpr double kNodeHeight = 30.0;
+constexpr double kFlowPaddingY = 8.0;
+constexpr double kBranchNodeY = 46.0;
+constexpr double kNodeWidth = 132.0;
+constexpr double kNodePitch = 150.0;
+
 struct Paint {
     theme::ColorToken t;
 };
@@ -120,16 +128,19 @@ StageFlow::NodeState StageFlow::StateOf(const QString& id) const {
 }
 
 QSize StageFlow::sizeHint() const {
-    return {static_cast<int>(nodes_.size()) * 172 + 24, 156};
+    // 高度覆盖最坏情况：有支线时 y 到 46 + 30，再加上下留白。
+    // 主链独占时按 sizeHint 自适应，不额外留白。
+    constexpr double branch_total = kBranchNodeY + kNodeHeight + kFlowPaddingY;
+    return {static_cast<int>(nodes_.size()) * 172 + 24, static_cast<int>(branch_total)};
 }
 
 QRectF StageFlow::BoxOf(std::size_t i) const {
     const Node& n = nodes_[i];
     // webui ui.css .stageflow：snode 高 30 / r-pill / p0 11；slink 宽 18。
-    // 这里取宽 132 + 间距 18（= slink 宽），两行布局，支线下沉一行。
-    const double x = 12.0 + static_cast<double>(i) * 150.0;
-    const double y = n.branchOf.isEmpty() ? 8.0 : 46.0;
-    return {x, y, 132, 30};
+    // 两行布局，支线下沉一行（branchOf 非空）。
+    const double x = 12.0 + static_cast<double>(i) * kNodePitch;
+    const double y = n.branchOf.isEmpty() ? kFlowPaddingY : kBranchNodeY;
+    return {x, y, kNodeWidth, kNodeHeight};
 }
 
 QString StageFlow::NodeAt(const QPointF& pos) const {
