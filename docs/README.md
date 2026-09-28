@@ -58,6 +58,7 @@ last_verified: 2026-09-25
 
 - [`90-reference/source-map.md`](90-reference/source-map.md)：从任务到目录、头文件和关键符号的索引。
 - [`90-reference/glossary.md`](90-reference/glossary.md)：项目术语、状态词和协议缩写。
+- [`90-reference/ui-design-parity-gaps.md`](90-reference/ui-design-parity-gaps.md)：Qt 无法 1:1 移植的设计稿特性、控件行为限制、数据缺口和验收盲区。
 
 ## 按任务阅读
 
@@ -68,7 +69,7 @@ last_verified: 2026-09-25
 | 改小说数据或生成 | `novel.md` → `novel-state.md` → `llm-mcp.md` → `pipeline.md` |
 | 改分镜/出图/出片 | `novel.md` → `visual-storyboard.md` → `flow-comfy.md` → `visual-generation.md` |
 | 改 ComfyUI/MCP/LLM 协议 | `flow-comfy.md` → `llm-mcp.md` → `protocols.md` |
-| 改 Qt 页面/主题/控件 | `ui-kit.md` → `coding-rules.md` → `architecture.md` |
+| 改 Qt 页面/主题/控件 | `ui-kit.md` → `ui-design-parity-gaps.md` → `coding-rules.md` → `architecture.md` |
 | 改构建或检查脚本 | `build.md` → `checks.md` → `environment.md` |
 | 定位陌生代码 | `source-map.md` → 对应模块文档 → 头文件/实现 |
 

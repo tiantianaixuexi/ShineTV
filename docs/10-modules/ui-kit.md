@@ -86,6 +86,12 @@ last_verified: 2026-09-28
 进度条 h6/pill、表头 f11.5/w600、页签 p8 12/f13/w600/选中 accent+2px 下划线）
 统一写在 `kit/theme/QssBuilder.cpp` 的 kit 样式段里，**不在页面里写几何值**。
 
+Qt 无法 1:1 移植的设计稿特性（`box-shadow`、`backdrop-filter`、CSS transform、
+transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTextEdit` 忽略
+`textIndent` 等控件行为限制，以及资产详情 `.tl` 时间线等数据缺口，统一记录在
+[`90-reference/ui-design-parity-gaps.md`](../90-reference/ui-design-parity-gaps.md)。
+改 UI 前先看那份文件，别重复踩同一类坑。
+
 `kit::canvas::FlowCanvas` 的节点自绘同样走 `theme::Current()` token
 （节点 w150 / r10 / 1.5px 边 / 标题 12px w700 + accent 标记 / 端口 11px muted），
 四套主题下节点与连线随主题变化。
