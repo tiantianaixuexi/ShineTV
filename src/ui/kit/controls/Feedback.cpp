@@ -14,7 +14,8 @@ ProgressBar::ProgressBar(QWidget* parent) : QProgressBar(parent) {
     setRange(0, 100);
     setValue(0);
     setTextVisible(true);
-    setMinimumHeight(8);
+    // 高度交给 QSS 的 min/max-height: 6px（webui .prog）。此处不再 setMinimumHeight(8)，
+    // 否则会压过 QSS 的 6px，比设计稿高一档。
 }
 
 void ProgressBar::SetIndeterminate(bool on) {
@@ -43,18 +44,23 @@ EmptyState::EmptyState(const QString& icon, const QString& title, const QString&
     : QFrame(parent) {
     SetKind(this, "emptystate");
     auto* col = new QVBoxLayout(this);
-    col->setContentsMargins(32, 24, 32, 24);
-    col->setSpacing(8);
+    col->setContentsMargins(20, 40, 20, 40); // webui .empty padding: 40px 20px
+    col->setSpacing(10);                      // .empty gap: 10px
     col->setAlignment(Qt::AlignCenter);
 
-    auto* ic = new QLabel(icon, this);
+    // .glyph：52×52 圆角虚线方框，框内才是图标（QSS 的 emptyglyph 负责框）
+    auto* glyph = new QFrame(this);
+    SetKind(glyph, "emptyglyph");
+    auto* glyphLay = new QHBoxLayout(glyph);
+    glyphLay->setContentsMargins(0, 0, 0, 0);
+    auto* ic = new QLabel(icon, glyph);
     SetKind(ic, "stateicon");
     ic->setAlignment(Qt::AlignCenter);
-    col->addWidget(ic, 0, Qt::AlignCenter);
+    glyphLay->addWidget(ic);
+    col->addWidget(glyph, 0, Qt::AlignCenter);
 
     auto* t = new QLabel(title, this);
-    SetKind(t, "statetitle");
-    SetSemibold(t, true);
+    SetKind(t, "emptytitle"); // .empty .title：f13 w600 text-secondary
     t->setAlignment(Qt::AlignCenter);
     t->setWordWrap(true);
     t->setMaximumWidth(360); // 同 subtitle：宽度上限让折行点可预期
@@ -88,8 +94,8 @@ EmptyState::EmptyState(const QString& icon, const QString& title, const QString&
 ErrorState::ErrorState(const QString& title, const QString& detail, QWidget* parent) : QFrame(parent) {
     SetKind(this, "errorstate");
     auto* col = new QVBoxLayout(this);
-    col->setContentsMargins(32, 24, 32, 24);
-    col->setSpacing(8);
+    col->setContentsMargins(20, 40, 20, 40); // 与 EmptyState 同一套 .empty 几何
+    col->setSpacing(10);
     col->setAlignment(Qt::AlignCenter);
 
     auto* ic = new QLabel(QStringLiteral("⚠"), this);

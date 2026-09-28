@@ -1,9 +1,12 @@
 #include "ui/pages/shell/RightPanel.h"
 
 #include "ui/kit/controls/Controls.h"
+#include "ui/kit/controls/WidgetCommon.h"
 #include "ui/kit/theme/Token.h"
 
 #include <QLabel>
+#include <QPushButton>
+#include <QScrollArea>
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
@@ -21,19 +24,36 @@ namespace {
 class Section : public QFrame {
   public:
     Section(const QString& title, QWidget* body, QWidget* parent = nullptr) : QFrame(parent) {
+        setObjectName(QStringLiteral("sect")); // .sect：段间一条 line-subtle
+        title_ = title;
         auto* lay = new QVBoxLayout(this);
         lay->setContentsMargins(0, 0, 0, 0);
-        lay->setSpacing(theme::space::kSteps[1]);
-        header_ = new shine::widgets::Button(QStringLiteral("▾ %1").arg(title),
-                                             shine::widgets::Button::Variant::Ghost,
-                                             shine::widgets::Button::Size::Sm, this);
-        connect(header_, &shine::widgets::Button::clicked, this, [this, title] {
-            body_->setVisible(!body_->isVisible());
-            header_->setText((body_->isVisible() ? QStringLiteral("▾ ") : QStringLiteral("▸ ")) + title);
-        });
+        lay->setSpacing(0);
+        header_ = new QPushButton(this);
+        header_->setObjectName(QStringLiteral("sectHeader"));
+        header_->setCursor(Qt::PointingHandCursor);
+        header_->setCheckable(false);
+        header_->setFlat(true);
         body_ = body;
+        SetOpen(true);
+        connect(header_, &QPushButton::clicked, this, [this] { SetOpen(!open_); });
+        // .sect-b：p 2px 14px 14px（shell.css:367-370）—— 头部自带 10/14 内距，
+        // 这里只补正文容器的上/下/左右
+        auto* box = new QWidget(this);
+        auto* box_lay = new QVBoxLayout(box);
+        box_lay->setContentsMargins(14, 2, 14, 14);
+        box_lay->setSpacing(0);
+        box_lay->addWidget(body_);
         lay->addWidget(header_);
-        lay->addWidget(body_);
+        lay->addWidget(box);
+    }
+
+    void SetOpen(bool on) {
+        open_ = on;
+        // .sect-h .tw：展开时 chevron 旋转 90°（shell.css:361-366）。
+        // QSS 无 transform，这里用两个字符图标表示朝向（同一 widget 的两种字形）。
+        header_->setText(on ? QStringLiteral("▾ %1").arg(title_)
+                            : QStringLiteral("▸ %1").arg(title_));
     }
 
     // 把 body 从段里摘下来还给外壳（不销毁）：页面仍持有它。
@@ -47,29 +67,40 @@ class Section : public QFrame {
     }
 
   private:
-    shine::widgets::Button* header_ = nullptr;
+    QPushButton* header_ = nullptr;
     QWidget* body_ = nullptr;
+    QString title_;
+    bool open_ = true;
 };
 
 } // namespace
 
 RightPanel::RightPanel(QWidget* parent) : QFrame(parent) {
     setObjectName(QStringLiteral("rightPanel"));
-    // 收起态宽度由外壳给 0；打开态给一个够用的下限，避免检查器自己被压成残条
+    // .inspector：w280（shell.css:335-342）。收起态宽度由外壳给 0；
+    // 打开态给一个够用的下限，避免检查器自己被压成残条（用户可拖宽到 560）。
     setMinimumWidth(280);
     setMaximumWidth(560);
 
     auto* lay = new QVBoxLayout(this);
-    lay->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[3],
-                            theme::space::kSteps[3], theme::space::kSteps[3]);
-    lay->setSpacing(theme::space::kSteps[3]);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(0);
 
-    stack_ = new QStackedWidget(this);
+    // .inspector overflow-y: auto → 检查器整体可滚（段内容由页面提供，高度不定）
+    scroll_ = new QScrollArea(this);
+    scroll_->setWidgetResizable(true);
+    scroll_->setFrameShape(QFrame::NoFrame);
+    scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll_->setObjectName(QStringLiteral("inspectorScroll"));
+    lay->addWidget(scroll_, 1);
+
+    stack_ = new QStackedWidget(scroll_);
 
     // 空状态：没有选中对象时唯一可见的内容。不写任何「即将接入 / 占位」文案。
     empty_ = new QWidget(stack_);
     auto* el = new QVBoxLayout(empty_);
-    el->setContentsMargins(0, theme::space::kSteps[4], 0, 0);
+    el->setContentsMargins(14, 10, 14, 14);
     empty_text_ = new QLabel(QStringLiteral("未选中任何对象"), empty_);
     shine::widgets::SetKind(empty_text_, "statesub");
     empty_text_->setAlignment(Qt::AlignCenter);
@@ -82,11 +113,10 @@ RightPanel::RightPanel(QWidget* parent) : QFrame(parent) {
     host_ = new QWidget(stack_);
     host_lay_ = new QVBoxLayout(host_);
     host_lay_->setContentsMargins(0, 0, 0, 0);
-    host_lay_->setSpacing(theme::space::kSteps[3]);
+    host_lay_->setSpacing(0);
     host_lay_->addStretch();
     stack_->addWidget(host_);
-
-    lay->addWidget(stack_, 1);
+    scroll_->setWidget(stack_);
 }
 
 QWidget* RightPanel::AddSection(const QString& title, QWidget* body) {

@@ -11,6 +11,7 @@
 #include "ui/kit/controls/Inputs.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/layout/QtLayout.h"
 #include "llm/OpenAIConfig.h"
 #include "novel/NovelDirector.h"
 #include "novel/NovelPipeline.h"
@@ -65,9 +66,9 @@ std::string ModelPromptView::PromptOverridePath(const std::filesystem::path& dir
 
 ModelPromptView::ModelPromptView(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                              theme::space::kSteps[2], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     // —— 顶部：auto 规则灯 + Key 掩码 ——
     auto* head = new QWidget(this);

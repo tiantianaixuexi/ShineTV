@@ -129,10 +129,13 @@ bool RubricVerdictFail(const std::vector<RubricScore>& scores, std::string_view 
 namespace {
 
 // —— rubric 条形 + 阈值刻度线（token 派生，零内联）——
+// webui views.css:615 `.rubric .r-row { grid-template-columns: 76px 1fr 44px; gap:12px }`：
+// 名称与分数各自定宽居中，只有中间的进度条伸缩。条形本体不再自带文字
+// （旧版把「名称 分数/阈值」画在整条 bar 上，导致宽窄不一时文字跟着漂）。
 class RubricBar : public QWidget {
   public:
-    RubricBar(const RubricScore& s, QWidget* parent) : QWidget(parent), score_(s) {
-        setMinimumHeight(30);
+    explicit RubricBar(const RubricScore& s, QWidget* parent) : QWidget(parent), score_(s) {
+        setMinimumHeight(20);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
 
@@ -141,44 +144,76 @@ class RubricBar : public QWidget {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         const int h = height();
-        const int barH = 10;
-        const int y = (h - barH) / 2 + 3; // 给下方刻度留一行
-        const int w = std::max(1, width() - 2);
+        // webui `.progress.thin`：细条居中，上下留白对称
+        const int barH = std::clamp(h - 8, 4, 10);
+        const int y = (h - barH) / 2;
+        const int w = std::max(1, width());
 
-        // 底槽（bg.elevated）
-        p.fillRect(QRect(1, y, w, barH), shine::widgets::TokenQColor(theme::Current().bgElevated));
-        // 得分条（低于阈值 = danger，否则 = accent primary）
+        // 底槽（bg.elevated；r-pill 与进度条同档）
+        p.setPen(Qt::NoPen);
+        p.setBrush(shine::widgets::TokenQColor(theme::Current().bgElevated));
+        p.drawRoundedRect(QRect(0, y, w, barH), barH / 2.0, barH / 2.0);
+        // 得分条（低于阈值 = danger，否则 = accent primary；r-pill 圆头）
         const auto c = score_.below
                            ? shine::widgets::TokenQColor(theme::Current().statusDanger)
                            : shine::widgets::TokenQColor(theme::Current().accentPrimary);
-        const int fw = w * std::clamp(score_.score, 0, 100) / 100;
-        p.fillRect(QRect(1, y, std::max(2, fw), barH), c);
+        p.setBrush(c);
+        p.drawRoundedRect(QRect(0, y, std::max(barH, w * std::clamp(score_.score, 0, 100) / 100),
+                                barH),
+                          barH / 2.0, barH / 2.0);
 
-        // 阈值刻度线（textSecondary，虚线感：短线三段）
-        const int tx = 1 + w * std::clamp(score_.threshold, 0, 100) / 100;
+        // 阈值刻度线（text.secondary，贯穿条高的竖线）
+        const int tx = w * std::clamp(score_.threshold, 0, 100) / 100;
         p.setPen(shine::widgets::TokenQColor(theme::Current().textSecondary));
-        for (int dy = -3; dy <= 3; ++dy) {
-            p.drawLine(tx, y + dy, tx, y + dy + (dy < 0 ? 1 : 0));
-        }
-
-        // 文案：`名称  分数/阈值`
-        QFont f = font();
-        f.setPointSizeF(std::max(7.0, f.pointSizeF() - 1.0));
-        p.setFont(f);
-        p.setPen(shine::widgets::TokenQColor(score_.below ? theme::Current().statusDanger
-                                                          : theme::Current().textPrimary));
-        p.drawText(QRect(4, 0, w - 8, 18), Qt::AlignLeft | Qt::AlignVCenter,
-                   QStringLiteral("%1  %2 / %3%4")
-                       .arg(score_.name)
-                       .arg(score_.score)
-                       .arg(score_.threshold)
-                       .arg(score_.below ? QStringLiteral("  ✘ 低于阈值")
-                                          : QStringLiteral("  ✔")));
+        p.drawLine(tx, y - 2, tx, y + barH + 2);
     }
 
   private:
     RubricScore score_;
 };
+
+// .rubric 的三列行：名称（76px / w600 / text-secondary）· 条 · 分数（44px 右对齐 /
+// 等宽 / 11px / text-muted）。行间距 9px 由外层 QVBoxLayout 给。
+[[nodiscard]] QWidget* MakeRubricRow(const RubricScore& s, QWidget* parent) {
+    auto* row = new QWidget(parent);
+    auto* rl = new QHBoxLayout(row);
+    rl->setContentsMargins(0, 0, 0, 0);
+    rl->setSpacing(theme::space::kSteps[4]); // 12px：.r-row 的 gap
+
+    auto* name = new QLabel(s.name, row);
+    name->setFixedWidth(76); // grid 第一列
+    name->setFont([parent] {
+        QFont f = parent->font();
+        f.setPixelSize(12); // 12.5px 按「就近取整」落 12px 档
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }());
+    widgets::SetTextColor(name, theme::Current().textSecondary);
+    name->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+    auto* score = new QLabel(QString::number(s.score), row);
+    score->setFixedWidth(44); // grid 第三列
+    score->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    QFont sf = score->font();
+    sf.setPixelSize(11); // 11.5px → 11px
+    sf.setFamilies({QString::fromLatin1("Cascadia Code"), QString::fromLatin1("JetBrains Mono"),
+                    QString::fromLatin1("Consolas"), QString::fromLatin1("monospace")});
+    score->setFont(sf);
+    widgets::SetTextColor(score,
+                          s.below ? theme::Current().statusDanger : theme::Current().textMuted);
+
+    rl->addWidget(name);
+    rl->addWidget(new RubricBar(s, row), 1);
+    rl->addWidget(score);
+    // 阈值不再常驻成第三段文字（`.r-score` 只有分数一列），信息落到 tooltip 上，
+    // hover 就能看到「得分 / 阈值 / 是否达标」，与判据（`06` §2.4）对得上。
+    row->setToolTip(QStringLiteral("%1：%2 / %3 阈值（%4）")
+                        .arg(s.name)
+                        .arg(s.score)
+                        .arg(s.threshold)
+                        .arg(s.below ? QStringLiteral("低于阈值") : QStringLiteral("达标")));
+    return row;
+}
 
 } // namespace
 
@@ -377,6 +412,9 @@ void ReviewView::Refresh() {
 
     // —— 刷新 UI ——
     auto* rows = new QVBoxLayout(rubric_rows_);
+    // webui .rubric { display:flex; flex-direction:column; gap:9px }
+    rows->setContentsMargins(0, 0, 0, 0);
+    rows->setSpacing(9);
     while (rows->count() > 0) {
         QLayoutItem* it = rows->takeAt(0);
         delete it->widget();
@@ -384,7 +422,7 @@ void ReviewView::Refresh() {
     }
     if (!critic_json_.empty()) {
         for (const RubricScore& s : scores_) {
-            rows->addWidget(new RubricBar(s, rubric_rows_));
+            rows->addWidget(MakeRubricRow(s, rubric_rows_));
         }
         rubric_stack_->setCurrentWidget(rubric_rows_);
     } else {

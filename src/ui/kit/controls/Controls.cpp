@@ -138,7 +138,8 @@ IconButton::IconButton(const QString& iconText, const QString& tooltip, Size s, 
     SetKind(this, "iconbutton");
     SetSizeAttr(this, s == Size::Sm ? "sm" : "md");
     setToolTip(tooltip.isEmpty() ? iconText : tooltip); // 必带 tooltip（UI.md §1 无障碍）
-    setFixedSize(s == Size::Sm ? 24 : 32, s == Size::Sm ? 24 : 32);
+    // webui ui.css .icon-btn 28×28 / .icon-btn.sm 22×22（box-sizing: border-box，含 1px 边）
+    setFixedSize(s == Size::Sm ? 22 : 28, s == Size::Sm ? 22 : 28);
     setCursor(Qt::PointingHandCursor);
     setFocusPolicy(Qt::StrongFocus);
 }
@@ -179,9 +180,10 @@ void Card::SetAccent(bool on) {
 QVBoxLayout* Card::BodyLayout() { return body_; }
 
 void Card::Lift(int dy) {
+    // 抬升/回落过渡对齐 CSS transition 的 var(--dur-2)=200ms（此前用 motion.fast）
     auto* t = new motion::Tween{theme::motion::kStandard, this};
     const QPoint from = pos();
-    t->Run(from, from + QPoint(0, dy), theme::motion::kDurFastMs, // motion.fast
+    t->Run(from, from + QPoint(0, dy), theme::motion::kDurBaseMs,
            [this](const QVariant& v) { move(v.toPoint()); });
 }
 
@@ -189,10 +191,9 @@ void Card::enterEvent(QEnterEvent* ev) {
     QFrame::enterEvent(ev);
     if (!lifted_) {
         lifted_ = true;
-        Lift(-1); // hover 抬升 1px
-        // webui ui.css:196 .card.hoverable:hover = shadow-1 + translateY(-2px)。
-        // QSS 无 box-shadow，这里用 QGraphicsDropShadowEffect 补上（见 ApplyShadow）。
-        ApplyShadow(this, ShadowLevel::Sm);
+        // webui ui.css:196 .card.hoverable:hover = translateY(-2px)，过渡走 motion.base
+        Lift(-2);
+        ApplyShadow(this, ShadowLevel::Sm); // webui 同一规则还带 shadow-1（QSS 无 box-shadow）
     }
 }
 
@@ -200,7 +201,7 @@ void Card::leaveEvent(QEvent* ev) {
     QFrame::leaveEvent(ev);
     if (lifted_) {
         lifted_ = false;
-        Lift(1);
+        Lift(2);
         ApplyShadow(this, ShadowLevel::None);
     }
 }
@@ -263,7 +264,7 @@ void Badge::SetDot(bool on) {
     if (on) {
         setProperty("dot", QStringLiteral("true"));
         setText(QString{});
-        setFixedSize(8, 8);
+        setFixedSize(7, 7); // webui ui.css .dot：7×7 正圆
         show();
         Repolish(this);
     } else {

@@ -88,7 +88,9 @@ DraftView::DraftView(QWidget* parent) : QWidget(parent) {
     // 会连带影响手改哈希与落盘一致性（P04-S6 edit-hash 判据）。
     edit_->setAcceptRichText(false);
     widgets::SetKind(edit_, "draftbody");
-    // webui .draft：f14 / line-height 1.9 / 段距 14px / text-indent 2em
+    // webui .draft：f14 / line-height 1.9 / 段距 14px / text-indent 2em / max-width 720px
+    edit_->setMaximumWidth(kDraftMaxW);
+    ApplyEditSheet(QString{});
     ApplyDraftTypography();
     connect(edit_->document(), &QTextDocument::contentsChange, this,
             [this](int, int, int) { ApplyDraftTypography(); });
@@ -333,14 +335,30 @@ void DraftView::StartBreathing() {
         connect(breath_, &QVariantAnimation::valueChanged, this, [this](const QVariant& v) {
             const double a = 0.3 + 0.5 * std::fabs(std::sin(v.toDouble() * 3.14159265358979));
             const QColor c = shine::widgets::TokenQColor(theme::Current().accentPrimary);
-            edit_->setStyleSheet(QStringLiteral("QTextEdit { border: 2px solid rgba(%1,%2,%3,%4); }")
-                                     .arg(c.red())
-                                     .arg(c.green())
-                                     .arg(c.blue())
-                                     .arg(a, 0, 'f', 2));
+            ApplyEditSheet(QStringLiteral("border: 2px solid rgba(%1,%2,%3,%4);")
+                               .arg(c.red())
+                               .arg(c.green())
+                               .arg(c.blue())
+                               .arg(a, 0, 'f', 2));
         });
     }
     breath_->start();
+}
+
+// `.draft` 的字色（text.primary）QssBuilder 的 draftbody 段已经落了（views.css:571），
+// 这里仍自写一条：呼吸光每帧要重设 border，若拆成两条 setStyleSheet 会互相把属性清掉。
+// 合成一条后，字色随 theme::Current() 实时取（切主题不必等 QSS 重建），
+// 同时满足 check-layers rule 3：颜色只从 token 派生，不写死字面量。
+void DraftView::ApplyEditSheet(const QString& borderRule) {
+    if (edit_ == nullptr) {
+        return;
+    }
+    const QColor fg = shine::widgets::TokenQColor(theme::Current().textPrimary);
+    edit_->setStyleSheet(QStringLiteral("QTextEdit { color: rgb(%1,%2,%3); %4 }")
+                             .arg(fg.red())
+                             .arg(fg.green())
+                             .arg(fg.blue())
+                             .arg(borderRule));
 }
 
 // webui .draft：正文 14px、行高 1.9、段间距 14px、首行缩进 2em。
@@ -372,7 +390,7 @@ void DraftView::StopBreathing() {
     if (breath_ != nullptr) {
         breath_->stop();
     }
-    edit_->setStyleSheet(QString{});
+    ApplyEditSheet(QString{}); // 只撤边框，字色保留（否则正文退回调色板灰）
 }
 
 [[nodiscard]] bool DraftView::Breathing() const {

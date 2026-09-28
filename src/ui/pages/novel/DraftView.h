@@ -79,6 +79,13 @@ class DraftView : public QWidget {
     // webui .draft 排版：14px / 行高 1.9 / 段距 14px / 首行缩进 2em（2em = 2 × 14px）
     void ApplyDraftTypography();
     static constexpr qreal kIndentPx = 28.0;
+    // webui views.css:572 `.draft { max-width: 720px }`：超宽窗口下正文仍按 720
+    // 阅读宽度排版，与 .chap-summary 同一条测量线（该值在 NovelWorkspace 里也用一份）。
+    static constexpr int kDraftMaxW = 720;
+    // 正文控件的内联样式：只补全局 QSS 的 draftbody 没写的那一项
+    // （`.draft { color: text-primary }`），底色 / 边框 / 字号仍走 QSS；
+    // 呼吸光边框也由这里拼成一条（避免两条 sheet 互相覆盖）。
+    void ApplyEditSheet(const QString& borderRule);
     void MarkFailure(const QString& reason);
     void ClearFailureMarker();
     void SaveToDb(const QString& body);

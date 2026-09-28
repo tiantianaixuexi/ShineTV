@@ -20,6 +20,7 @@
 namespace shine::app {
 
 GenShotBridgeView::GenShotBridgeView(QWidget* parent) : QWidget(parent) {
+    setObjectName(QStringLiteral("genShot"));
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(theme::space::kSteps[1]);
@@ -27,17 +28,28 @@ GenShotBridgeView::GenShotBridgeView(QWidget* parent) : QWidget(parent) {
     outer->addWidget(title);
     status_ = new QLabel(QStringLiteral("选择章节后生成可提交的 GenShot。"), this);
     status_->setWordWrap(true);
-    widgets::SetKind(status_, "statedetail");
+    widgets::SetKind(status_, "statemeta");
+    // idle 态：未选章节 / 未运行。色随四态切（见 SetStatus）
+    widgets::SetTextColor(status_, theme::Current().textMuted);
     outer->addWidget(status_);
     auto* run = new widgets::Button(QStringLiteral("生成 / 导出 shots.json"),
                                     widgets::Button::Variant::Primary,
                                     widgets::Button::Size::Sm, this);
-    outer->addWidget(run, 0, Qt::AlignLeft); // 同上：不做通栏按钮
+    outer->addWidget(run, 0, Qt::AlignLeft); // 不做通栏按钮
     preview_ = new QPlainTextEdit(this);
     preview_->setReadOnly(true);
     preview_->setPlaceholderText(QStringLiteral("ToGenShot 结果会在这里显示"));
     outer->addWidget(preview_, 1);
     connect(run, &QPushButton::clicked, this, [this] { RunBridge(); });
+}
+
+// idle / running / done / error 四态统一入口：文案 + status.* 色
+void GenShotBridgeView::SetStatus(const QString& text, std::uint32_t color) {
+    if (status_ == nullptr) {
+        return;
+    }
+    status_->setText(text);
+    widgets::SetTextColor(status_, color);
 }
 
 void GenShotBridgeView::SetContext(std::filesystem::path db_path, std::filesystem::path project_dir,
@@ -48,20 +60,21 @@ void GenShotBridgeView::SetContext(std::filesystem::path db_path, std::filesyste
     export_path_.clear();
     has_result_ = false;
     preview_->clear();
-    status_->setText(QStringLiteral("选择章节后生成可提交的 GenShot。"));
+    SetStatus(QStringLiteral("选择章节后生成可提交的 GenShot。"), theme::Current().textMuted);
 }
 
 bool GenShotBridgeView::RunBridge() {
     if (db_path_.empty() || chapter_id_ <= 0) return false;
+    SetStatus(QStringLiteral("正在生成 GenShot…"), theme::Current().statusBusy);
     shine::db::sqlite::Database db;
     if (auto opened = db.Open({.path = db_path_, .readOnly = true, .create = false}); !opened) {
-        status_->setText(QString::fromStdString(opened.error().message));
+        SetStatus(QString::fromStdString(opened.error().message), theme::Current().statusDanger);
         return false;
     }
     shine::novelcore::NovelVisual visual(db);
     auto shots = visual.ListShotsByChapter(chapter_id_);
     if (!shots || shots->empty()) {
-        status_->setText(QStringLiteral("当前章节没有 shots，先完成 V9。"));
+        SetStatus(QStringLiteral("当前章节没有 shots，先完成 V9。"), theme::Current().statusWarn);
         return false;
     }
     shine::video::NarrativeSceneInput scene;
@@ -104,7 +117,8 @@ bool GenShotBridgeView::RunBridge() {
 
 void GenShotBridgeView::Rebuild() {
     if (!has_result_) return;
-    status_->setText(QString::fromStdString(result_.ok ? "ToGenShot 完成" : result_.error));
+    SetStatus(QString::fromStdString(result_.ok ? "ToGenShot 完成" : result_.error),
+              result_.ok ? theme::Current().statusOk : theme::Current().statusDanger);
     preview_->setPlainText(QString::fromStdString(result_.project.ToJson(true)));
 }
 

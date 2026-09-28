@@ -22,6 +22,11 @@ class StoryboardTimeline : public QWidget {
 
     void SetScene(const novelcore::SceneRow& scene, std::vector<novelcore::ShotRow> shots);
     void SetOnReorder(ReorderHandler handler) { on_reorder_ = std::move(handler); }
+    // 当前选中镜头（对应 webui 的 selShot）：卡片亮 accent 边 + accent 辉光
+    void SetSelectedShot(novelcore::RowId id);
+    void SetOnSelectShot(std::function<void(novelcore::RowId)> handler) {
+        on_select_ = std::move(handler);
+    }
     [[nodiscard]] QString TimelineProbe() const;
 
   protected:
@@ -35,10 +40,15 @@ class StoryboardTimeline : public QWidget {
     novelcore::SceneRow scene_;
     std::vector<novelcore::ShotRow> shots_;
     ReorderHandler on_reorder_;
+    std::function<void(novelcore::RowId)> on_select_;
+    novelcore::RowId selected_id_ = 0;
 
     QPoint drag_start_;
     int drag_ord_ = 0;
     void Rebuild();
+    // 卡片态合成：选中 = accent 边（QSS 的 [selected="true"]）+ accent 辉光，
+    // 悬停 = shadow-1，拖拽中不加辉光（.dragging 的半透明由拖拽像素图承担）
+    void ApplyCardStates();
     // duration_note（"3.5s" / "4.1"）→ 时长条百分比，webui 口径 min(100, secs/6*100)
     static int SecondsOf(const std::string& note);
 };

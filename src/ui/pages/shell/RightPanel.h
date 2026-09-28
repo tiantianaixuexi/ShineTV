@@ -12,6 +12,7 @@
 #include <QString>
 
 class QVBoxLayout;
+class QScrollArea;
 class QStackedWidget;
 
 namespace shine::app {
@@ -29,6 +30,7 @@ class RightPanel : public QFrame {
     void ClearSections();
 
   private:
+    QScrollArea* scroll_ = nullptr;       // .inspector overflow-y: auto
     QStackedWidget* stack_ = nullptr;
     QWidget* empty_ = nullptr;      // 无选中时的空状态页
     QWidget* host_ = nullptr;       // 有选中时的段容器

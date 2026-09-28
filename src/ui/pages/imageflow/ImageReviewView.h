@@ -5,7 +5,7 @@
 #include <QWidget>
 
 class QLabel;
-class QListWidget;
+class QVBoxLayout;
 
 namespace shine::app {
 
@@ -26,7 +26,9 @@ class ImageReviewView : public QWidget {
     flow::ImageReviewReport report_;
     bool has_report_ = false;
     QLabel* image_ = nullptr;
-    QListWidget* findings_ = nullptr;
+    // 五项固定清单（webui .checklist）：行由 Rebuild 逐个建、逐个销毁
+    QWidget* checklist_ = nullptr;
+    QVBoxLayout* checklist_lay_ = nullptr;
     QLabel* status_ = nullptr;
 };
 

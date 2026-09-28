@@ -3,6 +3,7 @@
 #include "ui/pages/assets/AssetPolicyPanel.h"
 #include "ui/pages/novel/WorldBoardShared.h"
 #include "ui/kit/data/Flow.h"
+#include "ui/kit/data/Panels.h"
 #include "ui/kit/images/Sheet.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
@@ -23,6 +24,7 @@
 #include <QLabel>
 #include <QPixmap>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSizePolicy>
 #include <QVBoxLayout>
 #include <QStringList>
@@ -59,6 +61,16 @@ constexpr std::array<LayerSpec, 4> kLayers{{
     {novelcore::AssetLayer::Wardrobe, "wardrobe", "服装", "base_body"},
 }};
 
+// views.css:747 .vsec { gap: 10px } —— 10 不在 kSteps 刻度里（0/2/4/8/12/16…），
+// 按 Token.h 的约定用命名常量，不去插 kSteps 下标。
+constexpr int kVSecGap = 10;
+// views.css:711 .asset-grid gap 14px：设定集里的形象层卡片同样按 14 排，
+// 与资产卡网格保持同一节奏。
+constexpr int kLayerGridGap = 14;
+// views.css:764 .derive .dnode：缩略 64 + 标签 p6 8 + 行高 ≈15 + 上下边框 2 ≈ 93，
+// 宿主横向滚动区固定到这个高度（overflow-x: auto 不改纵向尺寸）。
+constexpr int kDeriveHeight = 96;
+
 [[nodiscard]] QString ArtifactState(std::string_view status) {
     if (status == "DONE") return QStringLiteral("已就绪");
     if (status == "RUNNING") return QStringLiteral("生成中");
@@ -75,6 +87,8 @@ constexpr std::array<LayerSpec, 4> kLayers{{
 
 // webui .vsec-h：accent 字符图标 + 13.5px w700 标题 + 右侧补充说明
 // （sub 对应 Assets.jsx 里 .vsec-h 末尾的 `.tiny.dim` 补充说明，缺省不显示）
+// ⚠️ `.vsec-h .t` 的 13.5px 无法逐值复刻：QFont / QSS 的 font-size 只到整数像素，
+//    这里沿用 QssBuilder 已落地的 13px（半像素差在灰度上不可见），不再内联覆盖。
 QWidget* MakeVSecHead(const QString& icon, const QString& text, QWidget* parent,
                       QLabel** title_out = nullptr, const QString& sub = QString{}) {
     auto* head = new QWidget(parent);
@@ -89,8 +103,11 @@ QWidget* MakeVSecHead(const QString& icon, const QString& text, QWidget* parent,
     widgets::SetKind(title, "vsechead");
     row->addWidget(title);
     if (!sub.isEmpty()) {
+        // `.tiny.dim` 是**纯文字**（muted、无底无框）。原来这里用的是 statedetail
+        // ——那是一个 fill-muted 底 + 1px 框 + r6 的胶囊，和设计稿完全不是一回事。
         auto* note = new QLabel(sub, head);
-        widgets::SetKind(note, "statedetail");
+        widgets::SetKind(note, "statemeta");
+        note->setStyleSheet(QStringLiteral("font-size: 12px;"));
         row->addWidget(note);
     }
     row->addStretch(1);
@@ -319,16 +336,19 @@ void AssetDetailView::BuildUi() {
     widgets::SetKind(vsec, "vsec");
     auto* sec_layout = new QVBoxLayout(vsec);
     sec_layout->setContentsMargins(0, 0, 0, 0);
-    sec_layout->setSpacing(theme::space::kSteps[2]);
+    sec_layout->setSpacing(kVSecGap);
     title_layout->addWidget(
         MakeVSecHead(QStringLiteral("◈"), QStringLiteral("资产详情 · 未选择"), titles, &title_));
     subtitle_ = new QLabel(QStringLiteral("选择资产后显示正脸、四视图、基础身体与服装。"), titles);
     subtitle_->setWordWrap(true);
-    widgets::SetKind(subtitle_, "statedetail");
+    // webui `.vsec-h` 末尾的 `.tiny.dim`：纯文字 muted，无底无框
+    widgets::SetKind(subtitle_, "statemeta");
+    subtitle_->setStyleSheet(QStringLiteral("font-size: 12px;"));
     title_layout->addWidget(subtitle_);
     runtime_label_ = new QLabel(titles);
     runtime_label_->setWordWrap(true);
-    widgets::SetKind(runtime_label_, "statedetail");
+    widgets::SetKind(runtime_label_, "statemeta");
+    runtime_label_->setStyleSheet(QStringLiteral("font-size: 12px;"));
     runtime_label_->hide();
     title_layout->addWidget(runtime_label_);
     header_layout->addWidget(titles, 1);
@@ -346,6 +366,13 @@ void AssetDetailView::BuildUi() {
     export_->setEnabled(false);
     header_layout->addWidget(export_);
     sec_layout->addWidget(header);
+
+    // webui Assets.jsx 的 <KV rows={类别 / 别名 / 出处 / 降级策略}>：
+    // ui.css:1015 `.kv { grid auto 1fr; gap 6 14; f12.5 }` —— 复用 kit::data::KeyValue，
+    // 不在页面里再造第二份两列表。取值全部来自真库行，不填占位。
+    facts_ = new data::KeyValue(vsec);
+    sec_layout->addWidget(facts_);
+
     outer->addWidget(vsec, 1);
 
     auto* scroll = new QScrollArea(vsec);
@@ -355,8 +382,8 @@ void AssetDetailView::BuildUi() {
     cards_ = new QWidget(scroll);
     cards_layout_ = new QGridLayout(cards_);
     cards_layout_->setContentsMargins(0, 0, 0, 0);
-    cards_layout_->setHorizontalSpacing(theme::space::kSteps[2]);
-    cards_layout_->setVerticalSpacing(theme::space::kSteps[2]);
+    cards_layout_->setHorizontalSpacing(kLayerGridGap);
+    cards_layout_->setVerticalSpacing(kLayerGridGap);
     cards_layout_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     scroll->setWidget(cards_);
     sec_layout->addWidget(scroll, 1);
@@ -366,17 +393,38 @@ void AssetDetailView::BuildUi() {
     widgets::SetKind(chain_sec, "vsec");
     auto* chain_layout = new QVBoxLayout(chain_sec);
     chain_layout->setContentsMargins(0, 0, 0, 0);
-    chain_layout->setSpacing(theme::space::kSteps[1]);
+    chain_layout->setSpacing(kVSecGap);
     chain_layout->addWidget(MakeVSecHead(
         QStringLiteral("⑂"), QStringLiteral("V0 派生链 · 正脸 → 四视图 → 基础身体 → 服装"),
         chain_sec));
     derive_ = new QWidget(chain_sec);
     derive_->setObjectName(QStringLiteral("assetDeriveChain"));
     derive_row_ = new QHBoxLayout(derive_);
-    derive_row_->setContentsMargins(2, 6, 2, 6);
-    derive_row_->setSpacing(0);
+    derive_row_->setContentsMargins(2, 6, 2, 6); // views.css:855 .derive { padding: 6px 2px }
+    derive_row_->setSpacing(0);                  // 节点与连线之间靠 .dlink 自身的 22px 宽度
     derive_row_->addStretch(1);
-    chain_layout->addWidget(derive_);
+    // views.css:854 .derive { overflow-x: auto }：四节点 108 + 三连线 22 = 498px，
+    // 窄栏放不下时要能横向滚，而不是把节点压扁。
+    auto* derive_scroll = new QScrollArea(chain_sec);
+    derive_scroll->setFrameShape(QFrame::NoFrame);
+    derive_scroll->setWidgetResizable(true);
+    derive_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    derive_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    derive_scroll->setFixedHeight(kDeriveHeight);
+    derive_scroll->setWidget(derive_);
+    // 固定高度 + 按需出现的横向滚动条会互相抢位：滚动条一出现就吃掉 12~16px，
+    // 底部标签行被裁。这里按「滚动条是否真的有滚动范围」动态给高度，
+    // 放得下时不留空、放不下时正好够滚动条占位。
+    connect(derive_scroll->horizontalScrollBar(), &QScrollBar::rangeChanged, derive_scroll,
+            [derive_scroll](int range) {
+                const int bar = range > 0 ? derive_scroll->horizontalScrollBar()->sizeHint().height()
+                                          : 0;
+                const int want = kDeriveHeight + bar;
+                if (derive_scroll->height() != want) {
+                    derive_scroll->setFixedHeight(want);
+                }
+            });
+    chain_layout->addWidget(derive_scroll);
 
     // 分区三「关联时间线」：webui views.css:766-847 的 .tl（事件轴）+ .tl-below（绑定镜头 / 参考图）
     auto* tl_sec = new QWidget(this);
@@ -385,7 +433,7 @@ void AssetDetailView::BuildUi() {
     widgets::Repolish(tl_sec);
     auto* tl_sec_layout = new QVBoxLayout(tl_sec);
     tl_sec_layout->setContentsMargins(0, 0, 0, 0);
-    tl_sec_layout->setSpacing(theme::space::kSteps[1]);
+    tl_sec_layout->setSpacing(kVSecGap);
     tl_sec_layout->addWidget(MakeVSecHead(
         QStringLiteral("◷"), QStringLiteral("关联时间线"), tl_sec, nullptr,
         QStringLiteral("外观基线 / 出处 / 绑定镜头 / 参考图 · 全部条目可点击")));
@@ -442,7 +490,17 @@ bool AssetDetailView::ShowAsset(db::sqlite::Database& db, novelcore::NovelVisual
     }
 
     asset_ = asset;
+    entity_id_ = entityId;
     projectDir_ = projectDir;
+    // .kv「类别」行要实体 kind。AssetWorkspace 只把 asset 行 + entityId 递进来，
+    // 这里按 id 读一次（只读；实体被删时留空，KindLabelOf 会原样回显 key）。
+    entity_kind_.clear();
+    if (entityId > 0) {
+        novelcore::NovelGraph entity_graph(db);
+        if (auto row = entity_graph.GetEntity(entityId); row) {
+            entity_kind_ = QString::fromStdString(row->kind);
+        }
+    }
     layers_.clear();
     layers_.reserve(kLayers.size());
     for (const LayerSpec& spec : kLayers) {
@@ -596,6 +654,8 @@ void AssetDetailView::CollectTimeline(db::sqlite::Database& db, novelcore::Novel
 
 void AssetDetailView::Clear() {
     asset_ = {};
+    entity_id_ = 0;
+    entity_kind_.clear();
     projectDir_.clear();
     layers_.clear();
     timeline_chapters_ = 0;
@@ -626,6 +686,10 @@ void AssetDetailView::Clear() {
     }
     if (cards_layout_ != nullptr) {
         ClearLayout(cards_layout_);
+    }
+    if (facts_ != nullptr) {
+        facts_->SetPairs({});
+        facts_->hide();
     }
     if (policy_ != nullptr) {
         policy_->SetRuntimeState({}, {}, {}, false, false);
@@ -831,6 +895,48 @@ void AssetDetailView::RebuildDerive() {
     derive_row_->addStretch(1);
 }
 
+// webui Assets.jsx 设定集区的 <KV rows={类别 / 别名 / 出处 / 降级策略}>。
+// Qt 端能取到的真值只有资产行 / 形象层 / 时间线三处，别名与降级策略不在本页数据源里，
+// 因此不写这两项，也不编「—」以外的占位。
+void AssetDetailView::RebuildKeyValue() {
+    if (facts_ == nullptr) {
+        return;
+    }
+    if (asset_.id <= 0) {
+        facts_->SetPairs({});
+        facts_->hide();
+        return;
+    }
+    facts_->show();
+    int ready = 0;
+    for (const LayerData& data : layers_) {
+        ready += data.ready ? 1 : 0;
+    }
+    const int events = static_cast<int>(timeline_events_.size());
+    facts_->SetPairs({
+        {QStringLiteral("类别"),
+         entity_kind_.isEmpty()
+             ? QString::fromStdString(asset_.kind)
+             : QStringLiteral("%1 · %2").arg(QString::fromStdString(asset_.kind),
+                                            KindLabelOf(entity_kind_.toStdString()))},
+        {QStringLiteral("资产"), QStringLiteral("#%1 · %2")
+                                     .arg(asset_.id)
+                                     .arg(QString::fromStdString(asset_.name))},
+        {QStringLiteral("生产状态"), QString::fromStdString(asset_.status)},
+        {QStringLiteral("绑定实体"), QStringLiteral("#%1").arg(entity_id_)},
+        {QStringLiteral("形象层"), QStringLiteral("%1 层 · 就绪 %2")
+                                       .arg(static_cast<int>(layers_.size()))
+                                       .arg(ready)},
+        {QStringLiteral("外观基线"), timeline_chapters_ > 0
+                                        ? QStringLiteral("%1 段 · 第 1–%2 章")
+                                              .arg(events)
+                                              .arg(timeline_chapters_)
+                                        : QStringLiteral("暂无章节时间轴")},
+        {QStringLiteral("绑定镜头"), QStringLiteral("%1 个").arg(
+                                          static_cast<int>(bound_shots_.size()))},
+    });
+}
+
 AssetPolicy AssetDetailView::Policy() const {
     return policy_ == nullptr ? AssetPolicy{} : policy_->Policy();
 }
@@ -884,6 +990,7 @@ void AssetDetailView::Rebuild() {
     }
     ClearLayout(cards_layout_);
     RebuildTimeline();
+    RebuildKeyValue();
 
     title_->setText(QStringLiteral("资产详情 · %1").arg(QString::fromStdString(asset_.name)));
     subtitle_->setText(QStringLiteral("资产 #%1 · %2 · 状态 %3")

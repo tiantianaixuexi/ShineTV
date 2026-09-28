@@ -19,8 +19,11 @@
 #include "ui/layout/QtLayout.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
+#include "ui/kit/data/Panels.h"
+#include "ui/kit/motion/Tween.h"
 #include "util/Encoding.h"
 
+#include <QBoxLayout>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -29,6 +32,7 @@
 #include <QLabel>
 #include <QPointer>
 #include <QPixmap>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -41,6 +45,7 @@
 #include <system_error>
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <utility>
 
 namespace shine::app {
@@ -88,6 +93,114 @@ void CopyError(QString* out, const QString& message) {
         *out = message;
     }
 }
+
+// —— webui views.css 的资产工作区尺度常量 ——
+// .assets-shell：grid 220px | 1fr，gap 16px
+constexpr int kShellNavWidth = 220;
+constexpr int kShellGap = 16;
+// .vw-head：gap 14px；.vw-title：18px w800；.vw-sub：12.5px muted
+constexpr int kVwHeadGap = 14;
+// .asset-grid：repeat(auto-fit, minmax(210px, 1fr)) + gap 14px；.asset-grid .thumb 高 150px
+constexpr int kAssetCardMinWidth = 210;
+constexpr int kAssetGridGap = 14;
+constexpr int kAssetThumbHeight = 150;
+// .asset-card .abody：padding 9px 11px 11px；.aname ↔ .ameta 间距 4px
+constexpr int kAssetBodyTop = 9;
+constexpr int kAssetBodySide = 11;
+constexpr int kAssetBodyBottom = 11;
+constexpr int kAssetBodyGap = 4;
+// ⚠️ 刻意偏离 CSS 的一处：.asset-grid 在设计稿里没有内距，但 QSS 没有 box-shadow，
+//    选中卡的 shadow-accent（blur 20 / offsetY 4）四周要留出位置，否则贴在滚动视口
+//    边缘的那张会被裁掉半圈辉光。20 = accent 模糊半径，够 Sm(16) 与 Accent(20) 都完整。
+constexpr int kAssetShadowRoom = 20;
+// .asset-card:hover .thumb svg { transform: scale(1.07) }：QSS 无 transform，用 Tween 补
+constexpr qreal kAssetThumbHoverScale = 1.07;
+
+// .asset-grid 的宿主：QGridLayout 没有 repeat(auto-fit)，这里只负责「宽度变了就回调一次」，
+// 由 AssetWorkspace::ReflowAssets 决定列数并重排。自身不持有任何布局语义。
+class AssetGridHost : public QWidget {
+  public:
+    using Reflow = std::function<void(int)>;
+
+    explicit AssetGridHost(QWidget* parent = nullptr) : QWidget(parent) {}
+
+    void SetReflow(Reflow reflow) { reflow_ = std::move(reflow); }
+
+  protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        if (reflow_) {
+            reflow_(event->size().width());
+        }
+    }
+
+  private:
+    Reflow reflow_;
+};
+
+// webui .asset-card（views.css:716-741）：
+//   .card.hoverable:hover 的 translateY(-2px) + shadow-1 由 widgets::Card 自带（已对齐）；
+//   这里只补 CSS 侧独占的一条——hover 时封面按 1.07 放大。
+// QSS 没有 transform，缩放用缓存的原图重新 scaled，时长/缓动走 kit::motion token
+// （CSS .card 的 transition 里 transform 用 --dur-2）。
+class AssetCard : public widgets::Card {
+  public:
+    using widgets::Card::Card;
+
+    void SetThumbImage(QLabel* label, QImage image) {
+        thumb_ = label;
+        image_ = std::move(image);
+        ApplyScale();
+    }
+
+  protected:
+    void enterEvent(QEnterEvent* event) override {
+        widgets::Card::enterEvent(event);
+        TweenScale(kAssetThumbHoverScale);
+    }
+
+    void leaveEvent(QEvent* event) override {
+        widgets::Card::leaveEvent(event);
+        TweenScale(1.0);
+    }
+
+  private:
+    void TweenScale(qreal target) {
+        if (thumb_ == nullptr || image_.isNull()) {
+            return;
+        }
+        const qreal from = scale_;
+        if (qFuzzyCompare(from + 1.0, target + 1.0)) {
+            return;
+        }
+        // motion::Tween 不自删（见 Tween.h 生命周期约定：谁创建谁回收）。
+        // 每次 hover 都 new 一个会随进出次数累积，所以这里复用同一个实例：
+        // 首次进入时建一次并挂到本卡片，之后只 stop + 重跑。
+        if (scale_tween_ == nullptr) {
+            scale_tween_ = new motion::Tween{theme::motion::kStandard, this};
+        }
+        scale_tween_->stop();
+        scale_tween_->Run(from, target, theme::motion::kDurBaseMs, [this](const QVariant& value) {
+            scale_ = value.toReal();
+            ApplyScale();
+        });
+    }
+
+    void ApplyScale() {
+        if (thumb_ == nullptr || image_.isNull()) {
+            return;
+        }
+        const int w = std::max(1, static_cast<int>(std::lround(image_.width() * scale_)));
+        const int h = std::max(1, static_cast<int>(std::lround(image_.height() * scale_)));
+        thumb_->setPixmap(QPixmap::fromImage(
+            image_.scaled(w, h, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+    }
+
+    QLabel* thumb_ = nullptr;
+    QImage image_;
+    qreal scale_ = 1.0;
+    motion::Tween* scale_tween_ = nullptr; // 随卡片回收；复用，勿每次 hover 新建
+};
 
 struct WorkerResult {
     std::string phase;
@@ -171,10 +284,32 @@ void AssetWorkspace::BuildUi() {
     auto* header = new QWidget(this);
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(0, 0, 0, 0);
-    headerLayout->setSpacing(theme::space::kSteps[2]);
+    headerLayout->setSpacing(kVwHeadGap); // views.css:141 .vw-head gap: 14px
 
-    bookLabel_ = widgets::SectionTitle(QStringLiteral("视觉资产 · 未打开书库"), header);
-    headerLayout->addWidget(bookLabel_);
+    // webui .vw-head：accent 字符图标 + 标题块（.vw-title 18 w800 / .vw-sub 12.5 muted）
+    auto* titles = new QWidget(header);
+    auto* headRow = new QHBoxLayout(titles);
+    headRow->setContentsMargins(0, 0, 0, 0);
+    headRow->setSpacing(theme::space::kSteps[2]);
+    auto* headGlyph = new QLabel(QStringLiteral("◈"), titles);
+    widgets::SetKind(headGlyph, "vsecicon"); // accent 字符图标（views.css .vsec-h 同款）
+    auto* titleBlock = new QWidget(titles);
+    auto* titleBlockLayout = new QVBoxLayout(titleBlock);
+    titleBlockLayout->setContentsMargins(0, 0, 0, 0);
+    titleBlockLayout->setSpacing(2);
+    bookLabel_ = widgets::SectionTitle(QStringLiteral("视觉资产 · 未打开书库"), titleBlock);
+    // views.css:145 .vw-title { font-size: 18px; font-weight: 800 }
+    bookLabel_->setStyleSheet(QStringLiteral("font-size: 18px; font-weight: 800;"));
+    titleBlockLayout->addWidget(bookLabel_);
+    // views.css:149 .vw-sub { color: text-muted; font-size: 12.5px }：statemeta 即 muted 底色，
+    // 只把字号提到 12px（QFont 不支持半像素，12 与 12.5 的差在灰度上不可见）。
+    bookSub_ = new QLabel(titleBlock);
+    widgets::SetKind(bookSub_, "statemeta");
+    bookSub_->setStyleSheet(QStringLiteral("font-size: 12px;"));
+    titleBlockLayout->addWidget(bookSub_);
+    headRow->addWidget(headGlyph, 0, Qt::AlignTop);
+    headRow->addWidget(titleBlock, 1);
+    headerLayout->addWidget(titles, 1);
 
     const std::array<QString, 5> filterLabels = {
         QStringLiteral("全部"), QStringLiteral("人物"), QStringLiteral("地点"),
@@ -205,8 +340,10 @@ void AssetWorkspace::BuildUi() {
     outer->addWidget(header);
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
+    // views.css:667 .assets-shell gap: 16px —— QSplitter 的把手宽度即两列之间的间距
+    splitter->setHandleWidth(kShellGap);
     auto* left = new QWidget(splitter);
-    left->setMinimumWidth(240);
+    left->setMinimumWidth(kShellNavWidth); // views.css:666 grid-template-columns: 220px …
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(theme::space::kSteps[1]);
@@ -220,21 +357,25 @@ void AssetWorkspace::BuildUi() {
 
     // 中栏：资产卡网格（单列滚动 + 卡片网格，不带标题条）
     auto* center = new QWidget(splitter);
-    center->setMinimumWidth(560); // 硬下限：低于此值资产卡会被压成两列残条
+    center->setMinimumWidth(kAssetCardMinWidth * 2 + kAssetGridGap); // 至少放得下两列 auto-fit
     auto* centerLayout = new QVBoxLayout(center);
-    centerLayout->setContentsMargins(theme::space::kSteps[2], 0, theme::space::kSteps[2], 0);
+    // 两列之间的间距已由 splitter 把手给出，这里不再叠内距（原来多出的 4px 会与把手叠加）
+    centerLayout->setContentsMargins(0, 0, 0, 0);
     centerLayout->setSpacing(theme::space::kSteps[2]);
     assetCount_ = SectionLabel(center, QStringLiteral("资产卡 · 0"));
     auto* scroll = new QScrollArea(center);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    assetsHost_ = new QWidget(scroll);
+    auto* host = new AssetGridHost(scroll);
+    host->SetReflow([this](int width) { ReflowAssets(width); });
+    assetsHost_ = host;
     assetsGrid_ = new QGridLayout(assetsHost_);
-    assetsGrid_->setContentsMargins(0, 0, 0, 0);
-    assetsGrid_->setHorizontalSpacing(theme::space::kSteps[2]);
-    assetsGrid_->setVerticalSpacing(theme::space::kSteps[2]);
-    assetsGrid_->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+    assetsGrid_->setContentsMargins(kAssetShadowRoom, kAssetShadowRoom, kAssetShadowRoom,
+                                    kAssetShadowRoom);
+    assetsGrid_->setHorizontalSpacing(kAssetGridGap); // views.css:711 gap: 14px
+    assetsGrid_->setVerticalSpacing(kAssetGridGap);
+    assetsGrid_->setAlignment(Qt::AlignTop);
     scroll->setWidget(assetsHost_);
     centerLayout->addWidget(assetCount_);
     centerLayout->addWidget(scroll, 1);
@@ -278,7 +419,7 @@ void AssetWorkspace::BuildUi() {
     splitter->addWidget(center);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({280, 940});
+    splitter->setSizes({kShellNavWidth, 940});
     // 实体树交给外壳左侧栏（SidePanel::AdoptNav 借走，本页仍持有 entityTree_ 指针）。
     // 所有权留在本页：RebuildEntityTree / ApplyKindFilter 直接刷新 entityTree_，
     // 侧栏只负责摆放。导航不再占页内一列，内容区因此拿到整幅宽度。
@@ -364,6 +505,9 @@ void AssetWorkspace::ResetForClosedBook() noexcept {
     entityItems_.clear();
     if (bookLabel_ != nullptr) {
         bookLabel_->setText(QStringLiteral("视觉资产 · 未打开书库"));
+    }
+    if (bookSub_ != nullptr) {
+        bookSub_->setText(QStringLiteral("尚未打开书库"));
     }
     RebuildEntityTree();
     RebuildAssets();
@@ -512,7 +656,16 @@ void AssetWorkspace::RebuildAssets() {
         return;
     }
     ClearLayout(assetsGrid_);
+    assetCards_.clear();
+    gridState_ = nullptr;
+    gridColumns_ = 0; // 强制下一次 ReflowAssets 重新摆放
     assetCount_->setText(QStringLiteral("资产卡 · %1").arg(static_cast<int>(assets_.size())));
+    // views.css:141 .vw-sub：实体 / 资产口径都来自真库，不填任何假数字
+    bookSub_->setText(db_ == nullptr
+                          ? QStringLiteral("尚未打开书库")
+                          : QStringLiteral("实体 %1 个 · 视觉资产 %2 个 · 点击卡片进入详情")
+                                .arg(static_cast<int>(entities_.size()))
+                                .arg(static_cast<int>(assets_.size())));
 
     if (db_ == nullptr) {
         auto* empty = new widgets::EmptyState(
@@ -520,7 +673,8 @@ void AssetWorkspace::RebuildAssets() {
             QStringLiteral("工作区会打开当前书；实体和资产准备好后，下一步：从实体生成视觉资产。"),
             QStringLiteral("刷新"), assetsHost_);
         empty->SetOnAction([this] { RefreshAssets(); });
-        assetsGrid_->addWidget(empty, 0, 0, 1, 3);
+        gridState_ = empty;
+        ReflowAssets(assetsHost_->width());
         return;
     }
     if (!openError_.isEmpty()) {
@@ -532,7 +686,8 @@ void AssetWorkspace::RebuildAssets() {
                 RefreshAssets();
             }
         });
-        assetsGrid_->addWidget(error, 0, 0, 1, 3);
+        gridState_ = error;
+        ReflowAssets(assetsHost_->width());
         return;
     }
     if (assets_.empty()) {
@@ -553,12 +708,11 @@ void AssetWorkspace::RebuildAssets() {
         auto* empty = new widgets::EmptyState(QStringLiteral("▧"), title, subtitle,
                                               QStringLiteral("从实体生成视觉资产"), assetsHost_);
         empty->SetOnAction([this] { ShowGenerationNextStep(); });
-        assetsGrid_->addWidget(empty, 0, 0, 1, 3);
+        gridState_ = empty;
+        ReflowAssets(assetsHost_->width());
         return;
     }
 
-    int column = 0;
-    int row = 0;
     for (const AssetEntry& entry : assets_) {
         const auto runtimeIt = runtime_.constFind(entry.asset.id);
         const RuntimeState* runtime = runtimeIt == runtime_.cend() ? nullptr : &runtimeIt.value();
@@ -566,15 +720,27 @@ void AssetWorkspace::RebuildAssets() {
                                           ? runtime->phase
                                           : QString::fromStdString(entry.asset.status);
         const bool degraded = entry.degraded || (runtime != nullptr && runtime->degraded);
-        auto* card = new widgets::Card(widgets::Card::Variant::Outlined, assetsHost_);
-        card->setFixedWidth(230);
-        QVBoxLayout* body = card->BodyLayout();
+        auto* card = new AssetCard(widgets::Card::Variant::Outlined, assetsHost_);
+        card->setMinimumWidth(kAssetCardMinWidth);
+        card->setProperty("assetId", entry.asset.id);
+        card->setCursor(Qt::PointingHandCursor); // webui .asset-card { cursor: pointer }
 
+        // webui .asset-grid .thumb（views.css:713）是 .card 的**直接子元素**：满幅、贴着卡片
+        // 上沿、被卡片圆角裁掉，而不是躺在 .card-b 的 16px 内距里。
+        //
+        // ⚠️ 不要再用 insertLayout(0, …) 往 Card 外层塞：kit 的 Card 外层是 **QHBoxLayout**
+        //    （Controls.cpp:158，accent 条就靠它插在第 0 格）。往横排里插一个竖排布局，
+        //    得到的是「封面在左、文字在右」——与设计稿的「封面上、文字下」正好相反。
+        //    正确做法：用 Card 自带的 body 竖排布局，清零边距让封面满幅占第 0 格，
+        //    再在它下面挂一个带设计稿内距的 inner 竖排布局装正文。
         auto* thumb = new QLabel(card);
-        thumb->setFixedHeight(140);
+        thumb->setFixedHeight(kAssetThumbHeight); // views.css:714 height: 150px
         thumb->setAlignment(Qt::AlignCenter);
         thumb->setWordWrap(true);
-        widgets::SetKind(thumb, "statedetail");
+        // ui.css:1075 .art（r-sm + fill-muted）就是设计稿里这块占位/封面的类；
+        // 原来用的 statedetail 是「胶囊式说明条」（4px 8px 内距 + 描边），套在封面上不对。
+        widgets::SetKind(thumb, "art");
+        QImage thumbImage;
         const std::filesystem::path relative = util::PathFromUtf8(entry.asset.sheet_rel_path);
         if (relative.empty()) {
             thumb->setText(QStringLiteral("参考图待导入\n（P07 出图接入）"));
@@ -587,48 +753,64 @@ void AssetWorkspace::RebuildAssets() {
             if (image.isNull()) {
                 thumb->setText(QStringLiteral("参考图读取失败\n请检查路径或重新导入"));
             } else {
-                thumb->setPixmap(QPixmap::fromImage(
-                    image.scaled(198, 132, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+                // 缓存原图供 hover 缩放复用（views.css:720 scale(1.07)）
+                thumbImage = image.scaled(198, 132, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                thumb->setPixmap(QPixmap::fromImage(thumbImage));
             }
         }
+        QVBoxLayout* body = card->BodyLayout();
+        // 封面满幅：body 自身零边距、零间距（见上方注释：不能动 Card 的 QHBox 外层）
+        body->setContentsMargins(0, 0, 0, 0);
+        body->setSpacing(0);
         body->addWidget(thumb);
 
-        auto* title = new QLabel(QString::fromStdString(entry.asset.name), card);
-        widgets::SetSemibold(title, true);
-        title->setWordWrap(true);
-        body->addWidget(title);
+        // 正文另起一个竖排布局装设计稿内距（views.css:727 .asset-card .abody { padding: 9px 11px 11px }）
+        auto* inner = new QVBoxLayout();
+        inner->setContentsMargins(kAssetBodySide, kAssetBodyTop, kAssetBodySide, kAssetBodyBottom);
+        inner->setSpacing(kAssetBodyGap); // .ameta margin-top: 4px
+        body->addLayout(inner);
 
-        auto* statusRow = new QWidget(card);
-        auto* statusLayout = new QHBoxLayout(statusRow);
-        statusLayout->setContentsMargins(0, 0, 0, 0);
-        statusLayout->setSpacing(theme::space::kSteps[1]);
-        statusLayout->addWidget(new widgets::Tag(
-            StatusLabel(displayStatus), StatusTone(displayStatus), false, statusRow));
+        // views.css:154-156 .aname.grow.ellipsis + 右侧 .tag.sm（.row gap 8）
+        auto* nameRow = new QWidget(card);
+        auto* nameRowLayout = new QHBoxLayout(nameRow);
+        nameRowLayout->setContentsMargins(0, 0, 0, 0);
+        nameRowLayout->setSpacing(theme::space::kSteps[3]);
+        auto* name = new widgets::ElidedLabel(QString::fromStdString(entry.asset.name), nameRow);
+        name->SetExpandable(false);
+        // views.css:730 .aname { font-weight: 700; font-size: 13px }
+        name->setStyleSheet(QStringLiteral("font-size: 13px; font-weight: 700;"));
+        nameRowLayout->addWidget(name, 1);
+        nameRowLayout->addWidget(new widgets::Tag(
+            StatusLabel(displayStatus), StatusTone(displayStatus), false, nameRow));
         if (degraded) {
-            statusLayout->addWidget(
-                new widgets::Tag(QStringLiteral("降级:no_reference"), "warn", false, statusRow));
+            nameRowLayout->addWidget(
+                new widgets::Tag(QStringLiteral("降级"), "warn", false, nameRow));
         }
-        statusLayout->addStretch(1);
-        body->addWidget(statusRow);
+        inner->addWidget(nameRow);
 
-        auto* binding = new QLabel(
-            QStringLiteral("绑定实体：%1（#%2）")
-                .arg(QString::fromStdString(entry.entity.name))
-                .arg(entry.entity.id),
+        // views.css:734 .ameta { margin-top 4 / gap 6 / text-muted / f11 }
+        auto* meta = new QLabel(
+            QStringLiteral("%1 · %2 · 绑定 %3")
+                .arg(KindLabelOf(entry.entity.kind), QString::fromStdString(entry.asset.kind),
+                     QString::fromStdString(entry.entity.name)),
             card);
-        binding->setWordWrap(true);
-        body->addWidget(binding);
+        widgets::SetKind(meta, "statemeta");
+        meta->setStyleSheet(QStringLiteral("font-size: 11px;"));
+        meta->setToolTip(QStringLiteral("绑定实体 #%1").arg(entry.entity.id));
+        inner->addWidget(meta);
 
         if (!entry.asset.note.empty()) {
             auto* note = new QLabel(QString::fromStdString(entry.asset.note), card);
             note->setWordWrap(true);
-            body->addWidget(note);
+            widgets::SetKind(note, "statemeta");
+            note->setStyleSheet(QStringLiteral("font-size: 11px;"));
+            inner->addWidget(note);
         }
         if (runtime != nullptr && !runtime->detail.isEmpty()) {
             auto* runtime_note = new QLabel(runtime->detail, card);
             runtime_note->setWordWrap(true);
             widgets::SetKind(runtime_note, "statedetail");
-            body->addWidget(runtime_note);
+            inner->addWidget(runtime_note);
         }
 
         QString tooltip = QStringLiteral("资产 #%1\n实体：%2（#%3）\n生产状态：%4\n参考图：%5")
@@ -647,16 +829,65 @@ void AssetWorkspace::RebuildAssets() {
         }
         card->setToolTip(tooltip);
         card->SetOnClick([this, id = entry.asset.id] { SelectAsset(id); });
-        body->addStretch(1);
+        card->SetThumbImage(thumb, thumbImage);
+        inner->addStretch(1);
 
-        assetsGrid_->addWidget(card, row, column);
-        column += 1;
-        if (column == 3) {
-            column = 0;
-            row += 1;
-        }
+        assetCards_.push_back(card);
+    }
+    ReflowAssets(assetsHost_->width());
+    SyncSelectedCard();
+}
+
+// webui .asset-grid { repeat(auto-fit, minmax(210px, 1fr)) } —— QGridLayout 没有 auto-fit，
+// 这里按「列数 = (可用宽 + gap) / (最小列宽 + gap)」复刻 auto-fit 的列数决策，
+// 再用 setColumnStretch(1) 复刻 1fr 的等分拉伸。列宽最小值固定 210px。
+// availableWidth 是宿主控件宽度，要先扣掉给阴影预留的内距才是真正的可用列宽。
+void AssetWorkspace::ReflowAssets(int availableWidth) {
+    if (assetsGrid_ == nullptr) {
+        return;
+    }
+    const int usable = availableWidth - kAssetShadowRoom * 2;
+    int columns = 1;
+    if (usable > 0) {
+        columns = (usable + kAssetGridGap) / (kAssetCardMinWidth + kAssetGridGap);
+        columns = std::max(1, columns);
+    }
+    if (columns == gridColumns_) {
+        return;
+    }
+    gridColumns_ = columns;
+    for (QWidget* card : assetCards_) {
+        assetsGrid_->removeWidget(card);
+    }
+    if (gridState_ != nullptr) {
+        assetsGrid_->removeWidget(gridState_);
+    }
+    for (int column = 0; column < columns; ++column) {
+        assetsGrid_->setColumnStretch(column, 1);
+    }
+    for (std::size_t i = 0; i < assetCards_.size(); ++i) {
+        assetsGrid_->addWidget(assetCards_[i], static_cast<int>(i) / columns,
+                               static_cast<int>(i) % columns);
+    }
+    if (gridState_ != nullptr) {
+        assetsGrid_->addWidget(gridState_, 0, 0, 1, columns);
     }
 }
+
+// webui .asset-card.on { border-color: accent-glow; box-shadow: shadow-accent }：
+// 阴影走 ApplyShadowOnThemeChange（跟随主题切换，不写死色值）；边框色要过 QSS 的
+// `*[shineKind="card"][selected="true"]` 规则（QssBuilder 由协调者统一加），
+// 这里先把动态属性置上，规则一到位就生效——刻意不内联边框色，否则换肤后会留旧色。
+void AssetWorkspace::SyncSelectedCard() {
+    for (QWidget* card : assetCards_) {
+        const bool on = card->property("assetId").toLongLong() == selectedAssetId_;
+        card->setProperty("selected", on ? QStringLiteral("true") : QString{});
+        widgets::Repolish(card);
+        widgets::ApplyShadowOnThemeChange(
+            card, on ? widgets::ShadowLevel::Accent : widgets::ShadowLevel::None);
+    }
+}
+
 bool AssetWorkspace::SelectAsset(qint64 id) {
     const auto found = std::find_if(assets_.begin(), assets_.end(),
                                     [id](const AssetEntry& entry) {
@@ -666,6 +897,7 @@ bool AssetWorkspace::SelectAsset(qint64 id) {
         return false;
     }
     selectedAssetId_ = found->asset.id;
+    SyncSelectedCard();
     ShowSelectedAsset();
     return true;
 }

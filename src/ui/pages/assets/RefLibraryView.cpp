@@ -58,8 +58,19 @@ void RefLibraryView::BuildUi() {
     auto* header = new QWidget(this);
     auto* header_layout = new QHBoxLayout(header);
     header_layout->setContentsMargins(0, 0, 0, 0);
-    auto* title = widgets::SectionTitle(QStringLiteral("项目参考图 · assets/refs/"), header);
-    header_layout->addWidget(title, 1);
+    header_layout->setSpacing(theme::space::kSteps[3]);
+    auto* titles = new QWidget(header);
+    auto* titles_layout = new QVBoxLayout(titles);
+    titles_layout->setContentsMargins(0, 0, 0, 0);
+    titles_layout->setSpacing(2);
+    auto* title = widgets::SectionTitle(QStringLiteral("项目参考图 · assets/refs/"), titles);
+    titles_layout->addWidget(title);
+    // views.css:149 .vw-sub：数量来自真库行数，没有图就说 0，不写占位假数
+    count_ = new QLabel(QStringLiteral("0 张"), titles);
+    widgets::SetKind(count_, "statemeta");
+    count_->setStyleSheet(QStringLiteral("font-size: 12px;"));
+    titles_layout->addWidget(count_);
+    header_layout->addWidget(titles, 1);
     auto* choose = new widgets::Button(QStringLiteral("导入图片"), widgets::Button::Variant::Primary,
                                        widgets::Button::Size::Sm, header);
     auto* refresh = new widgets::Button(QStringLiteral("刷新"), widgets::Button::Variant::Secondary,
@@ -240,6 +251,9 @@ void RefLibraryView::RebuildModel() {
     auto* model = new QStringListModel(titles, grid_);
     grid_->setModel(model);
     grid_->PrefetchVisible();
+    if (count_ != nullptr) {
+        count_->setText(QStringLiteral("%1 张 · 缩略 156×132").arg(static_cast<int>(titles.size())));
+    }
 }
 
 const visual::ReferenceImage* RefLibraryView::SelectedImage() const {

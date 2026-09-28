@@ -15,7 +15,9 @@ namespace shine::app {
 // 状态点：小圆点自绘（tone → status.* token，零字面色）
 class StatusBar::Dot : public QWidget {
   public:
-    explicit Dot(QWidget* parent = nullptr) : QWidget(parent) { setFixedSize(9, 9); }
+    explicit Dot(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(9, 9); // .sb-item 里的 StatusDot：7px 点 + 两侧留白
+    }
     void SetTone(const char* tone) {
         const theme::ColorToken& t = theme::Current();
         std::uint32_t c = t.statusIdle;
@@ -51,10 +53,11 @@ namespace {
 
 StatusBar::StatusBar(QWidget* parent) : QFrame(parent) {
     setObjectName(QStringLiteral("statusBar"));
+    // webui shell.css:445-457 .statusbar：h26 / gap 4 / padding 0 10
+    setFixedHeight(26);
     auto* lay = new QHBoxLayout(this);
-    lay->setContentsMargins(theme::space::kSteps[3], theme::space::kSteps[1],
-                            theme::space::kSteps[3], theme::space::kSteps[1]);
-    lay->setSpacing(theme::space::kSteps[3]);
+    lay->setContentsMargins(10, 0, 10, 0);
+    lay->setSpacing(4);
 
     comfy_dot_ = new Dot(this);
     comfy_dot_->SetTone("idle");

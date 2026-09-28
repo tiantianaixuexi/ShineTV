@@ -26,8 +26,10 @@
 namespace shine::theme {
 namespace {
 
-std::array<std::string, 4> g_qssCache{};      // 4 张 QSS 预生成常驻（风险表 R6）
-std::array<bool, 4> g_qssBuilt{};
+// 每套内置主题一张 QSS 预生成常驻（风险表 R6）；长度由 kAllThemes 推导，
+// 免得再加主题时漏改缓存数组长度导致切到末位主题越界。
+std::array<std::string, kAllThemes.size()> g_qssCache{};
+std::array<bool, kAllThemes.size()> g_qssBuilt{};
 bool g_initialized = false;
 
 [[nodiscard]] std::size_t IndexOf(ThemeId id) { return static_cast<std::size_t>(id); }

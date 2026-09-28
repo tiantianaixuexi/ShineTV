@@ -52,7 +52,7 @@ Field::Field(const QString& label, LabelPos pos, QWidget* control, QWidget* pare
     SetKind(this, "field");
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    outer->setSpacing(4);
+    outer->setSpacing(theme::space::kXs); // webui .field { gap: 6px }
 
     auto* caption = new QLabel(label, this);
     SetKind(caption, "fieldlabel");
@@ -464,7 +464,7 @@ void NumberInput::Step(int dir) {
 
 Toggle::Toggle(QWidget* parent) : QWidget(parent) {
     SetKind(this, "toggle");
-    setFixedSize(36, 20);
+    setFixedSize(34, 19); // webui ui.css .switch：34×19（含 1px 边）
     setCursor(Qt::PointingHandCursor);
     setFocusPolicy(Qt::StrongFocus);
     knob_t_ = 0.0;
@@ -496,20 +496,24 @@ void Toggle::paintEvent(QPaintEvent* ev) {
     p.setRenderHint(QPainter::Antialiasing);
     const theme::ColorToken& t = theme::Current();
     const PaintState s = StateOf(*this);
-    // 勾选态也要能区分 hover / pressed（五态可辨）
-    const QColor off = TokenQColor(s.pressed ? t.bgSurface : (s.hover ? t.bgElevated : t.bgPanel));
+    // webui .switch：关 = bg-elevated 底 + line-normal 边；开 = accent 底 + accent 边。
+    // hover / pressed 是 Qt 侧的五态补齐，色沿用 accent-h / accent-2 两档。
+    const QColor off = TokenQColor(s.pressed ? t.bgSurface : t.bgElevated);
     const QColor on = TokenQColor(s.disabled ? t.statusIdle
                         : (s.pressed ? t.accentSecondary : (s.hover ? t.accentPrimaryHover : t.accentPrimary)));
     const QColor track = checked_ ? on : off;
-    const QRectF r = QRectF(rect()).adjusted(1, 1, -1, -1);
+    const QRectF r = QRectF(rect()).adjusted(1, 1, -1, -1); // 内容区 32×17
     p.setPen(TokenQColor(s.focus ? t.accentPrimary : t.lineNormal));
     p.setBrush(track);
-    p.drawRoundedRect(r, 10, 10);
+    p.drawRoundedRect(r, r.height() / 2.0, r.height() / 2.0); // --r-pill
 
-    const double kx = 2.0 + knob_t_ * (r.width() - 16.0);
-    p.setPen(TokenQColor(t.lineNormal));
-    p.setBrush(TokenQColor(t.bgSurface)); // knob 高亮块
-    p.drawEllipse(QRectF(r.x() + kx, r.y() + 2, 16, 16));
+    // 旋钮 13px，起点 (2,2)，行程 15px（CSS: .switch::after top/left 2px + translateX(15px)）
+    constexpr double kKnob = 13.0;
+    const double kx = 2.0 + knob_t_ * 15.0;
+    p.setPen(Qt::NoPen);
+    // 开 = accent-fg（深色旋钮），关 = text-secondary
+    p.setBrush(TokenQColor(checked_ ? t.accentPrimaryFg : t.textSecondary));
+    p.drawEllipse(QRectF(r.x() + kx, r.y() + 2, kKnob, kKnob));
 }
 
 void Toggle::mousePressEvent(QMouseEvent* ev) {
@@ -557,25 +561,30 @@ void Checkbox::paintEvent(QPaintEvent* ev) {
     const theme::ColorToken& t = theme::Current();
     const PaintState s = StateOf(*this);
 
-    QRectF box{0, (height() - 16) / 2.0, 16, 16};
+    // webui ui.css .check .box：15×15 / r-xs(4) / 1.5px line-strong 边；.check 文字 gap 8px
+    constexpr double kBox = 15.0;
+    constexpr double kGap = 8.0;
+    QRectF box{0, (height() - kBox) / 2.0, kBox, kBox};
     const bool filled = checked_ || partial_;
     const QColor fillColor = TokenQColor(s.disabled ? t.statusIdle
                                 : (s.pressed ? t.accentSecondary : (s.hover ? t.accentPrimaryHover : t.accentPrimary)));
-    p.setPen(TokenQColor(s.disabled ? t.statusIdle : (s.focus ? t.accentPrimary : t.lineNormal)));
+    p.setPen(QPen(TokenQColor(s.disabled ? t.statusIdle : (s.focus ? t.accentPrimary : t.lineStrong)), 1.5));
     p.setBrush(filled ? fillColor : TokenQColor(s.hover ? t.bgElevated : t.bgPanel));
-    p.drawRoundedRect(box, 3, 3);
+    p.drawRoundedRect(box, 4.0, 4.0);
 
     if (partial_) {
         p.setPen(QPen(TokenQColor(t.accentPrimaryFg), 2));
-        p.drawLine(box.x() + 4, box.center().y(), box.x() + 12, box.center().y());
+        p.drawLine(box.x() + 3.5, box.center().y(), box.x() + 11.5, box.center().y());
     } else if (checked_) {
         p.setPen(QPen(TokenQColor(t.accentPrimaryFg), 2));
-        p.drawPolyline(QPolygonF{{box.x() + 3.5, box.center().y()},
-                                 {box.x() + 7, box.y() + 11},
-                                 {box.x() + 12.5, box.y() + 5}});
+        p.drawPolyline(QPolygonF{{box.x() + 3, box.y() + 7.5},
+                                 {box.x() + 6, box.y() + 10.5},
+                                 {box.x() + 11.5, box.y() + 4.5}});
     }
-    p.setPen(TokenQColor(s.disabled ? t.statusIdle : t.textPrimary));
-    p.drawText(QRectF(24, 0, width() - 24, height()), Qt::AlignVCenter | Qt::AlignLeft, text_);
+    // webui .check 常态 text-secondary，勾选后升到 text-primary
+    p.setPen(TokenQColor(s.disabled ? t.statusIdle : (checked_ ? t.textPrimary : t.textSecondary)));
+    p.drawText(QRectF(kBox + kGap, 0, width() - kBox - kGap, height()), Qt::AlignVCenter | Qt::AlignLeft,
+               text_);
 }
 
 void Checkbox::mousePressEvent(QMouseEvent* ev) {
@@ -617,10 +626,13 @@ void Radio::paintEvent(QPaintEvent* ev) {
     const theme::ColorToken& t = theme::Current();
     const PaintState s = StateOf(*this);
 
-    QRectF box{0, (height() - 16) / 2.0, 16, 16};
+    // 与 .check .box 同规格：15×15 正圆 + 1.5px line-strong 边 + 8px gap
+    constexpr double kBox = 15.0;
+    constexpr double kGap = 8.0;
+    QRectF box{0, (height() - kBox) / 2.0, kBox, kBox};
     const QColor fillColor = TokenQColor(s.disabled ? t.statusIdle
                                 : (s.pressed ? t.accentSecondary : (s.hover ? t.accentPrimaryHover : t.accentPrimary)));
-    p.setPen(TokenQColor(s.disabled ? t.statusIdle : (s.focus ? t.accentPrimary : t.lineNormal)));
+    p.setPen(QPen(TokenQColor(s.disabled ? t.statusIdle : (s.focus ? t.accentPrimary : t.lineStrong)), 1.5));
     p.setBrush(checked_ ? fillColor : TokenQColor(s.hover ? t.bgElevated : t.bgPanel));
     p.drawEllipse(box);
     if (checked_) {
@@ -628,8 +640,9 @@ void Radio::paintEvent(QPaintEvent* ev) {
         p.setBrush(TokenQColor(t.accentPrimaryFg));
         p.drawEllipse(box.adjusted(5, 5, -5, -5));
     }
-    p.setPen(TokenQColor(s.disabled ? t.statusIdle : t.textPrimary));
-    p.drawText(QRectF(24, 0, width() - 24, height()), Qt::AlignVCenter | Qt::AlignLeft, text_);
+    p.setPen(TokenQColor(s.disabled ? t.statusIdle : (checked_ ? t.textPrimary : t.textSecondary)));
+    p.drawText(QRectF(kBox + kGap, 0, width() - kBox - kGap, height()), Qt::AlignVCenter | Qt::AlignLeft,
+               text_);
 }
 
 void Radio::mousePressEvent(QMouseEvent* ev) {
@@ -649,10 +662,12 @@ void Radio::keyPressEvent(QKeyEvent* ev) {
 // ================================================================= SearchBox
 
 SearchBox::SearchBox(QWidget* parent) : QFrame(parent) {
-    SetKind(this, "input");
+    // webui ui.css .search 是**独立**控件（不是 .input 的变体）：r-pill + line-subtle 边，
+    // 故用单独的 shineKind，否则会跟着 .input 的 r-sm(6) 走。
+    SetKind(this, "searchbox");
     auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(6, 0, 2, 0);
-    row->setSpacing(4);
+    row->setContentsMargins(11, 0, 11, 0); // .search padding: 0 12px（内含 1px 边）
+    row->setSpacing(8);                    // .search gap: 8px
 
     auto* icon = new QLabel(QStringLiteral("🔍"), this); // 前缀放大镜
     SetKind(icon, "searchicon");
@@ -678,11 +693,19 @@ SearchBox::SearchBox(QWidget* parent) : QFrame(parent) {
 void SearchBox::SetPlaceholder(const QString& p) { edit_->setPlaceholderText(p); }
 
 bool SearchBox::eventFilter(QObject* obj, QEvent* ev) {
-    if (obj == edit_ && ev->type() == QEvent::KeyPress) {
-        auto* ke = static_cast<QKeyEvent*>(ev);
-        if (ke->key() == Qt::Key_Escape && !edit_->text().isEmpty()) { // Esc 清空
-            edit_->clear();
-            return true;
+    if (obj == edit_) {
+        if (ev->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(ev);
+            if (ke->key() == Qt::Key_Escape && !edit_->text().isEmpty()) { // Esc 清空
+                edit_->clear();
+                return true;
+            }
+        }
+        // .search:focus-within —— 焦点落在内层 QLineEdit 上，QSS 的父级 :focus 不会触发，
+        // 这里把状态转发到外框的 focused 属性（QSS 侧对应 [focused="true"]）。
+        if (ev->type() == QEvent::FocusIn || ev->type() == QEvent::FocusOut) {
+            setProperty("focused", ev->type() == QEvent::FocusIn ? QStringLiteral("true") : QString{});
+            Repolish(this);
         }
     }
     return QFrame::eventFilter(obj, ev);

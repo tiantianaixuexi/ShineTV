@@ -112,7 +112,7 @@ Drawer::Drawer(const QString& title, QWidget* parent) : QWidget(parent, Qt::Tool
     SetKind(this, "drawer");
     setProperty("shineDrawer", true); // 无 Q_OBJECT，兄弟查找走属性标记
     setAttribute(Qt::WA_DeleteOnClose, true);
-    setFixedWidth(380); // 右侧 380px（UI.md §2.1）
+    setFixedWidth(390); // webui ui.css:652 .drawer width: 390px
     // webui ui.css:655 .drawer box-shadow: var(--shadow-2)（QSS 无 box-shadow）
     ApplyShadow(this, ShadowLevel::Lg);
 

@@ -6,11 +6,14 @@
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Inputs.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/layout/QtLayout.h"
 #include "llm/OpenAIConfig.h"
 #include "novel/NovelPipeline.h"
 #include "util/Encoding.h"
 
 #include <QDateTime>
+#include <QFont>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPlainTextEdit>
@@ -50,6 +53,48 @@ namespace {
     return std::clamp(static_cast<int>(std::lround(value)), lo, hi);
 }
 
+// webui `.gcode` 的等宽字（--font-mono 族序逐档回退）。
+[[nodiscard]] QFont MonoFont(const QFont& base, int pixelSize, QFont::Weight weight = QFont::Normal) {
+    QFont f = base;
+    f.setFamilies({QString::fromLatin1("Cascadia Code"), QString::fromLatin1("JetBrains Mono"),
+                    QString::fromLatin1("Consolas"), QString::fromLatin1("monospace")});
+    f.setPixelSize(pixelSize);
+    f.setWeight(weight);
+    return f;
+}
+
+// webui views.css:658 `.gates .gate.pass { border-color: ok 25% }` /
+// :660 `.gates .gate.fail { border-color: danger 35%; background: danger 7% + fill-muted }`
+// Qt 无 color-mix：描边按设计稿比例降 alpha，fail 底色按 7% 与 danger 混合。
+void PaintGateRow(QFrame* row, bool pass) {
+    const theme::ColorToken& t = theme::Current();
+    QColor bg = widgets::TokenQColor(t.fillMuted);
+    QColor edge = widgets::TokenQColor(t.lineSubtle);
+    if (pass) {
+        edge = widgets::TokenQColor(t.statusOk);
+        edge.setAlphaF(0.25);
+    } else {
+        const QColor danger = widgets::TokenQColor(t.statusDanger);
+        edge = danger;
+        edge.setAlphaF(0.35);
+        constexpr double kFailTint = 0.07;
+        bg = QColor::fromRgbF(bg.redF() * (1.0 - kFailTint) + danger.redF() * kFailTint,
+                              bg.greenF() * (1.0 - kFailTint) + danger.greenF() * kFailTint,
+                              bg.blueF() * (1.0 - kFailTint) + danger.blueF() * kFailTint);
+    }
+    row->setStyleSheet(QStringLiteral("QFrame { background-color: rgba(%1,%2,%3,1);"
+                                     " border: 1px solid rgba(%4,%5,%6,%7);"
+                                     " border-radius: %8px; }")
+                           .arg(bg.red())
+                           .arg(bg.green())
+                           .arg(bg.blue())
+                           .arg(edge.red())
+                           .arg(edge.green())
+                           .arg(edge.blue())
+                           .arg(QString::number(static_cast<double>(edge.alpha()) / 255.0, 'f', 3))
+                           .arg(theme::radius::kSm));
+}
+
 } // namespace
 
 AutoRunPanel::AutoRunPanel(QWidget* parent) : QWidget(parent) {
@@ -66,9 +111,9 @@ AutoRunPanel::~AutoRunPanel() {
 
 void AutoRunPanel::BuildUi() {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                              theme::space::kSteps[2], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     auto* head = new QWidget(this);
     auto* head_layout = new QHBoxLayout(head);
@@ -152,6 +197,13 @@ void AutoRunPanel::BuildUi() {
     widgets::SetKind(precondition_, "fieldhelp");
     precondition_->setMinimumHeight(150);
     gate_layout->addWidget(precondition_);
+    // 前置 1–6 逐条摆成 `.gate` 行（webui views.css:634 `.gates`）：
+    // 状态点 · 序号 gcode · 名称 grow · 尾部依据；书库没开时本容器隐藏。
+    pre_list_ = new QWidget(gate_card);
+    pre_list_layout_ = new QVBoxLayout(pre_list_);
+    pre_list_layout_->setContentsMargins(0, 0, 0, 0);
+    pre_list_layout_->setSpacing(5); // .gaps gap 5px
+    gate_layout->addWidget(pre_list_);
     outer->addWidget(gate_card);
 
     auto* progress_card = new widgets::SectionCard(QStringLiteral("进度"), this);
@@ -324,9 +376,10 @@ bool AutoRunPanel::LlmReady() const {
     return static_cast<bool>(call_) || !llm::ResolveApiKey().empty();
 }
 
-QString AutoRunPanel::PreconditionText() const {
+std::vector<AutoRunPanel::PreRow> AutoRunPanel::PreconditionRows() const {
+    std::vector<PreRow> rows;
     if (!db_ || !db_->isOpen()) {
-        return QStringLiteral("前置 1–6：未打开书库\n");
+        return rows; // 书库没开：交由 UI 退回单行说明（探针文本另有分支）
     }
     novelcore::AutoPreconditionInput input =
         novelcore::ProbeAutoPrecondition(*db_, LlmReady(),
@@ -335,16 +388,33 @@ QString AutoRunPanel::PreconditionText() const {
         *db_, limits_.max_llm_calls_per_chapter, max_total_calls_, max_chapters_);
     input.book_budget_ok = !estimate.Over();
     input.budget_detail = estimate.Describe();
+
+    const auto add = [&rows](int code, bool pass, const QString& name, const QString& detail = {}) {
+        rows.push_back(PreRow{code, name, pass, detail});
+    };
+    add(1, input.gates_verified_on_last_chapter, QStringLiteral("最近一章 G1–G5 已验证"));
+    add(2, input.verifiers_complete, QStringLiteral("K01–K29 校验器全量可用"));
+    add(3, input.llm_ok,
+        QStringLiteral("LLM 可用（%1）")
+            .arg(input.llm_ok ? QStringLiteral("已配置") : QStringLiteral("未配置 API Key")));
+    add(4, input.comfy_ok, QStringLiteral("Comfy 连通（本轮未请求出图）"));
+    add(5, input.cross_review_ok, QStringLiteral("评审模型 ≠ 写作模型"));
+    add(6, input.book_budget_ok, QStringLiteral("全书预算"),
+        QStringLiteral("：%1").arg(Text(estimate.Describe())));
+    return rows;
+}
+
+QString AutoRunPanel::PreconditionText() const {
+    if (!db_ || !db_->isOpen()) {
+        return QStringLiteral("前置 1–6：未打开书库\n");
+    }
     const auto mark = [](bool pass) { return pass ? QStringLiteral("✔") : QStringLiteral("✘"); };
     QString out;
-    out += QStringLiteral("前置 1 %1 最近一章 G1–G5 已验证\n").arg(mark(input.gates_verified_on_last_chapter));
-    out += QStringLiteral("前置 2 %1 K01–K29 校验器全量可用\n").arg(mark(input.verifiers_complete));
-    out += QStringLiteral("前置 3 %1 LLM 可用（%2）\n")
-               .arg(mark(input.llm_ok), input.llm_ok ? QStringLiteral("已配置") : QStringLiteral("未配置 API Key"));
-    out += QStringLiteral("前置 4 %1 Comfy 连通（本轮未请求出图）\n").arg(mark(input.comfy_ok));
-    out += QStringLiteral("前置 5 %1 评审模型 ≠ 写作模型\n").arg(mark(input.cross_review_ok));
-    out += QStringLiteral("前置 6 %1 全书预算：%2\n")
-               .arg(mark(input.book_budget_ok), Text(estimate.Describe()));
+    for (const PreRow& r : PreconditionRows()) {
+        out += QStringLiteral("前置 %1 %2 %3%4\n")
+                   .arg(r.code)
+                   .arg(mark(r.pass), r.name, r.detail);
+    }
     return out;
 }
 
@@ -359,14 +429,60 @@ void AutoRunPanel::Refresh() {
     }
     if (precondition_ != nullptr) {
         precondition_->SetFullText(PreconditionText());
-        bool allOk = false;
-        if (hasBook) {
-            const QString text = precondition_->text();
-            allOk = !text.contains(QStringLiteral("✘"));
-        }
+        const std::vector<PreRow> rows = PreconditionRows();
+        const bool allOk = !rows.empty()
+                           && std::all_of(rows.begin(), rows.end(),
+                                         [](const PreRow& r) { return r.pass; });
         widgets::SetTextColor(precondition_, hasBook && (run_mode_ != novelcore::RunMode::Auto || allOk)
                                    ? theme::Current().textSecondary
                                    : theme::Current().statusDanger);
+        // 有书库 → 逐条 gate 行；没书库 → 退回那一行说明（前置_ 的多行文本）
+        precondition_->setVisible(rows.empty());
+        if (pre_list_ != nullptr) {
+            pre_list_->setVisible(!rows.empty());
+        }
+        if (pre_list_layout_ != nullptr && !rows.empty()) {
+            while (pre_list_layout_->count() > 0) {
+                QLayoutItem* it = pre_list_layout_->takeAt(0);
+                delete it->widget();
+                delete it;
+            }
+            for (const PreRow& r : rows) {
+                auto* line = new QFrame(pre_list_);
+                line->setFrameShape(QFrame::NoFrame);
+                auto* hl = new QHBoxLayout(line);
+                hl->setContentsMargins(10, 6, 10, 6); // .gate padding 6px 10px
+                hl->setSpacing(9);                     // .gate gap 9px
+                auto* mark = new QLabel(r.pass ? QStringLiteral("✔") : QStringLiteral("✘"), line);
+                mark->setFixedWidth(12);
+                widgets::SetTextColor(mark, r.pass ? theme::Current().statusOk
+                                                   : theme::Current().statusDanger);
+                auto* code = new QLabel(QString::number(r.code), line);
+                code->setFixedWidth(34); // .gcode width 34px
+                code->setFont(MonoFont(code->font(), 11, QFont::Bold));
+                widgets::SetTextColor(code, r.pass ? theme::Current().statusOk
+                                                   : theme::Current().statusDanger);
+                auto* name = new QLabel(r.name, line);
+                {
+                    QFont f = line->font();
+                    f.setPixelSize(12); // 12.5px → 12px 档
+                    name->setFont(f);
+                }
+                widgets::SetTextColor(name, theme::Current().textSecondary);
+                hl->addWidget(mark);
+                hl->addWidget(code);
+                hl->addWidget(name);
+                if (!r.detail.isEmpty()) {
+                    auto* detail = new QLabel(r.detail, line);
+                    widgets::SetTextColor(detail, theme::Current().textMuted);
+                    hl->addWidget(detail);
+                }
+                hl->addStretch(1);
+                line->setToolTip(QStringLiteral("前置 %1 · %2%3").arg(r.code).arg(r.name, r.detail));
+                PaintGateRow(line, r.pass);
+                pre_list_layout_->addWidget(line);
+            }
+        }
     }
     if (stop_text_ != nullptr) {
         QString text;

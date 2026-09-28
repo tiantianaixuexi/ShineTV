@@ -5,7 +5,7 @@
 #include <vector>
 
 class QLabel;
-class QListWidget;
+class QVBoxLayout;
 
 namespace shine::app {
 
@@ -18,7 +18,13 @@ class FinalCutView : public QWidget {
 
   private:
     std::vector<std::pair<std::int64_t, QString>> videos_;
-    QListWidget* list_ = nullptr;
+    // 镜头视频密集行列表（webui .dlist）
+    QWidget* list_ = nullptr;
+    QVBoxLayout* list_lay_ = nullptr;
+    // 概览卡 KV（webui CutPanel 的可连播 / 编码 / 缺失）
+    QLabel* kv_playable_ = nullptr;
+    QLabel* kv_codec_ = nullptr;
+    QLabel* kv_missing_ = nullptr;
     QLabel* status_ = nullptr;
 };
 

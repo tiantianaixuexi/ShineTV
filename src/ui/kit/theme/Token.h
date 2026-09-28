@@ -4,7 +4,8 @@
 // 点分名与语义值由本文件定义；主题/动效规则见 docs/10-modules/ui-kit.md：
 //   §2.1 中性色阶 12 项 + §2.2 语义强调色 10 项 —— 颜色（RRGGBBAA）；
 //   §2.3 形状 / 间距 / 字体 / 阴影 / 描边 / 动效 —— 与主题无关的几何与动效。
-// 值与 4 套主题的 JSON 化在 P02-S1 落地；本文件只立结构与命名（S5 判据：与 §2 逐项对得上）。
+// 几何刻度以 webui/src/styles/tokens.css 的 :root 块为唯一权威（--r-* / --sp-* /
+// --dur-* / --font-*），本文件是它的 C++ 镜像。
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,8 +13,10 @@
 
 namespace shine::theme {
 
-// 4 套主题（总纲 §2 列头顺序；深空为默认）
-enum class ThemeId { DeepSpace /*深空*/, Dusk /*薄暮*/, PaperInk /*纸墨*/, PolarNight /*极夜*/ };
+// 5 套主题（深空为默认；顺序 = Theme.cpp 的 kThemes 下标，不得重排）
+enum class ThemeId {
+    DeepSpace /*深空*/, Dusk /*薄暮*/, PaperInk /*纸墨*/, InkWash /*水墨*/, PolarNight /*极夜*/
+};
 
 // ---- §2.1 + §2.2 颜色 token（字段顺序 = kColorTokenNames）----
 struct ColorToken {
@@ -78,28 +81,43 @@ inline constexpr std::array<std::string_view, 31> kColorTokenNames = {
 inline constexpr std::size_t kColorTokenCount = kColorTokenNames.size();
 
 // ---- §2.3 形状 / 间距 / 字体 / 阴影 / 描边 / 动效（与主题无关）----
-namespace radius { // radius.xs / sm / md / lg / pill
-inline constexpr int kXs = 2;   // 输入框 / 小徽标
-inline constexpr int kSm = 4;   // 按钮 / 输入 / 菜单项
-inline constexpr int kMd = 6;   // 按钮（lg）、分段控件、进度条
-inline constexpr int kLg = 10;  // 卡片 / 弹层 / 抽屉
-inline constexpr int kPill = 999;
+// 圆角刻度：与 tokens.css 的 --r-xs/sm/md/lg/xl/pill **逐档同值**，
+// 命名下标（xs<sm<md<lg<xl）也按数值递增，QSS 里出现的每个 radius 都能回溯到其中一档。
+namespace radius {
+inline constexpr int kXs = 4;   // --r-xs：分段项 / 勾选框 / kbd / 卡片强调条
+inline constexpr int kSm = 6;   // --r-sm：按钮 / 输入框 / 菜单项 / 树节点 / tooltip
+inline constexpr int kMd = 10;  // --r-md：卡片 / 分段控件容器 / 提示条 / 浮层面板
+inline constexpr int kLg = 14;  // --r-lg：弹窗 / 空态字形 / 浮动面板
+inline constexpr int kXl = 18;  // --r-xl：设计稿预留大容器档（当前无控件占用）
+inline constexpr int kPill = 999; // --r-pill：胶囊 / 进度条 / 滚动条滑块 / 正圆（>半边长时 Qt 自钳）
 } // namespace radius
 
 namespace space {
+// ⚠️ 下标语义不可动：~60 处按 kSteps[i] 取值。tokens.css 的 --sp-1…--sp-7
+// （4/8/12/16/24/32/48）对应这里的**下标 2…8**；下标 1（2px）是 Qt 侧历史刻度，
+// 设计稿没有对应 --sp-*（其 6/7/10px 字面 gap 走下面的命名常量或控件内固定值）。
 inline constexpr std::array<int, 9> kSteps = {0, 2, 4, 8, 12, 16, 24, 32, 48}; // space.0…space.8
 // 方案 01 补的 3 档（6 / 20 / 40）。**不进 kSteps**：kSteps 的下标被 ~60 处
 // 按索引取值（kSteps[3] 等），中途插入会让全部既有取值漂移；补在数组末尾又会让
 // 序列变成 0,2,4,…,48,6,20,40（非单调，后续二分/追加都会踩坑）。
 // 因此新增档位一律用命名常量，既有下标语义保持不变。
-inline constexpr int kXs = 6;   // 细间距：图标与文字、紧凑分组内
+inline constexpr int kXs = 6;   // 细间距：图标与文字、紧凑分组内（ui.css 的 6px gap）
 inline constexpr int kXl = 20;  // 大间距：区块之间（16 与 24 之间）
 inline constexpr int kXxl = 40; // 超大间距：页面级留白（32 与 48 之间）
 } // namespace space
 
 namespace font {
 inline constexpr std::string_view kFamily = "Microsoft YaHei UI, Segoe UI, sans-serif"; // font.family
+inline constexpr std::string_view kMonoFamily =
+    "Cascadia Code, JetBrains Mono, Consolas, monospace"; // --font-mono
 inline constexpr std::array<int, 6> kSizes = {12, 13, 14, 16, 20, 28}; // font.size.xs/sm/md/lg/xl/display
+// 正文基准字号。base.css 的 body 是 13.5px，但 Qt QSS 的 font-size 最终走
+// QFont::setPixelSize(int)，小数会在渲染前被量化到整设备像素：13.5px @100% 缩放
+// 实际是 14px，比设计稿偏得更多。QWidget 的基准因此取整像素档 13px —— 它同时是
+// ui.css 里显式声明最多的控件字号（.btn / .tabs / .input / .table 都是 13px），
+// 与本刻度其余整数档（12/14/16/20/28）同族。设计稿的 x.5 档（11.5 / 12.5 / 13.5）
+// 一律按「就近取整」落到整像素档，见 docs/90-reference/ui-design-parity-gaps.md。
+inline constexpr int kBase = 13;
 inline constexpr int kRegular = 400;  // font.weight.regular
 inline constexpr int kSemibold = 600; // font.weight.semibold
 } // namespace font

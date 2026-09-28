@@ -27,6 +27,8 @@
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QFont>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
@@ -38,6 +40,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -165,6 +168,49 @@ constexpr int kImportCardMinW = 560; // 导入行：前作选择 + 预算 + 按�
         }
     }
     return QStringLiteral("设定");
+}
+
+// webui `.gcode` 的等宽字（--font-mono 族序逐档回退）。
+[[nodiscard]] QFont MonoFont(const QFont& base, int pixelSize, QFont::Weight weight = QFont::Normal) {
+    QFont f = base;
+    f.setFamilies({QString::fromLatin1("Cascadia Code"), QString::fromLatin1("JetBrains Mono"),
+                    QString::fromLatin1("Consolas"), QString::fromLatin1("monospace")});
+    f.setPixelSize(pixelSize);
+    f.setWeight(weight);
+    return f;
+}
+
+// webui views.css:658 `.gates .gate.pass { border-color: ok 25% }` /
+// :660 `.gates .gate.fail { border-color: danger 35%; background: danger 7% + fill-muted }`
+// Qt 无 color-mix：描边按设计稿比例降 alpha，fail 底色按 7% 与 danger 混合。
+// pass = nullopt = 还没判定，留在中性底（line-subtle），不预判红绿。
+void PaintGateRow(QFrame* row, std::optional<bool> pass) {
+    const theme::ColorToken& t = theme::Current();
+    QColor bg = widgets::TokenQColor(t.fillMuted);
+    QColor edge = widgets::TokenQColor(t.lineSubtle);
+    if (pass.value_or(false)) {
+        edge = widgets::TokenQColor(t.statusOk);
+        edge.setAlphaF(0.25);
+    } else if (pass.has_value()) {
+        const QColor danger = widgets::TokenQColor(t.statusDanger);
+        edge = danger;
+        edge.setAlphaF(0.35);
+        constexpr double kFailTint = 0.07;
+        bg = QColor::fromRgbF(bg.redF() * (1.0 - kFailTint) + danger.redF() * kFailTint,
+                              bg.greenF() * (1.0 - kFailTint) + danger.greenF() * kFailTint,
+                              bg.blueF() * (1.0 - kFailTint) + danger.blueF() * kFailTint);
+    }
+    row->setStyleSheet(QStringLiteral("QFrame { background-color: rgba(%1,%2,%3,1);"
+                                     " border: 1px solid rgba(%4,%5,%6,%7);"
+                                     " border-radius: %8px; }")
+                           .arg(bg.red())
+                           .arg(bg.green())
+                           .arg(bg.blue())
+                           .arg(edge.red())
+                           .arg(edge.green())
+                           .arg(edge.blue())
+                           .arg(QString::number(static_cast<double>(edge.alpha()) / 255.0, 'f', 3))
+                           .arg(theme::radius::kSm));
 }
 
 } // namespace
@@ -326,38 +372,56 @@ QWidget* InitChainView::BuildGatesArea() {
     gateHost_ = new QWidget(card);
     gateCol_ = new QVBoxLayout(gateHost_);
     gateCol_->setContentsMargins(0, 0, 0, 0);
-    gateCol_->setSpacing(theme::space::kSteps[1]);
+    // webui .gates { gap: 5px }
+    gateCol_->setSpacing(5);
 
     for (const GateInfo& g : kGates) {
         GateRowUi row;
         row.nId = QString::fromLatin1(g.id);
-        auto* line = new QWidget(gateHost_);
-        auto* hl = new QHBoxLayout(line);
-        hl->setContentsMargins(0, 0, 0, 0);
-        hl->setSpacing(theme::space::kSteps[1]);
-        row.name = new widgets::ElidedLabel(QString("%1　%2").arg(row.nId, QString::fromUtf8(g.name)), line);
+        // webui views.css:639 `.gate { display:flex; align-items:center; gap:9px;
+        //   padding:6px 10px; border-radius:var(--r-sm); font-size:12.5px;
+        //   color:var(--text-secondary); background:var(--fill-muted);
+        //   border:1px solid var(--line-subtle) }`；pass / fail 的描边与底色
+        // 见 RebuildGates（Qt 无 color-mix，按设计稿比例降 alpha 等效）。
+        row.line = new QFrame(gateHost_);
+        row.line->setFrameShape(QFrame::NoFrame);
+        auto* hl = new QHBoxLayout(row.line);
+        hl->setContentsMargins(10, 6, 10, 6);
+        hl->setSpacing(9);
+        row.mark = new QLabel(QStringLiteral("—"), row.line);
+        row.mark->setFixedWidth(12);
+        row.mark->setAlignment(Qt::AlignCenter);
+        row.code = new QLabel(row.nId, row.line);
+        // `.gate .gcode { font-family:var(--font-mono); font-size:11px; font-weight:700;
+        //                  color:var(--text-muted); width:34px; flex:none }`
+        row.code->setFixedWidth(34);
+        row.code->setFont(MonoFont(row.code->font(), 11, QFont::Bold));
+        row.name = new widgets::ElidedLabel(QString::fromUtf8(g.name), row.line);
         row.name->SetExpandable(false); // 规则名短，纯省略位；判定文本才给点击展开
         row.name->setMinimumWidth(240);
-        row.mode = new QLabel(QStringLiteral("启用 enforce"), line);
+        row.mode = new QLabel(QStringLiteral("启用 enforce"), row.line);
         // 判定文本可能很长（失败详情 + 修法），普通 QLabel 既不省略也不限宽，
         // 会把同一行的按钮顶出容器并在右栏上叠字。改用 ElidedLabel：
         // 单行按可用宽度省略、hover 出全文、点击就地展开成多行。
-        row.verdict = new widgets::ElidedLabel(QStringLiteral("未判定"), line);
+        row.verdict = new widgets::ElidedLabel(QStringLiteral("未判定"), row.line);
         row.verdict->setMinimumWidth(200);
         widgets::SetKind(row.verdict, "fieldhelp");
         row.ignoreBtn = new widgets::Button(QStringLiteral("忽略并人工确认"), widgets::Button::Variant::Ghost,
-                                            widgets::Button::Size::Sm, line);
+                                            widgets::Button::Size::Sm, row.line);
         row.approveBtn = new widgets::Button(QStringLiteral("人工审批"), widgets::Button::Variant::Ghost,
-                                             widgets::Button::Size::Sm, line);
+                                             widgets::Button::Size::Sm, row.line);
         row.enforceBtn = new widgets::Button(QStringLiteral("启用"), widgets::Button::Variant::Ghost,
-                                             widgets::Button::Size::Sm, line);
+                                             widgets::Button::Size::Sm, row.line);
+        hl->addWidget(row.mark);
+        hl->addWidget(row.code);
         hl->addWidget(row.name, 3);
         hl->addWidget(row.mode);
         hl->addWidget(row.verdict, 4);
         hl->addWidget(row.ignoreBtn);
         hl->addWidget(row.approveBtn);
         hl->addWidget(row.enforceBtn);
-        gateCol_->addWidget(line);
+        PaintGateRow(row.line, std::nullopt); // 未判定 = 中性描边
+        gateCol_->addWidget(row.line);
 
         const QString nId = row.nId;
         connect(row.ignoreBtn, &QPushButton::clicked, this, [this, nId] {
@@ -1259,25 +1323,37 @@ void InitChainView::RebuildGates() {
 
         QString verdictText;
         std::uint32_t token = theme::Current().textMuted;
+        bool rowPass = false; // 行底板与 gcode 的着色口径（人工放行按「已过但有保留」处理）
         { // 门禁判定随时可看（EvaluateGates 是纯查询，不依赖是否点过「跑门禁」）
             const GateLine& l = lines[i];
             if (l.waived) {
                 verdictText = QStringLiteral("人工确认放行");
                 token = theme::Current().statusWarn;
+                rowPass = true;
             } else if (l.rawPass) {
                 verdictText = QStringLiteral("通过");
                 token = theme::Current().statusOk;
+                rowPass = true;
             } else if (l.pending) {
                 verdictText = QStringLiteral("不通过 · 待人工审批");
                 token = theme::Current().statusWarn;
+                rowPass = false;
             } else {
                 verdictText = QStringLiteral("不通过：%1｜修法：%2").arg(l.detail, l.fixHint);
                 token = theme::Current().statusDanger;
+                rowPass = false;
             }
             row.name->setToolTip(QStringLiteral("%1 %2　%3").arg(nId, l.name, l.detail));
         }
         row.verdict->SetFullText(verdictText);
         widgets::SetTextColor(row.verdict, token);
+        // `.gate` 的状态点与 gcode：过 = status-ok，未过 = status-danger
+        row.mark->setText(rowPass ? QStringLiteral("✔") : QStringLiteral("✘"));
+        widgets::SetTextColor(row.mark,
+                              rowPass ? theme::Current().statusOk : theme::Current().statusDanger);
+        widgets::SetTextColor(row.code,
+                              rowPass ? theme::Current().statusOk : theme::Current().statusDanger);
+        PaintGateRow(row.line, rowPass);
         row.ignoreBtn->setEnabled(cfg.mode == QLatin1String("enforce"));
         row.approveBtn->setEnabled(cfg.mode == QLatin1String("ignore-approved") && !cfg.approved);
         row.enforceBtn->setEnabled(cfg.mode != QLatin1String("enforce"));

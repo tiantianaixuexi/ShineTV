@@ -1,10 +1,15 @@
 #pragma once
-// shine::app —— 顶栏（P03-S6/S7）：[项目名 ▾] … 🔍Ctrl+K ▶运行 ⏹停止 🎨主题 ⚙设置。
-// 主题菜单承接 P02-S8 全部能力（4 内置 + 自定义 + 样式编辑器 + 减少动效）。
+// shine::app —— 顶栏（对齐 webui/src/styles/shell.css:18-155）：
+//   [品牌 ▸站名] [项目名胶囊 ▾] [🔍 搜索命令 Ctrl K] …… [▶运行 ⏹停止] [🎨主题] [⚙]
+// 主题菜单承接 P02-S8 全部能力（5 内置 + 自定义 + 样式编辑器 + 减少动效），
+// 内置主题每项带 26×16 色卡（取该主题自身的 accent token）。
 #include <QFrame>
 #include <QString>
 
 #include <functional>
+
+class QPushButton;
+class QWidget;
 
 namespace shine::widgets {
 class Button;
@@ -16,7 +21,7 @@ class TopBar : public QFrame {
   public:
     explicit TopBar(QWidget* parent = nullptr);
 
-    void SetProjectName(const QString& name); // 空 = 未打开项目（按钮禁用）
+    void SetProjectName(const QString& name); // 空 = 未打开项目
     void SetOnShowHub(std::function<void()> cb);          // 「项目列表」
     void SetOnCloseProject(std::function<void()> cb);     // 「关闭项目」
     void SetOnRevealProject(std::function<void()> cb);    // 「在资源管理器中显示」
@@ -35,10 +40,15 @@ class TopBar : public QFrame {
   private:
     void ShowThemeMenu(const QPoint& globalPos);
 
+    QPushButton* brand_ = nullptr;         // 站名（点击回项目列表）
+    QWidget* proj_chip_ = nullptr;         // 项目名胶囊外壳（色点 + 文字）
+    QWidget* proj_dot_ = nullptr;          // 胶囊里的 accent 色点
+    QPushButton* palette_ = nullptr;       // 搜索位（260×28）
     shine::widgets::Button* project_btn_ = nullptr;
     shine::widgets::Button* theme_btn_ = nullptr;
     shine::widgets::Button* side_btn_ = nullptr;
     shine::widgets::Button* inspector_btn_ = nullptr;
+    bool has_project_ = false;
     std::function<void()> on_show_hub_;
     std::function<void()> on_close_project_;
     std::function<void()> on_reveal_project_;

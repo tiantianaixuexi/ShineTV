@@ -27,12 +27,14 @@
 #include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/Navigation.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/kit/theme/CssColor.h"
 #include "util/Encoding.h"
 #include "util/File.h"
 
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QColor>
 #include <QDesktopServices>
 #include <QDir>
 #include <QEvent>
@@ -129,6 +131,115 @@ class DocTabBar : public QTabBar {
     const shine::AppSettings& s = shine::Settings();
     return !s.openaiApiKey.empty() || !s.mimoApiKey.empty() || !s.minimaxApiKey.empty();
 }
+
+// 两枚 token 按权重预合成（webui 的 color-mix 在 QSS 里没有对应声明，
+// 文档 §一 已把它列为能力边界；这里在 C++ 侧算出同一个结果，仍然零字面色）。
+[[nodiscard]] QString Blend(std::uint32_t a, std::uint32_t b, double wa) {
+    const QColor ca = shine::widgets::TokenQColor(a);
+    const QColor cb = shine::widgets::TokenQColor(b);
+    const auto mix = [wa](int x, int y) {
+        return static_cast<int>(x * wa + y * (1.0 - wa) + 0.5);
+    };
+    return QColor(mix(ca.red(), cb.red()), mix(ca.green(), cb.green()), mix(ca.blue(), cb.blue()))
+        .name();
+}
+
+// —— 外壳专属 QSS ——
+// 只挂在 workshop_ 根控件（objectName=shineShell）上，选择器一律以 #shineShell 打头，
+// 因此与 kit 的全局 QSS、以及其它页面目录完全隔离（不碰 QssBuilder）。
+// 逐条对应 webui/src/styles/shell.css：
+//   .workshop/.ws-center/.ws-view  bg-void + 视图顶细线
+//   .crumbs                        h34 + bg-void 60% 混 bg-surface（color-mix 的预合成）
+//   .doctabs/.doctab               h36 条 / h30 页签 / r6 6 0 0 / 选中 accent 顶条
+//   .inspector .sect/.sect-h       280 宽 / 段间细线 / 标题 p10 14 f12 w700
+//   .dock-tabs                     p5 10 0 + 底线 / 页签 p5 12 7 f12
+//   .statusbar                     h26 + sb-item h20 p0 8 r4
+//   .sidepanel                     p12 10
+[[nodiscard]] QString ShellQss() {
+    const theme::ColorToken& t = theme::Current();
+    return QStringLiteral(
+               "QWidget#shineShell { background-color: %1; }\n"
+               "QWidget#shineShell QWidget#wsCenter { background-color: %1; }\n"
+               "QWidget#shineShell QStackedWidget#wsView {\n"
+               "  background-color: %1; border-top: 1px solid %2; }\n"
+               "QWidget#shineShell QWidget#breadcrumb {\n"
+               "  background-color: %3; border-bottom: 1px solid %2; }\n"
+               // —— 文档标签条（.doctabs / .doctab）——
+               "QWidget#shineShell QTabBar#docTabs { background: transparent; }\n"
+               "QWidget#shineShell QTabBar#docTabs::tab {\n"
+               "  background-color: transparent; color: %4;\n"
+               "  border: 1px solid transparent; border-bottom: none;\n"
+               "  border-top-left-radius: %5px; border-top-right-radius: %5px;\n"
+               "  padding: 0 6px 0 12px; min-height: %6px; max-height: %6px;\n"
+               "  font-size: 12px; font-weight: 600; }\n"
+               "QWidget#shineShell QTabBar#docTabs::tab:hover {\n"
+               "  color: %7; background-color: %8; }\n"
+               "QWidget#shineShell QTabBar#docTabs::tab:selected {\n"
+               "  color: %7; background-color: %9; border-color: %2;\n"
+               "  border-top: 2px solid %10; }\n"
+               "QWidget#shineShell QTabBar#docTabs::close-button {\n"
+               "  subcontrol-position: right; width: 16px; height: 16px;\n"
+               "  border-radius: %11px; }\n"
+               // —— 右侧检查器（.inspector .sect / .sect-h）——
+               "QWidget#shineShell QWidget#rightPanel QFrame#sect {\n"
+               "  background: transparent; border: none;\n"
+               "  border-bottom: 1px solid %2; }\n"
+               "QWidget#shineShell QWidget#rightPanel QPushButton#sectHeader {\n"
+               "  background: transparent; border: none; border-radius: 0;\n"
+               "  padding: 10px 14px; text-align: left;\n"
+               "  font-size: 12px; font-weight: 700; color: %12; }\n"
+               "QWidget#shineShell QWidget#rightPanel QPushButton#sectHeader:hover {\n"
+               "  background: transparent; color: %7; }\n"
+               // —— 底部 Dock（.dock-tabs）——
+               "QWidget#shineShell QWidget#bottomDock QFrame#dockTabs {\n"
+               "  background: transparent; border: none;\n"
+               "  border-bottom: 1px solid %2; }\n"
+               "QWidget#shineShell QWidget#bottomDock *[shineKind=\"tabs\"] {\n"
+               "  background: transparent; border: none; }\n"
+               "QWidget#shineShell QWidget#bottomDock *[shineKind=\"tab\"] {\n"
+               "  padding: 5px 12px 7px; min-height: 26px; font-size: 12px; }\n"
+               // —— 状态栏（.statusbar / .sb-item）——
+               "QWidget#shineShell QPushButton#statusItem {\n"
+               "  background: transparent; border: none; border-radius: %11px;\n"
+               "  padding: 0 8px; min-height: 20px; max-height: 20px; }\n"
+               // —— 左侧栏（.sidepanel）——
+               "QWidget#shineShell QWidget#sidePanel { border-top: none; }")
+        .arg(shine::widget::CssRgb(t.bgVoid),      // %1 工作区底
+             shine::widget::CssRgb(t.lineSubtle),  // %2 细线
+             Blend(t.bgVoid, t.bgSurface, 0.6),    // %3 面包屑底（color-mix 预合成）
+             shine::widget::CssRgb(t.textMuted),   // %4 页签字
+             QString::number(theme::radius::kSm))  // %5 圆角 6
+        .arg(QString::number(30),                  // %6 页签高
+             shine::widget::CssRgb(t.textPrimary), // %7 强调字
+             shine::widget::CssRgb(t.fillMuted),   // %8 页签 hover 底
+             shine::widget::CssRgb(t.bgSurface),   // %9 页签选中底
+             shine::widget::CssRgb(t.accentPrimary)) // %10 accent 顶条
+        .arg(QString::number(theme::radius::kXs),  // %11 圆角 4
+             shine::widget::CssRgb(t.textSecondary)); // %12 段标题字
+}
+
+// 换肤后重挂外壳 QSS：ThemeService 是纯静态类，靠 QApplication 发的 ThemeChange 感知
+// （同 kit/controls/WidgetCommon.cpp 的阴影重挂做法）。
+class ShellStyleRefresher : public QObject {
+  public:
+    explicit ShellStyleRefresher(std::function<void()> apply, QObject* parent = nullptr)
+        : QObject(parent), apply_(std::move(apply)) {
+        if (qApp != nullptr) {
+            qApp->installEventFilter(this);
+        }
+    }
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* ev) override {
+        if (ev->type() == QEvent::ThemeChange && watched == qApp && apply_) {
+            apply_();
+        }
+        return QObject::eventFilter(watched, ev);
+    }
+
+  private:
+    std::function<void()> apply_;
+};
 
 // P04：小说工作区在活动栏/侧栏的稳定索引（WorkspaceNames：总控/小说/视觉资产/分镜/出图/出片）
 [[nodiscard]] int NovelWorkspaceIndex() {
@@ -589,6 +700,15 @@ void MainWindow::CloseProjectToHub() {
 
 void MainWindow::BuildWorkshop() {
     workshop_ = new QWidget(pages_);
+    // 外壳根控件：外壳专属 QSS 只挂在这一个节点上（选择器一律 #shineShell 打头）
+    workshop_->setObjectName(QStringLiteral("shineShell"));
+    workshop_->setStyleSheet(ShellQss());
+    // 换肤后重挂（主题 token 变了，外壳 QSS 里的具体色值要跟着重算）
+    new ShellStyleRefresher([this] {
+        if (workshop_ != nullptr) {
+            workshop_->setStyleSheet(ShellQss());
+        }
+    }, this);
     auto* lay = new QVBoxLayout(workshop_);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
@@ -628,26 +748,33 @@ void MainWindow::BuildWorkshop() {
         }
     });
 
-    // 中央工作区：面包屑 + 文档标签 + 页面栈（P04–P08 填充）
+    // 中央工作区：面包屑 + 文档标签 + 页面栈
     auto* center = new QWidget(workshop_);
+    center->setObjectName(QStringLiteral("wsCenter"));
     auto* cl = new QVBoxLayout(center);
     cl->setContentsMargins(0, 0, 0, 0);
     cl->setSpacing(0);
     cl->addWidget(crumb_);
 
+    // 文档标签条：.doctabs h36 / padding 0 10 / gap 2 / 贴底对齐（shell.css:248-256）
     auto* tabRow = new QWidget(center);
+    tabRow->setObjectName(QStringLiteral("docTabs"));
     auto* trl = new QHBoxLayout(tabRow);
-    trl->setContentsMargins(theme::space::kSteps[3], 0, theme::space::kSteps[2], 0);
-    trl->setSpacing(theme::space::kSteps[1]);
+    trl->setContentsMargins(10, 0, 10, 0);
+    trl->setSpacing(2);
+    tabRow->setFixedHeight(36);
     auto* tabs = new DocTabBar(tabRow);
+    tabs->setObjectName(QStringLiteral("docTabs"));
     doc_tabs_ = tabs;
     auto* addTab = new shine::widgets::IconButton(QStringLiteral("＋"), QStringLiteral("新建标签页"),
                                                   shine::widgets::IconButton::Size::Sm, tabRow);
-    trl->addWidget(doc_tabs_, 1);
-    trl->addWidget(addTab, 0, Qt::AlignVCenter);
+    addTab->setFixedSize(24, 24); // .doctab-add 24×24
+    trl->addWidget(doc_tabs_, 1, Qt::AlignBottom);
+    trl->addWidget(addTab, 0, Qt::AlignRight | Qt::AlignBottom);
     cl->addWidget(tabRow);
 
     doc_stack_ = new QStackedWidget(center);
+    doc_stack_->setObjectName(QStringLiteral("wsView"));
     cl->addWidget(doc_stack_, 1);
 
     auto add_doc = [this](const QString& title) { AddDocTab(title); };
@@ -710,6 +837,10 @@ void MainWindow::BuildWorkshop() {
             EnsureAssetDocTab(); // P05：切到视觉资产工作区 → 确保资产页签在
         }
     });
+    // 活动栏底部的三个面板开关（shell.css:100-108）与顶栏按钮 / 快捷键同路径
+    rail_->SetOnToggleSide([this] { ToggleSidePanel(); });
+    rail_->SetOnToggleDock([this] { ToggleBottomDock(); });
+    rail_->SetOnToggleInspector([this] { ToggleInspector(); });
     right_ = new RightPanel(workshop_); // 右侧检查器（默认收起，Ctrl+I / 顶栏按钮开合）
     side_ = new SidePanel(workshop_);   // 左侧导航栏（Ctrl+B 开合）
 
@@ -735,6 +866,11 @@ void MainWindow::BuildWorkshop() {
 
     bottom_ = new BottomDock(workshop_);
     bottom_->SetOnTabChanged([this](int) { UpdateBreadcrumb(); });
+    bottom_->SetOnClose([this] {
+        if (bottom_visible_) {
+            ToggleBottomDock();
+        }
+    });
     lay->addWidget(bottom_);
 
     status_bar_ = new StatusBar(workshop_);
@@ -751,7 +887,7 @@ void MainWindow::ToggleSidePanel() {
     const QList<int> sizes = hsplit_->sizes();
     const int cur = sizes.size() >= 3 ? sizes[0] : 0;
     const bool collapsed = cur <= 0;
-    const int target = collapsed ? (side_last_w_ > 0 ? side_last_w_ : 260) : 0;
+    const int target = collapsed ? (side_last_w_ > 0 ? side_last_w_ : 240) : 0;
     if (!collapsed) {
         side_last_w_ = std::max(220, cur);
     } else {
@@ -776,6 +912,7 @@ void MainWindow::ToggleSidePanel() {
     }
     side_visible_ = target > 0;
     top_bar_->SetSidePanelActive(side_visible_);
+    SyncPanelState();
 }
 
 void MainWindow::ToggleInspector() {
@@ -808,12 +945,13 @@ void MainWindow::ToggleInspector() {
     }
     inspector_visible_ = target > 0;
     top_bar_->SetInspectorActive(inspector_visible_);
+    SyncPanelState();
 }
 
 void MainWindow::ToggleBottomDock() {
     const bool collapsed = bottom_->isHidden() || bottom_->height() <= 0;
     const int cur = collapsed ? 0 : bottom_->height();
-    const int target = collapsed ? (bottom_last_h_ > 0 ? bottom_last_h_ : 220) : 0;
+    const int target = collapsed ? (bottom_last_h_ > 0 ? bottom_last_h_ : 200) : 0;
     if (collapsed) {
         bottom_->show();
     } else {
@@ -837,9 +975,18 @@ void MainWindow::ToggleBottomDock() {
         bottom_tween_->Settle();
     }
     bottom_visible_ = target > 0;
+    SyncPanelState();
 }
 
 // ────────────────────────────── 状态栏 ──────────────────────────────
+
+void MainWindow::SyncPanelState() {
+    // 顶栏的「导航 / 检查器」文字按钮 + 活动栏底部的三个面板开关共用这一份状态，
+    // 避免两条路径各自维护一份布尔值而漂移（活动栏开关见 shell.css:100-108）。
+    if (rail_ != nullptr) {
+        rail_->SetPanelActive(side_visible_, bottom_visible_, inspector_visible_);
+    }
+}
 
 void MainWindow::RefreshStatusBar() {
     // Comfy 健康检查由 P07 接入；P03 只报「未连接」+ 可点开详情
@@ -1092,6 +1239,7 @@ void MainWindow::RestoreLayout() {
         top_bar_->SetSidePanelActive(true);
         right_->setVisible(false);
         top_bar_->SetInspectorActive(false);
+        SyncPanelState();
         return; // 不算损坏
     }
     QJsonParseError err{};
@@ -1113,9 +1261,9 @@ void MainWindow::RestoreLayout() {
     // 所以按**显示**处理（webui 默认侧栏展开）；用户按 Ctrl+B 收起后
     // 下次就带上 sideVisible=false，语义仍然区分得开。
     side_visible_ = o.contains(QStringLiteral("sideVisible")) ? o[QStringLiteral("sideVisible")].toBool(true) : true;
-    side_last_w_ = o[QStringLiteral("sideLastW")].toInt(260);
-    inspector_last_w_ = o[QStringLiteral("inspectorLastW")].toInt(320);
-    bottom_last_h_ = o[QStringLiteral("bottomLastH")].toInt(220);
+    side_last_w_ = o[QStringLiteral("sideLastW")].toInt(240);
+    inspector_last_w_ = o[QStringLiteral("inspectorLastW")].toInt(280);
+    bottom_last_h_ = o[QStringLiteral("bottomLastH")].toInt(200);
 
     QList<int> sizes;
     for (const QJsonValue& v : o[QStringLiteral("hSizes")].toArray()) {
@@ -1136,6 +1284,7 @@ void MainWindow::RestoreLayout() {
     right_->setVisible(inspector_visible_);
     top_bar_->SetInspectorActive(inspector_visible_);
     bottom_->setVisible(bottom_visible_);
+    SyncPanelState();
     rail_->SetCurrent(o[QStringLiteral("workspace")].toInt(0), false);
     bottom_->SetCurrentTab(o[QStringLiteral("bottomTab")].toInt(0));
 
@@ -1204,7 +1353,9 @@ void MainWindow::SetTestLayout() {
     inspector_last_w_ = 300;
     hsplit_->setSizes({260, std::max(kCenterMinW, 1400 - 56 - 260 - 300), 300});
     bottom_->setVisible(true);
+    bottom_visible_ = true;
     bottom_->SetCurrentTab(1);
+    SyncPanelState();
     if (QWidget* page = doc_stack_->widget(0); page != nullptr) {
         doc_tabs_->setTabText(0, QStringLiteral("分镜草稿"));
     }

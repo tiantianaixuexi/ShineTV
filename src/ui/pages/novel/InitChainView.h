@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+class QFrame;
 class QLabel;
 class QPushButton;
 class QStackedWidget;
@@ -159,6 +160,9 @@ class InitChainView : public QWidget {
     QVBoxLayout* gateCol_ = nullptr;
     struct GateRowUi {
         QString nId;
+        QFrame* line = nullptr;            // 行底板（pass / fail 换描边与底色）
+        QLabel* mark = nullptr;            // 状态点（CSS 侧是 StatusDot）
+        QLabel* code = nullptr;            // gcode：N1…N14（等宽 34px 定宽）
         widgets::ElidedLabel* name = nullptr; // 规则名（纯省略位：hover 全文，不抢点击）
         widgets::ElidedLabel* verdict = nullptr; // 省略 + hover 全文 + 点击展开（长判定文本）
         QLabel* mode = nullptr;

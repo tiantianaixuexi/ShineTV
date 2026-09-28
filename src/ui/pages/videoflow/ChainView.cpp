@@ -1,31 +1,84 @@
 #include "ui/pages/videoflow/ChainView.h"
 
+#include "ui/kit/theme/CssColor.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/kit/controls/WidgetCommon.h"
 
-#include <QHeaderView>
+#include <QApplication>
+#include <QEvent>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
-#include <QTableWidget>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
+#include <array>
+
 namespace shine::app {
+namespace {
+
+// —— 页面专属 QSS ——
+// 只挂在本页根控件（objectName=chainView）上，与 kit 全局 QSS 隔离。
+// 逐条对应 webui views.css:290–320 与 VideoFlow.jsx ChainList：
+//   .drow        p8 2 + 底部发丝线 + hover fill.hover
+//   镜号        mono 11px accent + w700（两端都是）
+//   策略        tiny dim 单行省略
+[[nodiscard]] QString PageQss() {
+    const theme::ColorToken& t = theme::Current();
+    return QStringLiteral(
+               "QWidget#chainView *[shineKind=\"drow\"]:hover { background-color: %1; }\n"
+               "QWidget#chainView QLabel[rowRole=\"code\"] { color: %2; font-size: 11px; font-weight: 700; }\n"
+               "QWidget#chainView QLabel[rowRole=\"chev\"] { color: %3; font-size: 10px; }\n"
+               "QWidget#chainView QLabel[rowRole=\"dim\"] { color: %3; font-size: 11px; }\n")
+        .arg(shine::widget::CssRgb(t.fillHover), shine::widget::CssRgb(t.accentPrimary),
+             shine::widget::CssRgb(t.textMuted));
+}
+
+// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知。
+class PageStyleRefresher : public QObject {
+  public:
+    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
+        qApp->installEventFilter(this);
+    }
+    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* ev) override {
+        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
+        return QObject::eventFilter(watched, ev);
+    }
+
+  private:
+    QWidget* page_;
+};
+
+} // namespace
 
 ChainView::ChainView(QWidget* parent) : QWidget(parent) {
+    setObjectName(QStringLiteral("chainView"));
+    setStyleSheet(PageQss());
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("首尾帧链式 · ChainView"), this);
-    layout->addWidget(title);
+
+    // 密集行列表（webui .dlist）
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    list_ = new QWidget(scroll);
+    list_lay_ = new QVBoxLayout(list_);
+    list_lay_->setContentsMargins(0, 0, 0, 0);
+    list_lay_->setSpacing(0);
+    list_lay_->addStretch(1);
+    scroll->setWidget(list_);
+    layout->addWidget(scroll, 1);
+
     status_ = new QLabel(QStringLiteral("暂无链式关系"), this);
-    widgets::SetKind(status_, "statedetail");
+    widgets::SetKind(status_, "statemeta");
     layout->addWidget(status_);
-    table_ = new QTableWidget(this);
-    table_->setColumnCount(5);
-    table_->setHorizontalHeaderLabels({QStringLiteral("上一镜"), QStringLiteral("下一镜"),
-                                       QStringLiteral("状态"), QStringLiteral("策略"), QStringLiteral("处理建议")});
-    table_->horizontalHeader()->setStretchLastSection(true);
-    table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    layout->addWidget(table_, 1);
+    new PageStyleRefresher(this, this);
 }
 
 void ChainView::SetChain(flow::VideoChain chain) {
@@ -34,16 +87,47 @@ void ChainView::SetChain(flow::VideoChain chain) {
 }
 
 void ChainView::Rebuild() {
-    table_->setRowCount(static_cast<int>(chain_.links.size()));
-    for (int row = 0; row < static_cast<int>(chain_.links.size()); ++row) {
-        const auto& link = chain_.links[static_cast<std::size_t>(row)];
-        const std::array<QString, 5> values{QString::number(link.from_shot), QString::number(link.to_shot),
-                                           link.connected ? QStringLiteral("✔ 已连接") : QStringLiteral("⚠ 断链"),
-                                           QString::fromStdString(link.strategy),
-                                           QString::fromStdString(link.detail)};
-        for (int col = 0; col < values.size(); ++col) {
-            table_->setItem(row, col, new QTableWidgetItem(values[static_cast<std::size_t>(col)]));
-        }
+    while (list_lay_->count() > 1) {
+        QLayoutItem* item = list_lay_->takeAt(0);
+        if (item == nullptr) break;
+        if (QWidget* row = item->widget()) row->deleteLater();
+        delete item;
+    }
+    for (std::size_t i = 0; i < chain_.links.size(); ++i) {
+        const auto& link = chain_.links[i];
+        const bool last = i + 1 == chain_.links.size();
+        auto* row = new QWidget(list_);
+        widgets::SetKind(row, "drow");
+        if (last) row->setProperty("shineKind", QString{});
+        auto* lay = new QHBoxLayout(row);
+        lay->setContentsMargins(2, theme::space::kSteps[1], 2, theme::space::kSteps[1]);
+        lay->setSpacing(theme::space::kSteps[2]);
+
+        auto* from = new QLabel(QStringLiteral("S%1").arg(link.from_shot), row);
+        from->setProperty("rowRole", QStringLiteral("code"));
+        from->setFixedWidth(38);
+        auto* chev = new QLabel(QStringLiteral("›"), row);
+        chev->setProperty("rowRole", QStringLiteral("chev"));
+        auto* to = new QLabel(QStringLiteral("S%1").arg(link.to_shot), row);
+        to->setProperty("rowRole", QStringLiteral("code"));
+        to->setFixedWidth(38);
+        // 策略 + 建议：connected 时只给策略，断链时补一句「建议重生成首帧」
+        const QString policy = QString::fromStdString(link.strategy) +
+                               (link.connected ? QString()
+                                               : QStringLiteral(" · 建议按上一镜末帧重生成首帧"));
+        auto* note = new widgets::ElidedLabel(policy, row);
+        note->setProperty("rowRole", QStringLiteral("dim"));
+        note->SetExpandable(false);
+        note->setToolTip(QString::fromStdString(link.detail));
+        auto* tag = new widgets::Tag(
+            link.connected ? QStringLiteral("✔ 已连接") : QStringLiteral("⚠ 断链"),
+            link.connected ? "ok" : "warn", false, row);
+        lay->addWidget(from, 0);
+        lay->addWidget(chev, 0);
+        lay->addWidget(to, 0);
+        lay->addWidget(note, 1);
+        lay->addWidget(tag, 0);
+        list_lay_->insertWidget(list_lay_->count() - 1, row);
     }
     status_->setText(QString::fromStdString(chain_.Describe()));
 }

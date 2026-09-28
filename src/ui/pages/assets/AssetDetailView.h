@@ -29,6 +29,10 @@ namespace shine::db::sqlite {
 class Database;
 } // namespace shine::db::sqlite
 
+namespace shine::data {
+class KeyValue;
+} // namespace shine::data
+
 namespace shine::app {
 
 class AssetDetailView : public QWidget {
@@ -85,6 +89,7 @@ class AssetDetailView : public QWidget {
     void Rebuild();
     void RebuildDerive();
     void RebuildTimeline();
+    void RebuildKeyValue();
     void CollectTimeline(db::sqlite::Database& db, novelcore::NovelVisual& visual,
                          const novelcore::VisualAssetRow& asset, novelcore::RowId entityId);
     void ShowError(const QString& detail);
@@ -94,6 +99,8 @@ class AssetDetailView : public QWidget {
 
     std::vector<LayerData> layers_;
     novelcore::VisualAssetRow asset_;
+    novelcore::RowId entity_id_ = 0; // .kv「绑定实体」行
+    QString entity_kind_;            // .kv「类别」行的实体 kind（中文标签由 KindLabelOf 给出）
     std::filesystem::path projectDir_;
     GenerateHandler on_generate_;
     GenerateAllHandler on_generate_all_;
@@ -114,6 +121,7 @@ class AssetDetailView : public QWidget {
     QLabel* subtitle_ = nullptr;
     QPushButton* export_ = nullptr;
     QLabel* runtime_label_ = nullptr;
+    shine::data::KeyValue* facts_ = nullptr; // webui .kv：设定集分区的两列键值
     QWidget* cards_ = nullptr;
     QGridLayout* cards_layout_ = nullptr;
     QPushButton* generate_all_ = nullptr;

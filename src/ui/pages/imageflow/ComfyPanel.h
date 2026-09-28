@@ -19,6 +19,7 @@ class ComfyPanel : public QWidget {
     void Update();
 
     QLabel* state_ = nullptr;
+    QLabel* url_ = nullptr;
     QLabel* detail_ = nullptr;
     QLabel* queue_ = nullptr;
     QString base_url_;

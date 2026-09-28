@@ -7,6 +7,8 @@
 #include "ui/kit/controls/WidgetCommon.h"
 
 #include <QHash>
+#include <QString>
+#include <QStringList>
 #include <QWidget>
 
 #include <cstdint>
@@ -19,6 +21,7 @@ class QListWidgetItem;
 class QPushButton;
 class QStackedWidget;
 class QStandardItem;
+class QWidget;
 
 #include <filesystem>
 
@@ -41,6 +44,24 @@ class ModelPromptView;
 class ReviewView;
 class StateDiffView;
 class WorldBoardView;
+
+// StatusTagRow —— 「一组固定文案的 Tag，靠可见性切换当前项」。
+// webui 的 Tag 文案随状态走（`<Tag tone={st.tone}>{st.label}</Tag>`），而 kit::Tag
+// 的文字与 tone 都是构造期固定的（kit 已冻结），运行期改文案只能重建控件。
+// 状态取值是有限枚举，所以改成「每个取值预建一个 Tag + 只切可见性」：
+// 不重建控件、不产生泄漏，视觉与设计稿一致。
+class StatusTagRow : public QWidget {
+  public:
+    // items：{文案, tone}；key：与文案同序的取值键
+    explicit StatusTagRow(const QStringList& keys, const QStringList& texts,
+                          const QStringList& tones, QWidget* parent = nullptr);
+
+    void Show(const QString& key); // 切到该键（未知键 → 全部隐藏）
+
+  private:
+    QHash<QString, QWidget*> tag_of_;
+    QString current_;
+};
 
 class NovelWorkspace : public QWidget {
   public:
@@ -125,7 +146,12 @@ class NovelWorkspace : public QWidget {
     data::DataTree* tree_ = nullptr;
     QListWidget* cards_ = nullptr;
     QLabel* title_ = nullptr;
-    QLabel* status_ = nullptr;
+    StatusTagRow* status_ = nullptr; // 章头状态标记（未写/草稿/待评审/已提交/失败）
+    StatusTagRow* top_status_ = nullptr; // 顶栏同一状态的标记（.ntop-right 内）
+    StatusTagRow* run_ = nullptr;     // 顶栏运行态标记（空闲 / 运行中）
+    class QTimer* run_poll_ = nullptr; // 运行态轮询（发起生成后短时运行，无 running 即停）
+    int idle_ticks_ = 0;               // 连续多少次轮询没看到 running
+    QLabel* meta_ = nullptr;          // 章头右侧计数（正文实计字数 · 出自卷）
     QLabel* summary_ = nullptr;
     DraftView* draft_ = nullptr; // 正文草稿（P04-S6 DraftView：流式/中断/重试/哈希）
     data::KeyValue* props_ = nullptr;

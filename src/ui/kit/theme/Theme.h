@@ -1,7 +1,7 @@
 #pragma once
-// shine::theme —— 主题数据层（P02-S1）：4 套主题 JSON + 反射序列化 + theme::Current()
+// shine::theme —— 主题数据层（P02-S1）：5 套主题 JSON + 反射序列化 + theme::Current()
 //
-// 判据（P02-S1）：① 每个 token 有 4 个取值（深空 / 薄暮 / 纸墨 / 极夜 四份 JSON）；
+// 判据（P02-S1）：① 每个 token 有 5 个取值（深空 / 薄暮 / 纸墨 / 水墨 / 极夜 五份 JSON）；
 //                ② JSON 可被 C++26 反射序列化往返（ColorToken ↔ {"bg.void":"#RRGGBBAA",…}）。
 // 切换 / 持久化 / 200ms 交叉淡入在 ThemeService（S3）；Token 结构与几何常量见 Token.h。
 #include "ui/kit/theme/Token.h"
@@ -15,15 +15,17 @@
 
 namespace shine::theme {
 
-inline constexpr std::array<ThemeId, 4> kAllThemes = {
-    ThemeId::DeepSpace, ThemeId::Dusk, ThemeId::PaperInk, ThemeId::PolarNight};
+// 内置主题全集。**下标 == ThemeId 枚举值**（Theme.cpp 的 g_themes / ThemeService 的
+// QSS 缓存都按这个下标寻址），新增主题必须同时在这两处扩表，否则切换到末位主题会越界。
+inline constexpr std::array<ThemeId, 5> kAllThemes = {
+    ThemeId::DeepSpace, ThemeId::Dusk, ThemeId::PaperInk, ThemeId::InkWash, ThemeId::PolarNight};
 
 // 主题文件名（= 显示名；文件在 src/ui/kit/theme/Themes/<名字>.json）
 [[nodiscard]] std::string_view ThemeFileName(ThemeId id);
 [[nodiscard]] std::string_view ThemeDisplayName(ThemeId id);
 [[nodiscard]] bool ThemeIdFromName(std::string_view name, ThemeId& out);
 
-// 载入目录下的 4 套主题 JSON（幂等；false = 有主题缺失/解析失败，日志有明细）
+// 载入目录下的 5 套主题 JSON（幂等；false = 有主题缺失/解析失败，日志有明细）
 [[nodiscard]] bool LoadThemesFrom(const std::filesystem::path& dir);
 
 [[nodiscard]] const ColorToken& ThemeColorsOf(ThemeId id);
@@ -41,7 +43,7 @@ void SetCurrentTheme(ThemeId id) noexcept;
 // 返回命中的键数（== kColorTokenCount 才算完整主题）。
 [[nodiscard]] std::size_t ColorTokenFromJsonPartial(std::string_view json, ColorToken& out);
 
-// S1 自检（SHINE_THEME_SELFTEST=1 触发）：4×kColorTokenCount 取值齐 + 往返相等
+// S1 自检（SHINE_THEME_SELFTEST=1 触发）：5×kColorTokenCount 取值齐 + 往返相等
 [[nodiscard]] bool SelfTestRoundTrip(std::string* report);
 
 // —— 自定义主题（P02-S8）：样式编辑器另存 → 出现在主题菜单 → 重启仍可选 ——

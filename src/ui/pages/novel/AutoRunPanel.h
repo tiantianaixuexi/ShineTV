@@ -14,9 +14,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 class QLabel;
 class QPlainTextEdit;
+class QVBoxLayout;
 
 namespace shine::db::sqlite {
 class Database;
@@ -71,6 +73,15 @@ class AutoRunPanel : public QWidget {
     void RefreshLimits();
     [[nodiscard]] novelcore::RunRequest MakeRequest() const;
     [[nodiscard]] bool LlmReady() const;
+    // auto 启动前置 1–6。UI 逐条摆成 `.gate` 行，探针仍按同一份数据拼成
+    // PreconditionText()（逐字不变），两边不会各算一套。
+    struct PreRow {
+        int code = 0;
+        QString name;
+        bool pass = false;
+        QString detail; // 追加在行尾的依据（如预算估算）
+    };
+    [[nodiscard]] std::vector<PreRow> PreconditionRows() const;
     [[nodiscard]] QString PreconditionText() const;
     void AppendLog(const QString& text);
     void SetRunning(bool running);
@@ -108,6 +119,10 @@ class AutoRunPanel : public QWidget {
     widgets::Button* stop_btn_ = nullptr;
     // 以下三处都是长判定/多行文本：ElidedLabel（单行省略 + hover 全文 + 点击展开）
     widgets::ElidedLabel* precondition_ = nullptr;
+    // 前置 1–6 的 `.gate` 行容器（webui views.css:634 `.gates`）：
+    // 书库没开时退回 precondition_ 的单行说明。
+    QWidget* pre_list_ = nullptr;
+    QVBoxLayout* pre_list_layout_ = nullptr;
     QLabel* status_ = nullptr;
     widgets::ElidedLabel* progress_text_ = nullptr;
     widgets::ElidedLabel* stop_text_ = nullptr;

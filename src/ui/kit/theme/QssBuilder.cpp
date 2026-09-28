@@ -43,8 +43,13 @@ std::string Trim(std::string s) {
 // 位置与 kColorTokenNames（Token.h）一一对应，由 Build() 用当前主题的 Token 值填充。
 // 按 UI.md §2 的控件清单铺满常用 Qt 控件的每一种视觉状态。
 constexpr std::string_view kTemplate = R"QSS(
-/* 本样式表由 shine::theme::QssBuilder 从 Token 生成（P01-S8 验收：禁止散落字面色） */
+/* 本样式表由 shine::theme::QssBuilder 从 Token 生成（P01-S8 验收：禁止散落字面色）
+   圆角刻度以 tokens.css 的 --r-xs/sm/md/lg/xl/pill = 4/6/10/14/18/999 为准，
+   本文件出现的每个 border-radius 都取自其中一档（正圆写 999，Qt 会钳到半边长）。 */
 
+/* 基准字号 13px：base.css body 是 13.5px，但 Qt 会把 font-size 量化到整像素，
+   13.5px 实际渲染成 14px 反而更偏；13px 也是 ui.css 里控件用得最多的整像素档
+   （详见 Token.h 的 font::kBase 与 docs/90-reference/ui-design-parity-gaps.md）。 */
 QWidget { color: %9; background-color: %2; font-size: 13px; }
 QWidget:disabled { color: %11; }
 
@@ -52,25 +57,32 @@ QMainWindow { background-color: %1; }
 QMenuBar { background-color: %2; color: %9; border-bottom: 1px solid %6; }
 QMenuBar::item:selected { background-color: %25; color: %9; }
 QMenu { background-color: %3; color: %9; border: 1px solid %7; }
+/* 菜单项内距对齐 webui .menu-pop .mi（p7 10 → 整像素档 6 10）。
+   选中底沿用 fill.selected：原生 QMenu 分不清「悬停」与「当前项」，
+   两个状态共用一条规则，不能按 CSS 拆成 fill.hover + accent-dim。 */
+QMenu::item { padding: 6px 10px; }
 QMenu::item:selected { background-color: %25; }
 
+/* webui .btn 基础几何：h30 / p0 14 / r-sm(6) / f13 / w600；QPushButton 走同一刻度 */
 QPushButton {
   background-color: %3; color: %9;
-  border: 1px solid %7; border-radius: 5px; padding: 5px 12px;
+  border: 1px solid %7; border-radius: 6px; padding: 5px 12px;
 }
 QPushButton:hover { background-color: %24; border-color: %8; }
 QPushButton:pressed { background-color: %2; }
 QPushButton:disabled { background-color: %2; color: %11; border-color: %6; }
 QPushButton:checked { background-color: %25; color: %13; }
 
+/* webui .icon-btn：r-sm(6) + 透明底 */
 QToolButton {
   background-color: transparent; color: %9;
-  border: 1px solid transparent; border-radius: 5px; padding: 4px 8px;
+  border: 1px solid transparent; border-radius: 6px; padding: 4px 8px;
 }
 QToolButton:hover { background-color: %24; border-color: %7; }
 QToolButton:pressed { background-color: %2; }
 QToolButton:checked { background-color: %25; color: %13; }
 
+/* webui .input / .textarea：fill-muted + line-normal + r-sm(6) */
 QLineEdit, QPlainTextEdit, QTextEdit {
   background-color: %26; color: %9;
   border: 1px solid %7; border-radius: 6px; padding: 3px 10px;
@@ -84,7 +96,7 @@ QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled {
 QLineEdit[readOnly="true"] { background-color: %26; color: %10; }
 
 QSpinBox, QDoubleSpinBox {
-  background-color: %3; color: %9; border: 1px solid %7; border-radius: 5px; padding: 2px 4px;
+  background-color: %3; color: %9; border: 1px solid %7; border-radius: 6px; padding: 2px 4px;
 }
 QSpinBox::up-button, QDoubleSpinBox::up-button { width: 16px; background-color: %4; }
 QSpinBox::down-button, QDoubleSpinBox::down-button { width: 16px; background-color: %4; }
@@ -102,21 +114,23 @@ QComboBox QAbstractItemView {
   border: 1px solid %7; selection-background-color: %25; selection-color: %9;
 }
 
+/* webui .check .box：15×15 / r-xs(4) / 1.5px line-strong（自绘控件另见 Inputs.cpp） */
 QCheckBox, QRadioButton { color: %9; spacing: 6px; }
 QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; }
-QCheckBox::indicator:unchecked { background-color: %3; border: 1px solid %8; border-radius: 3px; }
-QCheckBox::indicator:checked { background-color: %13; border: 1px solid %13; border-radius: 3px; }
-QRadioButton::indicator:unchecked { background-color: %3; border: 1px solid %8; border-radius: 7px; }
-QRadioButton::indicator:checked { background-color: %13; border: 1px solid %13; border-radius: 7px; }
+QCheckBox::indicator:unchecked { background-color: %3; border: 1px solid %8; border-radius: 4px; }
+QCheckBox::indicator:checked { background-color: %13; border: 1px solid %13; border-radius: 4px; }
+QRadioButton::indicator:unchecked { background-color: %3; border: 1px solid %8; border-radius: 999px; }
+QRadioButton::indicator:checked { background-color: %13; border: 1px solid %13; border-radius: 999px; }
 QCheckBox:disabled, QRadioButton:disabled { color: %11; }
 
-QSlider::groove:horizontal { height: 4px; background-color: %1; border-radius: 2px; }
-QSlider::sub-page:horizontal { background-color: %13; border-radius: 2px; }
-QSlider::handle:horizontal { width: 14px; margin: -5px 0; border-radius: 7px; background-color: %13; }
+/* 槽 / 手柄都是圆头：ui.css 无 range 控件，槽高 4px 与 .prog.thin 同为胶囊刻度 */
+QSlider::groove:horizontal { height: 4px; background-color: %1; border-radius: 999px; }
+QSlider::sub-page:horizontal { background-color: %13; border-radius: 999px; }
+QSlider::handle:horizontal { width: 14px; margin: -5px 0; border-radius: 999px; background-color: %13; }
 QSlider::handle:horizontal:hover { background-color: %14; }
-QSlider::groove:vertical { width: 4px; background-color: %1; border-radius: 2px; }
-QSlider::sub-page:vertical { background-color: %13; border-radius: 2px; }
-QSlider::handle:vertical { height: 14px; margin: 0 -5px; border-radius: 7px; background-color: %13; }
+QSlider::groove:vertical { width: 4px; background-color: %1; border-radius: 999px; }
+QSlider::sub-page:vertical { background-color: %13; border-radius: 999px; }
+QSlider::handle:vertical { height: 14px; margin: 0 -5px; border-radius: 999px; background-color: %13; }
 
 QProgressBar {
   background-color: %26; border: none; border-radius: 999px; text-align: center; color: %10;
@@ -144,31 +158,35 @@ QListView, QTreeView, QTableView {
   alternate-background-color: %26;
   selection-background-color: %25; selection-color: %9;
 }
-/* webui .table：th f11.5 w600 muted p8 12 + 底部 line-normal；td p9 12 text-secondary */
+/* webui .table：th f11.5(→整像素 11) w600 muted p8 12 + 底部 line-normal；td p9 12 text-secondary */
 QHeaderView::section {
   background-color: %3; color: %10;
-  border: none; border-bottom: 1px solid %7; border-right: 1px solid %6;
-  padding: 6px 12px;
+  border: none; border-bottom: 1px solid %7;
+  padding: 8px 12px;
   font-size: 11px; font-weight: 600;
 }
 QHeaderView::section:hover { background-color: %24; color: %9; }
-QTableView::item { padding: 5px 12px; color: %10; border-bottom: 1px solid %6; }
+/* td：p9 12 + line-subtle 下边线（CSS 没有竖向分隔线，故不画 border-right） */
+QTableView::item { padding: 9px 12px; color: %10; border-bottom: 1px solid %6; }
 QTableView::item:selected { background-color: %25; color: %9; }
+/* webui .tree：f12.5(→12) / .node h28 p0 8 r-sm(6) */
+QTreeView { font-size: 12px; }
 QTreeView::item { padding: 3px 8px; border-radius: 6px; }
 
 QScrollBar:vertical { background: transparent; width: 10px; margin: 0; }
-QScrollBar::handle:vertical { background-color: %7; border-radius: 5px; min-height: 24px; }
+QScrollBar::handle:vertical { background-color: %7; border-radius: 999px; min-height: 24px; }
 QScrollBar::handle:vertical:hover { background-color: %8; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar:horizontal { background: transparent; height: 10px; margin: 0; }
-QScrollBar::handle:horizontal { background-color: %7; border-radius: 5px; min-width: 24px; }
+QScrollBar::handle:horizontal { background-color: %7; border-radius: 999px; min-width: 24px; }
 QScrollBar::handle:horizontal:hover { background-color: %8; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 
+/* webui [data-tip]：bg-overlay + line-normal + r-sm(6) + p4 9 */
 QToolTip {
   background-color: %5; color: %9;
-  border: 1px solid %8; padding: 4px 8px;
+  border: 1px solid %7; border-radius: 6px; padding: 4px 9px;
 }
 
 QStatusBar { background-color: %2; color: %10; border-top: 1px solid %6; }
@@ -191,36 +209,53 @@ constexpr std::string_view kKitTemplate = R"QSS(
 /* —— kit/widgets：通用 —— */
 *[shineWeight="semibold"] { font-weight: 600; }
 *[shineWeight="bold"] { font-weight: 700; }
-/* mono / 小号：webui .mono(12px) / .tiny(12px) / .small(12.5px) */
-*[shineWeight="mono"] { font-family: "Cascadia Mono", "Consolas", monospace; font-size: 12px; }
+/* mono / 小号：webui .mono(12px) / .tiny(12px) / .small(12.5→整像素 12)；
+   等宽族名对齐 tokens.css 的 --font-mono（Cascadia Code 优先于 Cascadia Mono） */
+*[shineWeight="mono"] { font-family: "Cascadia Code", "JetBrains Mono", "Consolas", monospace; font-size: 12px; }
 *[shineSize="tiny"] { font-size: 12px; }
 *[shineSize="small"] { font-size: 12px; }
 
 /* —— Button（变体 primary/secondary/ghost/danger × sm/md/lg） ——
-   webui ui.css .btn：h30 / p0 14 / r6 / f13 / w600；sm h24 p0 10 f12；lg h36 p0 20 f14 r10 */
+   webui ui.css .btn：h30 / p0 14 / r-sm(6) / f13 / w600；sm h24 p0 10 f12；
+   lg h36 p0 20 f14 r-md(10) —— */
 *[shineKind="button"] {
   border: 1px solid %7; border-radius: 6px; padding: 0 14px; min-height: 30px;
   background-color: %3; color: %9; font-size: 13px; font-weight: 600;
 }
 *[shineKind="button"][shineSize="sm"] { padding: 0 10px; min-height: 24px; font-size: 12px; }
 *[shineKind="button"][shineSize="lg"] { padding: 0 20px; min-height: 36px; border-radius: 10px; font-size: 14px; }
+/* .btn-primary：accent 底 + accent-fg 字；hover 换 accent-h */
 *[shineKind="button"][shineVariant="primary"] { background-color: %13; color: %15; border-color: %13; }
+/* .btn-secondary：bg-elevated 底 + line-normal 边 + text-primary 字（不是 bg-panel） */
 *[shineKind="button"][shineVariant="secondary"] { background-color: %4; color: %9; border-color: %7; }
-*[shineKind="button"][shineVariant="ghost"] { background-color: transparent; color: %13; border-color: %7; }
-*[shineKind="button"][shineVariant="danger"] { background-color: %20; color: %12; border-color: %20; }
+/* .btn-ghost：透明底 + 透明边 + text-secondary 字 */
+*[shineKind="button"][shineVariant="ghost"] { background-color: transparent; color: %10; border-color: transparent; }
+/* .btn-danger：透明底 + line-normal 边 + danger 字（不是 danger 实心底） */
+*[shineKind="button"][shineVariant="danger"] {
+  background-color: transparent; color: %20; border-color: %7;
+}
 *[shineKind="button"][shineVariant="primary"]:hover { background-color: %14; border-color: %14; }
 *[shineKind="button"][shineVariant="primary"][shineState="hover"] { background-color: %14; border-color: %14; }
-*[shineKind="button"][shineVariant="ghost"]:hover { background-color: %24; color: %14; }
-*[shineKind="button"][shineVariant="ghost"][shineState="hover"] { background-color: %24; color: %14; }
+*[shineKind="button"][shineVariant="primary"]:pressed { background-color: %13; color: %15; border-color: %13; }
+*[shineKind="button"][shineVariant="primary"][shineState="pressed"] { background-color: %13; color: %15; border-color: %13; }
+/* .btn-secondary:hover：fill-hover 底 + line-strong 边 */
+*[shineKind="button"][shineVariant="secondary"]:hover { background-color: %24; border-color: %8; }
+*[shineKind="button"][shineVariant="secondary"][shineState="hover"] { background-color: %24; border-color: %8; }
+/* .btn-ghost:hover：fill-hover 底 + text-primary 字 */
+*[shineKind="button"][shineVariant="ghost"]:hover { background-color: %24; color: %9; border-color: transparent; }
+*[shineKind="button"][shineVariant="ghost"][shineState="hover"] { background-color: %24; color: %9; border-color: transparent; }
+/* .btn-danger:hover：12% danger 混色底 → Qt 无同源混色 token，按既有约定用 fill.hover 底 */
+*[shineKind="button"][shineVariant="danger"]:hover { background-color: %24; border-color: %20; color: %20; }
+*[shineKind="button"][shineVariant="danger"][shineState="hover"] { background-color: %24; border-color: %20; color: %20; }
+*[shineKind="button"][shineVariant="danger"]:pressed { background-color: %2; border-color: %20; color: %20; }
+*[shineKind="button"][shineVariant="danger"][shineState="pressed"] { background-color: %2; border-color: %20; color: %20; }
 *[shineKind="button"]:hover { background-color: %24; border-color: %8; }
 *[shineKind="button"][shineState="hover"] { background-color: %24; border-color: %8; }
-*[shineKind="button"][shineVariant="primary"]:pressed { background-color: %2; color: %13; border-color: %13; }
-*[shineKind="button"][shineVariant="primary"][shineState="pressed"] { background-color: %2; color: %13; border-color: %13; }
 *[shineKind="button"]:pressed { background-color: %2; border-color: %8; }
 *[shineKind="button"][shineState="pressed"] { background-color: %2; border-color: %8; }
 *[shineKind="button"]:disabled { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="button"][shineState="disabled"] { background-color: %2; color: %11; border-color: %6; }
-/* focus = 2px accent 环 + 内距各减 1px（无布局跳动） */
+/* focus = 2px accent 环 + 内距各减 1px（无布局跳动；替 CSS 的 box-shadow 焦点环） */
 *[shineKind="button"]:focus { border: 2px solid %27; padding: 0 13px; }
 *[shineKind="button"][shineState="focus"] { border: 2px solid %27; padding: 0 13px; }
 *[shineKind="button"][shineSize="sm"]:focus { padding: 0 9px; }
@@ -228,9 +263,10 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="button"][shineSize="lg"]:focus { padding: 0 19px; }
 *[shineKind="button"][shineSize="lg"][shineState="focus"] { padding: 0 19px; }
 
-/* —— IconButton（active 高亮给活动栏） —— */
+/* —— IconButton：webui .icon-btn 28×28（sm 22×22）/ r-sm(6) / text-secondary ——
+   尺寸由 Controls.cpp 的 setFixedSize 落，QSS 只管圆角与配色。 */
 *[shineKind="iconbutton"] {
-  border: 1px solid transparent; border-radius: 5px; padding: 5px;
+  border: 1px solid transparent; border-radius: 6px; padding: 5px;
   background-color: transparent; color: %10;
 }
 *[shineKind="iconbutton"][shineSize="sm"] { padding: 3px; }
@@ -238,7 +274,8 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="iconbutton"][shineState="hover"] { background-color: %24; color: %9; }
 *[shineKind="iconbutton"]:pressed { background-color: %2; color: %9; }
 *[shineKind="iconbutton"][shineState="pressed"] { background-color: %2; color: %9; }
-*[shineKind="iconbutton"][active="true"] { background-color: %25; color: %13; border-color: %6; }
+/* .icon-btn.active：fill-selected 底 + accent 字，边框仍透明 */
+*[shineKind="iconbutton"][active="true"] { background-color: %25; color: %13; border-color: transparent; }
 *[shineKind="iconbutton"]:disabled { color: %11; }
 *[shineKind="iconbutton"][shineState="disabled"] { color: %11; }
 *[shineKind="iconbutton"]:focus { border: 2px solid %27; padding: 4px; }
@@ -254,7 +291,9 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="card"][shineState="hover"] { border-color: %8; }
 *[shineKind="card"]:disabled { color: %11; border-color: %6; }
 *[shineKind="card"][shineState="disabled"] { color: %11; border-color: %6; }
-*[shineKind="cardaccent"] { background-color: %13; border-radius: 2px; }
+/* 3px accent 左条：CSS 里对应的是条状元素本身（.md-view blockquote / .toast 的
+   border-left: 3px），无圆角；方头与卡片平直的左边框一致，故 radius 走 0 而不是刻度值。 */
+*[shineKind="cardaccent"] { background-color: %13; border-radius: 0px; }
 
 /* —— SectionCard（分区卡片：标题栏 + 内容；页面单列滚动时的分组件）——
    标题栏对齐 webui .card-h：p12 16 + 底部发丝线 + 13.5px w600 —— */
@@ -268,11 +307,17 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="sectionsub"] { background: transparent; color: %11; }
 *[shineKind="sectionchevron"] { background: transparent; color: %10; }
 
-/* —— Tag：webui .tag h20 p0 8 r-pill f11.5 w600（色来自 status.* / accent.*） —— */
+/* —— Tag：webui .tag h20 p0 8 r-pill f11.5(→11) w600（色来自 status.* / accent.*） ——
+   tone 的底/边在 CSS 里是 color-mix(色 12%/35%)，QSS 无 color-mix，
+   沿用仓库既有约定：实心 tone 底 + text.inverse 字。 */
 *[shineKind="tag"] {
   border: 1px solid %7; border-radius: 999px; padding: 0 8px; min-height: 20px;
   background-color: %26; color: %10; font-size: 11px; font-weight: 600;
 }
+
+/* tone 变体：CSS 用 color-mix(色 35% 边 / 12% 底)，QSS 无 color-mix，
+   沿用仓库既有约定 = 实心 tone 底 + text.inverse 字；
+   .tag.idle 例外：CSS 只覆盖文字色，底/边沿用 .tag 基色。 */
 *[shineKind="tag"][tone="accent"] { background-color: %13; color: %15; border-color: %13; }
 *[shineKind="tag"][tone="info"] { background-color: %17; color: %12; border-color: %17; }
 *[shineKind="tag"][tone="ok"] { background-color: %18; color: %12; border-color: %18; }
@@ -280,7 +325,7 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="tag"][tone="danger"] { background-color: %20; color: %12; border-color: %20; }
 *[shineKind="tag"][tone="busy"] { background-color: %21; color: %12; border-color: %21; }
 *[shineKind="tag"][tone="pending"] { background-color: %23; color: %12; border-color: %23; }
-*[shineKind="tag"][tone="idle"] { background-color: %22; color: %12; border-color: %22; }
+*[shineKind="tag"][tone="idle"] { background-color: %26; color: %22; border-color: %7; }
 *[shineKind="tag"]:hover { border-color: %8; }
 *[shineKind="tag"][shineState="hover"] { border-color: %8; }
 *[shineKind="tag"]:disabled { color: %11; border-color: %6; }
@@ -288,29 +333,30 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="tag"]:focus { border: 2px solid %27; padding: 0 7px; }
 *[shineKind="tag"][shineState="focus"] { border: 2px solid %27; padding: 0 7px; }
 
-/* —— Badge（数字/点） —— */
+/* —— Badge（数字/点；点态 7×7 与 webui .dot 同径） —— */
 *[shineKind="badge"] {
   border-radius: 999px; padding: 1px 6px; background-color: %20; color: %12;
 }
 *[shineKind="badge"][tone="accent"] { background-color: %13; color: %15; }
-*[shineKind="badge"][dot="true"] { padding: 3px; }
+*[shineKind="badge"][dot="true"] { padding: 0px; }
 
-/* —— Kbd（快捷键标注） —— */
+/* —— Kbd：webui .kbd min-w18 h18 p0 5 r-xs(4) 底边 2px f10.5(→10) w600 —— */
 *[shineKind="kbd"] {
   border: 1px solid %7; border-bottom-width: 2px; border-radius: 4px;
-  padding: 1px 6px; background-color: %4; color: %10;
+  min-width: 18px; padding: 0 5px; background-color: %4; color: %10;
+  font-size: 10px; font-weight: 600;
 }
 
 /* —— Segmented：webui .seg p3 gap2 fill-muted + line-subtle + r-sm(6) —— */
 *[shineKind="segmented"] { background-color: %26; border: 1px solid %6; border-radius: 6px; padding: 3px; }
-/* .seg > button：h26 / p0 13 / r4 / f12.5 / w600 / text-muted；选中态抬到 bg-elevated */
+/* .seg > button：h26 / p0 13 / r-xs(4) / f12.5(→12) / w600 / text-muted；选中态抬到 bg-elevated */
 *[shineKind="segment"] {
   border: 1px solid transparent; border-radius: 4px; padding: 0 13px; min-height: 26px;
   background-color: transparent; color: %10; font-size: 12px; font-weight: 600;
 }
 *[shineKind="segment"]:hover { color: %9; }
 *[shineKind="segment"][shineState="hover"] { color: %9; }
-*[shineKind="segment"][selected="true"] { background-color: %4; color: %9; border-color: %7; }
+*[shineKind="segment"][selected="true"] { background-color: %4; color: %9; border-color: %6; }
 *[shineKind="segment"]:disabled { color: %11; }
 *[shineKind="segment"][shineState="disabled"] { color: %11; }
 *[shineKind="segment"]:focus { border: 2px solid %27; padding: 0 12px; }
@@ -320,16 +366,19 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="spinner"] { background: transparent; }
 *[shineKind="spinner"][variant="muted"] { color: %11; }
 
-/* —— Field（标签左/上 + help + error） —— */
+/* —— Field（标签左/上 + help + error） ——
+   webui .field > label：f12 w600 text-secondary（.field 的 6px gap 走布局间距） —— */
 *[shineKind="field"] { background: transparent; }
-*[shineKind="fieldlabel"] { color: %10; background: transparent; }
+*[shineKind="fieldlabel"] { color: %10; background: transparent; font-size: 12px; font-weight: 600; }
 *[shineKind="fieldhelp"] { color: %11; background: transparent; }
 *[shineKind="fielderror"] { color: %20; background: transparent; }
 
-/* —— 输入族：webui .input h30 / p0 10 / r6 / fill-muted + line-normal —— */
+/* —— 输入族：webui .input h30 / p0 10 / r6 / fill-muted + line-normal ——
+   CSS 的 .input 不声明 font-size（继承 body 13.5），故这里也不再写死字号，
+   跟其他「继承基准字号」的控件保持一致。 */
 *[shineKind="input"] {
   background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px;
-  padding: 0 10px; min-height: 30px; font-size: 13px;
+  padding: 0 10px; min-height: 30px;
   placeholder-text-color: %11;
 }
 *[shineKind="input"]:hover { border-color: %8; }
@@ -345,7 +394,6 @@ constexpr std::string_view kKitTemplate = R"QSS(
 /* .textarea：p8 10 + r6 + line-height 1.6（高度随行数自适应，不设 min-height） */
 *[shineKind="textarea"] {
   background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px; padding: 8px 10px;
-  font-size: 13px;
   placeholder-text-color: %11;
 }
 *[shineKind="textarea"]:hover { border-color: %8; }
@@ -358,6 +406,16 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="clearbutton"]:hover { color: %9; }
 *[shineKind="clearbutton"][shineState="hover"] { color: %9; }
 *[shineKind="searchicon"] { background: transparent; color: %11; border: none; }
+/* .search 是独立控件（r-pill + line-subtle 边），不是 .input 的变体；
+   内距由 SearchBox 的布局边距提供，QSS 只管配色与圆角（padding 见 WidgetCommon 的约定） */
+*[shineKind="searchbox"] {
+  background-color: %26; color: %9; border: 1px solid %6; border-radius: 999px;
+  padding: 0; min-height: 30px;
+}
+*[shineKind="searchbox"]:hover { border-color: %8; }
+/* .search:focus-within：焦点在内层 QLineEdit，状态由 SearchBox 转发到 focused 属性 */
+*[shineKind="searchbox"][focused="true"] { border-color: %27; background-color: %2; }
+*[shineKind="searchbox"]:disabled { background-color: %2; color: %11; border-color: %6; }
 *[shineKind="counter"] { background: transparent; color: %11; }
 *[shineKind="counter"][error="true"] { color: %20; }
 
@@ -366,7 +424,7 @@ constexpr std::string_view kKitTemplate = R"QSS(
    颜色必须落在这里而不是内联 palette(...)：QSS 的 palette(text) 取 QPalette，
    与 Token 不同源；深色主题下会渲染成系统黑字。 */
 *[shineKind="selectbutton"] {
-  background: transparent; border: none; border-radius: 5px;
+  background: transparent; border: none; border-radius: 6px;
   text-align: left; color: %9; padding: 4px 8px;
 }
 *[shineKind="selectbutton"]:hover { background-color: %24; }
@@ -379,7 +437,7 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="selectbutton"][shineState="disabled"] { color: %11; }
 *[shineKind="select"] {
   background-color: %26; color: %9; border: 1px solid %7; border-radius: 6px;
-  padding: 0 10px; min-height: 30px; font-size: 13px;
+  padding: 0 10px; min-height: 30px;
 }
 *[shineKind="select"]:hover { border-color: %8; }
 *[shineKind="select"][shineState="hover"] { border-color: %8; }
@@ -387,29 +445,32 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="select"][shineState="focus"] { border: 2px solid %27; padding: 0 9px; background-color: %2; }
 *[shineKind="select"]:disabled { color: %11; border-color: %6; }
 *[shineKind="select"][shineState="disabled"] { color: %11; border-color: %6; }
+/* 弹层对齐 webui .menu-pop：bg-overlay + line-normal + r-md(10) + p5 */
 *[shineKind="selectpopup"] {
-  background-color: %5; color: %9; border: 1px solid %7; border-radius: 10px; padding: 4px;
+  background-color: %5; color: %9; border: 1px solid %7; border-radius: 10px; padding: 5px;
 }
 *[shineKind="selectgroup"] { color: %10; background: transparent; padding: 4px 8px 2px 8px; }
-*[shineKind="selectitem"] { background: transparent; color: %9; padding: 4px 8px; border-radius: 5px; }
+/* 列表行对齐 .menu-pop .mi：r-sm(6) / p7 10 / f12.5(→12) */
+*[shineKind="selectitem"] { background: transparent; color: %9; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
 *[shineKind="selectitem"]:hover { background-color: %24; }
 *[shineKind="selectitem"][shineState="hover"] { background-color: %24; }
 *[shineKind="selectitem"][checked="true"] { color: %13; }
 *[shineKind="selectitem"]:disabled { color: %11; }
 *[shineKind="selectitem"][shineState="disabled"] { color: %11; }
 
-/* —— Slider（值 + 单位标签；handle 态挂在控件 shineState 上） —— */
+/* —— Slider（值 + 单位标签；handle 态挂在控件 shineState 上） ——
+   槽 / 已填充段 / 手柄都是圆头（999，Qt 钳到半边长），手柄为正圆。 —— */
 *[shineKind="slidervalue"] { background: transparent; color: %10; }
-QSlider::groove:horizontal[shineKind="slider"] { height: 4px; border-radius: 2px; background-color: %1; }
-QSlider::handle:horizontal[shineKind="slider"] { width: 14px; margin: -5px 0; border-radius: 7px; background-color: %13; }
+QSlider::groove:horizontal[shineKind="slider"] { height: 4px; border-radius: 999px; background-color: %1; }
+QSlider::handle:horizontal[shineKind="slider"] { width: 14px; margin: -5px 0; border-radius: 999px; background-color: %13; }
 QSlider::handle:horizontal[shineKind="slider"][shineState="hover"] { background-color: %14; }
 QSlider::handle:horizontal[shineKind="slider"][shineState="pressed"] { background-color: %16; }
 QSlider::handle:horizontal[shineKind="slider"][shineState="disabled"] { background-color: %11; }
 QSlider::handle:horizontal[shineKind="slider"][shineState="focus"] { background-color: %14; }
-QSlider::sub-page:horizontal[shineKind="slider"] { background-color: %13; border-radius: 2px; }
-QSlider::groove:vertical[shineKind="slider"] { width: 4px; border-radius: 2px; background-color: %1; }
-QSlider::handle:vertical[shineKind="slider"] { height: 14px; margin: 0 -5px; border-radius: 7px; background-color: %13; }
-QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-radius: 2px; }
+QSlider::sub-page:horizontal[shineKind="slider"] { background-color: %13; border-radius: 999px; }
+QSlider::groove:vertical[shineKind="slider"] { width: 4px; border-radius: 999px; background-color: %1; }
+QSlider::handle:vertical[shineKind="slider"] { height: 14px; margin: 0 -5px; border-radius: 999px; background-color: %13; }
+QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-radius: 999px; }
 
 /* —— Toggle / Checkbox / Radio（自绘；QSS 只管文字色） —— */
 *[shineKind="toggle"] { background: transparent; }
@@ -431,10 +492,19 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="progressbar"][state="ok"]::chunk { background-color: %18; }
 *[shineKind="progressbar"][state="idle"]::chunk { background-color: %22; }
 
-/* —— EmptyState / ErrorState（容器三态中的两态）—— */
-/* webui .empty：p40 20 居中；.glyph 52×52 r-lg + 虚线边 + fill-muted */
+/* —— EmptyState / ErrorState（容器三态中的两态）——
+   webui .empty：p40 20 居中 gap10；.glyph 52×52 + r-lg(14) + 虚线边 + fill-muted，
+   .title f13 w600 text-secondary —— */
+/* .glyph 外框：52×52 圆角方框 + 虚线描边（CSS 的 float-y 浮动动效 QSS/Qt 无对应，见缺口文档） */
+*[shineKind="emptyglyph"] {
+  background-color: %26; border: 1px dashed %7; border-radius: 14px;
+  width: 52px; height: 52px;
+}
+*[shineKind="emptyglyph"] QLabel { background: transparent; color: %11; font-size: 24px; }
 *[shineKind="emptystate"] { background: transparent; }
 *[shineKind="errorstate"] { background: transparent; }
+/* .empty .title：f13 w600 text-secondary（与全局 statetitle 的 text-primary 有别） */
+*[shineKind="emptytitle"] { background: transparent; color: %10; font-size: 13px; font-weight: 600; }
 *[shineKind="statetitle"] { background: transparent; color: %9; font-weight: 600; }
 *[shineKind="statesub"] { background: transparent; color: %10; font-size: 12px; }
 *[shineKind="stateicon"] { background: transparent; color: %11; }
@@ -481,13 +551,15 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 *[shineKind="toasticon"][tone="busy"] { color: %21; background: transparent; }
 *[shineKind="toasticon"][tone="pending"] { color: %23; background: transparent; }
 
-/* —— Dialog / Drawer / Tooltip：webui .modal r-lg(14)；tooltip r-sm(6) —— */
+/* —— Dialog / Drawer / Tooltip ——
+   webui .modal：r-lg(14) + bg-overlay + line-normal；.modal-h .title f15 w700；
+   [data-tip]：bg-overlay + line-normal + r-sm(6) + p4 9 + f11.5(→11) —— */
 *[shineKind="dialog"] { background-color: %5; border: 1px solid %7; border-radius: 14px; }
-*[shineKind="dialogtitle"] { background: transparent; color: %9; }
+*[shineKind="dialogtitle"] { background: transparent; color: %9; font-size: 15px; }
 *[shineKind="dialogbody"] { background: transparent; color: %10; }
 *[shineKind="drawer"] { background-color: %5; border-left: 1px solid %7; }
 *[shineKind="tooltip"] {
-  background-color: %5; color: %9; border: 1px solid %8; border-radius: 6px; padding: 4px 9px;
+  background-color: %5; color: %9; border: 1px solid %7; border-radius: 6px; padding: 4px 9px;
   font-size: 11px;
 }
 *[shineKind="tooltip"] QLabel { background: transparent; color: %9; }
@@ -617,8 +689,8 @@ QGraphicsView { background-color: %26; border: none; }
   border-radius: 6px; padding: 10px 14px; font-size: 12px;
 }
 
-/* —— .draft 正文容器：f14；行高 1.9 / 段距 14px / 首行缩进 2em 由 QTextBlockFormat 设 —— */
-*[shineKind="draftbody"] { background-color: %2; border: none; padding: 0; font-size: 14px; }
+/* —— .draft 正文容器：f14；字色 text-primary（views.css:568-573）；行高 1.9 / 段距 14px / 首行缩进 2em 由 QTextBlockFormat 设 —— */
+*[shineKind="draftbody"] { background-color: %2; color: %9; border: none; padding: 0; font-size: 14px; }
 
 /* —— 故事板 .tl-card：w128 / 圆角 10 / fill-muted 底 + line-normal 边 —— */
 *[shineKind="tlcard"] { background-color: %26; border: 1px solid %7; border-radius: 10px; }
@@ -626,7 +698,7 @@ QGraphicsView { background-color: %26; border: none; }
 *[shineKind="tlthumb"] { background: transparent; border: none; border-radius: 0px; color: %11; }
 *[shineKind="tlcode"] {
   background: transparent; border: none; color: %13;
-  font-family: "Cascadia Mono", "Consolas", monospace; font-size: 11px; font-weight: 700;
+  font-family: "Cascadia Code", "JetBrains Mono", "Consolas", monospace; font-size: 11px; font-weight: 700;
 }
 *[shineKind="tldur"] { background: transparent; border: none; color: %11; font-size: 11px; }
 
@@ -634,15 +706,30 @@ QGraphicsView { background-color: %26; border: none; }
 *[shineKind="derivenode"] { background-color: %26; border: 1px solid %7; border-radius: 10px; }
 *[shineKind="derivenode"][selected="true"] { border-color: %13; }
 *[shineKind="derivelink"] { background-color: %7; border: none; }
+/* .asset-card.on：CSS 写 border-color: var(--accent-glow)（views.css:723-726）。
+   accent-glow 是 Web 派生 token，Qt 侧没有同名项；shadow.accent 正是它按主题的落地值
+   （各主题 alpha 与 accent-glow 基本一致，偏差不超过 .02），故取 %31 而不是实心 %13 ——
+   实心会丢掉设计稿那层半透明。
+   ⚠️ 本段在 kKitTemplate 原始字符串内：注释里不得写十六进制色值，也不得写 rgb/rgba
+   函数调用式的字面量。SelfCheck 的 kColorRe 扫的是**整段 QSS 输出（含注释）**，
+   写了会被判「不可回溯的颜色字面」而 qss=FAIL。 */
+*[shineKind="card"][selected="true"] { border-color: %31; }
+*[shineKind="drow"] {
+  background-color: transparent; border: none; border-bottom: 1px solid %6;
+  padding: 8px 2px; font-size: 12px; color: %10;
+}
+/* CSS 侧 `.dlist .drow:last-child { border-bottom: none }`（views.css:307-309）：
+   QSS 没有 :last-child 选择器，由构造方对末行清掉 shineKind="drow"（见 ConsistencyView）。 */
 *[shineKind="derivelink"][fill="true"] { background-color: %13; }
-*[shineKind="tlaxis"] { background-color: %7; border: none; border-radius: 2px; }
+/* 轴线是 2px 细条，CSS 侧无对应圆角声明；保持方头（0），不做圆头 */
+*[shineKind="tlaxis"] { background-color: %7; border: none; border-radius: 0px; }
 *[shineKind="tltick"] { background-color: %8; border: none; }
 *[shineKind="tlpin"] { border: 2px solid %2; border-radius: 999px; background-color: %11; }
 *[shineKind="tlpin"][hot="true"] { background-color: %13; }
 *[shineKind="tlcap"] { background: transparent; border: none; color: %10; font-size: 11px; }
 *[shineKind="tlcap"][hot="true"] { color: %13; font-weight: 700; }
 /* .tl-below .art：52×36 参考图缩略（views.css 无独立框线，用 line-subtle + r-xs 兜一个边） */
-*[shineKind="tlref"] { background-color: %1; border: 1px solid %6; border-radius: 2px; color: %11; font-size: 11px; }
+*[shineKind="tlref"] { background-color: %1; border: 1px solid %6; border-radius: 4px; color: %11; font-size: 11px; }
 
 /* —— 小说 .ntab 模式页签：p8 12 / f13 / w600 / text-muted；选中 accent + 2px 下划线 —— */
 *[shineKind="ntabbar"] { background: transparent; border: none; border-bottom: 1px solid %6; }
@@ -731,11 +818,20 @@ bool QssBuilder::SelfCheck(const ColorToken& c, std::string* detail) {
     }
 
     // 覆盖率自检：每个 token 都必须在模板里被真正消费（方案 01 判据 5：不允许占位符空占）
+    // 例外：shadow.1 / shadow.2 / shadow.accent —— QSS 没有 box-shadow，这三项由
+    // widgets::ApplyShadow 从 theme::Current() 取色（见 WidgetCommon.cpp），
+    // 不进 QSS 是契约而非漏写，因此不参与本项判定。
+    const auto is_shadow_token = [](int n) {
+        return n >= static_cast<int>(kColorTokenCount) - 2; // 末尾三项
+    };
     std::string unused;
     {
         const std::string all{kTemplate};
         const std::string kit{kKitTemplate};
         for (int n = 1; n <= static_cast<int>(values.size()); ++n) {
+            if (is_shadow_token(n)) {
+                continue;
+            }
             const std::string key = "%" + std::to_string(n);
             if (all.find(key) == std::string::npos && kit.find(key) == std::string::npos) {
                 if (!unused.empty()) {

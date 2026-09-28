@@ -16,6 +16,7 @@
 #include "ui/kit/controls/Inputs.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/layout/QtLayout.h"
 #include "novel/NovelDirector.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelRunLoop.h"
@@ -136,9 +137,9 @@ ChapterFlowView::ChapterFlowView(QWidget* parent) : QWidget(parent) {
     }
 
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                              theme::space::kSteps[2], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
     outer->addWidget(BuildHead());
     auto* split = new QSplitter(Qt::Horizontal, this);
     split->addWidget(BuildStageArea());

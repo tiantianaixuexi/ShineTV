@@ -26,6 +26,7 @@ class StageFlow;
 }
 namespace shine::widgets {
 class Button;
+class Tag;
 }
 
 namespace shine::app {
@@ -86,6 +87,12 @@ class StoryboardWorkspace : public QWidget {
     std::vector<novelcore::ShotRow> current_shots_;
     std::int64_t selected_chapter_ = 0;
     bool timeline_busy_ = false;
+    // 当前选中镜头（webui 的 selShot）：时间线卡片选中态 + 镜头详情的数据源。
+    // 0 = 未选，回落到列表首个镜头（与旧行为一致）。
+    novelcore::RowId selected_shot_ = 0;
+    [[nodiscard]] const novelcore::ShotRow* SelectedShot() const;
+    // views.css:140 .vw-head 的标题行与副标题行
+    void UpdateHead();
     void RebuildTree();
     ShotTableView* shot_table_ = nullptr;
     void UpdateSelection();
@@ -114,6 +121,11 @@ class StoryboardWorkspace : public QWidget {
     bool stage_running_ = false;
 
     QLabel* status_ = nullptr;
+    QLabel* head_title_ = nullptr;
+    shine::widgets::Tag* shot_status_tag_ = nullptr;
+    QLabel* stage_status_ = nullptr;
+    shine::widgets::Tag* stage_tag_ = nullptr;
+    int committed_scenes_ = 0;
     shine::data::DataTree* tree_ = nullptr;
     QWidget* detail_ = nullptr;
     // 借给外壳左侧栏的导航（章节/场景树）；外壳收回时重新挂回 nav_box_

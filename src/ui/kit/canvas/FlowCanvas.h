@@ -2,7 +2,9 @@
 // P07-S5–S7：ComfyUI 流程画布。只消费 DTO，不依赖 flow::GraphHost。
 #include <QGraphicsItem>
 #include <QGraphicsView>
+#include <QPoint>
 #include <QPointF>
+#include <QRectF>
 #include <QString>
 
 #include <functional>
@@ -12,7 +14,12 @@
 #include <vector>
 
 class QGraphicsProxyWidget;
+class QPainter;
 class QWidget;
+
+namespace shine::widgets {
+class Spinner;
+}
 
 namespace shine::kit {
 
@@ -63,6 +70,12 @@ class FlowCanvas : public QGraphicsView {
     void SelectAll();
     void FitView();
     void SetZoom(double zoom);
+    // 自适应视图时右侧预留的像素（webui FlowCanvas 的 fitInset：出图 / 出片页
+    // 都传 380 = 浮动面板 348 + 外缩 16 + 一点余量，否则节点会被压在面板底下）。
+    void SetFitInset(double px) { fit_inset_ = px; }
+    // 浮动缩放工具条的底边内缩（views.css .canvas-tools.bl = 16 / .bl-up = 118）。
+    // 出图页没有胶片条 → 16；出片页底部有 float-strip → 118（设计稿自带这一档）。
+    void SetToolsBottomInset(int px) { tools_bottom_ = px; }
     [[nodiscard]] double Zoom() const noexcept { return zoom_; }
     [[nodiscard]] std::size_t NodeCount() const noexcept { return nodes_.size(); }
     [[nodiscard]] std::size_t LinkCount() const noexcept { return links_.size(); }
@@ -71,6 +84,8 @@ class FlowCanvas : public QGraphicsView {
     [[nodiscard]] std::vector<FlowCanvasNode> Nodes() const { return nodes_; }
     [[nodiscard]] QString Probe() const;
     [[nodiscard]] bool HasNativeEditor() const noexcept;
+    // 浮动工具条样式重刷：换肤时由内部的 ToolsStyleRefresher 回调
+    void StyleTools();
 
   signals:
     void graphChanged();
@@ -82,6 +97,10 @@ class FlowCanvas : public QGraphicsView {
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void drawBackground(QPainter* painter, const QRectF& rect) override;
+    void resizeEvent(QResizeEvent* event) override;
+
+    void BuildTools();
 
   private:
     struct PortPoint {
@@ -103,8 +122,18 @@ class FlowCanvas : public QGraphicsView {
     SelectionChanged selection_changed_;
     std::string drag_id_;
     QPointF drag_offset_;
+    // 背景平移（webui onBgDown/onMove 的 panning）
+    bool panning_ = false;
+    QPoint pan_anchor_view_;
     PortPoint wire_start_;
     double zoom_ = 1.0;
+    double fit_inset_ = 0.0;
+    int tools_bottom_ = 16;
+    // 浮动缩放工具条（webui .canvas-tools：+ / − / 适应视图 + 运行中转圈）
+    QWidget* tools_ = nullptr;
+    shine::widgets::Spinner* spin_ = nullptr;
+    void LayoutTools();
+    void UpdateRunningIndicator();
     QGraphicsProxyWidget* editor_proxy_ = nullptr;
 };
 

@@ -12,7 +12,7 @@
 #include <vector>
 
 class QHBoxLayout;
-class QLabel;
+class QScrollArea;
 
 namespace shine::app {
 
@@ -39,8 +39,9 @@ class FilmStrip : public QWidget {
     void Rebuild();
 
     std::vector<Cell> cells_;
+    // 横向滚动容器（webui .float-strip 的 overflow-x: auto）
+    QScrollArea* scroll_ = nullptr;
     QHBoxLayout* row_ = nullptr;
-    QLabel* summary_ = nullptr;
     std::function<void(int)> on_picked_;
 };
 

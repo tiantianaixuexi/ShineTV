@@ -45,6 +45,22 @@
 #include <numeric>
 
 namespace shine::app {
+namespace {
+
+// widgets::Tag 只暴露只读 Text()，改文案/色调走「动态属性 + repolish / 内部
+// QLabel」，与 kit 里 Chip 的 tone 用法同构，不动 kit 本身。
+void SetTagText(widgets::Tag* tag, const QString& text, const char* tone) {
+    if (tag == nullptr) {
+        return;
+    }
+    if (auto* label = tag->findChild<QLabel*>(); label != nullptr) {
+        label->setText(text);
+    }
+    tag->setProperty("tone", QString::fromLatin1(tone));
+    widgets::Repolish(tag);
+}
+
+} // namespace
 
 StoryboardWorkspace::StoryboardWorkspace(QWidget* parent) : QWidget(parent) {
     BuildUi();
@@ -59,44 +75,98 @@ void StoryboardWorkspace::BuildUi() {
     // QVBoxLayout 并给 splitter 伸展因子，结果下面的时间线/详情全被压扁
     // （实测截图里 .tl-card 只剩缩略图、镜头表行被裁一半）。
     // 改成：整体放进滚动区，各区块按内容高度排布，splitter 不再抢伸展。
+    // 选择器前缀 shotWs：页面专属样式只落在本页根控件子树内，与 kit 全局 QSS
+    // 和其他代理的页面互不干扰（不改 QssBuilder.cpp 的前提下做页面级微调）。
+    setObjectName(QStringLiteral("shotWs"));
     auto* scroll = new QScrollArea(this);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     auto* body = new QWidget(scroll);
     auto* outer = new QVBoxLayout(body);
+    // views.css:134 .vw { padding: 20px 24px 26px; gap: 16px }
     util::PageMargins(outer);
     util::PageSpacing(outer);
     scroll->setWidget(body);
 
-    status_ = widgets::SectionTitle(QStringLiteral("分镜 · 未打开书库"), this);
-    outer->addWidget(status_);
-
-    auto* stage_bar = new QWidget(this);
+    // ── views.css:140 .vw-head { display:flex; align-items:center; gap:14px } ──
+    auto* head = new QWidget(body);
+    auto* head_row = new QHBoxLayout(head);
+    head_row->setContentsMargins(0, 0, 0, 0);
+    head_row->setSpacing(14);
+    // Icon name="clapper" style={{ width:20, height:20, color:var(--accent) }}
+    auto* glyph = new QLabel(QStringLiteral("▥"), head);
+    glyph->setFixedSize(20, 20);
+    glyph->setAlignment(Qt::AlignCenter);
+    widgets::SetTextColor(glyph, theme::Current().accentPrimary);
+    head_row->addWidget(glyph, 0, Qt::AlignTop);
+    auto* titles = new QWidget(head);
+    auto* titles_layout = new QVBoxLayout(titles);
+    titles_layout->setContentsMargins(0, 0, 0, 0);
+    titles_layout->setSpacing(2);
+    // views.css:145 .vw-title { font-size: 18px; font-weight: 800 }
+    head_title_ = widgets::SectionTitle(QStringLiteral("分镜工作区"), titles);
+    head_title_->setStyleSheet(QStringLiteral("font-size: 18px; font-weight: 800;"));
+    titles_layout->addWidget(head_title_);
+    // views.css:149 .vw-sub { color: text-muted; font-size: 12.5px }
+    status_ = new QLabel(QStringLiteral("已提交场景 0 个 · Scene → Sequence → Shot"), titles);
+    widgets::SetKind(status_, "statemeta");
+    status_->setStyleSheet(QStringLiteral("font-size: 12px;"));
+    status_->setWordWrap(true);
+    titles_layout->addWidget(status_);
+    head_row->addWidget(titles, 1);
+    // views.css:64 <Tag tone={SHOT_STATUS[shot.status].tone}>{label}</Tag>
+    shot_status_tag_ = new widgets::Tag(QStringLiteral("未选镜头"), "idle", false, head);
+    head_row->addWidget(shot_status_tag_);
+    auto* stage_bar = new QWidget(head);
     auto* stage_layout = new QHBoxLayout(stage_bar);
     stage_layout->setContentsMargins(0, 0, 0, 0);
-    run_stages_ = new widgets::Button(QStringLiteral("运行 V1–V8"),
-                                      widgets::Button::Variant::Primary,
-                                      widgets::Button::Size::Sm, stage_bar);
+    stage_layout->setSpacing(theme::space::kSteps[1]);
     auto* persist = new widgets::Button(QStringLiteral("V9/V10 落库"),
                                        widgets::Button::Variant::Secondary,
                                        widgets::Button::Size::Sm, stage_bar);
     persist->setToolTip(QStringLiteral("生成叙事分镜并写入 shots / prompt_artifacts"));
     stage_layout->addWidget(persist);
     auto* prompt_only = new widgets::Button(QStringLiteral("V10 重生成"),
-                                            widgets::Button::Variant::Ghost,
+                                            widgets::Button::Variant::Secondary,
                                             widgets::Button::Size::Sm, stage_bar);
     prompt_only->setToolTip(QStringLiteral("按当前输入状态重新生成并递增 Prompt 版本"));
     stage_layout->addWidget(prompt_only);
-    persistence_status_label_ = new QLabel(QStringLiteral("V9/V10 未运行"), stage_bar);
-    persistence_status_label_->setWordWrap(true);
-    stage_layout->addWidget(persistence_status_label_, 1);
+    run_stages_ = new widgets::Button(QStringLiteral("运行 V1–V8"),
+                                      widgets::Button::Variant::Primary,
+                                      widgets::Button::Size::Sm, stage_bar);
     run_stages_->setToolTip(QStringLiteral("按章节运行 V1–V7 阶段并执行 V8 连续性校验"));
     stage_layout->addWidget(run_stages_);
-    stage_flow_ = new data::StageFlow(stage_bar);
-    stage_flow_->setMinimumHeight(92);
-    stage_layout->addWidget(stage_flow_, 1);
-    outer->addWidget(stage_bar);
+    head_row->addWidget(stage_bar);
+    outer->addWidget(head);
+
+    // ── views.css:75 Card：V1–V8 阶段条（状态行 + StageFlow）────────────
+    // 上一版把三个按钮和 StageFlow 挤在同一行，设计稿里 head 与阶段卡是两层。
+    auto* stage_card = new widgets::Card(widgets::Card::Variant::Outlined, body);
+    auto* stage_body = stage_card->BodyLayout();
+    auto* stage_status_row = new QWidget(stage_card);
+    auto* ssr = new QHBoxLayout(stage_status_row);
+    ssr->setContentsMargins(0, 0, 0, 0);
+    ssr->setSpacing(theme::space::kSteps[1]);
+    stage_status_ = new QLabel(QStringLiteral("V1–V7 按章节运行，V8 执行连续性校验"),
+                               stage_status_row);
+    widgets::SetKind(stage_status_, "statestatus");
+    widgets::SetTextColor(stage_status_, theme::Current().textMuted);
+    ssr->addWidget(stage_status_);
+    ssr->addStretch(1);
+    // views.css:85 <Tag tone={vRun >= 8 ? 'ok' : 'idle'} sm>
+    stage_tag_ = new widgets::Tag(QStringLiteral("V9/V10 未运行"), "idle", false, stage_status_row);
+    ssr->addWidget(stage_tag_);
+    stage_body->addWidget(stage_status_row);
+    // 落库 / 重生成的回执（设计稿里是 toast，Qt 端没有 toast 契约，留在卡内）
+    persistence_status_label_ = new QLabel(stage_card);
+    widgets::SetKind(persistence_status_label_, "statemeta");
+    persistence_status_label_->setWordWrap(true);
+    persistence_status_label_->hide();
+    stage_body->addWidget(persistence_status_label_);
+    stage_flow_ = new data::StageFlow(stage_card);
+    stage_body->addWidget(stage_flow_);
+    outer->addWidget(stage_card);
     artifact_view_ = new QPlainTextEdit(this);
     artifact_view_->setReadOnly(true);
     artifact_view_->hide();
@@ -129,10 +199,36 @@ void StoryboardWorkspace::BuildUi() {
     // 导航不再占页内一列，阶段条与内容区拿到整幅宽度。
     nav_host_ = tree_;
     nav_box_ = splitter;
+
+    // ── views.css:945 .shots-wrap { grid-template-columns: minmax(0,1.2fr) minmax(0,1fr);
+    //                                  gap:16px; align-items:start } ──
+    // 左 = 镜头详情，右 = 连续性。上一版两者竖排通栏，右列宽度优势完全没吃到。
+    auto* shots_wrap = new QWidget(body);
+    auto* sw = new QHBoxLayout(shots_wrap);
+    sw->setContentsMargins(0, 0, 0, 0);
+    sw->setSpacing(theme::space::kSteps[5]); // 16
+    shot_detail_ = new ShotDetailView(shots_wrap);
+    continuity_ = new ContinuityView(shots_wrap);
+    sw->addWidget(shot_detail_, 6); // 1.2fr
+    sw->addWidget(continuity_, 5);  // 1fr
+    outer->addWidget(shots_wrap);
+
     timeline_ = new StoryboardTimeline(this);
     timeline_->SetOnReorder([this](const std::vector<novelcore::RowId>& ids) {
         (void)ReorderTimeline(ids);
     });
+    timeline_->SetOnSelectShot([this](novelcore::RowId id) {
+        if (selected_shot_ == id) {
+            return;
+        }
+        selected_shot_ = id;
+        timeline_->SetSelectedShot(id);
+        if (const auto* shot = SelectedShot(); shot != nullptr) {
+            shot_detail_->SetShot(*shot);
+        }
+        UpdateHead();
+    });
+    outer->addWidget(timeline_);
     shot_table_ = new ShotTableView(this);
     shot_table_->SetOnUpdate([this](const ShotTableView::ShotEdit& edit) {
         (void)UpdateShot(edit.id, edit.action.toStdString(), edit.mood.toStdString(),
@@ -141,21 +237,14 @@ void StoryboardWorkspace::BuildUi() {
     shot_table_->SetOnBatchMood([this](const std::vector<novelcore::RowId>& ids, const QString& mood) {
         (void)ApplyMoodBatch(ids, mood);
     });
-    // 镜头表给 260（表头 + 若干行），时间线给 196（标题 22 + 卡片 148 + 余量），
-    // 其余区块交各自 sizeHint。
+    // 镜头表给 260（表头 + 若干行），时间线给 196（标题 22 + .timeline 内距 20
+    // + 卡片 148 + 余量），其余区块交各自 sizeHint。
     shot_table_->setMinimumHeight(200);
     shot_table_->setMaximumHeight(320);
     outer->addWidget(shot_table_);
-    timeline_->setMinimumHeight(196);
-    timeline_->setMaximumHeight(260);
-    outer->addWidget(timeline_);
-    shot_detail_ = new ShotDetailView(this);
     shot_detail_->SetTimelineHandler([this](std::string json) {
         (void)SaveSelectedTimeline(json);
     });
-    outer->addWidget(shot_detail_);
-    continuity_ = new ContinuityView(this);
-    outer->addWidget(continuity_);
     gen_shot_ = new GenShotBridgeView(this);
     outer->addWidget(gen_shot_);
     // 末尾留白：滚动区底部不至于紧贴内容
@@ -175,6 +264,7 @@ void StoryboardWorkspace::BuildUi() {
     connect(persist, &widgets::Button::clicked, this, &StoryboardWorkspace::RunStoryboardPersistence);
     connect(prompt_only, &widgets::Button::clicked, this, &StoryboardWorkspace::RunPromptPersistence);
     connect(run_stages_, &widgets::Button::clicked, this, &StoryboardWorkspace::RunStagePipeline);
+    UpdateHead();
     UpdateStageGraph();
 }
 
@@ -187,6 +277,63 @@ std::int64_t StoryboardWorkspace::SelectedChapterId() const {
         }
     }
     return 0;
+}
+
+const novelcore::ShotRow* StoryboardWorkspace::SelectedShot() const {
+    if (current_shots_.empty()) {
+        return nullptr;
+    }
+    for (const auto& shot : current_shots_) {
+        if (shot.id == selected_shot_) {
+            return &shot;
+        }
+    }
+    return &current_shots_.front();
+}
+
+// views.css:140-152 .vw-head：标题 = `{code} · {action}`，副标题 =
+// `第 {章} 章 · {场景} · 已提交场景 N 个 · Scene → Sequence → Shot`
+void StoryboardWorkspace::UpdateHead() {
+    if (head_title_ == nullptr || status_ == nullptr) {
+        return;
+    }
+    const novelcore::ShotRow* shot = SelectedShot();
+    if (shot != nullptr) {
+        head_title_->setText(QStringLiteral("S%1 · %2")
+                                 .arg(shot->ord)
+                                 .arg(QString::fromStdString(shot->action)));
+        // views.css:64 Tag tone={SHOT_STATUS[shot.status].tone}
+        // canon_status 的取值域是 PROPOSED / CANON / DRAFT（novelcore 落库口径）。
+        const QString status = QString::fromStdString(shot->canon_status);
+        if (status == QStringLiteral("CANON")) {
+            SetTagText(shot_status_tag_, QStringLiteral("已定稿"), "ok");
+        } else if (status == QStringLiteral("PROPOSED")) {
+            SetTagText(shot_status_tag_, QStringLiteral("待定"), "pending");
+        } else {
+            SetTagText(shot_status_tag_, status.isEmpty() ? QStringLiteral("草稿") : status, "idle");
+        }
+        shot_status_tag_->show();
+    } else {
+        head_title_->setText(QStringLiteral("分镜工作区"));
+        SetTagText(shot_status_tag_, QStringLiteral("未选镜头"), "idle");
+        shot_status_tag_->hide();
+    }
+    QString sub;
+    for (const ChapterScenes& chapter : chapters_) {
+        for (const auto& scene : chapter.scenes) {
+            if (scene.id == selected_scene_) {
+                sub = QStringLiteral("第 %1 章 · 场景 %2 · %3")
+                          .arg(chapter.chapter.ord)
+                          .arg(scene.ord)
+                          .arg(QString::fromStdString(scene.title));
+            }
+        }
+    }
+    if (!sub.isEmpty()) {
+        sub += QStringLiteral(" · ");
+    }
+    sub += QStringLiteral("已提交场景 %1 个 · Scene → Sequence → Shot").arg(committed_scenes_);
+    status_->setText(sub);
 }
 
 void StoryboardWorkspace::UpdateStageGraph() {
@@ -217,6 +364,40 @@ void StoryboardWorkspace::UpdateStageGraph() {
         }
     }
     stage_flow_->SetGraph(std::move(nodes), std::move(links));
+
+    // views.css:77-85 状态行：运行中 / 完成 / 未开始，三态文案与色调同步
+    int running = -1;
+    bool done = stage_states_.size() == 8;
+    bool failed = false;
+    for (std::size_t i = 0; i < stage_states_.size(); ++i) {
+        const QString& status = stage_states_[i].status;
+        if (status == QStringLiteral("running")) {
+            running = static_cast<int>(i);
+            done = false;
+        } else if (status == QStringLiteral("failed")) {
+            failed = true;
+            done = false;
+        } else if (status != QStringLiteral("done") && status != QStringLiteral("reused")) {
+            done = false;
+        }
+    }
+    if (stage_status_ != nullptr && stage_tag_ != nullptr) {
+        if (running >= 0) {
+            stage_status_->setText(QStringLiteral("V%1 运行中…").arg(running + 1));
+            widgets::SetTextColor(stage_status_, theme::Current().accentPrimary);
+        } else if (done) {
+            stage_status_->setText(QStringLiteral("V1–V8 完成 · C1–C12 通过"));
+            widgets::SetTextColor(stage_status_, theme::Current().statusOk);
+        } else if (failed) {
+            stage_status_->setText(QStringLiteral("阶段失败 · 详见下方产物"));
+            widgets::SetTextColor(stage_status_, theme::Current().statusDanger);
+        } else {
+            stage_status_->setText(QStringLiteral("V1–V7 按章节运行，V8 执行连续性校验"));
+            widgets::SetTextColor(stage_status_, theme::Current().textMuted);
+        }
+        SetTagText(stage_tag_, done ? QStringLiteral("已校验") : QStringLiteral("V9/V10 未运行"),
+                   done ? "ok" : "idle");
+    }
 }
 
 void StoryboardWorkspace::ShowLatestArtifact() {
@@ -373,7 +554,10 @@ bool StoryboardWorkspace::RunStoryboardPersistence() {
             guard->persistence_shots_ = shots;
             guard->persistence_prompts_ = prompts;
             guard->persistence_status_ = status;
-            if (guard->persistence_status_label_ != nullptr) guard->persistence_status_label_->setText(status);
+            if (guard->persistence_status_label_ != nullptr) {
+                guard->persistence_status_label_->setText(status);
+                guard->persistence_status_label_->show();
+            }
             guard->LoadTimeline();
         });
     });
@@ -416,7 +600,10 @@ bool StoryboardWorkspace::RunPromptPersistence() {
             guard->persistence_v10_ok_ = ok;
             guard->persistence_prompts_ = prompts;
             guard->persistence_status_ = status;
-            if (guard->persistence_status_label_ != nullptr) guard->persistence_status_label_->setText(status);
+            if (guard->persistence_status_label_ != nullptr) {
+                guard->persistence_status_label_->setText(status);
+                guard->persistence_status_label_->show();
+            }
         });
     });
     return true;
@@ -489,18 +676,26 @@ void StoryboardWorkspace::CloseBook() noexcept {
     error_.clear();
     selected_chapter_ = 0;
     current_shots_.clear();
+    selected_shot_ = 0;
+    committed_scenes_ = 0;
     if (timeline_ != nullptr) {
         timeline_->SetScene({}, {});
+        timeline_->SetSelectedShot(0);
     }
     if (continuity_ != nullptr) continuity_->SetContext({}, {}, 0);
     if (gen_shot_ != nullptr) gen_shot_->SetContext({}, {}, 0);
     stage_states_.clear();
     artifact_view_->clear();
     artifact_view_->hide();
+    if (persistence_status_label_ != nullptr) {
+        persistence_status_label_->clear();
+        persistence_status_label_->hide();
+    }
     stage_running_ = false;
     UpdateStageGraph();
     RebuildTree();
     UpdateSelection();
+    UpdateHead();
 }
 
 bool StoryboardWorkspace::ReloadScenes() {
@@ -532,12 +727,12 @@ bool StoryboardWorkspace::ReloadScenes() {
         chapters_.push_back({chapter, *scenes});
     }
     error_.clear();
-    status_->setText(QStringLiteral("分镜 · 已提交场景 %1 个")
-                         .arg(static_cast<int>(std::accumulate(
-                             chapters_.begin(), chapters_.end(), 0,
-                             [](int sum, const ChapterScenes& chapter) {
-                                 return sum + static_cast<int>(chapter.scenes.size());
-                             }))));
+    committed_scenes_ = std::accumulate(
+        chapters_.begin(), chapters_.end(), 0,
+        [](int sum, const ChapterScenes& chapter) {
+            return sum + static_cast<int>(chapter.scenes.size());
+        });
+    UpdateHead();
     return true;
 }
 
@@ -679,11 +874,21 @@ void StoryboardWorkspace::LoadTimeline() {
     if (timeline_ != nullptr) {
         timeline_->SetScene(scene, current_shots_);
     }
+    // 选中的镜头在拖拽重排后可能已被改序 / 删除，回落到列表首个镜头。
+    const bool still_there = std::any_of(
+        current_shots_.begin(), current_shots_.end(),
+        [this](const novelcore::ShotRow& shot) { return shot.id == selected_shot_; });
+    if (!still_there) {
+        selected_shot_ = current_shots_.empty() ? 0 : current_shots_.front().id;
+    }
+    if (timeline_ != nullptr) {
+        timeline_->SetSelectedShot(selected_shot_);
+    }
     if (shot_table_ != nullptr) {
         shot_table_->SetShots(current_shots_);
     }
-    if (shot_detail_ != nullptr && !current_shots_.empty()) {
-        shot_detail_->SetShot(current_shots_.front());
+    if (const auto* shot = SelectedShot(); shot_detail_ != nullptr && shot != nullptr) {
+        shot_detail_->SetShot(*shot);
     }
     if (continuity_ != nullptr) {
         continuity_->SetContext(dbPath_, projectDir_, selected_chapter_);
@@ -691,6 +896,7 @@ void StoryboardWorkspace::LoadTimeline() {
     if (gen_shot_ != nullptr) {
         gen_shot_->SetContext(dbPath_, projectDir_, selected_chapter_);
     }
+    UpdateHead();
 }
 
 bool StoryboardWorkspace::ReorderTimeline(const std::vector<novelcore::RowId>& orderedIds) {
@@ -809,8 +1015,9 @@ bool StoryboardWorkspace::ApplyMoodBatch(const std::vector<novelcore::RowId>& id
 }
 
 bool StoryboardWorkspace::SaveSelectedTimeline(const std::string& timeline_json) {
-    if (db_ == nullptr || current_shots_.empty() || timeline_busy_) return false;
-    auto shot = current_shots_.front();
+    const novelcore::ShotRow* current = SelectedShot();
+    if (db_ == nullptr || current == nullptr || timeline_busy_) return false;
+    auto shot = *current;
     shot.timeline_json = timeline_json;
     timeline_busy_ = true;
     const auto db_path = dbPath_;

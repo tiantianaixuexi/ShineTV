@@ -84,6 +84,8 @@ class MainWindow : public QMainWindow {
     void CloseProjectToHub();
     void RefreshStatusBar();
     void UpdateBreadcrumb();
+    // 三处开合态的唯一出口：顶栏文字按钮 + 活动栏面板开关一起同步（shell.css:100-108/140）
+    void SyncPanelState();
     void SaveLayout();
     void RestoreLayout();
     // 首次显示后按真实 splitter 宽度落地三格默认尺寸（构造期宽度不可信，见 RestoreLayout）
@@ -131,9 +133,9 @@ class MainWindow : public QMainWindow {
     bool side_visible_ = true;
     bool inspector_visible_ = false; // 检查器默认收起
     bool bottom_visible_ = true;
-    int side_last_w_ = 260;
-    int inspector_last_w_ = 320;
-    int bottom_last_h_ = 220;
+    int side_last_w_ = 240;
+    int inspector_last_w_ = 280;
+    int bottom_last_h_ = 200; // webui shell.css:380 .dock height 200px
     bool layout_restored_ = true;
     bool pending_default_sizes_ = false; // 首次显示后需要落地三格尺寸
     bool applied_after_show_ = false;    // 首次进入工坊时已落地过默认尺寸

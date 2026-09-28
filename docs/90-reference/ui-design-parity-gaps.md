@@ -7,12 +7,17 @@ source_of_truth:
   - webui/src/styles/views.css
   - webui/src/styles/ui.css
   - webui/src/styles/shell.css
+  - webui/src/styles/base.css
   - webui/src/styles/tokens.css
+  - webui/src/components/UI.jsx
   - src/ui/kit/theme/QssBuilder.cpp
   - src/ui/kit/theme/Token.h
   - src/ui/kit/theme/Theme.h
+  - src/ui/kit/theme/ThemeService.cpp
   - src/ui/kit/controls/WidgetCommon.h
   - src/ui/kit/controls/Controls.h
+  - src/ui/kit/controls/Inputs.h
+  - src/ui/kit/controls/Surfaces.h
   - src/ui/pages/assets/AssetDetailView.cpp
   - src/ui/pages/assets/AssetWorkspace.h
   - src/ui/pages/novel/DraftView.cpp
@@ -33,6 +38,86 @@ last_verified: 2026-09-29
 
 ---
 
+## 〇、几何刻度基线（已对齐，规则记在这里）
+
+**源码事实**：圆角、字号两套刻度都已收敛到 `webui/src/styles/tokens.css` 的
+`:root` 块，改 QSS 时按这两条规则走，不要另起数值。
+
+### 圆角（6 档，已 1:1）
+
+`--r-xs/sm/md/lg/xl/pill = 4 / 6 / 10 / 14 / 18 / 999`。`Token.h` 的
+`radius::kXs…kPill` 与之同值同序；`QssBuilder.cpp` 里出现的每个 `border-radius`
+都取自其中一档。
+
+| 刻度 | 值 | 典型控件 |
+|---|---|---|
+| `--r-xs` | 4 | `.seg > button`、`.check .box`、`.kbd`、缩略图兜边 |
+| `--r-sm` | 6 | `.btn` / `.input` / `.select` / `.tag`(非 pill 者) / `.tree .node` / `[data-tip]` / `.icon-btn` / `.spin` 容器 |
+| `--r-md` | 10 | `.card` / `.toast` / `.sheet` / `.seg` 容器 / `.menu-pop` |
+| `--r-lg` | 14 | `.modal` / `.drawer` 内浮层 / `.empty .glyph` |
+| `--r-xl` | 18 | 设计稿预留大容器档，**当前无控件占用**（QSS 里不出现） |
+| `--r-pill` | 999 | `.tag` / `.prog` / `.chip` / `.stageflow .snode` / `.search` / 滚动条滑块 / 正圆控件 |
+
+两条约定：
+
+- **正圆写 999，不写半径数值**。单选钮、勾选框、开关轨道、滑块手柄都是「圆」，
+  写 7 或 999 在 Qt 里渲染一致（QPainter 会钳到半边长），999 才是设计稿的写法。
+- **方头元素写 0**。accent 左条、`.tl` 轴线这类本身没有圆角声明的细条走 `0px`，
+  不要为了「在刻度上」硬凑成 4。
+
+### 字号（整数档，设计稿的 x.5 档就近取整）
+
+**外部前提**：Qt QSS 的 `font-size` 最终走 `QFont::setPixelSize(int)`
+（`qfont.h:165` 的签名就是 `int`），小数在渲染前被量化到整设备像素。
+`13.5px @ 100% 缩放` 实际是 14px——比设计稿**更**偏，不是更近。
+
+**因此**：QSS 一律声明整像素值，设计稿的 x.5 档按就近取整落位：
+
+| 设计稿 | 取值 | 落到的整像素档 |
+|---|---|---|
+| body 13.5px / `.card-title` 13.5px / `.input`（继承 body） | 13px | 基准字号 `font::kBase` |
+| `.small` / `.seg > button` / `.check` / `.toast` 12.5px | 12px | |
+| `.tag` / `.table th` / `[data-tip]` 11.5px | 11px | |
+| `.kbd` / `.tag.sm` 10.5px | 10px | |
+
+显式声明 13px 的控件（`.btn` / `.tabs` / `.table`）与基准同值，
+所以控件观感与设计稿一致；差异只落在「设计稿 13.5px vs Qt 13px」这半像素上。
+**待运行验证**：实际截图里 100% 缩放下 Qt 的取整方向（上取/下取）尚未截图确认。
+
+### 主题集（5 套，已齐）
+
+**源码事实**：`tokens.css` 的 5 套 `[data-theme]` 块与 Qt 端一一对应，
+深空 / 薄暮 / 纸墨 / **水墨** / 极夜。水墨（宣纸 · 墨色 · 印泥红）是后补的，
+`Themes/水墨.json` 的 21 个直出色值逐条抄自该块，4 个 alpha 值按既有约定落位：
+
+| token | CSS 来源 | JSON 写法 |
+|---|---|---|
+| `shadow.scrim` | `--scrim: rgba(24,21,17,0.5)` | `#18151180`（原样带 alpha） |
+| `shadow.accent` | `--shadow-accent` 的 `rgba(47,44,40,0.22)` | `#2F2C2838` |
+| `shadow.2` | `--shadow-2` 的 `rgba(50,44,36,0.18)` | `#322C242E` |
+| `shadow.1` | `--shadow-1` 的**第二层** `rgba(50,44,36,0.10)` | `#322C241A`（取扩散主导那层） |
+| `line.*` / `fill.*` | `rgba()` 叠在底色上 | 预合成到 `bg.surface` 的**不透明**值 |
+
+预合成约定与四套旧主题一致（可反查 `Themes/深空.json` 的 `line.subtle` =
+`rgba(234,240,247,.07)` 叠在 `bg.surface` 上），不是新发明。
+
+**加主题时必须同步改三处**（都按下标寻址，漏一处就是越界或加载失败）：
+`Token.h` 的 `enum class ThemeId` → `Theme.h` 的 `kAllThemes` → `Theme.cpp` 的
+`kThemes` / `g_themes` / `g_loaded`（后两者已改为按 `kAllThemes.size()` 推导）→
+`ThemeService.cpp` 的 QSS 缓存数组（同样按 `kAllThemes.size()` 推导）。
+`kAllThemes` 的下标就是 `ThemeId` 的枚举值，**顺序不可重排**（已持久化的主题名按名查，
+但运行时缓存按下标寻址）。
+
+**已知未对齐**：水墨块额外覆盖了 `--font-ui`（衬线族：`Noto Serif SC` / `SimSun` 等）。
+`ColorToken` 只装颜色、`QssBuilder` 只做 `%N` 颜色替换，要落地得给主题加非颜色字段，
+会动 `ColorTokenToJson/FromJson` 的序列化契约（%N 占位符位置即字段顺序）——
+不在设计系统基线这一轮里，留作独立一轮。
+
+**待运行验证**：水墨在「主题菜单 → 切换 → 各页面」的实际观感（尤其深色系控件残留、
+浅色主题下的焦点环对比）只跑过自检，尚未截图。
+
+---
+
 ## 一、渲染器能力边界（Qt QSS 不支持，无法 1:1 移植）
 
 Qt 样式表是 CSS 的子集，设计稿里这些属性在 QSS 中**根本没有对应声明**，
@@ -42,9 +127,13 @@ Qt 样式表是 CSS 的子集，设计稿里这些属性在 QSS 中**根本没�
 |---|---|---|---|
 | `box-shadow` | `.tl-card:hover`、`shadow-1/2/accent` 等 | **QSS 无此属性，但 Qt 有现成方案**：`QGraphicsDropShadowEffect`，已封装为 `widgets::ApplyShadow(w, ShadowLevel)` | 直接用，见下方「阴影」小节 |
 | `backdrop-filter: blur()` | 浮动面板毛玻璃 | QSS 无滤镜系统 | 用 `bg.overlay` 不透明底（见下方说明） |
-| `transform: translateY(-2px)` | `.tl-card:hover`、卡片 hover 抬升 | QSS 不能改几何 | 用 `motion::Tween` 主动画（`Card::Lift` 已做） |
+| `transform: translateY(-2px)` / `scale(0.97)` | `.card.hoverable:hover`、`.btn:active` | QSS 不能改几何 | 用 `motion::Tween` 主动画（`Card::Lift` 已做，按 2px / motion.base）；按钮按压缩放**未做** |
 | `transition: all var(--dur-N)` | `.chip`、按钮、卡片全局 | QSS 无 transition | 用 `kit::motion::Tween` + `Easing` 主动画（`kDurFastMs=120` / `kDurBaseMs=200` / `kDurSlowMs=320` 三档 token 已存在） |
-| `color-mix()` | `.chip.on .cnt`、`accent-dim` | QSS 无 | 用已存在的近似 token（`fill.selected` 替 `accent-dim`、`fill.selected` 替 18% accent 混色） |
+| `color-mix()` | `.tag.ok` 等 tone 底、`.btn-danger:hover` 底、`accent-dim` | QSS 无 | 沿用既有近似 token：tone 底用实心 `status.*` + `text.inverse` 字；`.btn-danger:hover` 用 `fill.hover` 底 + `danger` 边 |
+| `opacity: 0.45` | `.btn:disabled`、`.stageflow .snode.skip` | QSS 无 opacity 属性 | 用 `bg.surface` 底 + `text.muted` 字 + `line.subtle` 边表达「不可用」 |
+| `@keyframes` 循环动画 | `.prog.run` 微光、`.dot.run` 脉冲、`.empty .glyph` 浮动 | QSS 无 keyframes | 定时器自绘（`Spinner` 已做）；进度条微光与状态点脉冲**未做** |
+| `:focus-within` | `.search:focus-within` | QSS 只认控件自身焦点 | 事件过滤把焦点转发到父框的 `focused` 属性（`SearchBox` 已做） |
+| 每主题改字体族 | `[data-theme="inkwash"] --font-ui`（衬线） | `ColorToken` 只装颜色，`QssBuilder` 只按 `%N` 替换颜色 | **未做**：水墨主题仍是 UI 衬线族，要落地得给主题加非颜色字段（会动序列化契约） |
 | CSS Grid / Flex 的 `minmax()`、`auto-fit` | `.asset-grid`、`.flowwrap` | QSS 不参与布局 | `QGridLayout` + `ResizeEvent` 重算，或用 `QScrollArea` + 固定列宽 |
 
 ### 阴影（已实现，不要重复造）
@@ -60,9 +149,15 @@ widgets::ApplyShadow(widget, widgets::ShadowLevel::Accent); // 主按钮辉光
 
 几何参数硬编码在 `WidgetCommon.cpp` 的 `kShadowSm/kShadowLg/kShadowAccent`，
 逐条对齐 `webui/src/styles/tokens.css` 的 `--shadow-1/2/accent`
-（CSS 一条 box-shadow 可叠多层，effect 只出一层，取扩散占主导的那层）。
+（CSS 一条 box-shadow 可叠多层，effect 只出一层，取扩散占主导的那层：
+`--shadow-1` 取第二层的 blur/alpha）。
 色值随主题变化，所以走 `ColorToken` 的 `shadow1`/`shadow2`/`shadowAccent`
-（`Theme.h` 的 `Current()`），四套主题 JSON 各自一份。
+（`Theme.h` 的 `Current()`），五套主题 JSON 各自一份。
+
+**源码事实**：这三个 shadow token **故意不出现在 QSS 里**——QSS 没有 `box-shadow`
+这属性，写 `%29/%30/%31` 是无意义的空占。因此 `QssBuilder::SelfCheck` 的
+「每个 token 都必须被模板消费」判据对末尾三项做了显式豁免（见该函数的 `is_shadow_token`）。
+它们真正的消费方是 `widgets::ApplyShadow`，改阴影档位别去 QSS 里找。
 
 **已挂阴影的位置**：`Card` hover（进/出事件自动开关）、出图/出片的浮动工具栏与浮动面板、
 `CommandPalette`、`Drawer`、`Toast`。
@@ -202,7 +297,112 @@ Qt Widgets 没有 flow layout。当前把 chip 钉在各自 `sizeHint` 上，窄
 
 ---
 
-## 四、验收体系自身的已知噪音
+## 四、控件级差异清单（本轮逐控件核对 `ui.css` ↔ `controls/*.cpp` + QSS）
+
+**源码事实**：左列是设计稿规则，右列是 2026-09-29 这一轮核对后的实际状态。
+「已对齐」= 数值逐条相同或已按第〇节的刻度规则落位。
+
+| 控件 | 设计稿要点 | 本轮状态 |
+|---|---|---|
+| Button | secondary = `bg-elevated` 底；ghost = `text-secondary` 字；danger = 透明底 + `line-normal` 边 | **已对齐**（此前 secondary 用 `bg.panel`、ghost 用 accent 字、danger 是实心 danger 底） |
+| Button | `:active` `scale(0.97)`、`:disabled` `opacity .45`、primary 的 inset 高光 | 未做，见第一节（QSS 无 transform/opacity） |
+| IconButton | 28×28（sm 22×22）、r-sm、`text-secondary` 字、active = `fill.selected` + accent | **已对齐**（尺寸此前是 32/24，active 态多画了一圈边） |
+| Tag | h20 p0 8 r-pill f11.5 w600；tone 底 = 12% 混色 | 几何已对齐；tone 底仍是实心 `status.*`（`color-mix` 缺失） |
+| Card | r10 + `line-subtle`；hover = `line-strong` + shadow-1 + `translateY(-2px)` / dur-2 | **已对齐**（抬升此前是 1px + motion.fast） |
+| Segmented | 选中态 `bg-elevated` + shadow-1 | 底色已对齐；shadow-1 用 1px 描边代替（QSS 无 `box-shadow`） |
+| Tabs | p8 12 / f13 w600 / muted；选中 accent + 2px 下划线 | **已对齐**（原生 `QTabWidget` 的取舍见第二节第 4 条） |
+| Field / Input / TextArea | label f12 w600；input h30 p0 10 r6；textarea p8 10 + line-height 1.6 | **已对齐**（`.field` 的 6px gap 走布局间距；input 不再写死字号，跟随基准） |
+| Select | r6 h30；弹层 r10 + `bg-overlay`；行 r6 p7 10 | **已对齐**（下拉箭头 Qt 是字符 `▾`，CSS 是 10×6 SVG） |
+| SearchBox | **独立**控件：r-pill + `line-subtle` + h30 + `:focus-within` | **已对齐**（此前复用 `.input` 的 r-sm；焦点转发到 `focused` 属性） |
+| Switch | 34×19 pill；旋钮 13px、起点 2、行程 15；关 = `bg-elevated` 底 + `text-secondary` 旋钮 | **已对齐**（此前 36×20，旋钮恒为 `bg-surface` 且行程按宽度算） |
+| Checkbox / Radio | 15×15、r-xs、1.5px `line-strong` 边、文字 gap 8；常态 `text-secondary`，选中 `text-primary` | **已对齐**（此前 16×16 + 1px + 常态就是 `text-primary`） |
+| Progress | h6 r-pill + `fill-muted`；`thin` h4；`run` 微光 | h6 + pill 已对齐（此前 `setMinimumHeight(8)` 压过 QSS）；`thin` / `run` 未做 |
+| Spinner | 14px / sm 11px，2px 边、顶边 accent，0.7s 线性 | Qt 为 14/20/32 三档、周期约 0.53s（按钮 loading 用的是 14 档，与 CSS 一致） |
+| Tooltip | `bg-overlay` + `line-normal` + r6 + p4 9 + f11.5 | **已对齐**；`scale(.94→1)` 与 shadow-1 未做（无边框 window 挂阴影会被窗口边界裁掉） |
+| Empty | p40 20 + gap 10；`.glyph` 52×52 r-lg 虚线框 + 24px 图标；标题 f13 w600 `text-secondary` | **已对齐**（此前没有 52×52 字形框，标题走 `statetitle` 的 `text-primary`）；`float-y` 浮动未做 |
+| Table | th f11.5 w600 p8 12 + 仅下边线；td p9 12 + `line-subtle` | **已对齐**（此前 th 多一条竖分隔线、p6 12；td 是 p5 12） |
+| Table | 行 `:hover` = `fill-hover`；`.sel` = `fill.selected` + inset 2px accent 左条 | **未做**：QSS 没有 `::row:hover`，也没有 `inset` 阴影 |
+| Tree | `.node` h28 p0 8 r6；`.kids` 左侧竖线 + 缩进 | kit 只给 `QTreeView` 基类（f12 + item 圆角）；行高与缩进在页面布局里 |
+| Kbd | min-w18 h18 p0 5 r-xs 底边 2px f10.5 w600 | **已对齐**（此前 p1 6 且无字号/字重） |
+| StatusDot | `.dot` 7px 正圆、`.dot.run` 脉冲 | 点态 = `Badge` 的 dot，**已对齐** 7px；脉冲动画未做；**没有独立的 StatusDot 控件** |
+| KeyValue / Steps | `.kv` f12.5 + gap 6 14；`.steps` 20px 圆圈序号 | 控件在 `src/ui/kit/data/Panels.*`，**不在本轮范围**，未核对 |
+
+---
+
+## 五、页面级复刻：本轮形成的约定与仍在的取舍
+
+### 1. 页面专属 QSS 落在哪（2026-09-29 全页面复刻定下的做法）
+
+`QssBuilder.cpp` 承载**共享控件层**；页面私有样式**一律不进它**，改用：
+
+```cpp
+// 页面 .cpp 内定义局部 QSS 函数，用只作用于本页根控件的 objectName 收敛作用域
+static QString StoryboardQss() { return QStringLiteral(R"( #shotWs QFrame { … } )"); }
+// 构造末尾：
+root->setObjectName("shotWs");
+root->setStyleSheet(StoryboardQss());
+```
+
+换肤重挂沿用 `WidgetCommon.cpp` 的既有做法：监听 `QEvent::ThemeChange` 后重新 `setStyleSheet`。
+**注意 ThemeChange 不是唯一入口**——自定义主题经 Palette/Style 通道进来时同样要重刷。
+
+### 2. 仍存在的有意取舍（不是遗漏，改前先读）
+
+| 位置 | 设计稿 | 现状 | 理由 |
+|---|---|---|---|
+| `ReviewView` K01–K29 | 3 元素 gate 行 | 保留 5 列 `DataTable`（多 `detail`/`severity`） | `06` §2.3 验收判据要这两列；改列会动断言。**要不要为 1:1 牺牲这两列，待产品决定** |
+| 出图/出片分栏 | `Segmented` 胶囊 | `QTabWidget` 下划线页签 | `P07Review.cpp` / `P08Review.cpp` 用 `findChild<QTabWidget*>()` 反查并切页 |
+| `.tl-below` | `flex-wrap: wrap` | 窄时**溢出而不裁切** | Qt Widgets 无 flow layout；裁切会丢内容，溢出安全 |
+| 浮动面板 | `absolute inset` | 共享 grid cell + alignment | 窄窗下面板被压缩而非盖住画布；改 child-over-parent 手动 `move()` 是另一轮工作量 |
+| 顶栏「运行/停止」 | 单按钮两态 | 两个按钮 | P09 流水线状态未接，做成切换就是假状态 |
+| `.stem` 时间轴竖线 | `top:30 h14` | 改到 40–44 | CSS 原值会与上方 `.ev` 文字行（26–39）重叠 |
+
+### 3. 本轮真实踩到的坑（3 个：QSS 注释色值 / Tween 累积 / StyleChange 自递归）
+
+**QSS 注释里写色值字面量会让主题自检 FAIL。**
+`kKitTemplate` 是 `R"QSS(… )QSS"` 原始字符串，自检的 `kColorRe` 扫的是**整段输出含注释**。
+在注释里写「本规则对应 accent 辉光」并顺手附上 rgba 字面量，会被判「不可回溯的颜色字面」，
+5 套主题一起 `qss=FAIL`。**加注释时不要写十六进制色值，也不要写 rgb/rgba 函数调用式的字面量。**
+
+**`motion::Tween` 不自删，反复 new 会累积。**
+`Tween.h` 明写「不自删 —— 谁创建谁回收」。挂到卡片这类长生命周期父对象上时，
+每次交互 `new` 一个 Tween 会随交互次数单调累积。正确做法是**成员复用一个实例**，
+每次只 `stop()` + 重跑。
+
+**在 `changeEvent` 里响应 `StyleChange` 又调 `setStyleSheet` = 无限递归。**
+`setStyleSheet()` 自身会派发 `QEvent::StyleChange`。若 `changeEvent` 把 `StyleChange`
+也当成「需要换肤重刷」的信号去调那个 `setStyleSheet` 的函数，就是
+setStyleSheet → StyleChange → 重刷 → setStyleSheet 的死循环，
+进程以 `0xC00000FD`（栈溢出）崩掉，而且**崩在控件构造期**，表现得像"程序莫名其妙起不来"，
+很容易误判成环境问题或既有缺陷。
+本轮 `GanttView::ApplyQss()` 就中了这招，连带把 `SHINE_P04_REVIEW` 和 `--widget-gallery`
+全部打挂。凡是「事件里重新 setStyleSheet」的写法，**必须加一个重入标志位**。
+自查口诀：`grep -n "changeEvent" -A 10` 看到 `setStyleSheet`，先问一句会不会自己触发自己。
+
+### 4. 视觉验收的环境限制（2026-09-29 实测）
+
+本机**没有可交互桌面会话**：Qt 窗口能被创建（尺寸正确）但 `IsWindowVisible=false`，
+`scripts/capture_window.ps1` 按标题找不到窗、回退抓屏只会拍到锁屏，
+`PrintWindow` 返回 `true` 但输出**整张纯黑**。所以「实机启动截图」这一环在本机不可用。
+
+**可用的替代路径是评审 harness**：它走 `QWidget::grab()` 离屏渲染，不依赖桌面。
+用 `SHINE_P03_REVIEW` / `P04` / … / `P10` 各跑一遍即可拿到各页真实渲染图
+（本轮 P03–P10 全跑通，共 53 张，覆盖项目 Hub / 小说 / 资产 / 分镜 / 出图 / 出片 / 画廊）。
+
+**离屏渲染有两个只有它才会暴露的坑**（实机运行不一定看得出来）：
+
+- 离屏渲染**不等事件循环**。凡是靠 `deleteLater()` 清理的旧控件，在 `grab()` 时可能
+  **还没被回收、仍绘制在原处**——表现为新旧文字叠在一起。本轮 `Breadcrumb::Rebuild()`
+  就这样让面包屑出现重叠字与成对分隔符。修法是 `hide()` 立刻停止绘制 + 保留
+  `deleteLater()` 负责安全回收（不能就地 `delete`：重建常常由被删按钮自己的信号触发）。
+- 离屏渲染**不经过桌面合成**，靠屏幕坐标抓图的方案在这里一律失效。
+
+读结论时还要注意：harness 抓的是**离屏控件树**，覆盖不到的东西要另行确认
+（第二节第 5 条与第三节第 3 条讲的就是这类盲区）。
+
+---
+
+## 六、验收体系自身的已知噪音
 
 不是 UI 问题，但会干扰读自检报告，一并记录：
 
@@ -212,13 +412,19 @@ Qt Widgets 没有 flow layout。当前把 chip 钉在各自 `sizeHint` 上，窄
 | `QString::arg: 1 argument(s) missing` | P05 fixture 搭建 | 既有噪音 |
 | `SHINE_P10_S8` / `SHINE_P10_S10` FAIL | `checks/P10Checks.cpp` | 断言 `dist/ShineTVStudio2/ShineTVStudio.exe` 存在，那是**打包产物**；本工作区无 `dist/`（`build/` 已 gitignore）。与 UI 无关 |
 | P04_S1–S4 报告格式不同 | `checks/P04WorldChecks.cpp` 等 | 用 `key=val PASS` 而非 `[PASS]`，按 `[PASS]` 正则统计会误显示为 0 项，**别误判成"没跑"** |
+| `check-theme: PASS (four themes parse)` | `tools/check-theme.ps1` | 提示串里的「four」是旧文案；判据是 `Count -lt 4`，现在目录里有 5 个 JSON，脚本仍然通过。**别照着提示串以为只有 4 套主题** |
+| `font-size: 13.5px` 会渲染成 14px | QSS 全局 | 第〇节的取整规则：QSS 里只写整像素 |
+| `QLayout: Attempting to add QLayout "" to QWidget ""` ×2 | `SHINE_P04_REVIEW` 运行期 | 本轮观察到的 Qt 告警，**来源尚未定位**（只记录现象，不下结论）。重建式页面里对同一成员控件二次 `new QVBoxLayout(w)`（w 已有布局）会触发；`pages/novel/WorldBoardS3.cpp` 是本仓最密集的重布局点，且该文件本轮**未改动**。各处渲染图未见异常 |
 
 ---
 
-## 五、怎么用这份文件
+## 七、怎么用这份文件
 
+- **加控件 / 改 QSS 前**：先看第〇节的圆角与字号刻度规则，别再引入 2/3/5/7 这种设计稿没有的半径；
+  也别在 `QssBuilder` 注释里写色值字面量（第五节第 3 条）。
 - **改 UI 前**：先查第二节，避免再踩 `QPushButton` 尺寸、QSS padding 这类已修过的坑。
-- **被要求"再像一点"**：第一节是硬边界，别在这里浪费时间；能动的在第二、三节。
+- **给页面加私有样式**：按第五节第 1 条走局部 `setStyleSheet`，不要往 `QssBuilder` 里塞页面规则。
+- **被要求"再像一点"**：第一节是硬边界，别在这里浪费时间；能动的在第二、三、四节。
 - **评审截图与设计稿有差异时**：先确认差异是否落在第一节（能力边界，无法修），
-  再看是不是第二、三节的未完成项。
-- 补完任一条后，**同步更新本文件**并删掉对应条目，别留"已修复"的记录当历史。
+  再看是不是第二、三、四节的未完成项；第五节第 2 条列的是**有意识的取舍**，别当 bug 顺手"修掉"。
+- **补完任一条后，**同步更新本文件**并删掉对应条目，别留"已修复"的记录当历史。

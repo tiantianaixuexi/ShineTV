@@ -5,7 +5,7 @@
 #include <QWidget>
 
 class QLabel;
-class QTableWidget;
+class QVBoxLayout;
 
 namespace shine::app {
 
@@ -24,7 +24,9 @@ class BindingView : public QWidget {
 
     flow::FlowBinder binder_;
     flow::BindingShotContext shot_;
-    QTableWidget* table_ = nullptr;
+    // 密集行列表（webui .dlist）：行由 Rebuild 逐个建、逐个销毁
+    QWidget* list_ = nullptr;
+    QVBoxLayout* list_lay_ = nullptr;
     QLabel* status_ = nullptr;
 };
 

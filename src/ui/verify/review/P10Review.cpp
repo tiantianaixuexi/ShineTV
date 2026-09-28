@@ -25,7 +25,8 @@ namespace {
 namespace fs = std::filesystem;
 struct State { fs::path dir; std::vector<std::string> manifest; };
 void Run(State* state) {
-    const std::array<shine::theme::ThemeId, 4> themes = shine::theme::kAllThemes;
+    // 主题数跟着 theme::kAllThemes 走（加第 5 套「水墨」后是 5），不再写死 4
+    const auto themes = shine::theme::kAllThemes;
     for (auto id : themes) {
         const std::string suffix = std::string(shine::theme::ThemeFileName(id));
         shine::theme::ThemeService::Switch(id, false);

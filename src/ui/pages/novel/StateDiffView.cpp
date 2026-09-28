@@ -10,6 +10,7 @@
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/layout/QtLayout.h"
 #include "novel/NovelChecks.h"
 #include "novel/NovelCommit.h"
 #include "novel/NovelGraph.h"
@@ -19,6 +20,7 @@
 #include "util/File.h"
 #include "util/Json.h"
 
+#include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -27,13 +29,58 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace {
 
 using namespace shine::novelcore;
 
+// CSS 色串：token 色 + 运行期 alpha（QSS 没有 color-mix，pass / fail 的描边
+// 与 fail 底色都靠「状态色按设计稿比例降 alpha / 与底色混合」等效实现）。
+[[nodiscard]] QString CssOf(const QColor& c) {
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+        .arg(c.red())
+        .arg(c.green())
+        .arg(c.blue())
+        .arg(QString::number(static_cast<double>(c.alpha()) / 255.0, 'f', 3));
+}
 
+// webui `.gcode` / `.r-score` 一类的等宽字（--font-mono）。kit 未提供字体工厂，
+// 这里按 theme::font::kMonoFamily 的族序逐档回退，页内各处共用这一份。
+[[nodiscard]] QFont MonoFont(const QFont& base, int pixelSize, QFont::Weight weight = QFont::Normal) {
+    QFont f = base;
+    f.setFamilies({QString::fromLatin1("Cascadia Code"), QString::fromLatin1("JetBrains Mono"),
+                    QString::fromLatin1("Consolas"), QString::fromLatin1("monospace")});
+    f.setPixelSize(pixelSize);
+    f.setWeight(weight);
+    return f;
+}
+
+// webui views.css:658 `.gates .gate.pass { border-color: ok 25% }` /
+// :660 `.gates .gate.fail { border-color: danger 35%; background: danger 7% + fill-muted }`
+// pass = nullopt = 还没跑判定：留在中性底（line-subtle 描边），不预判红绿。
+void PaintGateRow(QFrame* row, std::optional<bool> pass) {
+    const shine::theme::ColorToken& t = shine::theme::Current();
+    QColor bg = shine::widgets::TokenQColor(t.fillMuted);
+    QColor edge = shine::widgets::TokenQColor(t.lineSubtle);
+    if (pass.value_or(false)) {
+        edge = shine::widgets::TokenQColor(t.statusOk);
+        edge.setAlphaF(0.25);
+    } else if (pass.has_value()) {
+        const QColor danger = shine::widgets::TokenQColor(t.statusDanger);
+        edge = danger;
+        edge.setAlphaF(0.35);
+        constexpr double kFailTint = 0.07; // color-mix(danger 7%, fill-muted)
+        bg = QColor::fromRgbF(bg.redF() * (1.0 - kFailTint) + danger.redF() * kFailTint,
+                              bg.greenF() * (1.0 - kFailTint) + danger.greenF() * kFailTint,
+                              bg.blueF() * (1.0 - kFailTint) + danger.blueF() * kFailTint);
+    }
+    row->setStyleSheet(QStringLiteral("QFrame { background-color: %1; border: 1px solid %2;"
+                                     " border-radius: %3px; }")
+                           .arg(CssOf(bg), CssOf(edge))
+                           .arg(shine::theme::radius::kSm));
+}
 
 } // namespace
 
@@ -119,9 +166,9 @@ std::vector<GateLine> EvalGates(db::sqlite::Database& db, const StateDiff& diff,
 
 StateDiffView::StateDiffView(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
-    outer->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                              theme::space::kSteps[2], theme::space::kSteps[2]);
-    outer->setSpacing(theme::space::kSteps[2]);
+    // 页面级留白 / 分区间距统一走 layout helper（对齐 webui .vw：20 24 26 / gap 16）
+    util::PageMargins(outer);
+    util::PageSpacing(outer);
 
     // —— 头部：总判定 + 提交/回滚 ——
     auto* head = new QWidget(this);
@@ -172,6 +219,8 @@ StateDiffView::StateDiffView(QWidget* parent) : QWidget(parent) {
     gate_card->SetCollapsible(true);
     gate_card->SetContentMinWidth(680);
     QVBoxLayout* gl = gate_card->BodyLayout();
+    // webui views.css:634 `.gates { display:flex; flex-direction:column; gap:5px }`
+    gl->setSpacing(5);
     struct GateDef {
         const char* gate;
         const char* name;
@@ -180,24 +229,42 @@ StateDiffView::StateDiffView(QWidget* parent) : QWidget(parent) {
         {"G1", "评审结论 PASS"}, {"G2", "K01–K29 无阻断"}, {"G3", "章级快照就绪（I11）"},
         {"G4", "StateDiff 契约有效"}, {"G5", "无未解决 high issue"}};
     for (const GateDef& d : kGates) {
-        auto* row = new QFrame(gate_card);
-        row->setFrameShape(QFrame::StyledPanel);
-        auto* rl = new QHBoxLayout(row);
-        rl->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[1],
-                               theme::space::kSteps[2], theme::space::kSteps[1]);
-        auto* mark = new QLabel(QStringLiteral("—"), row);
-        mark->setMinimumWidth(24);
-        auto* name = new QLabel(QStringLiteral("%1 %2").arg(QString::fromLatin1(d.gate),
-                                                            QString::fromUtf8(d.name)),
-                                row);
+        GateRowUi ui;
+        // webui views.css:639 `.gate { display:flex; align-items:center; gap:9px;
+        //                               padding:6px 10px; border-radius:var(--r-sm);
+        //                               font-size:12.5px; color:var(--text-secondary);
+        //                               background:var(--fill-muted);
+        //                               border:1px solid var(--line-subtle) }`
+        ui.row = new QFrame(gate_card);
+        ui.row->setFrameShape(QFrame::NoFrame); // 底板完全由下面的 token 样式给出
+        auto* rl = new QHBoxLayout(ui.row);
+        rl->setContentsMargins(10, 6, 10, 6);
+        rl->setSpacing(9);
+        ui.mark = new QLabel(QStringLiteral("—"), ui.row);
+        ui.mark->setFixedWidth(12);
+        ui.mark->setAlignment(Qt::AlignCenter);
+        ui.code = new QLabel(QString::fromLatin1(d.gate), ui.row);
+        // `.gate .gcode { font-family:var(--font-mono); font-size:11px; font-weight:700;
+        //                  color:var(--text-muted); width:34px; flex:none }`
+        ui.code->setFixedWidth(34);
+        ui.code->setFont(MonoFont(ui.code->font(), 11, QFont::Bold));
+        auto* name = new QLabel(QString::fromUtf8(d.name), ui.row);
+        {
+            QFont f = ui.row->font();
+            f.setPixelSize(12); // 12.5px 按「就近取整」落 12px 档
+            name->setFont(f);
+        }
+        widgets::SetTextColor(name, theme::Current().textSecondary);
         name->setMinimumWidth(200);
-        auto* detail = new widgets::ElidedLabel(QString{}, row);
-        widgets::SetKind(detail, "fieldhelp");
-        rl->addWidget(mark);
+        ui.detail = new widgets::ElidedLabel(QString{}, ui.row);
+        widgets::SetKind(ui.detail, "fieldhelp");
+        rl->addWidget(ui.mark);
+        rl->addWidget(ui.code);
         rl->addWidget(name);
-        rl->addWidget(detail, 1);
-        gl->addWidget(row);
-        gate_widgets_.push_back({mark, detail});
+        rl->addWidget(ui.detail, 1);
+        PaintGateRow(ui.row, std::nullopt); // 未判定 = 中性描边
+        gl->addWidget(ui.row);
+        gate_widgets_.push_back(ui);
     }
     col->addWidget(gate_card);
 
@@ -351,10 +418,22 @@ void StateDiffView::Refresh() {
                                       : (allOk ? theme::Current().statusOk
                                                : theme::Current().statusDanger));
     for (std::size_t i = 0; i < gates_.size() && i < gate_widgets_.size(); ++i) {
-        gate_widgets_[i].first->setText(gates_[i].pass ? QStringLiteral("✔") : QStringLiteral("✘"));
-        widgets::SetTextColor(gate_widgets_[i].first,
-                 gates_[i].pass ? theme::Current().statusOk : theme::Current().statusDanger);
-        gate_widgets_[i].second->SetFullText(gates_[i].detail);
+        const GateLine& g = gates_[i];
+        GateRowUi& ui = gate_widgets_[i];
+        ui.mark->setText(g.pass ? QStringLiteral("✔") : QStringLiteral("✘"));
+        widgets::SetTextColor(ui.mark,
+                              g.pass ? theme::Current().statusOk : theme::Current().statusDanger);
+        // `.gcode`：默认 text-muted；pass → status-ok；fail → status-danger
+        widgets::SetTextColor(ui.code,
+                              g.pass ? theme::Current().statusOk
+                                     : (theme::Current().statusDanger));
+        ui.detail->SetFullText(g.detail);
+        ui.row->setToolTip(QStringLiteral("%1 %2 —— %3")
+                               .arg(QString::fromLatin1(g.gate), QString::fromUtf8(g.name))
+                               .arg(g.detail.isEmpty() ? (g.pass ? QStringLiteral("通过")
+                                                                  : QStringLiteral("未过"))
+                                                       : g.detail));
+        PaintGateRow(ui.row, g.pass); // pass / fail 换整行描边与底色
     }
     commit_btn_->setEnabled(allOk && !running_commit_ && diff_ != nullptr);
     rollback_btn_->setEnabled(snapshot_exists_ && !running_commit_);

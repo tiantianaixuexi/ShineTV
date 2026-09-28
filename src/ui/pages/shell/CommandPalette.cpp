@@ -1,4 +1,5 @@
 #include "ui/pages/shell/CommandPalette.h"
+#include "ui/kit/controls/Controls.h"
 #include "ui/kit/theme/CssColor.h"
 
 #include "ui/kit/motion/Easing.h"
@@ -8,6 +9,8 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -16,6 +19,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVector>
+
+#include <algorithm>
 
 namespace shine::app {
 
@@ -84,33 +89,95 @@ namespace {
 CommandPalette::CommandPalette(QWidget* host)
     : QWidget(host, Qt::Popup | Qt::FramelessWindowHint), host_(host) {
     setObjectName(QStringLiteral("commandPalette"));
+    // .cmdk：width min(560px, 100vw - 40px) / max-height 60vh / r-lg / bg-overlay
+    // （shell.css:487-499）
     setFixedWidth(560);
-    // webui shell.css:109 .cmdk box-shadow: var(--shadow-2)（QSS 无 box-shadow）
+    // webui shell.css:489 `box-shadow: var(--shadow-2)`（QSS 无 box-shadow）
     widgets::ApplyShadow(this, widgets::ShadowLevel::Lg);
 
     // 面板本体样式：运行时取 Token 构串（QSS 零字面色是源码纪律，变量构串是正规形态）
     const theme::ColorToken& t = theme::Current();
     setStyleSheet(QStringLiteral("CommandPalette { background: %1; border: 1px solid %2; "
-                                 "border-radius: %3px; }")
-                      .arg(ToHex(t.bgElevated), ToHex(t.lineNormal))
-                      .arg(theme::radius::kLg));
+                                 "border-radius: %3px; }"
+                                 "CommandPalette QLineEdit { background: transparent; "
+                                 "border: none; font-size: 15px; color: %4; }"
+                                 "CommandPalette QLabel#cmdkInputIcon { color: %5; }"
+                                 "CommandPalette QLabel#cmdkFoot { color: %5; font-size: 11px; }"
+                                 "CommandPalette QLabel#cmdkEmpty { color: %5; font-size: 12px; }")
+                      .arg(ToHex(t.bgOverlay), ToHex(t.lineNormal),
+                           QString::number(theme::radius::kLg),
+                           shine::widget::CssRgb(t.textPrimary),
+                           shine::widget::CssRgb(t.textMuted)));
 
     auto* lay = new QVBoxLayout(this);
-    lay->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[2],
-                            theme::space::kSteps[2], theme::space::kSteps[2]);
-    lay->setSpacing(theme::space::kSteps[2]);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(0);
 
-    edit_ = new QLineEdit(this);
-    edit_->setPlaceholderText(QStringLiteral("🔍 输入命令、页面或项目内容…"));
+    // .cmdk-input：p 14px 16px + 底部细线 + 🔍 + 输入框 + Esc 标注
+    // （shell.css:500-518 / CommandPalette.jsx:67-71）
+    auto* inputRow = new QFrame(this);
+    inputRow->setObjectName(QStringLiteral("cmdkInputRow"));
+    input_row_ = inputRow;
+    auto* in_lay = new QHBoxLayout(inputRow);
+    in_lay->setContentsMargins(16, 14, 16, 14);
+    in_lay->setSpacing(10);
+    auto* icon = new QLabel(QStringLiteral("🔍"), inputRow);
+    icon->setObjectName(QStringLiteral("cmdkInputIcon"));
+    in_lay->addWidget(icon);
+    edit_ = new QLineEdit(inputRow);
+    edit_->setPlaceholderText(QStringLiteral("搜索命令、页面、项目内容…"));
     edit_->setClearButtonEnabled(true);
+    edit_->setFrame(false);
     edit_->installEventFilter(this);
-    lay->addWidget(edit_);
+    in_lay->addWidget(edit_, 1);
+    auto* esc = new widgets::Kbd(QStringLiteral("Esc"), inputRow);
+    in_lay->addWidget(esc);
+    lay->addWidget(inputRow);
 
-    list_ = new QListWidget(this);
+    // .cmdk-list padding 6（shell.css:519-522）。QListWidget 的 viewport margin 是
+    // protected，这里用一个 6px 内距的外壳承担（QSS 里 ::item 的 margin 不生效）。
+    auto* listBox = new QFrame(this);
+    listBox->setObjectName(QStringLiteral("cmdkListBox"));
+    list_box_ = listBox;
+    auto* box_lay = new QVBoxLayout(listBox);
+    box_lay->setContentsMargins(6, 6, 6, 6);
+    box_lay->setSpacing(0);
+    list_ = new QListWidget(listBox);
+    list_->setObjectName(QStringLiteral("cmdkList"));
     list_->setFrameShape(QFrame::NoFrame);
     list_->setFocusPolicy(Qt::NoFocus); // 焦点始终在输入框，↑↓ 走事件过滤
     list_->installEventFilter(this);
-    lay->addWidget(list_, 1);
+    box_lay->addWidget(list_, 1);
+    lay->addWidget(listBox, 1);
+
+    empty_label_ = new QLabel(QStringLiteral("没有匹配的命令，换个关键词试试"), list_->viewport());
+    empty_label_->setObjectName(QStringLiteral("cmdkEmpty"));
+    empty_label_->setAlignment(Qt::AlignCenter);
+    empty_label_->hide();
+
+    // .cmdk-foot：p 9px 16px + 顶部细线 + 快捷键说明（shell.css:562-569）
+    auto* foot = new QFrame(this);
+    foot->setObjectName(QStringLiteral("cmdkFootRow"));
+    foot_ = foot;
+    auto* f_lay = new QHBoxLayout(foot);
+    f_lay->setContentsMargins(16, 9, 16, 9);
+    f_lay->setSpacing(14);
+    const auto mk = [foot](const QString& k, const QString& text) -> QWidget* {
+        auto* box = new QWidget(foot);
+        auto* bl = new QHBoxLayout(box);
+        bl->setContentsMargins(0, 0, 0, 0);
+        bl->setSpacing(4);
+        bl->addWidget(new widgets::Kbd(k, box));
+        auto* lbl = new QLabel(text, box);
+        lbl->setObjectName(QStringLiteral("cmdkFoot"));
+        bl->addWidget(lbl);
+        return box;
+    };
+    f_lay->addWidget(mk(QStringLiteral("↑"), QStringLiteral("↓ 选择")));
+    f_lay->addWidget(mk(QStringLiteral("↵"), QStringLiteral("执行")));
+    f_lay->addWidget(mk(QStringLiteral("Esc"), QStringLiteral("关闭")));
+    f_lay->addStretch();
+    lay->addWidget(foot);
 
     debounce_ = new QTimer(this);
     debounce_->setSingleShot(true);
@@ -125,7 +192,7 @@ CommandPalette::CommandPalette(QWidget* host)
         }
     });
 
-    resize(560, 420);
+    Relayout();
 }
 
 void CommandPalette::SetCommands(std::vector<CommandItem> items) {
@@ -194,9 +261,8 @@ std::vector<CommandPalette::Row> CommandPalette::Match(const QString& query) con
 void CommandPalette::Rebuild(const QString& query) {
     rows_ = Match(query);
     list_->clear();
-    const QString hi = shine::widget::CssRgb(theme::Current().accentPrimary);
     const QString dim = shine::widget::CssRgb(theme::Current().textMuted);
-    (void)hi;
+    const QString muted = shine::widget::CssRgb(theme::Current().textSecondary);
     // QListWidgetItem 只渲染纯文本（HTML 会原样吐出标签，实测踩过）——
     // 富文本行用透明 QLabel 承载；WA_TransparentForMouseEvents 让点击/悬停落到条目上，
     // 选中高亮从透明背景底下透出。
@@ -206,34 +272,54 @@ void CommandPalette::Rebuild(const QString& query) {
         label->setAttribute(Qt::WA_TransparentForMouseEvents);
         label->setFixedHeight(height);
         label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        label->setContentsMargins(theme::space::kSteps[3], 0, theme::space::kSteps[3], 0);
+        label->setContentsMargins(12, 0, 12, 0); // .cmdk-item p 9px 12px
         return label;
     };
+    bool any = false;
     for (const Row& row : rows_) {
         auto* item = new QListWidgetItem(list_);
         if (!row.selectable) {
             item->setFlags(Qt::NoItemFlags);
+            // .cmdk-group：p 8px 10px 4px / f10 w700 letter-spacing .08em
             list_->setItemWidget(
-                item, makeLabel(QStringLiteral("<span style=\"color:%1\">%2</span>")
+                item, makeLabel(QStringLiteral("<span style=\"color:%1;\">%2</span>")
                                     .arg(dim, EscapeHtml(row.item.title)),
                                 26));
             item->setSizeHint(QSize(0, 26));
             continue;
         }
+        any = true;
         const QVector<int> hits = FuzzyHits(row.item.title, query);
-        QString html = QStringLiteral("<div style=\"font-size:14px;\">%1</div>")
-                           .arg(RichTitle(row.item.title, hits));
+        // .cmdk-item .hint margin-left:auto —— 快捷键右对齐（用表格布局把 hint 顶到右侧）
+        QString html = row.item.subtitle.isEmpty()
+                           ? RichTitle(row.item.title, hits)
+                           : QStringLiteral(
+                                 "<table width=\"100%\" cellspacing=\"0\" cellpadding=\"0\">"
+                                 "<tr><td valign=\"middle\" width=\"*\">%1</td>"
+                                 "<td valign=\"middle\" align=\"right\">"
+                                 "<span style=\"color:%2; font-size:11px;\">%3</span></td>"
+                                 "</tr></table>")
+                                 .arg(RichTitle(row.item.title, hits), dim,
+                                      EscapeHtml(row.item.subtitle));
+        QString body = QStringLiteral("<div style=\"font-size:13px;\">%1</div>").arg(html);
         if (!row.item.detail.isEmpty()) {
-            html += QStringLiteral("<div style=\"color:%1; font-size:11px;\">%2</div>")
-                        .arg(dim, EscapeHtml(row.item.detail));
+            body += QStringLiteral("<div style=\"color:%1; font-size:11px;\">%2</div>")
+                        .arg(muted, EscapeHtml(row.item.detail));
         }
-        const int height = row.item.detail.isEmpty() ? 34 : 46;
-        list_->setItemWidget(item, makeLabel(html, height));
+        const int height = row.item.detail.isEmpty() ? 36 : 48;
+        list_->setItemWidget(item, makeLabel(body, height));
         if (!row.item.subtitle.isEmpty()) {
-            item->setData(Qt::UserRole + 1, row.item.subtitle); // 右侧快捷键（绘制简化：进工具提示）
             item->setToolTip(row.item.subtitle);
         }
         item->setSizeHint(QSize(0, height));
+    }
+    if (empty_label_ != nullptr) {
+        empty_label_->setVisible(!any);
+        if (!any && empty_label_->parentWidget() != nullptr) {
+            // 空态盖在列表视口上（p28 居中，shell.css:556-561）
+            QRect r = empty_label_->parentWidget()->rect();
+            empty_label_->setGeometry(r.adjusted(0, 0, 0, 0));
+        }
     }
     // 选中第一个可选行
     for (int i = 0; i < list_->count(); ++i) {
@@ -242,6 +328,8 @@ void CommandPalette::Rebuild(const QString& query) {
             break;
         }
     }
+    // 面板高度随内容走，上限 60vh（.cmdk height fit-content / max-height 60vh）
+    AdjustHeight();
 }
 
 void CommandPalette::MoveSelection(int delta) {
@@ -337,6 +425,25 @@ void CommandPalette::Relayout() {
     const int y = host_->height() / 5;
     // Popup 是顶层窗口，坐标要走全局（踩过：按父件坐标摆位会飞出屏幕）
     move(host_->mapToGlobal(QPoint(x, y)));
+}
+
+void CommandPalette::AdjustHeight() {
+    if (host_ == nullptr) {
+        return;
+    }
+    // .cmdk height fit-content / max-height 60vh（shell.css:489-490）
+    // 内容高度按各条目 sizeHint 累加（QListWidget::sizeHint 不随条目数变化，不能直接用）
+    int content = 0;
+    for (int i = 0; i < list_->count(); ++i) {
+        content += list_->sizeHintForRow(i) > 0 ? list_->sizeHintForRow(i)
+                                               : list_->item(i)->sizeHint().height();
+    }
+    content += list_box_->contentsMargins().top() + list_box_->contentsMargins().bottom();
+    // 上下两块固定区（输入行 + 页脚）用各自的 sizeHint 实测，不写死常数
+    const int chrome = input_row_->sizeHint().height() + foot_->sizeHint().height();
+    const int cap = host_->height() * 3 / 5;
+    setFixedHeight(std::max(160, std::min(content + chrome, cap)));
+    Relayout();
 }
 
 void CommandPalette::resizeEvent(QResizeEvent* ev) {

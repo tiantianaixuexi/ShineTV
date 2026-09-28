@@ -5,6 +5,7 @@
 
 #include <QWidget>
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -24,6 +25,8 @@ class GenShotBridgeView : public QWidget {
 
  private:
     void Rebuild();
+    // idle / running / done / error 四态的统一出口（文案 + status.* 色调）
+    void SetStatus(const QString& text, std::uint32_t color);
 
     std::filesystem::path db_path_;
     std::filesystem::path project_dir_;

@@ -5,6 +5,8 @@
 
 #include <functional>
 
+class QLabel;
+
 namespace shine::app {
 
 class Breadcrumb : public QFrame {
@@ -18,6 +20,7 @@ class Breadcrumb : public QFrame {
     void Rebuild();
 
     QStringList crumbs_;
+    QLabel* hint_ = nullptr; // 右侧快捷键提示（webui Shell.jsx:138）
     std::function<void(int)> on_pick_;
 };
 

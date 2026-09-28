@@ -5,6 +5,8 @@
 #include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/Inputs.h"
 
+#include <QBrush>
+#include <QModelIndex>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -13,9 +15,38 @@
 #include <QTableView>
 #include <QVBoxLayout>
 
+#include <utility>
+
 namespace shine::app {
+namespace {
+
+// 状态列下标（与 SetColumns 的顺序一致）
+constexpr int kStatusCol = 5;
+
+// canon_status 的取值域是 PROPOSED / CANON / DRAFT（novelcore 落库口径）。
+// 设计稿的状态位一律走 status.* 色 + 中文标签，Qt 侧原来直接吐英文原值。
+struct StatusStyle {
+    QString text;
+    QColor color;
+};
+StatusStyle StyleOf(const QString& canon) {
+    const auto& t = theme::Current();
+    if (canon == QStringLiteral("CANON")) {
+        return {QStringLiteral("已定稿"), widgets::TokenQColor(t.statusOk)};
+    }
+    if (canon == QStringLiteral("PROPOSED")) {
+        return {QStringLiteral("待定"), widgets::TokenQColor(t.statusPending)};
+    }
+    if (canon.isEmpty()) {
+        return {QStringLiteral("草稿"), widgets::TokenQColor(t.statusIdle)};
+    }
+    return {canon, widgets::TokenQColor(t.textMuted)};
+}
+
+} // namespace
 
 ShotTableView::ShotTableView(QWidget* parent) : QWidget(parent) {
+    setObjectName(QStringLiteral("shotTable"));
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(theme::space::kSteps[1]);
@@ -79,15 +110,26 @@ void ShotTableView::Rebuild() {
     if (table_ == nullptr) {
         return;
     }
+    std::vector<StatusStyle> styles;
     std::vector<std::vector<QString>> rows;
     rows.reserve(shots_.size());
+    styles.reserve(shots_.size());
     for (const auto& shot : shots_) {
+        styles.push_back(StyleOf(QString::fromStdString(shot.canon_status)));
         rows.push_back({QString::number(shot.ord), QStringLiteral("S%1").arg(shot.ord),
                         QString::fromStdString(shot.action), QString::fromStdString(shot.mood),
-                        QString::fromStdString(shot.duration_note),
-                        QString::fromStdString(shot.canon_status), QStringLiteral("编辑")});
+                        QString::fromStdString(shot.duration_note), styles.back().text,
+                        QStringLiteral("编辑")});
     }
     table_->SetRows(rows);
+    // 状态列按 status.* 着色：kit 的 DataTable 只吃纯文本，这里在 model 上补
+    // ForegroundRole（不碰 kit，走 QTableView::model() 这个公共入口）。
+    if (auto* model = table_->model(); model != nullptr) {
+        for (int row = 0; row < model->rowCount() && row < static_cast<int>(styles.size()); ++row) {
+            const auto& style = styles[static_cast<std::size_t>(row)];
+            model->setData(model->index(row, kStatusCol), QBrush(style.color), Qt::ForegroundRole);
+        }
+    }
 }
 
 void ShotTableView::EditSelected(int row) {

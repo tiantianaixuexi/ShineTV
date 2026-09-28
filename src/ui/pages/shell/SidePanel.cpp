@@ -14,14 +14,13 @@ namespace shine::app {
 
 SidePanel::SidePanel(QWidget* parent) : QFrame(parent) {
     setObjectName(QStringLiteral("sidePanel"));
-    // 与右侧检查器对称的宽度区间；折叠态宽度由外壳给 0。
-    setMinimumWidth(220);
+    // webui shell.css:572-579 .sidepanel：w240 / p12 10 / overflow-y auto
+    setMinimumWidth(240);
     setMaximumWidth(460);
 
     auto* lay = new QVBoxLayout(this);
-    lay->setContentsMargins(theme::space::kSteps[2], theme::space::kSteps[3],
-                            theme::space::kSteps[2], theme::space::kSteps[3]);
-    lay->setSpacing(theme::space::kSteps[2]);
+    lay->setContentsMargins(10, 12, 10, 12);
+    lay->setSpacing(8);
 
     // 标题行：当前工作区名（与活动栏一致），让用户知道侧栏属于谁
     auto* head = new QWidget(this);

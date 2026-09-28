@@ -36,16 +36,22 @@ struct ThemeMeta {
     std::string_view display; // 显示名
 };
 
-// 顺序 = ThemeId（总纲 §2 列头：深空（默认）/ 薄暮 / 纸墨 / 极夜）
-constexpr std::array<ThemeMeta, 4> kThemes = {{
+// 顺序 == ThemeId 枚举值（深空=0 / 薄暮=1 / 纸墨=2 / 水墨=3 / 极夜=4）。
+// ⚠️ 增删主题必须同步改 Token.h 的 enum、这里的数组长度与 ThemeService.cpp 的
+//    QSS 缓存数组长度——三者都按下标寻址，长度对不上就是越界。
+// 色值逐条抄自 webui/src/styles/tokens.css 的同名 [data-theme] 块；
+// 半透明的 line.* / fill.* / shadow.* 按「预合成到 bg.surface」的既有约定写成不透明值，
+// shadow.scrim / shadow.1 / shadow.2 / shadow.accent 保留 8 位 RRGGBBAA。
+constexpr std::array<ThemeMeta, kAllThemes.size()> kThemes = {{
     {ThemeId::DeepSpace, "deepspace", "深空", "深空（默认）"},
     {ThemeId::Dusk, "dusk", "薄暮", "薄暮"},
     {ThemeId::PaperInk, "paperink", "纸墨", "纸墨"},
+    {ThemeId::InkWash, "inkwash", "水墨", "水墨"},
     {ThemeId::PolarNight, "polarnight", "极夜", "极夜"},
 }};
 
-std::array<ColorToken, 4> g_themes{};
-std::array<bool, 4> g_loaded{};
+std::array<ColorToken, kAllThemes.size()> g_themes{};
+std::array<bool, kAllThemes.size()> g_loaded{};
 ThemeId g_current = ThemeId::DeepSpace;
 
 // 自定义主题表（P02-S8）：样式编辑器另存；当前可激活其一

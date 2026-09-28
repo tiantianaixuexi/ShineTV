@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+class QFrame;
 class QLabel;
 class QPlainTextEdit;
 
@@ -109,8 +110,14 @@ class StateDiffView : public QWidget {
     QLabel* verdict_ = nullptr;
     widgets::ElidedLabel* hint_ = nullptr;
     QPlainTextEdit* diff_view_ = nullptr;
-    // (✔/✘, 依据)：依据是长判定文本，用 ElidedLabel（省略 + hover 全文 + 点击展开）
-    std::vector<std::pair<QLabel*, widgets::ElidedLabel*>> gate_widgets_;
+    // 一行门禁的控件（对齐 webui `.gate`：状态点 · gcode · 名称 · 尾部依据）
+    struct GateRowUi {
+        QFrame* row = nullptr; // 整行底板（pass / fail 换描边与底色）
+        QLabel* mark = nullptr; // 状态点字符（CSS 里是 StatusDot）
+        QLabel* code = nullptr; // gcode（G1…G5；等宽 34px 定宽）
+        widgets::ElidedLabel* detail = nullptr; // 尾部依据（tiny dim；长文本省略 + hover 全文）
+    };
+    std::vector<GateRowUi> gate_widgets_;
     widgets::Button* commit_btn_ = nullptr;
     widgets::Button* rollback_btn_ = nullptr;
 };

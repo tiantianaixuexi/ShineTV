@@ -14,7 +14,6 @@
 
 class QLabel;
 class QTabWidget;
-class QListWidget;
 class QPushButton;
 
 namespace shine::app {

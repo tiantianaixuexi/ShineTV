@@ -4,8 +4,10 @@
 
 #include <QWidget>
 
+#include <array>
 #include <functional>
 
+class QGridLayout;
 class QLabel;
 class QPlainTextEdit;
 
@@ -21,6 +23,9 @@ class ShotDetailView : public QWidget {
     [[nodiscard]] QString DetailProbe() const;
 
   private:
+    // webui ui.css:1015 .kv 的固定行数：设计稿 7 行（动作/空间/表演/机位/光线/
+    // 时长/情绪），Qt 端多一行「引用」承载 reference_json（P06-S5 的不变式）。
+    inline static constexpr int kKvRows = 8;
     void Rebuild();
     void SaveTimeline();
 
@@ -28,10 +33,10 @@ class ShotDetailView : public QWidget {
     std::string timeline_json_ = "{}";
     TimelineHandler on_timeline_;
     QLabel* title_ = nullptr;
-    QLabel* performance_ = nullptr;
-    QLabel* spatial_ = nullptr;
-    QLabel* camera_ = nullptr;
-    QLabel* references_ = nullptr;
+    QLabel* sub_ = nullptr;
+    QGridLayout* kv_ = nullptr;
+    std::array<QLabel*, kKvRows> keys_{};
+    std::array<QLabel*, kKvRows> values_{};
     QPlainTextEdit* timeline_ = nullptr;
 };
 

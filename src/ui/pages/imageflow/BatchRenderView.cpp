@@ -1,27 +1,76 @@
 #include "ui/pages/imageflow/BatchRenderView.h"
 
+#include "ui/kit/theme/CssColor.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/kit/controls/Feedback.h"
+#include "ui/kit/controls/WidgetCommon.h"
 
-#include <QHeaderView>
+#include <QApplication>
+#include <QEvent>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <algorithm>
-#include <array>
-#include <QTableWidget>
+#include <QScrollArea>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace shine::app {
+namespace {
+
+// —— 页面专属 QSS ——
+// 只挂在本页根控件（objectName=batchView）上，与 kit 全局 QSS 隔离。
+// 逐条对应 webui views.css:290–320 的 .dlist 段：
+//   .drow  p8 2 + 底部发丝线 + hover fill.hover
+//   .q-prog w90（进度条列宽由布局给，样式走 kit 的 progressbar）
+[[nodiscard]] QString PageQss() {
+    const theme::ColorToken& t = theme::Current();
+    return QStringLiteral(
+               "QWidget#batchView *[shineKind=\"drow\"]:hover { background-color: %1; }\n"
+               "QWidget#batchView QLabel[rowRole=\"idx\"] { color: %2; font-size: 11px; }\n"
+               "QWidget#batchView QLabel[rowRole=\"code\"] { color: %3; font-size: 11px; font-weight: 700; }\n"
+               "QWidget#batchView QLabel[rowRole=\"dim\"] { color: %4; font-size: 11px; }\n"
+               "QWidget#batchView QLabel[rowRole=\"pct\"] { color: %4; font-size: 11px; }\n")
+        .arg(shine::widget::CssRgb(t.fillHover), shine::widget::CssRgb(t.textMuted),
+             shine::widget::CssRgb(t.accentPrimary), shine::widget::CssRgb(t.textMuted));
+}
+
+// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知。
+class PageStyleRefresher : public QObject {
+  public:
+    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
+        qApp->installEventFilter(this);
+    }
+    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* ev) override {
+        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
+        return QObject::eventFilter(watched, ev);
+    }
+
+  private:
+    QWidget* page_;
+};
+
+} // namespace
 
 BatchRenderView::BatchRenderView(QWidget* parent) : QWidget(parent) {
+    setObjectName(QStringLiteral("batchView"));
+    setStyleSheet(PageQss());
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(theme::space::kSteps[1]);
     auto* title = widgets::SectionTitle(QStringLiteral("批量出图 · 队列与降级账"), this);
     layout->addWidget(title);
-    auto* bar = new QHBoxLayout;
+    // webui BatchList：按钮行在列表之上，未连接时补一条 warn 提示
+    auto* action_row = new QWidget(this);
+    auto* bar = new QHBoxLayout(action_row);
+    bar->setContentsMargins(0, 0, 0, 0);
+    bar->setSpacing(theme::space::kSteps[1]);
     auto* enqueue = new widgets::Button(QStringLiteral("全部入队"), widgets::Button::Variant::Primary,
-                                       widgets::Button::Size::Sm, this);
+                                        widgets::Button::Size::Sm, this);
     auto* mock = new widgets::Button(QStringLiteral("演示运行"), widgets::Button::Variant::Secondary,
                                      widgets::Button::Size::Sm, this);
     auto* cancel = new widgets::Button(QStringLiteral("中断 / 清队列"), widgets::Button::Variant::Danger,
@@ -29,21 +78,29 @@ BatchRenderView::BatchRenderView(QWidget* parent) : QWidget(parent) {
     bar->addWidget(enqueue);
     bar->addWidget(mock);
     bar->addWidget(cancel);
-    layout->addLayout(bar);
+    bar->addStretch(1);
+    layout->addWidget(action_row);
+
+    // 密集行列表（.dlist）
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    list_ = new QWidget(scroll);
+    list_lay_ = new QVBoxLayout(list_);
+    list_lay_->setContentsMargins(0, 0, 0, 0);
+    list_lay_->setSpacing(0);
+    list_lay_->addStretch(1);
+    scroll->setWidget(list_);
+    layout->addWidget(scroll, 1);
+
     summary_ = new QLabel(QStringLiteral("没有待出图的镜头"), this);
-    widgets::SetKind(summary_, "statedetail");
+    widgets::SetKind(summary_, "statemeta");
     layout->addWidget(summary_);
-    table_ = new QTableWidget(this);
-    table_->setColumnCount(7);
-    table_->setHorizontalHeaderLabels({QStringLiteral("#"), QStringLiteral("镜头"), QStringLiteral("流程"),
-                                       QStringLiteral("状态"), QStringLiteral("进度"), QStringLiteral("产物"),
-                                       QStringLiteral("错误 / 降级")});
-    table_->horizontalHeader()->setStretchLastSection(true);
-    table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    layout->addWidget(table_, 1);
     connect(enqueue, &QPushButton::clicked, this, &BatchRenderView::EnqueueAll);
     connect(mock, &QPushButton::clicked, this, &BatchRenderView::RunMockBatch);
     connect(cancel, &QPushButton::clicked, this, &BatchRenderView::CancelAll);
+    new PageStyleRefresher(this, this);
 }
 
 void BatchRenderView::SetShots(std::vector<std::pair<std::int64_t, QString>> shots) {
@@ -96,24 +153,85 @@ void BatchRenderView::CancelAll() {
 void BatchRenderView::CompleteMock() { RunMockBatch(); }
 
 void BatchRenderView::Rebuild() {
+    while (list_lay_->count() > 1) {
+        QLayoutItem* item = list_lay_->takeAt(0);
+        if (item == nullptr) break;
+        if (QWidget* row = item->widget()) row->deleteLater();
+        delete item;
+    }
     const auto jobs = queue_.Snapshot();
-    table_->setRowCount(static_cast<int>(jobs.size()));
-    for (int row = 0; row < static_cast<int>(jobs.size()); ++row) {
-        const auto& job = jobs[static_cast<std::size_t>(row)];
-        const std::array<QString, 7> values{
-            QString::number(job.id), QString::fromStdString(job.label),
-            QString::fromStdString(job.flow_name),
-            job.state == flow::BatchState::Pending ? QStringLiteral("排队")
-                : job.state == flow::BatchState::Running ? QStringLiteral("运行中")
-                : job.state == flow::BatchState::Done ? QStringLiteral("完成")
-                : job.state == flow::BatchState::Degraded ? QStringLiteral("降级")
-                : job.state == flow::BatchState::Failed ? QStringLiteral("失败")
-                : QStringLiteral("已中断"),
-            QStringLiteral("%1%").arg(job.progress), QString::number(job.artifacts),
-            QString::fromStdString(job.error.empty() ? job.degradation : job.error)};
-        for (int col = 0; col < values.size(); ++col) {
-            table_->setItem(row, col, new QTableWidgetItem(values[static_cast<std::size_t>(col)]));
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        const auto& job = jobs[i];
+        const bool last = i + 1 == jobs.size();
+        // 状态四态：排队 idle / 运行中 busy / 完成 ok / 降级 warn / 失败 danger / 已中断 idle
+        const char* tone = "idle";
+        QString text = QStringLiteral("排队");
+        if (job.state == flow::BatchState::Running) {
+            tone = "busy";
+            text = QStringLiteral("运行中");
+        } else if (job.state == flow::BatchState::Done) {
+            tone = "ok";
+            text = QStringLiteral("完成");
+        } else if (job.state == flow::BatchState::Degraded) {
+            tone = "warn";
+            text = QStringLiteral("降级");
+        } else if (job.state == flow::BatchState::Failed) {
+            tone = "danger";
+            text = QStringLiteral("失败");
+        } else if (job.state == flow::BatchState::Cancelled) {
+            tone = "idle";
+            text = QStringLiteral("已中断");
         }
+
+        auto* row = new QWidget(list_);
+        widgets::SetKind(row, "drow");
+        if (last) row->setProperty("shineKind", QString{});
+        auto* col = new QVBoxLayout(row);
+        col->setContentsMargins(2, theme::space::kSteps[1], 2, theme::space::kSteps[1]);
+        col->setSpacing(3);
+
+        auto* line = new QHBoxLayout;
+        line->setContentsMargins(0, 0, 0, 0);
+        line->setSpacing(theme::space::kSteps[2]);
+        auto* idx = new QLabel(QStringLiteral("%1").arg(i + 1, 2, 10, QLatin1Char('0')), row);
+        idx->setProperty("rowRole", QStringLiteral("idx"));
+        idx->setFixedWidth(18);
+        auto* code = new QLabel(QString::fromStdString(job.label), row);
+        code->setProperty("rowRole", QStringLiteral("code"));
+        code->setFixedWidth(46);
+        auto* prog = new widgets::ProgressBar(row);
+        // webui .q-prog w90：队列行里的进度条是固定 90px 的细条
+        prog->setFixedWidth(90);
+        prog->setTextVisible(false);
+        prog->setValue(job.progress);
+        prog->SetState(job.state == flow::BatchState::Failed ? "error"
+                          : job.state == flow::BatchState::Degraded ? "idle" : "");
+        auto* pct = new QLabel(QStringLiteral("%1%").arg(job.progress), row);
+        pct->setProperty("rowRole", QStringLiteral("pct"));
+        pct->setFixedWidth(32);
+        pct->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        auto* tag = new widgets::Tag(text, tone, false, row);
+        line->addWidget(idx, 0);
+        line->addWidget(code, 0);
+        line->addWidget(prog, 1);
+        line->addWidget(pct, 0);
+        line->addWidget(tag, 0);
+        col->addLayout(line);
+
+        // 降级 / 错误说明作为 dsub 单行省略（webui BatchList 末行的 tiny dim 说明）
+        const QString note = job.error.empty()
+                                 ? (job.degradation.empty()
+                                        ? QStringLiteral("%1 · 产物 %2").arg(QString::fromStdString(job.flow_name))
+                                                                          .arg(job.artifacts)
+                                        : QString::fromStdString(job.degradation))
+                                 : QString::fromStdString(job.error);
+        if (!note.isEmpty()) {
+            auto* sub = new widgets::ElidedLabel(note, row);
+            sub->setProperty("rowRole", QStringLiteral("dim"));
+            sub->SetExpandable(false);
+            col->addWidget(sub);
+        }
+        list_lay_->insertWidget(list_lay_->count() - 1, row);
     }
     summary_->setText(QString::fromStdString(queue_.Describe()) +
                       (queue_.DegradationLedger().empty() ? QStringLiteral(" · 无降级")

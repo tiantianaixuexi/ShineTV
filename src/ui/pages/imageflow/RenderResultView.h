@@ -14,6 +14,7 @@
 
 class QLabel;
 class QPushButton;
+class QVBoxLayout;
 
 namespace shine::widgets {
 class Button;
@@ -45,8 +46,11 @@ class RenderResultView : public QWidget {
 
     Entry entry_;
     QLabel* thumb_ = nullptr;
-    QLabel* facts_ = nullptr;
-    QLabel* assets_ = nullptr;
+    // KV 区（webui ResultPanel 的 4 行）与资产行（两条 dlist）
+    QWidget* facts_ = nullptr;
+    class QVBoxLayout* facts_lay_ = nullptr;
+    QWidget* assets_ = nullptr;
+    class QVBoxLayout* assets_lay_ = nullptr;
     shine::widgets::Button* rerun_ = nullptr;
 };
 

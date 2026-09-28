@@ -41,11 +41,13 @@ class ConsistencyView : public QWidget {
   private:
     struct StateLine {
         novelcore::VisualStateRow state;
+        int chapter_ord = 0; // 章序（1 基）；from_chapter 存的是章节行 id，不能当章号显示
         const char* tone = "ok";
         QString note;
     };
     struct EmotionLine {
         novelcore::CharacterStatusRow status;
+        int chapter_ord = 0;
         QString summary;
     };
     struct ShotFrame {
@@ -57,6 +59,9 @@ class ConsistencyView : public QWidget {
 
     void BuildUi();
     void Rebuild();
+    // webui Assets.jsx CompareFlat 右侧信息列：<KV rows> + .dlist 差异行 + 「仅重跑差异项」
+    // （重跑动作本页没有真实后端，故只留前两段，不放演示按钮）
+    void RebuildCompareSide();
     void ShowError(const QString& detail);
 
     novelcore::VisualAssetRow asset_;
@@ -74,6 +79,8 @@ class ConsistencyView : public QWidget {
     images::CompareView* compare_ = nullptr;
     widgets::Segmented* compare_mode_ = nullptr;
     QLabel* compare_result_ = nullptr;
+    QWidget* compare_side_ = nullptr;      // CompareFlat 右列（minmax(220px, 1fr)）
+    QVBoxLayout* compare_side_layout_ = nullptr;
 };
 
 } // namespace shine::app

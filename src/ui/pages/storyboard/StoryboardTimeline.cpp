@@ -1,17 +1,20 @@
 #include "ui/pages/storyboard/StoryboardTimeline.h"
 
 #include "ui/kit/theme/Theme.h"
+#include "ui/kit/theme/CssColor.h"
 #include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/WidgetCommon.h"
 #include "util/Encoding.h"
 
+#include <QColor>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QDrag>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPixmap>
 #include <QLabel>
 #include <QMimeData>
@@ -25,9 +28,26 @@
 namespace shine::app {
 namespace {
 constexpr const char* kShotMime = "application/x-shine-shot-ord";
+// webui .tl-card.dragging { opacity: 0.45 }：Qt 没有 widget 级 opacity，
+// 也不能挂 QGraphicsOpacityEffect（一个控件只允许一个 graphics effect，
+// 会把 hover/选中的阴影顶掉）。改为直接给拖拽像素图乘 alpha —— 视觉等价，
+// 且不与阴影冲突。
+constexpr int kDraggingAlpha = 115; // 0.45 * 255
+
+// 把控件快照整体乘 alpha，替代 CSS 的 opacity
+QPixmap FadedPixmap(QWidget* card) {
+    QPixmap pixmap = card->grab();
+    QPainter painter(&pixmap);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(pixmap.rect(), QColor(0, 0, 0, kDraggingAlpha));
+    painter.end();
+    return pixmap;
 }
+} // namespace
 
 StoryboardTimeline::StoryboardTimeline(QWidget* parent) : QWidget(parent) {
+    // 页面专属选择器前缀：样式只落在本控件子树内，与 kit 全局 QSS / 其他页面互不干扰
+    setObjectName(QStringLiteral("shotTl"));
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(theme::space::kSteps[1]);
@@ -35,9 +55,11 @@ StoryboardTimeline::StoryboardTimeline(QWidget* parent) : QWidget(parent) {
     auto* head_row = new QHBoxLayout(head);
     head_row->setContentsMargins(0, 0, 0, 0);
     head_row->setSpacing(theme::space::kSteps[1]);
-    auto* title = widgets::SectionTitle(QStringLiteral("故事板时间线 · Scene → Sequence → Shot"), head);
+    // webui views.css:145 Card title="故事板时间线 · 拖拽重排"
+    auto* title = widgets::SectionTitle(QStringLiteral("故事板时间线 · 拖拽重排"), head);
     head_row->addWidget(title);
     head_row->addStretch(1);
+    // views.css:145 extra=<span class="tiny dim">按住卡片拖动 · 时长条按比例</span>
     auto* hint = new QLabel(QStringLiteral("按住卡片拖动 · 时长条按比例"), head);
     widgets::SetKind(hint, "statemeta");
     head_row->addWidget(hint);
@@ -47,14 +69,15 @@ StoryboardTimeline::StoryboardTimeline(QWidget* parent) : QWidget(parent) {
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     host_ = new QWidget(scroll);
     row_ = new QHBoxLayout(host_);
-    row_->setContentsMargins(0, 0, 0, 0);
-    row_->setSpacing(theme::space::kSteps[2]);
+    // views.css:955 .timeline { gap: 10px; padding: 8px 2px 12px }
+    row_->setContentsMargins(2, 8, 2, 12);
+    row_->setSpacing(10);
     row_->addStretch(1);
     scroll->setWidget(host_);
     outer->addWidget(scroll, 1);
-    // 标题行 ~22 + 间距 4 + 卡片 148 + 滚动条余量 8 ≈ 182
+    // 标题行 ~22 + 间距 4 + 卡片 148 + .timeline 内距(8+12) ≈ 194
     // 不给下限的话卡片会被压到底部时长行只剩一半（实测截图）。
-    setMinimumHeight(186);
+    setMinimumHeight(196);
     setAcceptDrops(true);
 }
 
@@ -63,6 +86,41 @@ void StoryboardTimeline::SetScene(const novelcore::SceneRow& scene,
     scene_ = scene;
     shots_ = std::move(shots);
     Rebuild();
+}
+
+void StoryboardTimeline::SetSelectedShot(novelcore::RowId id) {
+    if (selected_id_ == id) {
+        return;
+    }
+    selected_id_ = id;
+    ApplyCardStates();
+}
+
+// 卡片态：选中态的 accent 边走 QSS 的 [selected="true"]（随主题走）；
+// box-shadow 是 QSS 表达不了的，按 selected > hover 的优先级挂 Accent / Sm。
+void StoryboardTimeline::ApplyCardStates() {
+    if (host_ == nullptr) {
+        return;
+    }
+    for (QWidget* child : host_->findChildren<QWidget*>()) {
+        auto* card = qobject_cast<QFrame*>(child);
+        if (card == nullptr || !card->property("shotId").isValid()) {
+            continue;
+        }
+        const bool selected = selected_id_ > 0 &&
+                              card->property("shotId").toLongLong() == selected_id_;
+        if (card->property("selected").toBool() != selected) {
+            card->setProperty("selected", selected);
+            widgets::Repolish(card);
+        }
+        if (card->property("dragging").toBool()) {
+            continue; // 拖拽中的半透明由拖拽像素图承担，不占 graphics effect
+        }
+        const auto level = selected ? widgets::ShadowLevel::Accent
+                          : card->property("hovered").toBool() ? widgets::ShadowLevel::Sm
+                                                                : widgets::ShadowLevel::None;
+        widgets::ApplyShadow(card, level);
+    }
 }
 
 void StoryboardTimeline::Rebuild() {
@@ -87,8 +145,11 @@ void StoryboardTimeline::Rebuild() {
         // 这里显式兜底。
         card->setMinimumHeight(148);
         card->setAcceptDrops(true);
+        card->setProperty("shotId", QVariant::fromValue<qlonglong>(shot.id));
         card->setProperty("shotOrd", shot.ord);
         card->installEventFilter(this);
+        // 不开 WA_Hover 就收不到 QEvent::Enter/Leave，悬停阴影与点击选中都无从触发
+        card->setAttribute(Qt::WA_Hover, true);
         card->setCursor(Qt::OpenHandCursor);
         auto* body = new QVBoxLayout(card);
         body->setContentsMargins(0, 0, 0, 0);
@@ -102,15 +163,22 @@ void StoryboardTimeline::Rebuild() {
 
         auto* info = new QWidget(card);
         auto* il = new QVBoxLayout(info);
+        // views.css:980 .tl-card .tinfo { padding: 7px 9px 9px }
         il->setContentsMargins(9, 7, 9, 9);
         il->setSpacing(2);
 
+        // views.css:982 .tcode：等宽 11px / w700 / accent
         auto* code = new QLabel(QStringLiteral("S%1").arg(shot.ord), info);
         widgets::SetKind(code, "tlcode");
         il->addWidget(code);
 
+        // views.css:988 .taction：11.5px / text-secondary / 单行省略。
+        // QSS 最终落到 QFont::setPixelSize(int)，11.5 按 Token.h 的「x.5 档就近
+        // 取整」口径取 12px；字色走运行时 token 构串（源码零字面色值）。
         auto* action = new widgets::ElidedLabel(QString::fromStdString(shot.action), info);
         action->SetExpandable(false);
+        action->setStyleSheet(QStringLiteral("color:%1; font-size: 12px;")
+                                  .arg(shine::widget::CssRgb(theme::Current().textSecondary)));
         il->addWidget(action);
 
         // 时长行：细进度条（按秒数 / 6s 归一）+ 时长文字
@@ -139,6 +207,7 @@ void StoryboardTimeline::Rebuild() {
         row_->addWidget(card);
     }
     row_->addStretch(1);
+    ApplyCardStates();
 }
 
 int StoryboardTimeline::SecondsOf(const std::string& note) {
@@ -159,16 +228,41 @@ void StoryboardTimeline::dragEnterEvent(QDragEnterEvent* event) {
 
 bool StoryboardTimeline::eventFilter(QObject* watched, QEvent* event) {
     auto* card = qobject_cast<QWidget*>(watched);
-    if (card == nullptr) {
+    if (card == nullptr || !card->property("shotId").isValid()) {
         return QWidget::eventFilter(watched, event);
     }
-    if (event->type() == QEvent::MouseButtonPress) {
+    switch (event->type()) {
+    case QEvent::Enter:
+        // views.css:967 .tl-card:hover → border + shadow-1；QSS 表达不了
+        // box-shadow，这里交给 ApplyCardStates 挂 Sm 阴影。
+        if (!card->property("hovered").toBool()) {
+            card->setProperty("hovered", true);
+            ApplyCardStates();
+        }
+        break;
+    case QEvent::Leave:
+        if (card->property("hovered").toBool()) {
+            card->setProperty("hovered", false);
+            ApplyCardStates();
+        }
+        break;
+    case QEvent::MouseButtonRelease: {
+        // views.css Storyboard.jsx:159 onClick={() => setSelShot(id)}
+        auto* mouse = static_cast<QMouseEvent*>(event);
+        if (mouse->button() == Qt::LeftButton && on_select_) {
+            on_select_(static_cast<novelcore::RowId>(card->property("shotId").toLongLong()));
+        }
+        break;
+    }
+    case QEvent::MouseButtonPress: {
         auto* mouse = static_cast<QMouseEvent*>(event);
         if (mouse->button() == Qt::LeftButton) {
             drag_start_ = mouse->position().toPoint();
             drag_ord_ = card->property("shotOrd").toInt();
         }
-    } else if (event->type() == QEvent::MouseMove) {
+        break;
+    }
+    case QEvent::MouseMove: {
         auto* mouse = static_cast<QMouseEvent*>(event);
         if ((mouse->buttons() & Qt::LeftButton) &&
             (mouse->position().toPoint() - drag_start_).manhattanLength() > 8) {
@@ -176,10 +270,18 @@ bool StoryboardTimeline::eventFilter(QObject* watched, QEvent* event) {
             mime->setData(kShotMime, QByteArray::number(drag_ord_));
             auto* drag = new QDrag(card);
             drag->setMimeData(mime);
-            drag->setPixmap(card->grab());
+            drag->setPixmap(FadedPixmap(card));
+            card->setProperty("dragging", true);
+            ApplyCardStates();
             drag->exec(Qt::MoveAction);
+            card->setProperty("dragging", false);
+            ApplyCardStates();
             return true;
         }
+        break;
+    }
+    default:
+        break;
     }
     return QWidget::eventFilter(watched, event);
 }

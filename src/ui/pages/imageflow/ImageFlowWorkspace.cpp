@@ -10,12 +10,16 @@
 #include "flow/GraphHost.h"
 #include "flow/WorkflowIO.h"
 #include "flow/FlowValidator.h"
+#include "ui/kit/theme/CssColor.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "ui/kit/controls/WidgetCommon.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelVisual.h"
 #include "util/File.h"
 
+#include <QApplication>
+#include <QEvent>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QFile>
@@ -34,6 +38,49 @@ namespace shine::app {
 namespace {
 
 [[nodiscard]] QString Text(const std::string& value) { return QString::fromStdString(value); }
+
+// —— 页面专属 QSS ——
+// 只挂在页面根控件（objectName=imgFlowWs）上，选择器一律以 #imgFlowWs 打头，
+// 因此与 kit 全局 QSS、以及其它页面目录完全隔离（不改 QssBuilder.cpp）。
+// 逐条对应 webui/src/styles/views.css:195–262：
+//   .float-panel .fp-h   p12 14 + 底部 line-subtle 发丝线
+//   .float-panel .fp-b   p8 12 14 + 段间距 10
+//   .float-panel .fp-f   顶部 line-subtle 发丝线 + p10 14
+//   .float-toolbar .vsep w1 h18（几何在布局里给，这里只给底色）
+// 面板本体的底 / 边 / 圆角 / 阴影已由 QssBuilder 的 QWidget#floatPanel 承担。
+[[nodiscard]] QString PageQss() {
+    const theme::ColorToken& t = theme::Current();
+    return QStringLiteral(
+               "QWidget#imgFlowWs QWidget#fpHead {\n"
+               "  background: transparent; border: none;\n"
+               "  border-bottom: 1px solid %1; }\n"
+               "QWidget#imgFlowWs QWidget#fpBody { background: transparent; border: none; }\n"
+               "QWidget#imgFlowWs QWidget#fpFoot {\n"
+               "  background: transparent; border: none;\n"
+               "  border-top: 1px solid %1; }\n"
+               "QWidget#imgFlowWs QWidget#fpPanelTitle {\n"
+               "  background: transparent; border: none; font-size: 13px; font-weight: 700; }\n")
+        .arg(shine::widget::CssRgb(t.lineSubtle));
+}
+
+// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知
+// （与 shell/MainWindow.cpp 的 ShellStyleRefresher 同一做法）。
+class PageStyleRefresher : public QObject {
+  public:
+    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
+        qApp->installEventFilter(this);
+    }
+    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* ev) override {
+        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
+        return QObject::eventFilter(watched, ev);
+    }
+
+  private:
+    QWidget* page_;
+};
 
 [[nodiscard]] std::int64_t StableSeedFor(std::int64_t id) {
     std::uint64_t value = static_cast<std::uint64_t>(id) + 0x9e3779b97f4a7c15ULL;
@@ -80,6 +127,10 @@ ImageFlowWorkspace::ImageFlowWorkspace(QWidget* parent) : QWidget(parent) {
 ImageFlowWorkspace::~ImageFlowWorkspace() { flow::Shutdown(); }
 
 void ImageFlowWorkspace::BuildUi() {
+    // 页面根控件：页面专属 QSS 的挂载点（选择器前缀 #imgFlowWs）
+    setObjectName(QStringLiteral("imgFlowWs"));
+    setStyleSheet(PageQss());
+    new PageStyleRefresher(this, this);
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
@@ -96,6 +147,9 @@ void ImageFlowWorkspace::BuildUi() {
 
     canvas_ = new shine::kit::FlowCanvas(stage);
     canvas_->setMinimumWidth(360);
+    // webui ImageFlow.jsx：<FlowCanvas ... fill fitInset={380} />
+    canvas_->SetFitInset(380);
+    canvas_->SetToolsBottomInset(16); // .canvas-tools.bl：左下 16（出图页底部无胶片条）
     stage_lay->addWidget(canvas_, 0, 0);
 
     // 左上：浮动工具栏（accent 标记 + 标题 + 导入/导出/校验/批量出图 + 状态）
@@ -146,27 +200,44 @@ void ImageFlowWorkspace::BuildUi() {
     // webui views.css:216 .float-panel box-shadow: var(--shadow-2)
     widgets::ApplyShadow(panel_, widgets::ShadowLevel::Lg);
     panel_->setFixedWidth(348);
+    // 面板自身不加内距：内距分三段给（fp-h p12 14 / fp-b p8 12 14 / fp-f p10 14），
+    // 发丝线正好压在面板圆角内侧。
     auto* panel_lay = new QVBoxLayout(panel_);
-    panel_lay->setContentsMargins(14, 12, 14, 12);
-    panel_lay->setSpacing(10);
+    panel_lay->setContentsMargins(0, 0, 0, 0);
+    panel_lay->setSpacing(0);
 
+    // fp-h：accent 链接图标 + 镜头号 + 状态 Tag + 折叠按钮
     auto* panel_head = new QWidget(panel_);
+    panel_head->setObjectName(QStringLiteral("fpHead"));
     auto* ph = new QHBoxLayout(panel_head);
-    ph->setContentsMargins(0, 0, 0, 0);
-    ph->setSpacing(8);
-    auto* panel_title = widgets::SectionTitle(QStringLiteral("镜头参数"), panel_head);
+    ph->setContentsMargins(14, 12, 14, 12); // views.css .float-panel .fp-h p12 14
+    ph->setSpacing(9);
+    auto* head_mark = new QLabel(QStringLiteral("◈"), panel_head);
+    widgets::SetKind(head_mark, "stateicon");
+    widgets::SetTextColor(head_mark, theme::Current().accentPrimary);
+    auto* panel_title = new QLabel(QStringLiteral("镜头参数"), panel_head);
+    panel_title->setObjectName(QStringLiteral("fpPanelTitle"));
     fold_btn_ = new QPushButton(QStringLiteral("▾"), panel_head);
     fold_btn_->setToolTip(QStringLiteral("折叠 / 展开面板（画布拿回整幅宽度）"));
     widgets::SetKind(fold_btn_, "iconbutton");
     widgets::SetSizeAttr(fold_btn_, "sm");
+    ph->addWidget(head_mark, 0, Qt::AlignVCenter);
     ph->addWidget(panel_title, 1);
     ph->addWidget(fold_btn_, 0, Qt::AlignVCenter);
     panel_lay->addWidget(panel_head);
 
-    // 页签：绑定 · 批量出图 · 图评审 · 结果（与 webui 顺序一致）
+    // fp-b：页签内容（绑定 · 批量出图 · 图评审 · 结果，与 webui 顺序一致）
+    auto* panel_body = new QWidget(panel_);
+    panel_body->setObjectName(QStringLiteral("fpBody"));
+    auto* body_lay = new QVBoxLayout(panel_body);
+    body_lay->setContentsMargins(12, 8, 12, 14); // views.css .fp-b p8 12 14
+    body_lay->setSpacing(10);
     // 用 QTabWidget 承载内容栈：kit::Tabs 只是无内容的指示条，
     // 浮动面板需要「标签 + 页面」一体，所以这里保留 QTabWidget。
-    panel_stack_ = new QTabWidget(panel_);
+    // ⚠️ 取舍：设计稿这一段是自定义 Segmented 胶囊分段，QTabWidget 是下划线页签。
+    // 换成 Segmented 会打破 verify/review/P07Review.cpp 的 findChild<QTabWidget*>()
+    // 反查与切页探针，故本轮**刻意保留** QTabWidget。
+    panel_stack_ = new QTabWidget(panel_body);
     binding_ = new BindingView(panel_stack_);
     batch_ = new BatchRenderView(panel_stack_);
     review_ = new ImageReviewView(panel_stack_);
@@ -175,12 +246,18 @@ void ImageFlowWorkspace::BuildUi() {
     panel_stack_->addTab(batch_, QStringLiteral("批量出图"));
     panel_stack_->addTab(review_, QStringLiteral("图评审"));
     panel_stack_->addTab(result_, QStringLiteral("结果"));
-    panel_lay->addWidget(panel_stack_, 1);
+    body_lay->addWidget(panel_stack_, 1);
+    panel_lay->addWidget(panel_body, 1);
 
-    // 面板底部常驻 ComfyUI 健康条（webui fp-f）：连接状态常驻可见，
-    // 不再单独占页面底部一整行。
-    comfy_ = new ComfyPanel(panel_);
-    panel_lay->addWidget(comfy_);
+    // fp-f：面板底部常驻 ComfyUI 健康条，连接状态常驻可见
+    auto* panel_foot = new QWidget(panel_);
+    panel_foot->setObjectName(QStringLiteral("fpFoot"));
+    auto* foot_lay = new QVBoxLayout(panel_foot);
+    foot_lay->setContentsMargins(14, 10, 14, 10); // views.css .fp-f p10 14
+    foot_lay->setSpacing(0);
+    comfy_ = new ComfyPanel(panel_foot);
+    foot_lay->addWidget(comfy_);
+    panel_lay->addWidget(panel_foot);
 
     auto* panel_host = new QWidget(stage);
     panel_host->setObjectName(QStringLiteral("floatHost"));

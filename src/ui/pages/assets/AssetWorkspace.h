@@ -110,6 +110,10 @@ class AssetWorkspace : public QWidget {
     bool RefreshEntities();
     void RebuildEntityTree();
     void RebuildAssets();
+    // webui .asset-grid 的 repeat(auto-fit, minmax(210px, 1fr))：QGridLayout 没有 auto-fit，
+    // 由 AssetGridHost 在宽度变化时回调本函数重算列数并重新摆放（卡片随之 1fr 拉伸）。
+    void ReflowAssets(int availableWidth);
+    void SyncSelectedCard();
     void ApplyKindFilter();
     void SetKindFilter(const QString& kind);
     void SyncKindButtons();
@@ -138,10 +142,16 @@ class AssetWorkspace : public QWidget {
     qint64 runSerial_ = 0;
 
     QLabel* bookLabel_ = nullptr;
+    QLabel* bookSub_ = nullptr;
     QLabel* assetCount_ = nullptr;
     QTreeWidget* entityTree_ = nullptr;
     QWidget* assetsHost_ = nullptr;
     QGridLayout* assetsGrid_ = nullptr;
+    // 按 auto-fit 摆放好的资产卡（RebuildAssets 重建，ReflowAssets 重排）
+    std::vector<QWidget*> assetCards_;
+    // 空态 / 错误态：跨全部列居中，单独记一份以便重排时同步跨度
+    QWidget* gridState_ = nullptr;
+    int gridColumns_ = 0;
     AssetDetailView* detail_ = nullptr;
     GalleryWorkspace* global_gallery_ = nullptr;
     QStackedWidget* detail_stack_ = nullptr;

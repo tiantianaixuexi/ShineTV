@@ -66,6 +66,7 @@ class RefLibraryView : public QWidget {
 
     images::ThumbGrid* grid_ = nullptr;
     widgets::TextInput* marker_input_ = nullptr;
+    QLabel* count_ = nullptr; // views.css:149 .vw-sub：真实张数
     QLabel* detail_ = nullptr;
     widgets::Button* bind_ = nullptr;
     widgets::Button* remove_ = nullptr;

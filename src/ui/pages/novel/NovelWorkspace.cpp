@@ -28,6 +28,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStandardItem>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <utility>
@@ -63,9 +64,40 @@ namespace {
     return QIcon(px);
 }
 
-
+// 阅读测量线：webui .chap-summary（views.css:598）与 .draft（:572）同取 720px，
+// 正文与摘要因此始终排在同一条竖线上。DraftView.cpp 里另有一份同名常量。
+constexpr int kMeasureMaxW = 720;
 
 } // namespace
+
+// ── StatusTagRow ──────────────────────────────────────────────────
+// 每个取值预建一个 Tag、只切可见性：kit::Tag 的文案与 tone 都是构造期固定的，
+// 运行期换文案只能重建控件（会漏控件、会打断布局），状态取值又是有限枚举。
+StatusTagRow::StatusTagRow(const QStringList& keys, const QStringList& texts,
+                           const QStringList& tones, QWidget* parent) : QWidget(parent) {
+    auto* row = new QHBoxLayout(this);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(theme::space::kXs);
+    for (int i = 0; i < keys.size() && i < texts.size(); ++i) {
+        const QByteArray tone = i < tones.size() ? tones.at(i).toLatin1() : QByteArray{};
+        auto* tag = new widgets::Tag(texts.at(i), tone.constData(), false, this);
+        tag->setVisible(false);
+        row->addWidget(tag);
+        tag_of_.insert(keys.at(i), tag);
+    }
+    current_ = QStringLiteral("\x01"); // 哨兵：强制首次 Show 执行一次「全隐藏」
+    Show(QString{});                   // 未选章时不显示任何状态标记
+}
+
+void StatusTagRow::Show(const QString& key) {
+    if (current_ == key) {
+        return;
+    }
+    current_ = key;
+    for (auto it = tag_of_.cbegin(); it != tag_of_.cend(); ++it) {
+        it.value()->setVisible(it.key() == key);
+    }
+}
 
 NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     auto* outer = new QHBoxLayout(this);
@@ -106,8 +138,11 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     // ── 中栏：模式按钮行 + [章节]/[设定] 内容栈 ──
     auto* center = new QWidget(this);
     auto* ml = new QVBoxLayout(center);
-    ml->setContentsMargins(theme::space::kSteps[3], 0, theme::space::kSteps[3], 0);
-    ml->setSpacing(theme::space::kSteps[2]);
+    // .novel-center 是 flex column：模式行贴顶、内容区吃掉剩余高度，本层不留白。
+    // 留白由各自承载层给（模式行 0 16px = .novel-modes；章节页 16 18 24 = .novel-body），
+    // 否则模式行会被内容区的页边距顶出一条不该有的偏移。
+    ml->setContentsMargins(0, 0, 0, 0);
+    ml->setSpacing(0);
 
     // 模式按钮行（UI.md §2.1）：本 S 只接 [章节]（现有内容）与 [设定]（设定台 WorldBoardView）；
     // 其余按钮 disabled + tooltip「P04-Sx 接入」。
@@ -117,7 +152,8 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     widgets::SetKind(modeRow, "ntabbar");
     modeRow->setFixedHeight(44);
     auto* mr = new QHBoxLayout(modeRow);
-    mr->setContentsMargins(0, 0, 0, 0);
+    // webui .novel-modes { padding: 0 16px }：左右各 16px 与正文测量线对齐
+    mr->setContentsMargins(theme::space::kSteps[5], 0, theme::space::kSteps[5], 0);
     mr->setSpacing(2);
     const auto makeMode = [modeRow](const QString& text) {
         auto* b = new widgets::Button(text, widgets::Button::Variant::Ghost,
@@ -166,34 +202,88 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
         mr->addWidget(b);
     }
     mr->addStretch(1);
-    mr->addWidget(genBtn);
+    // webui .novel-modes .ntop-right { display:flex; align-items:center; gap:8px;
+    //                                   padding-bottom:6px }：
+    // 章状态 Tag + 运行态 Tag + 生成钮同属右侧一组，底距 6px 让它们不压住那条发丝线。
+    auto* topRight = new QWidget(modeRow);
+    auto* trl = new QHBoxLayout(topRight);
+    trl->setContentsMargins(0, 0, 0, theme::space::kXs);
+    trl->setSpacing(theme::space::kSteps[4]);
+    top_status_ = new StatusTagRow({QStringLiteral("idle"), QStringLiteral("draft"),
+                                    QStringLiteral("review"), QStringLiteral("done"),
+                                    QStringLiteral("failed")},
+                                   {QStringLiteral("未写"), QStringLiteral("草稿"), QStringLiteral("待评审"),
+                                    QStringLiteral("已提交"), QStringLiteral("失败")},
+                                   {QStringLiteral("idle"), QStringLiteral("warn"), QStringLiteral("busy"),
+                                    QStringLiteral("ok"), QStringLiteral("danger")},
+                                   topRight);
+    run_ = new StatusTagRow({QStringLiteral("idle"), QStringLiteral("run")},
+                            {QStringLiteral("空闲"), QStringLiteral("运行中")},
+                            {QStringLiteral("idle"), QStringLiteral("busy")}, topRight);
+    run_->Show(QStringLiteral("idle"));
+    trl->addWidget(top_status_);
+    trl->addWidget(run_);
+    trl->addWidget(genBtn);
+    mr->addWidget(topRight, 0, Qt::AlignVCenter);
     ml->addWidget(modeRow);
 
     centerStack_ = new QStackedWidget(center);
     auto* chapterPage = new QWidget(centerStack_);
     auto* cpl = new QVBoxLayout(chapterPage);
-    cpl->setContentsMargins(0, 0, 0, 0);
-    cpl->setSpacing(theme::space::kSteps[2]);
+    // webui views.css:561 .novel-body { padding: 16px 18px 24px; overflow-y:auto }
+    // 上下左右逐值对齐；段间距不靠 layout spacing，CSS 里每一段都自带 margin
+    // （.chap-head mb4 / .chap-summary 12 0 18），所以这里 spacing = 0。
+    cpl->setContentsMargins(theme::space::kSteps[5], theme::space::kSteps[5], 18, 24);
+    cpl->setSpacing(0);
     auto* headRow = new QWidget(chapterPage);
     auto* hr = new QHBoxLayout(headRow);
-    hr->setContentsMargins(0, 0, 0, 0);
-    hr->setSpacing(theme::space::kSteps[2]);
+    // webui views.css:587 .chap-head { display:flex; align-items:center; gap:10px;
+    //                                  margin-bottom:4px }
+    hr->setContentsMargins(0, 0, 0, theme::space::kSteps[2]);
+    hr->setSpacing(10);
     title_ = new QLabel(QStringLiteral("未选择章节"), headRow);
     QFont tf = title_->font();
-    tf.setPointSize(tf.pointSize() + 2);
-    tf.setBold(true);
+    // webui .chap-title { font-size:20px; font-weight:800 }：
+    // 走像素档（QSS 字号一律 QFont::setPixelSize，点值会随 DPI 再放大一档）；
+    // 800 在 Qt 字体枚举里最高只能到 Bold(700)，这里取其上限。
+    tf.setPixelSize(20);
+    tf.setWeight(QFont::Bold);
     title_->setFont(tf);
-    status_ = new QLabel(headRow);
-    hr->addWidget(title_, 1);
+    title_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    hr->addWidget(title_, 0);
+    status_ = new StatusTagRow({QStringLiteral("idle"), QStringLiteral("draft"),
+                                QStringLiteral("review"), QStringLiteral("done"),
+                                QStringLiteral("failed")},
+                               {QStringLiteral("未写"), QStringLiteral("草稿"), QStringLiteral("待评审"),
+                                QStringLiteral("已提交"), QStringLiteral("失败")},
+                               {QStringLiteral("idle"), QStringLiteral("warn"), QStringLiteral("busy"),
+                                QStringLiteral("ok"), QStringLiteral("danger")},
+                               headRow);
     hr->addWidget(status_, 0, Qt::AlignVCenter);
-    summary_ = new QLabel(chapterPage);
+    // 正文实计字数（webui .chap-head 右侧的 tiny dim 计数）：用数据库里的真实 words，
+    // 空正文显示 0，不编造数字。
+    meta_ = new QLabel(headRow);
+    hr->addStretch(1);
+    hr->addWidget(meta_, 0, Qt::AlignVCenter);
+    // .chap-summary { max-width:720px; margin:12px 0 18px }：
+    // 宽度由摘要自己封顶 + 右侧留白，超宽窗口下摘要仍按 720 阅读宽度排，
+    // 与下方 .draft 同一条测量线。
+    auto* summaryRow = new QWidget(chapterPage);
+    auto* sl = new QHBoxLayout(summaryRow);
+    sl->setContentsMargins(0, 12, 0, 18);
+    sl->setSpacing(0);
+    summary_ = new QLabel(summaryRow);
     summary_->setWordWrap(true);
+    summary_->setMaximumWidth(kMeasureMaxW);
+    summary_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     // webui .chap-summary：fill-muted 底 + 3px accent 左条（引用块）
     widgets::SetKind(summary_, "chapsummary");
+    sl->addWidget(summary_, 0);
+    sl->addStretch(1);
     // 正文区（P04-S6 DraftView 接管）：流式逐 token 只追加末段 + 呼吸光 + 中断落盘 + 重试
     draft_ = new DraftView(chapterPage);
     cpl->addWidget(headRow);
-    cpl->addWidget(summary_);
+    cpl->addWidget(summaryRow);
     cpl->addWidget(draft_, 1);
     world_ = new WorldBoardView(centerStack_);   // [设定] 页：设定台（P04-S2）
     init_ = new InitChainView(centerStack_);     // [初始化] 页：初始化链（P04-S4）
@@ -224,6 +314,32 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
         SwitchCenter(3);
         if (flow_ != nullptr) {
             flow_->GenerateCurrent(false);
+        }
+    });
+    // 顶栏「运行中 / 空闲」只报真值：发起后轮询 ChapterFlowView 的**内存**态
+    // （LiveProbe 只读 live_log_，不做文件或网络 IO），连续两次没有 running 阶段
+    // 就落回「空闲」并停表；不常驻轮询，也不臆造「Tn 运行中」里的阶段号。
+    run_poll_ = new QTimer(this);
+    run_poll_->setInterval(500);
+    connect(run_poll_, &QTimer::timeout, this, [this] {
+        if (flow_ == nullptr) {
+            run_poll_->stop();
+            return;
+        }
+        if (flow_->LiveProbe().contains(QStringLiteral(":running"))) {
+            idle_ticks_ = 0;
+            run_->Show(QStringLiteral("run"));
+            return;
+        }
+        if (++idle_ticks_ >= 2) {
+            run_->Show(QStringLiteral("idle"));
+            run_poll_->stop();
+        }
+    });
+    connect(genBtn, &widgets::Button::clicked, this, [this] {
+        if (run_poll_ != nullptr) {
+            idle_ticks_ = 0;
+            run_poll_->start();
         }
     });
     SwitchCenter(0);
@@ -469,10 +585,15 @@ void NovelWorkspace::ShowCurrent() {
         return;
     }
     const ChapterNode& n = chapters_[static_cast<std::size_t>(current_)];
-    const auto [label, token] = StatusView(n.status, n.body.isEmpty());
+    const QString label = StatusView(n.status, n.body.isEmpty()).first;
     title_->setText(QStringLiteral("第 %1 章 · %2").arg(n.ord).arg(n.title));
-    status_->setText(label);
-    status_->setStyleSheet(QStringLiteral("color:%1;").arg(shine::widget::CssRgb(token)));
+    status_->Show(label); // 章头状态标记（文案 = StatusView 的 label，键即 label）
+    top_status_->Show(label); // 顶栏同一状态再标一次（设计稿两处都有）
+    // 计数只报真值：正文实计字数 + 所属卷；数据库没有的字段（视角 / 修订轮次）不编。
+    meta_->setText(QStringLiteral("%1 字（正文实计） · 出自：%2")
+                       .arg(n.words)
+                       .arg(n.volumeTitle.isEmpty() ? QStringLiteral("—") : n.volumeTitle));
+    widgets::SetTextColor(meta_, theme::Current().textMuted);
     summary_->setText(n.summary.isEmpty() ? QStringLiteral("（暂无摘要）") : n.summary);
     props_->SetPairs({{QStringLiteral("书"), n.book},
                       {QStringLiteral("卷"), n.volumeTitle},

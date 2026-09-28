@@ -1,6 +1,8 @@
 #include "ui/kit/canvas/FlowCanvas.h"
 
+#include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/kit/theme/CssColor.h"
 #include "ui/kit/theme/Theme.h"
 
 #include <QCheckBox>
@@ -16,6 +18,7 @@
 #include <QScrollBar>
 #include <QSlider>
 #include <QSpinBox>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QtMath>
 
@@ -45,18 +48,34 @@ inline constexpr double kNodeRadius = 10.0;
 [[nodiscard]] QColor TokenDanger() { return widgets::TokenQColor(shine::theme::Current().statusDanger); }
 [[nodiscard]] QColor TokenTextPrimary() { return widgets::TokenQColor(shine::theme::Current().textPrimary); }
 [[nodiscard]] QColor TokenTextMuted() { return widgets::TokenQColor(shine::theme::Current().textMuted); }
+[[nodiscard]] QColor TokenFillSelected() { return widgets::TokenQColor(shine::theme::Current().fillSelected); }
+[[nodiscard]] QColor TokenFillMuted() { return widgets::TokenQColor(shine::theme::Current().fillMuted); }
 
-// 节点状态 → 边框色 + 底色（webui .fnode.done/.run/.fail）。
+// webui 的 color-mix(in srgb, C 45%, transparent) 在 QSS/Qt 没有对应声明，
+// 这里按同一权重把状态色压到 bgPanel 上（45% = done、50% = fail、18% = run 辉光），
+// 与 MainWindow.cpp 的 Blend() 同一口径，只是这里只需要「朝面板底色压」。
+[[nodiscard]] QColor Mix(const QColor& color, const QColor& base, double weight) {
+    const auto channel = [&](int shift) {
+        const double from = static_cast<double>((color.red() >> shift) & 0xFF);
+        const double to = static_cast<double>((base.red() >> shift) & 0xFF);
+        return static_cast<int>(std::lround(from * weight + to * (1.0 - weight)));
+    };
+    return QColor(channel(16), channel(8), channel(0));
+}
+
+// 节点状态 → 边框色 + 底色 + 辉光色（webui .fnode.done/.run/.fail）。
 struct NodeSkin {
     QColor border;
     QColor fill;
+    QColor glow; // 3px 外圈（webui box-shadow 0 0 0 3px）
 };
 
 [[nodiscard]] NodeSkin SkinFor(const std::string& state) {
-    if (state == "running") return {TokenBusy(), TokenBgPanel()};
-    if (state == "done") return {TokenOk(), TokenBgPanel()};
-    if (state == "failed") return {TokenDanger(), TokenBgPanel()};
-    return {TokenLineNormal(), TokenBgPanel()};
+    const QColor panel = TokenBgPanel();
+    if (state == "running") return {TokenBusy(), panel, Mix(TokenBusy(), panel, 0.18)};
+    if (state == "done") return {Mix(TokenOk(), panel, 0.45), panel, QColor()};
+    if (state == "failed") return {Mix(TokenDanger(), panel, 0.50), panel, QColor()};
+    return {TokenLineNormal(), panel, QColor()};
 }
 
 class NodeItem final : public QGraphicsObject {
@@ -69,6 +88,15 @@ class NodeItem final : public QGraphicsObject {
         setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
         setAcceptHoverEvents(true);
         setZValue(1);
+        // 画布默认选中框（虚线矩形）与设计稿的 accent 实心描边冲突，直接关掉，
+        // 选中态改由 paint() 自己画（views.css .fnode.sel）。
+        setFlag(QGraphicsItem::ItemIsFocusable, false);
+    }
+
+    void SetSelected(bool on) {
+        if (selected_ == on) return;
+        selected_ = on;
+        update();
     }
 
     [[nodiscard]] static double NodeHeightFor(const FlowCanvasNode& node) {
@@ -80,17 +108,32 @@ class NodeItem final : public QGraphicsObject {
         return QRectF(0, 0, node_.width, node_.height);
     }
 
-    void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
+    void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget*) override {
         painter->setRenderHint(QPainter::Antialiasing, true);
         const QRectF box = boundingRect().adjusted(1, 1, -1, -1);
-        const NodeSkin skin = SkinFor(node_.state);
+        NodeSkin skin = SkinFor(node_.state);
+        const bool hovered = option != nullptr && (option->state & QStyle::State_MouseOver);
+        // 优先级：选中 > hover > 状态（views.css 里 .fnode.sel / :hover 排在状态态之前）
+        if (selected_) {
+            skin.border = TokenAccent();
+            skin.glow = Mix(TokenAccent(), TokenFillMuted(), 0.34); // ≈ --accent-dim
+        } else if (hovered) {
+            skin.border = widgets::TokenQColor(shine::theme::Current().lineStrong);
+        }
+
+        // views.css .fnode.sel / .run：box-shadow 0 0 0 3px <状态辉光>
+        if (skin.glow.isValid()) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(skin.glow);
+            painter->drawRoundedRect(box.adjusted(-3, -3, 3, 3), kNodeRadius + 3, kNodeRadius + 3);
+        }
 
         // webui .fnode：bg-panel + 1.5px 边 + r-md(10)
         painter->setBrush(skin.fill);
-        painter->setPen(QPen(skin.border, 1.5));
+        painter->setPen(QPen(skin.border, selected_ ? 2.0 : 1.5));
         painter->drawRoundedRect(box, kNodeRadius, kNodeRadius);
 
-        // 标题带：accent 图标 + 12px w700 标题 + 底部发丝线
+        // 标题带：accent 图标 + 12px w700 标题 + 底部发丝线（.fhead p7 10）
         const QFont base = painter->font();
         QFont head = base;
         head.setPixelSize(12);
@@ -99,14 +142,23 @@ class NodeItem final : public QGraphicsObject {
         painter->setPen(TokenAccent());
         painter->drawText(QRectF(10, 0, 14, kNodeHeadH), Qt::AlignLeft | Qt::AlignVCenter,
                           QStringLiteral("◆"));
+        // 右侧状态记号（.fhead 尾部 check / spin）：done 打勾、failed 打叉；
+        // running 的转圈在浮动工具条上（见 FlowCanvas::BuildTools）
+        if (node_.state == "done" || node_.state == "failed") {
+            painter->setPen(node_.state == "done" ? TokenOk() : TokenDanger());
+            painter->drawText(QRectF(node_.width - 24, 0, 14, kNodeHeadH),
+                              Qt::AlignRight | Qt::AlignVCenter,
+                              node_.state == "done" ? QStringLiteral("✓") : QStringLiteral("✕"));
+        }
         painter->setPen(TokenTextPrimary());
-        painter->drawText(QRectF(24, 0, node_.width - 34, kNodeHeadH),
-                          Qt::AlignLeft | Qt::AlignVCenter,
-                          QString::fromStdString(node_.title));
-        painter->setPen(QPen(TokenBgPanel(), 1));
+        const int title_w = static_cast<int>(node_.width) - 38;
+        painter->drawText(QRectF(24, 0, title_w, kNodeHeadH), Qt::AlignLeft | Qt::AlignVCenter,
+                          painter->fontMetrics().elidedText(QString::fromStdString(node_.title),
+                                                           Qt::ElideRight, title_w));
+        painter->setPen(QPen(TokenFillMuted(), 1));
         painter->drawLine(QPointF(0, kNodeHeadH), QPointF(node_.width, kNodeHeadH));
 
-        // 端口行：11px muted 名称 + 9px 圆点（状态色描边）
+        // 端口行：11px muted 名称 + 9px 圆点（.port：⌀9 / 2px 描边 / 状态色）
         QFont body = base;
         body.setPixelSize(11);
         painter->setFont(body);
@@ -119,6 +171,7 @@ class NodeItem final : public QGraphicsObject {
                                     : TokenInfo();
             if (node_.state == "done") port_color = TokenOk();
             if (node_.state == "running") port_color = TokenBusy();
+            if (node_.state == "failed") port_color = TokenDanger();
             painter->setPen(QPen(port_color, 2));
             painter->setBrush(TokenBgPanel());
             painter->drawEllipse(QPointF(x, y), 4.5, 4.5);
@@ -126,7 +179,9 @@ class NodeItem final : public QGraphicsObject {
             const QRectF text(port.input ? 10 : 14, y - 9,
                               port.input ? node_.width - 22 : node_.width - 28, 18);
             painter->drawText(text, Qt::AlignLeft | Qt::AlignVCenter,
-                              QString::fromStdString(port.name));
+                              painter->fontMetrics().elidedText(QString::fromStdString(port.name),
+                                                               Qt::ElideRight,
+                                                               static_cast<int>(text.width())));
         }
         painter->setFont(base);
     }
@@ -142,6 +197,7 @@ class NodeItem final : public QGraphicsObject {
 
   private:
     FlowCanvasNode node_;
+    bool selected_ = false;
 };
 
 [[nodiscard]] QColor LinkColor(const std::string& type) {
@@ -164,10 +220,123 @@ class NodeItem final : public QGraphicsObject {
 FlowCanvas::FlowCanvas(QWidget* parent) : QGraphicsView(parent) {
     setScene(new QGraphicsScene(this));
     setRenderHint(QPainter::Antialiasing, true);
-    setDragMode(QGraphicsView::NoDrag);
+    setDragMode(QGraphicsView::NoDrag); // 平移自己实现（见 pan_* 成员），节点拖拽优先
     setFocusPolicy(Qt::StrongFocus);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    viewport()->setCursor(Qt::OpenHandCursor);
+    BuildTools();
+}
+
+// 网格底纹：webui .flow-canvas 的 background 是
+// radial-gradient(circle at 1px 1px, line-normal 1px, transparent 0) 0 0 / 22px 22px
+// 叠在 fill-muted 上。QSS 没有 background-image，这里自绘。
+// 点阵按**视口**坐标画（先复位变换）：CSS 的 background 属于宿主元素，
+// 不随画布 zoom 缩放；viewport backgroundBrush 是场景坐标，会跟着缩放，故不用。
+void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
+    // painter 的世界变换就是「场景 → 设备」，所以 rect 映射过去即视口可见区
+    const QRectF view = painter->transform().mapRect(rect);
+    const QTransform saved = painter->transform();
+    painter->resetTransform();
+    painter->setRenderHint(QPainter::Antialiasing, false);
+    painter->fillRect(view, TokenFillMuted());
+    constexpr double kGridStep = 22.0; // 设计稿的 22px 点阵
+    QColor dot = widgets::TokenQColor(shine::theme::Current().lineNormal);
+    painter->setPen(QPen(dot, 1.0));
+    const double x0 = std::floor(view.left() / kGridStep) * kGridStep;
+    const double y0 = std::floor(view.top() / kGridStep) * kGridStep;
+    for (double y = y0; y < view.top() + view.height(); y += kGridStep) {
+        for (double x = x0; x < view.left() + view.width(); x += kGridStep) {
+            painter->drawPoint(QPointF(x, y));
+        }
+    }
+    painter->setTransform(saved);
+}
+
+// 换肤后重刷工具条样式：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知
+// （与 WidgetCommon.cpp 的阴影重挂同一做法）。
+class ToolsStyleRefresher : public QObject {
+  public:
+    ToolsStyleRefresher(FlowCanvas* canvas, QObject* parent) : QObject(parent), canvas_(canvas) {
+        qApp->installEventFilter(this);
+    }
+    ~ToolsStyleRefresher() override { qApp->removeEventFilter(this); }
+
+  protected:
+    bool eventFilter(QObject* watched, QEvent* ev) override {
+        if (ev->type() == QEvent::ThemeChange && watched == qApp) canvas_->StyleTools();
+        return QObject::eventFilter(watched, ev);
+    }
+
+  private:
+    FlowCanvas* canvas_;
+};
+
+// 浮动缩放工具条（views.css .canvas-tools / .bl：p4 / gap4 / r-md / 左下 16）。
+// 出图页在左下（bl=16），出片页底部有胶片条，用 bl-up=118 让开。
+void FlowCanvas::BuildTools() {
+    auto* tools = new QWidget(viewport());
+    tools->setObjectName(QStringLiteral("flowCanvasTools"));
+    StyleTools();
+    auto* lay = new QVBoxLayout(tools);
+    lay->setContentsMargins(4, 4, 4, 4);
+    lay->setSpacing(4);
+    auto* zoom_in = new widgets::IconButton(QStringLiteral("＋"), QStringLiteral("放大"),
+                                            widgets::IconButton::Size::Sm, tools);
+    auto* zoom_out = new widgets::IconButton(QStringLiteral("－"), QStringLiteral("缩小"),
+                                             widgets::IconButton::Size::Sm, tools);
+    auto* fit = new widgets::IconButton(QStringLiteral("⊙"), QStringLiteral("适应视图"),
+                                        widgets::IconButton::Size::Sm, tools);
+    // .canvas-tools 里的运行指示（running 时才出现，webui 用 spin）
+    auto* spin = new widgets::Spinner(widgets::Spinner::Size::Sm, tools);
+    spin->setFixedWidth(20);
+    spin->setVisible(false);
+    lay->addWidget(zoom_in, 0, Qt::AlignHCenter);
+    lay->addWidget(zoom_out, 0, Qt::AlignHCenter);
+    lay->addWidget(fit, 0, Qt::AlignHCenter);
+    lay->addWidget(spin, 0, Qt::AlignHCenter);
+    tools->show();
+    tools_ = tools;
+    spin_ = spin;
+    new ToolsStyleRefresher(this, this);
+    connect(zoom_in, &QPushButton::clicked, this, [this] { SetZoom(zoom_ * 1.2); });
+    connect(zoom_out, &QPushButton::clicked, this, [this] { SetZoom(zoom_ / 1.2); });
+    connect(fit, &QPushButton::clicked, this, &FlowCanvas::FitView);
+    LayoutTools();
+}
+
+// 工具条上的运行指示：任一节点处于 running 时显示转圈（webui .canvas-tools 里的 spin）
+void FlowCanvas::UpdateRunningIndicator() {
+    if (spin_ == nullptr) return;
+    const bool running = std::any_of(nodes_.begin(), nodes_.end(), [](const FlowCanvasNode& node) {
+        return node.state == "running";
+    });
+    spin_->setVisible(running);
+    spin_->SetRunning(running);
+}
+
+// 工具条样式：色值全部来自 theme token（.canvas-tools 的 --glass 在 Qt 侧退化为
+// 不透明 bg.elevated + line-subtle 细边 + r-md(10)；没有 backdrop-filter）
+void FlowCanvas::StyleTools() {
+    if (tools_ == nullptr) return;
+    const theme::ColorToken& t = theme::Current();
+    tools_->setStyleSheet(QStringLiteral("QWidget#flowCanvasTools { background-color: %1; "
+                                         "border: 1px solid %2; border-radius: %3px; }")
+                              .arg(shine::widget::CssRgb(t.bgElevated),
+                                   shine::widget::CssRgb(t.lineSubtle))
+                              .arg(theme::radius::kMd));
+}
+
+void FlowCanvas::LayoutTools() {
+    if (tools_ == nullptr) return;
+    tools_->adjustSize();
+    tools_->move(16, std::max(16, viewport()->height() - tools_->height() - tools_bottom_));
+    tools_->raise();
+}
+
+void FlowCanvas::resizeEvent(QResizeEvent* event) {
+    QGraphicsView::resizeEvent(event);
+    LayoutTools();
 }
 
 void FlowCanvas::SetGraph(std::vector<FlowCanvasNode> nodes, std::vector<FlowCanvasLink> links) {
@@ -176,8 +345,10 @@ void FlowCanvas::SetGraph(std::vector<FlowCanvasNode> nodes, std::vector<FlowCan
     selected_.clear();
     RebuildItems();
     FitView();
+    LayoutTools();
     emit graphChanged();
     NotifySelection();
+    UpdateRunningIndicator();
 }
 
 void FlowCanvas::SetNodeState(const std::string& id, const std::string& state) {
@@ -189,6 +360,7 @@ void FlowCanvas::SetNodeState(const std::string& id, const std::string& state) {
             }
         }
     }
+    UpdateRunningIndicator();
 }
 
 void FlowCanvas::SelectNode(const std::string& id) {
@@ -255,11 +427,24 @@ void FlowCanvas::SelectAll() {
 
 void FlowCanvas::FitView() {
     if (scene()->items().isEmpty()) return;
-    fitInView(scene()->itemsBoundingRect().adjusted(-40, -40, 40, 40), Qt::KeepAspectRatio);
+    // webui fitInset：出图 / 出片页都传 380（浮动面板 348 + 外缩 16 + 余量）。
+    // Qt 侧等价做法是先把可视区右侧扣掉这段，再按剩余宽高算缩放。
+    QRectF target = scene()->itemsBoundingRect().adjusted(-24, -24, 24, 24);
+    const int avail_w = std::max(200, viewport()->width() - static_cast<int>(fit_inset_) - 48);
+    const int avail_h = std::max(160, viewport()->height() - 48);
+    const double z = std::min({avail_w / std::max(1.0, target.width()),
+                               avail_h / std::max(1.0, target.height()), 1.15});
+    SetZoom(z);
+    // 水平方向按「扣掉面板后的可视区」居中，垂直方向按全高居中
+    const double vis_x = (viewport()->width() - fit_inset_) / 2.0;
+    const double vis_y = viewport()->height() / 2.0;
+    centerOn(target.center().x() + (vis_x - viewport()->width() / 2.0) / zoom_,
+             target.center().y() + (vis_y - viewport()->height() / 2.0) / zoom_);
 }
 
 void FlowCanvas::SetZoom(double zoom) {
-    zoom_ = std::clamp(zoom, 0.2, 3.0);
+    // webui FlowCanvas.jsx：setView 里 clamp(0.35, 2)
+    zoom_ = std::clamp(zoom, 0.35, 2.0);
     setTransform(QTransform::fromScale(zoom_, zoom_));
 }
 
@@ -362,7 +547,9 @@ void FlowCanvas::RebuildItems() {
         item->setData(0, QString::fromStdString(node.id));
         scene()->addItem(item);
         node_items_.emplace(node.id, item);
-        if (std::find(selected_.begin(), selected_.end(), node.id) != selected_.end()) item->setSelected(true);
+        // 选中态由 NodeItem 自己画（accent 实心边 + 3px 辉光），
+        // 不走 QGraphicsView 默认选中框 —— 那一圈虚线矩形设计稿里没有。
+        item->SetSelected(std::find(selected_.begin(), selected_.end(), node.id) != selected_.end());
     }
     for (const auto& link : links_) {
         const auto from = std::find_if(nodes_.begin(), nodes_.end(), [&](const FlowCanvasNode& n) {
@@ -385,11 +572,31 @@ void FlowCanvas::RebuildItems() {
             }
         }
         QPainterPath path(p1);
-        const double dx = std::max(40.0, std::abs(p2.x() - p1.x()) * 0.45);
+        const double dx = std::max(36.0, std::abs(p2.x() - p1.x()) * 0.55);
         path.cubicTo(p1 + QPointF(dx, 0), p2 - QPointF(dx, 0), p2);
+        // webui 连线是两层：底层 line-normal 5px @0.4（柔化底衬），
+        // 上层 1.8px 的类型色 / 灰线。两端都不是 todo 时上层走 6 6 虚线
+        // （CSS 的 flow-dash 动画在 Qt 侧没有 keyframes，只能给静态虚线）。
+        const bool active = from->state != "todo" && to->state != "todo";
+        auto* halo = new QGraphicsPathItem(path);
+        QColor halo_color = widgets::TokenQColor(shine::theme::Current().lineNormal);
+        halo_color.setAlphaF(0.4 * halo_color.alphaF());
+        QPen halo_pen(halo_color, 5.0);
+        halo_pen.setCapStyle(Qt::RoundCap);
+        halo->setPen(halo_pen);
+        halo->setZValue(0);
+        scene()->addItem(halo);
         auto* wire = new QGraphicsPathItem(path);
-        wire->setPen(QPen(LinkColor(link.type), 2.0));
-        wire->setZValue(0);
+        QPen pen(active ? LinkColor(link.type) : widgets::TokenQColor(shine::theme::Current().lineStrong),
+                 1.8);
+        pen.setCapStyle(Qt::RoundCap);
+        if (active) {
+            QList<qreal> dashes{6.0, 6.0};
+            pen.setDashPattern(dashes);
+            pen.setDashOffset(-6.0); // 静态斜纹的相位偏移，视觉上接近流动中的一帧
+        }
+        wire->setPen(pen);
+        wire->setZValue(1);
         scene()->addItem(wire);
     }
 }
@@ -399,9 +606,10 @@ void FlowCanvas::NotifySelection() {
 }
 
 void FlowCanvas::wheelEvent(QWheelEvent* event) {
-    const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
+    // webui：exp(-deltaY * 0.0014) 的指数缩放 + 锚点缩放
+    const double factor = std::exp(-event->angleDelta().y() * 0.0014);
     const QPointF anchor = mapToScene(event->position().toPoint());
-    const double next = std::clamp(zoom_ * factor, 0.2, 3.0);
+    const double next = std::clamp(zoom_ * factor, 0.35, 2.0);
     const double ratio = next / zoom_;
     setTransform(QTransform::fromScale(next, next));
     const QPointF delta = anchor - mapToScene(event->position().toPoint());
@@ -433,6 +641,10 @@ void FlowCanvas::mousePressEvent(QMouseEvent* event) {
     const std::string id = NodeIdAt(pos);
     if (id.empty()) {
         ClearSelection();
+        // 空白处按下 = 平移画布（webui onBgDown → panning → cursor grabbing）
+        panning_ = true;
+        pan_anchor_view_ = event->pos();
+        viewport()->setCursor(Qt::ClosedHandCursor);
         return;
     }
     if (!event->modifiers().testFlag(Qt::ShiftModifier)) selected_.clear();
@@ -448,6 +660,12 @@ void FlowCanvas::mousePressEvent(QMouseEvent* event) {
 void FlowCanvas::mouseMoveEvent(QMouseEvent* event) {
     if (wire_start_.valid) {
         QGraphicsView::mouseMoveEvent(event);
+        return;
+    }
+    if (panning_) {
+        const QPoint delta = event->pos() - pan_anchor_view_;
+        pan_anchor_view_ = event->pos();
+        translate(-delta.x() / zoom_, -delta.y() / zoom_);
         return;
     }
     if (drag_id_.empty()) return;
@@ -507,6 +725,10 @@ void FlowCanvas::mouseReleaseEvent(QMouseEvent* event) {
         emit graphChanged();
     }
     drag_id_.clear();
+    if (panning_) {
+        panning_ = false;
+        viewport()->setCursor(Qt::OpenHandCursor);
+    }
     QGraphicsView::mouseReleaseEvent(event);
 }
 

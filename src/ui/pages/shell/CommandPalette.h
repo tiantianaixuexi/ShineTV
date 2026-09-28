@@ -7,6 +7,8 @@
 #include <functional>
 #include <vector>
 
+class QFrame;
+class QLabel;
 class QLineEdit;
 class QListWidget;
 class QTimer;
@@ -54,11 +56,17 @@ class CommandPalette : public QWidget {
     void Rebuild(const QString& query);
     void MoveSelection(int delta);
     void Relayout();
+    void AdjustHeight(); // 面板高度随结果行数走，封顶 60vh
 
     QWidget* host_ = nullptr;
     QLineEdit* edit_ = nullptr;
     QListWidget* list_ = nullptr;
+    QLabel* empty_label_ = nullptr; // 无结果时的空态（.cmdk-empty）
     QTimer* debounce_ = nullptr;
+    // 上下两块固定区的容器，供 AdjustHeight 实测高度（不写死常数）
+    QFrame* input_row_ = nullptr;
+    QFrame* foot_ = nullptr;
+    QFrame* list_box_ = nullptr;
     std::vector<CommandItem> commands_;
     std::vector<Row> rows_; // 当前渲染行（与 list 行序对齐）
     std::function<std::vector<CommandItem>(const QString&)> entity_provider_;

@@ -13,19 +13,27 @@
 #include "ui/kit/controls/Inputs.h"
 #include "ui/kit/controls/Navigation.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/kit/theme/Theme.h"
+#include "ui/layout/QtLayout.h"
 #include "util/Encoding.h"
 
 #include <QApplication>
 #include <QDir>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QStackedWidget>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <utility>
@@ -107,6 +115,197 @@ void AddRow(QWidget* page, const QString& caption, QWidget* content) {
     cc->addWidget(content);
     col->insertWidget(col->count() - 1, cell);
 }
+
+// ============================================================ 画廊栅格（views.css:394-407）
+//
+// webui 组件画廊是**一张自适应卡片网格**，不是「左导航 + 逐页堆叠」：
+//
+//   .gal-grid { display: grid;
+//               grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+//               gap: 16px; align-items: start; }
+//   .gal-row  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+//
+// 两条规则各自对应下面的 GalGrid / GalRow。Qt 无 Grid 的 auto-fit/minmax，
+// 也无 flex-wrap，因此两处都按同一套算式手写（列宽 = 均分剩余空间，够宽就多一列）：
+//
+//   GalGrid 列数 = max(1, floor((可用宽 + gap) / (minmax 下限 + gap)))
+//   GalRow  换行 = 逐项累加宽度，放不下即折行，行内按 align-items:center 垂直居中
+//
+// gap 16px 取自 webui（= token space.s4），GalRow 的 gap 10px / align-items:center
+// 同样逐值对齐设计稿，不是自选值。
+
+// .gal-grid 的 minmax() 下限 340px 与 gap 16px（webui views.css:397-398 原值）
+constexpr int kGalMinColW = 340;
+constexpr int kGalGap = 16;
+// .gal-row 的 gap: 10px + align-items: center（webui views.css:403-404 原值）
+constexpr int kGalRowGap = 10;
+
+// .gal-row —— flex 行：横向排布、垂直居中、放不下换行（views.css:401-406）
+class GalRow : public QWidget {
+  public:
+    explicit GalRow(QWidget* parent = nullptr) : QWidget(parent) {
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    }
+
+    void AddItem(QWidget* item) {
+        item->setParent(this);
+        items_.push_back(item);
+        invalidate();
+    }
+
+    QSize sizeHint() const override {
+        int w = 0;
+        int h = 0;
+        for (QWidget* item : items_) {
+            w += item->sizeHint().width();
+            h = std::max(h, item->sizeHint().height());
+        }
+        if (!items_.empty()) {
+            w += kGalRowGap * (static_cast<int>(items_.size()) - 1);
+        }
+        return {w, h};
+    }
+
+    QSize minimumSizeHint() const override {
+        if (items_.empty()) {
+            return {};
+        }
+        return items_.front()->minimumSizeHint();
+    }
+
+    // 按可用宽算出的高度（折行后所有行高 + 行间距）。
+    // 覆写 heightForWidth + hasHeightForWidth，外层 QVBoxLayout 才会按折行结果
+    // 给本控件分配高度；否则只用 sizeHint（单行高），折行会被裁掉。
+    [[nodiscard]] int heightForWidth(int w) const override { return HeightFor(w); }
+
+    [[nodiscard]] bool hasHeightForWidth() const override { return true; }
+
+    [[nodiscard]] int HeightFor(int availW) const {
+        int x = 0;
+        int y = 0;
+        int line_h = 0;
+        for (QWidget* item : items_) {
+            const QSize s = item->sizeHint();
+            if (x > 0 && x + s.width() > availW) {
+                x = 0;
+                y += line_h + kGalRowGap;
+                line_h = 0;
+            }
+            x += s.width() + kGalRowGap;
+            line_h = std::max(line_h, s.height());
+        }
+        return items_.empty() ? 0 : y + line_h;
+    }
+
+  protected:
+    void resizeEvent(QResizeEvent* ev) override {
+        QWidget::resizeEvent(ev);
+        Place();
+    }
+
+  private:
+    void invalidate() { updateGeometry(); }
+
+    // 折行排布：行内按 align-items:center 垂直居中，行间距 10px
+    void Place() {
+        int x = 0;
+        int y = 0;
+        int line_h = 0;
+        for (QWidget* item : items_) {
+            const QSize s = item->sizeHint();
+            if (x > 0 && x + s.width() > width()) {
+                x = 0;
+                y += line_h + kGalRowGap;
+                line_h = 0;
+            }
+            item->setGeometry(x, y + (line_h - s.height()) / 2, s.width(), s.height());
+            x += s.width() + kGalRowGap;
+            line_h = std::max(line_h, s.height());
+        }
+    }
+
+    std::vector<QWidget*> items_;
+};
+
+// .gal-grid —— 自适应卡片网格（views.css:395-400）
+// auto-fit minmax(340px,1fr) 的语义 = 「每列至少 340px，剩余空间均分，
+// 放得下几列就放几列」；align-items:start = 每张卡片按自身内容高，不被同行拉齐。
+class GalGrid : public QWidget {
+  public:
+    explicit GalGrid(QWidget* parent = nullptr) : QWidget(parent) {
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    }
+
+    void AddCard(QWidget* card) {
+        card->setParent(this);
+        cards_.push_back(card);
+        updateGeometry();
+    }
+
+    QSize sizeHint() const override {
+        const int w = std::max(width(), kGalMinColW);
+        return {w, ContentHeight(w)};
+    }
+
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+  protected:
+    void resizeEvent(QResizeEvent* ev) override {
+        QWidget::resizeEvent(ev);
+        Place();
+    }
+
+  private:
+    // auto-fit 的列数算式：放得下几列就放几列（至少一列）
+    [[nodiscard]] int ColumnsFor(int availW) const {
+        if (cards_.empty()) {
+            return 1;
+        }
+        const int cols = (availW + kGalGap) / (kGalMinColW + kGalGap);
+        return std::max(1, std::min(cols, static_cast<int>(cards_.size())));
+    }
+
+    // 1fr = 剩余空间均分（扣掉列间距后除以列数）
+    [[nodiscard]] int ColumnWidth(int cols) const {
+        return std::max(1, (width() - kGalGap * (cols - 1)) / std::max(1, cols));
+    }
+
+    [[nodiscard]] int ContentHeight(int availW) const {
+        const int cols = ColumnsFor(availW);
+        const int col_w = std::max(1, (availW - kGalGap * (cols - 1)) / std::max(1, cols));
+        int y = 0;
+        for (std::size_t i = 0; i < cards_.size(); i += static_cast<std::size_t>(cols)) {
+            int line_h = 0;
+            for (std::size_t j = i;
+                 j < std::min(cards_.size(), i + static_cast<std::size_t>(cols)); ++j) {
+                line_h = std::max(line_h, cards_[j]->sizeHint().height());
+            }
+            y += line_h + kGalGap;
+        }
+        return cards_.empty() ? 0 : std::max(0, y - kGalGap);
+    }
+
+    void Place() {
+        const int cols = ColumnsFor(width());
+        const int col_w = ColumnWidth(cols);
+        int y = 0;
+        for (std::size_t i = 0; i < cards_.size(); i += static_cast<std::size_t>(cols)) {
+            const std::size_t end = std::min(cards_.size(), i + static_cast<std::size_t>(cols));
+            int line_h = 0;
+            for (std::size_t j = i; j < end; ++j) {
+                line_h = std::max(line_h, cards_[j]->sizeHint().height());
+            }
+            for (std::size_t j = i; j < end; ++j) {
+                // align-items: start —— 卡片顶部对齐，不拉伸到行高
+                cards_[j]->setGeometry(static_cast<int>(j - i) * (col_w + kGalGap), y, col_w,
+                                        cards_[j]->sizeHint().height());
+            }
+            y += line_h + kGalGap;
+        }
+    }
+
+    std::vector<QWidget*> cards_;
+};
 
 // 五态截图登记（GrabAllPages 逐条另存 <name>.png）
 std::vector<std::pair<QString, QWidget*>>& ShotRegistry() {
@@ -238,12 +437,348 @@ int WidgetGalleryView::GrabAllPages(const std::string& outDirUtf8) {
 
 namespace {
 
+// 画廊卡片外壳：对应 webui <Card>（ui.css:175-195 的 .card + .card-h + .card-b）。
+// 用 kit 的 SectionCard —— 它就是「标题栏 + 内容区」那件（QSS 段逐值对齐 .card-h：
+// p12 16 + 底部发丝线 + 13.5px w600），无需另写一套外壳。
+shine::widgets::SectionCard* GalCard(const QString& title, QWidget* parent) {
+    auto* card = new shine::widgets::SectionCard(title, parent);
+    card->SetCollapsible(false); // 设计稿的卡片不可折叠
+    return card;
+}
+
+// .gal-row 便捷构造：把若干控件摆成一行（放不下自动折行）
+GalRow* GalRowOf(std::initializer_list<QWidget*> items, QWidget* parent) {
+    auto* row = new GalRow(parent);
+    for (QWidget* item : items) {
+        row->AddItem(item);
+    }
+    return row;
+}
+
+// 设计稿的说明小字（Gallery.jsx 里反复出现的 <div className="tiny dim">）
+QLabel* Note(const QString& text, QWidget* parent) {
+    auto* label = new QLabel(text, parent);
+    SetKind(label, "statemeta");
+    label->setWordWrap(true);
+    return label;
+}
+
 void BuildAll(WidgetGalleryView* self, QListWidget* nav, QStackedWidget* stack) {
     const auto add = [nav, stack](const QString& navText, const char* fileName, QWidget* page) {
         auto* item = new QListWidgetItem(navText, nav);
         item->setData(Qt::UserRole, QString::fromLatin1(fileName));
         stack->addWidget(page);
     };
+
+    // ================= 设计稿视图（webui Gallery.jsx 1:1） =================
+    // 一页看完设计稿陈列的全部控件：.vw-head 页头 + .gal-grid 卡片网格
+    // （views.css:394-407）。下面 9 张卡片逐张对应 Gallery.jsx 里同序的 <Card>。
+    {
+        auto* scroll = new QScrollArea();
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto* body = new QWidget(scroll);
+        auto* col = new QVBoxLayout(body);
+        shine::util::PageMargins(col); // .vw padding: 20px 24px 26px
+        shine::util::PageSpacing(col); // .vw gap: 16px
+
+        // —— .vw-head：accent 图标 + 标题 + 副标题 + 右侧 Tag（Gallery.jsx:22-30）——
+        auto* head = new QWidget(body);
+        auto* head_row = new QHBoxLayout(head);
+        head_row->setContentsMargins(0, 0, 0, 0);
+        head_row->setSpacing(14);
+        auto* head_icon = new QLabel(QStringLiteral("▦"), head);
+        SetKind(head_icon, "vsecicon");
+        head_icon->setFixedWidth(20);
+        head_row->addWidget(head_icon, 0, Qt::AlignVCenter);
+        auto* head_texts = new QWidget(head);
+        auto* head_col = new QVBoxLayout(head_texts);
+        head_col->setContentsMargins(0, 0, 0, 0);
+        head_col->setSpacing(2);
+        auto* head_title = new QLabel(QStringLiteral("组件画廊"), head_texts);
+        SetKind(head_title, "statetitle");
+        SetSemibold(head_title, true);
+        head_col->addWidget(head_title);
+        auto* head_sub = new QLabel(
+            QStringLiteral("设计稿组件总览 · 对应 Qt 端 verify/gallery · 36 个组件 / 5 组"),
+            head_texts);
+        SetKind(head_sub, "statemeta");
+        head_col->addWidget(head_sub);
+        head_row->addWidget(head_texts, 1);
+        auto* head_tag = new Tag(QStringLiteral("Web 设计稿"), "accent", false, head);
+        head_row->addWidget(head_tag, 0, Qt::AlignVCenter);
+        col->addWidget(head);
+
+        auto* grid = new GalGrid(body);
+        col->addWidget(grid);
+
+        // —— ① Button 按钮 · 变体 4 × 尺寸 3（Gallery.jsx:33-54）——
+        {
+            auto* card = GalCard(QStringLiteral("Button 按钮 · 变体 4 × 尺寸 3"), grid);
+            auto* body_lay = card->BodyLayout();
+            body_lay->addWidget(GalRowOf({new Button(QStringLiteral("主要"), Button::Variant::Primary),
+                                          new Button(QStringLiteral("次要"), Button::Variant::Secondary),
+                                          new Button(QStringLiteral("幽灵"), Button::Variant::Ghost),
+                                          new Button(QStringLiteral("危险"), Button::Variant::Danger)},
+                                         card));
+            auto* loading = new Button(QStringLiteral("加载中"), Button::Variant::Primary);
+            loading->SetLoading(true);
+            auto* disabled = new Button(QStringLiteral("禁用"), Button::Variant::Primary);
+            disabled->setEnabled(false);
+            body_lay->addWidget(GalRowOf({new Button(QStringLiteral("小号"), Button::Variant::Primary,
+                                                     Button::Size::Sm),
+                                          new Button(QStringLiteral("中号"), Button::Variant::Primary,
+                                                     Button::Size::Md),
+                                          new Button(QStringLiteral("大号"), Button::Variant::Primary,
+                                                     Button::Size::Lg),
+                                          loading, disabled},
+                                         card));
+            auto* icon_active = new IconButton(QStringLiteral("⚙"), QStringLiteral("设置"));
+            icon_active->SetActive(true);
+            body_lay->addWidget(GalRowOf({new IconButton(QStringLiteral("↻"),
+                                                         QStringLiteral("图标钮 · tooltip"),
+                                                         IconButton::Size::Sm),
+                                          new IconButton(QStringLiteral("⤓"), QStringLiteral("下载"),
+                                                         IconButton::Size::Sm),
+                                          icon_active},
+                                         card));
+            grid->AddCard(card);
+        }
+
+        // —— ② Tag / Badge / Kbd / StatusDot（Gallery.jsx:56-79）——
+        {
+            auto* card = GalCard(QStringLiteral("Tag / Badge / Kbd / StatusDot"), grid);
+            auto* body_lay = card->BodyLayout();
+            body_lay->addWidget(GalRowOf({new Tag(QStringLiteral("已提交"), "ok"),
+                                          new Tag(QStringLiteral("草稿"), "warn"),
+                                          new Tag(QStringLiteral("失败"), "danger"),
+                                          new Tag(QStringLiteral("运行中"), "busy"),
+                                          new Tag(QStringLiteral("参考就绪"), "info"),
+                                          new Tag(QStringLiteral("降级 B"), "accent"),
+                                          new Tag(QStringLiteral("待出图"))},
+                                         card));
+            auto* badge_count = new Badge(card);
+            badge_count->SetCount(5);
+            auto* badge_over = new Badge(card);
+            badge_over->SetCount(120);
+            auto* badge_dot = new Badge(card);
+            badge_dot->SetDot(true);
+            body_lay->addWidget(GalRowOf({badge_count, badge_over, badge_dot,
+                                          Note(QStringLiteral("状态标记 / 计数 / 点"), card)},
+                                         card));
+            body_lay->addWidget(GalRowOf({Note(QStringLiteral("快捷键："), card), new Kbd(QStringLiteral("Ctrl"), card),
+                                          new Kbd(QStringLiteral("K"), card), new Kbd(QStringLiteral("Ctrl"), card),
+                                          new Kbd(QStringLiteral("B"), card), new Kbd(QStringLiteral("Ctrl"), card),
+                                          new Kbd(QStringLiteral("Enter"), card)},
+                                         card));
+            grid->AddCard(card);
+        }
+
+        // —— ③ Segmented / Tabs / 进度（Gallery.jsx:81-101）——
+        {
+            auto* card = GalCard(QStringLiteral("Segmented / Tabs / 进度"), grid);
+            auto* body_lay = card->BodyLayout();
+            auto* seg = new Segmented(
+                {QStringLiteral("列表"), QStringLiteral("看板"), QStringLiteral("日/周/月")}, card);
+            seg->SetCurrent(0);
+            body_lay->addWidget(seg);
+            auto* tabs = new Tabs({QStringLiteral("剧本"), QStringLiteral("分镜"), QStringLiteral("渲染"),
+                                   QStringLiteral("设定集")},
+                                  card);
+            tabs->SetCurrent(1, false); // 设计稿默认停在「分镜」
+            body_lay->addWidget(tabs);
+            auto* prog = new ProgressBar(card);
+            prog->setValue(64);
+            prog->SetInlineText(QString());
+            prog->setTextVisible(false);
+            body_lay->addWidget(prog);
+            // 设计稿的 ± 按钮与百分比读数（Gallery.jsx:89-94）
+            auto* minus = new Button(QStringLiteral("-"), Button::Variant::Secondary,
+                                     Button::Size::Sm, card);
+            auto* plus = new Button(QStringLiteral("+"), Button::Variant::Secondary,
+                                    Button::Size::Sm, card);
+            auto* readout = Note(QStringLiteral("64%"), card);
+            const auto step = [prog, readout](int delta) {
+                const int next = std::clamp(prog->value() + delta, 0, 100);
+                prog->setValue(next);
+                readout->setText(QStringLiteral("%1%").arg(next));
+            };
+            QObject::connect(minus, &Button::clicked, card, [step] { step(-18); });
+            QObject::connect(plus, &Button::clicked, card, [step] { step(18); });
+            body_lay->addWidget(GalRowOf({minus, plus, readout}, card));
+            body_lay->addWidget(GalRowOf({new Spinner(Spinner::Size::Sm, card),
+                                          new Spinner(Spinner::Size::Md, card),
+                                          new Spinner(Spinner::Size::Lg, card),
+                                          Note(QStringLiteral("Spinner / 加载态"), card)},
+                                         card));
+            grid->AddCard(card);
+        }
+
+        // —— ④ Field 表单项 · 五态控件（Gallery.jsx:103-121）——
+        {
+            auto* card = GalCard(QStringLiteral("Field 表单项 · 五态控件"), grid);
+            auto* body_lay = card->BodyLayout();
+            auto* name_input = new TextInput(card);
+            name_input->SetPlaceholder(QStringLiteral("输入项目名称…"));
+            auto* name_field = new Field(QStringLiteral("项目名称"), Field::LabelPos::Top, name_input, card);
+            name_field->SetHelp(QStringLiteral("例如：灯语回声"));
+            body_lay->addWidget(name_field);
+
+            auto* vendor = new Select(false, false, card);
+            vendor->SetItems({{QStringLiteral("小米 MiMo")}, {QStringLiteral("OpenAI 兼容")},
+                               {QStringLiteral("自定义端点")}});
+            auto* vendor_field = new Field(QStringLiteral("供应商"), Field::LabelPos::Top, vendor, card);
+
+            auto* switches = new QWidget(card);
+            auto* switch_col = new QVBoxLayout(switches);
+            switch_col->setContentsMargins(0, 18, 0, 0);
+            switch_col->setSpacing(8);
+            auto* auto_run = new Toggle(switches);
+            auto_run->SetChecked(true);
+            switch_col->addWidget(GalRowOf({Note(QStringLiteral("自动运行"), switches), auto_run}, switches));
+            auto* degrade = new Checkbox(QStringLiteral("允许超期降级"), switches);
+            degrade->SetChecked(true);
+            switch_col->addWidget(degrade);
+            body_lay->addWidget(GalRowOf({vendor_field, switches}, card));
+
+            auto* note_area = new TextArea(500, card);
+            note_area->Edit()->setPlaceholderText(QStringLiteral("TextArea · 可拖拽调整高度…"));
+            body_lay->addWidget(
+                new Field(QStringLiteral("备注"), Field::LabelPos::Top, note_area, card));
+            grid->AddCard(card);
+        }
+
+        // —— ⑤ DataTable 表格 · 排序 / 筛选 / 选中（Gallery.jsx:123-138）——
+        {
+            auto* card = GalCard(QStringLiteral("DataTable 表格 · 排序 / 筛选 / 选中"), grid);
+            auto* table = new shine::data::DataTable(QStringLiteral("gallerydesign"), card);
+            table->SetColumns({{"idx", QStringLiteral("#"), 44},
+                               {"code", QStringLiteral("镜号"), 80},
+                               {"mood", QStringLiteral("情绪"), 72},
+                               {"dur", QStringLiteral("时长"), 64},
+                               {"state", QStringLiteral("状态"), 88}});
+            table->SetRows({{QStringLiteral("01"), QStringLiteral("S01"), QStringLiteral("静谧"),
+                             QStringLiteral("3.5s"), QStringLiteral("完成")},
+                            {QStringLiteral("02"), QStringLiteral("S02"), QStringLiteral("温柔"),
+                             QStringLiteral("2.8s"), QStringLiteral("完成")},
+                            {QStringLiteral("03"), QStringLiteral("S04"), QStringLiteral("怅然"),
+                             QStringLiteral("2.2s"), QStringLiteral("生成中")},
+                            {QStringLiteral("04"), QStringLiteral("S05"), QStringLiteral("紧张"),
+                             QStringLiteral("4.1s"), QStringLiteral("生成中")},
+                            {QStringLiteral("05"), QStringLiteral("S06"), QStringLiteral("惊喜"),
+                             QStringLiteral("3.0s"), QStringLiteral("待出图")}});
+            table->selectRow(2); // 设计稿里高亮的是第 3 行（S04）
+            table->setFixedHeight(230);
+            card->BodyLayout()->addWidget(table);
+            grid->AddCard(card);
+        }
+
+        // —— ⑥ StageFlow 阶段流 · 节点四态（Gallery.jsx:140-146）——
+        {
+            auto* card = GalCard(QStringLiteral("StageFlow 阶段流 · 节点四态"), grid);
+            auto* body_lay = card->BodyLayout();
+            auto* flow_scroll = new QScrollArea(card);
+            flow_scroll->setFrameShape(QFrame::NoFrame);
+            flow_scroll->setWidgetResizable(false);
+            flow_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+            flow_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            auto* flow = new shine::data::StageFlow(flow_scroll);
+            flow->SetGraph(
+                {
+                    {"T1", QStringLiteral("章节初始化"), shine::data::StageFlow::NodeState::Done, QString{}},
+                    {"T2", QStringLiteral("本章目标"), shine::data::StageFlow::NodeState::Done, QString{}},
+                    {"T3", QStringLiteral("大纲"), shine::data::StageFlow::NodeState::Running, QString{}},
+                    {"T11", QStringLiteral("正文写作"), shine::data::StageFlow::NodeState::Todo, QString{}},
+                    {"T12", QStringLiteral("章节评审"), shine::data::StageFlow::NodeState::Failed, QString{}},
+                    {"T16", QStringLiteral("状态提交"), shine::data::StageFlow::NodeState::Todo, QString{}},
+                },
+                {});
+            // 无支线 → 行高 = snode 30 + 上下留白；84 足够（与 PipelineWorkspace 同值）。
+            // 外层滚动壳比内容高 12px，给横向滚动条留位（views.css:814-821 overflow-x:auto）。
+            flow->setFixedHeight(84);
+            flow_scroll->setWidget(flow);
+            flow_scroll->setFixedHeight(96);
+            body_lay->addWidget(flow_scroll);
+            body_lay->addWidget(Note(
+                QStringLiteral("todo / running / done / failed / skipped —— 小说 T1–T17、初始化 I1–I16、"
+                               "分镜 V1–V8、连续性 C1–C12 通用。"),
+                card));
+            auto* kv = new shine::data::KeyValue(card);
+            kv->SetPairs({{QStringLiteral("阶段产物"), QStringLiteral("214 个")},
+                          {QStringLiteral("LLM 调用"), QStringLiteral("86 次 · 高档 12")},
+                          {QStringLiteral("估算成本"), QStringLiteral("¥12.40")}});
+            body_lay->addWidget(kv);
+            grid->AddCard(card);
+        }
+
+        // —— ⑦ Art 占位画 · 程序化生成（Gallery.jsx:148-155）——
+        // kit 无 Art 控件：设计稿的 SVG 占位画在此用等尺寸程序化渐变图代替，
+        // 尺寸（92×60）与排布与设计稿一致，颜色仍走当前主题 Token。
+        {
+            auto* card = GalCard(QStringLiteral("Art 占位画 · 程序化生成"), grid);
+            const auto art_row = GalRowOf({}, card);
+            for (int seed = 0; seed < 6; ++seed) {
+                auto* art = new QLabel(art_row);
+                art->setFixedSize(92, 60);
+                QImage img(92, 60, QImage::Format_RGB32);
+                const shine::theme::ColorToken& t = shine::theme::Current();
+                const QColor top = shine::widgets::TokenQColor(t.bgPanel);
+                const QColor bottom = shine::widgets::TokenQColor(t.accentPrimary);
+                for (int y = 0; y < 60; ++y) {
+                    for (int x = 0; x < 92; ++x) {
+                        img.setPixelColor(x, y, QColor::fromRgbF(
+                                                     top.redF() + (bottom.redF() - top.redF()) * y / 59.0,
+                                                     top.greenF() + (bottom.greenF() - top.greenF()) * y / 59.0,
+                                                     top.blueF() + (bottom.blueF() - top.blueF()) * y / 59.0));
+                    }
+                }
+                art->setPixmap(QPixmap::fromImage(img));
+                art_row->AddItem(art);
+            }
+            card->BodyLayout()->addWidget(art_row);
+            card->BodyLayout()->addWidget(
+                Note(QStringLiteral("无外部资源 · 程序化渐变占位，种子决定配色与构图。"), card));
+            grid->AddCard(card);
+        }
+
+        // —— ⑧ 空态 / 反馈（Gallery.jsx:164-177）——
+        {
+            auto* card = GalCard(QStringLiteral("空态 / 反馈"), grid);
+            auto* body_lay = card->BodyLayout();
+            auto* empty = new EmptyState(QStringLiteral("🗒"), QStringLiteral("还没有项目"),
+                                         QStringLiteral("新建一个项目，开始你的第一部作品"),
+                                         QStringLiteral("新建项目"), card);
+            body_lay->addWidget(empty);
+            auto* info = new Button(QStringLiteral("Info"), Button::Variant::Secondary,
+                                    Button::Size::Sm, card);
+            auto* success = new Button(QStringLiteral("Success"), Button::Variant::Primary,
+                                       Button::Size::Sm, card);
+            auto* warning = new Button(QStringLiteral("Warning"), Button::Variant::Secondary,
+                                       Button::Size::Sm, card);
+            auto* error = new Button(QStringLiteral("Error"), Button::Variant::Danger,
+                                     Button::Size::Sm, card);
+            QObject::connect(info, &Button::clicked, card,
+                    [] { shine::widgets::Toast::Show(QStringLiteral("Info 提示：普通信息反馈")); });
+            QObject::connect(success, &Button::clicked, card,
+                    [] { shine::widgets::Toast::Show(QStringLiteral("Success：操作已成功完成"),
+                                                     shine::widgets::Toast::Tone::Success); });
+            QObject::connect(warning, &Button::clicked, card,
+                    [] { shine::widgets::Toast::Show(QStringLiteral("Warning：ComfyUI 未连接"),
+                                                     shine::widgets::Toast::Tone::Warning); });
+            QObject::connect(error, &Button::clicked, card,
+                    [] { shine::widgets::Toast::Show(QStringLiteral("Error：KSampler.seed 缺数据"),
+                                                     shine::widgets::Toast::Tone::Error); });
+            body_lay->addWidget(GalRowOf({info, success, warning, error}, card));
+            body_lay->addWidget(
+                Note(QStringLiteral("Toast 四色 · 右下角弹出 · 4s 自动消失（error 8s）。"), card));
+            grid->AddCard(card);
+        }
+
+        col->addStretch(1);
+        scroll->setWidget(body);
+        add(QStringLiteral("组件画廊（设计稿）"), "GalleryDesign", scroll);
+    }
 
     // ---------------- Button ----------------
     {

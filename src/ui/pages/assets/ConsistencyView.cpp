@@ -1,8 +1,10 @@
 #include "ui/pages/assets/ConsistencyView.h"
 
 #include "ui/pages/novel/WorldBoardShared.h"
+#include "ui/kit/data/Panels.h"
 #include "ui/kit/images/Viewer.h"
 #include "ui/kit/theme/Theme.h"
+#include "ui/kit/theme/CssColor.h"
 #include "ui/kit/controls/Controls.h"
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/WidgetCommon.h"
@@ -25,11 +27,22 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include <yyjson.h>
 
 namespace shine::app {
 namespace {
+
+// —— webui Assets.jsx CompareFlat（views.css:898-942 对应的 JSX 结构）——
+//   grid-template-columns: minmax(0, 640px) minmax(220px, 1fr); gap: 16px
+//   .compare: width 100% / maxWidth 640 / aspectRatio 16:10 / alignSelf start
+constexpr int kCompareMaxWidth = 640;
+constexpr int kCompareHeight = 400; // 640 × 10/16
+constexpr int kCompareGap = 16;
+// .dlist .drow：padding 8px 2px / border-bottom line-subtle / f12.5 / hover fill-hover
+constexpr int kDiffRowPadV = 8;
+constexpr int kDiffRowPadH = 2;
 
 [[nodiscard]] bool ShotHasEntity(std::string_view json, shine::novelcore::RowId entityId) {
     yyjson_doc* doc = yyjson_read(json.data(), json.size(), 0);
@@ -144,13 +157,31 @@ void ConsistencyView::BuildUi() {
     compare_mode_->SetCurrent(1);
     outer->addWidget(compare_mode_);
 
-    compare_ = new images::CompareView(this);
+    // CompareFlat 的两列：舞台 minmax(0, 640px) + 信息列 minmax(220px, 1fr)，gap 16px
+    auto* compare_row = new QWidget(this);
+    auto* compare_row_layout = new QHBoxLayout(compare_row);
+    compare_row_layout->setContentsMargins(0, 0, 0, 0);
+    compare_row_layout->setSpacing(kCompareGap);
+
+    compare_ = new images::CompareView(compare_row);
     compare_->SetMode(images::CompareView::Mode::Wipe); // 与上方 Segmented 的「滑动」保持一致
-    compare_->setMinimumHeight(300);
-    outer->addWidget(compare_);
+    // .compare { width 100% / maxWidth 640 / aspectRatio 16:10 }：
+    // Qt 侧没有 aspect-ratio，用 640×400 定点还原（= 16:10），alignSelf: start = 顶对齐。
+    compare_->setFixedSize(kCompareMaxWidth, kCompareHeight);
+    compare_row_layout->addWidget(compare_, 0, Qt::AlignTop);
+
+    compare_side_ = new QWidget(compare_row);
+    compare_side_->setMinimumWidth(220); // CompareFlat 的 minmax(220px, 1fr) 下限
+    compare_side_layout_ = new QVBoxLayout(compare_side_);
+    compare_side_layout_->setContentsMargins(0, theme::space::kSteps[1], 0, 0);
+    compare_side_layout_->setSpacing(theme::space::kSteps[2]);
+    compare_row_layout->addWidget(compare_side_, 1);
+    outer->addWidget(compare_row);
+
     compare_result_ = new QLabel(QStringLiteral("选择至少两张同角色镜头图后开始对比。"), this);
     compare_result_->setWordWrap(true);
-    widgets::SetKind(compare_result_, "statedetail");
+    widgets::SetKind(compare_result_, "statemeta");
+    compare_result_->setStyleSheet(QStringLiteral("font-size: 12px;"));
     outer->addWidget(compare_result_);
 
     compare_mode_->SetOnChanged([this](int index) {
@@ -199,8 +230,26 @@ bool ConsistencyView::ShowAsset(shine::db::sqlite::Database& db, novelcore::Nove
     asset_ = asset;
     entity_id_ = entityId;
     projectDir_ = projectDir;
+
+    auto chapters = graph.ListChapters(1000);
+    // 章节行 id → 章序。visual_states.from_chapter 与 character_status.chapter_id 存的都是
+    // 行 id，直接当章号显示会得到「第 1042 章」这种假数据，必须先换算成 ord。
+    std::unordered_map<novelcore::RowId, int> chapter_ord;
+    if (chapters) {
+        for (const novelcore::ChapterRow& chapter : *chapters) {
+            chapter_ord.emplace(chapter.id, chapter.ord);
+        }
+    }
+    const auto ord_of = [&chapter_ord](novelcore::RowId chapterId) {
+        const auto found = chapter_ord.find(chapterId);
+        return found == chapter_ord.end() ? 0 : found->second;
+    };
+
     for (const auto& state : *state_result) {
-        StateLine line{.state = state, .tone = "ok", .note = QStringLiteral("与基线一致")};
+        StateLine line{.state = state,
+                       .chapter_ord = ord_of(state.from_chapter),
+                       .tone = "ok",
+                       .note = QStringLiteral("与基线一致")};
         if (!states_.empty()) {
             const auto& baseline = states_.front().state;
             const bool appearance_changed = state.appearance != baseline.appearance;
@@ -216,10 +265,11 @@ bool ConsistencyView::ShowAsset(shine::db::sqlite::Database& db, novelcore::Nove
         states_.push_back(std::move(line));
     }
     for (const auto& status : *status_result) {
-        emotions_.push_back({.status = status, .summary = EmotionSummary(status.emotion_json)});
+        emotions_.push_back({.status = status,
+                             .chapter_ord = ord_of(status.chapter_id),
+                             .summary = EmotionSummary(status.emotion_json)});
     }
 
-    auto chapters = graph.ListChapters(1000);
     std::unordered_map<novelcore::RowId, int> matched_shots;
     if (chapters) {
         for (const auto& chapter : *chapters) {
@@ -287,6 +337,9 @@ void ConsistencyView::Clear() {
     if (compare_result_ != nullptr) {
         compare_result_->setText(QStringLiteral("选择至少两张同角色镜头图后开始对比。"));
     }
+    if (compare_side_layout_ != nullptr) {
+        ClearLayout(compare_side_layout_);
+    }
 }
 
 void ConsistencyView::Rebuild() {
@@ -310,10 +363,17 @@ void ConsistencyView::Rebuild() {
             auto* head = new QWidget(card);
             auto* head_layout = new QHBoxLayout(head);
             head_layout->setContentsMargins(0, 0, 0, 0);
-            auto* title = new QLabel(QStringLiteral("第 %1 章 · %2")
-                                          .arg(line.state.from_chapter)
-                                          .arg(QString::fromStdString(line.state.stage_label)),
-                                      head);
+            // 章号取 ord；from_chapter 是行 id，直接显示会得到假章号。
+            const QString where =
+                line.chapter_ord > 0 ? QStringLiteral("第 %1 章").arg(line.chapter_ord)
+                                     : QStringLiteral("章节未定位（#%1）")
+                                           .arg(line.state.from_chapter);
+            auto* title = new QLabel(
+                QStringLiteral("%1 · %2")
+                    .arg(where, line.state.stage_label.empty()
+                                    ? QString::fromStdString(line.state.stage_key)
+                                    : QString::fromStdString(line.state.stage_label)),
+                head);
             widgets::SetSemibold(title, true);
             head_layout->addWidget(title, 1);
             head_layout->addWidget(new widgets::Tag(line.note, line.tone, false, head));
@@ -331,15 +391,18 @@ void ConsistencyView::Rebuild() {
     content_layout_->addWidget(SectionLabel(content_, QStringLiteral("表情基线")));
     if (emotions_.empty()) {
         auto* hint = new QLabel(QStringLiteral("character_status.emotion_json 暂无记录。"), content_);
-        widgets::SetKind(hint, "statedetail");
+        widgets::SetKind(hint, "statemeta");
+        hint->setStyleSheet(QStringLiteral("font-size: 12px;"));
         content_layout_->addWidget(hint);
     } else {
         for (const auto& line : emotions_) {
             auto* row = new QWidget(content_);
             auto* row_layout = new QHBoxLayout(row);
             row_layout->setContentsMargins(0, 0, 0, 0);
-            row_layout->addWidget(new QLabel(QStringLiteral("第 %1 章").arg(line.status.chapter_id),
-                                             row));
+            row_layout->addWidget(new QLabel(
+                line.chapter_ord > 0 ? QStringLiteral("第 %1 章").arg(line.chapter_ord)
+                                     : QStringLiteral("章节未定位（#%1）").arg(line.status.chapter_id),
+                row));
             row_layout->addWidget(new widgets::Tag(line.summary, "accent", false, row), 1);
             content_layout_->addWidget(row);
         }
@@ -359,6 +422,83 @@ void ConsistencyView::Rebuild() {
         compare_result_->setText(QStringLiteral("同角色镜头图不足两张；已找到 %1 张。")
                                      .arg(static_cast<int>(frames_.size())));
     }
+    RebuildCompareSide();
+}
+
+// webui Assets.jsx CompareFlat 的右列：<KV rows={对比对象 / 基线帧 / 当前帧 / 检测项}>
+// 紧跟一段 .dlist 差异行（k dim 撑开 + v 按 ok/warn 上色）。
+// 「仅重跑差异项」按钮在设计稿里是演示 notify，本页没有对应的真实后端，故不放。
+void ConsistencyView::RebuildCompareSide() {
+    if (compare_side_layout_ == nullptr) {
+        return;
+    }
+    ClearLayout(compare_side_layout_);
+    if (asset_.id <= 0) {
+        return;
+    }
+
+    const auto chapter_of = [](int ord) {
+        return ord > 0 ? QStringLiteral("第 %1 章").arg(ord) : QStringLiteral("未定位");
+    };
+    const QString first_label = states_.empty()
+                                    ? QStringLiteral("暂无")
+                                    : chapter_of(states_.front().chapter_ord);
+    const QString last_label =
+        states_.empty() ? QStringLiteral("暂无") : chapter_of(states_.back().chapter_ord);
+
+    // 检测项口径 = 已登记的外观基线段数 + 已比对镜头对数，全部来自真库行数
+    const QString verdict =
+        difference_ < 0        ? QStringLiteral("未比对")
+        : difference_ <= 0.02  ? QStringLiteral("全部一致")
+        : difference_ <= 0.12  ? QStringLiteral("轻微差异")
+                               : QStringLiteral("显著差异");
+    auto* kv = new data::KeyValue(compare_side_);
+    kv->SetPairs({
+        {QStringLiteral("对比对象"), QStringLiteral("按章外观基线 · %1").arg(
+                                             QString::fromStdString(asset_.name))},
+        {QStringLiteral("基线帧"), first_label},
+        {QStringLiteral("当前帧"), last_label},
+        {QStringLiteral("检测项"), QStringLiteral("外观 %1 段 · 镜头 %2 张 · 判定 %3")
+                                        .arg(static_cast<int>(states_.size()))
+                                        .arg(static_cast<int>(frames_.size()))
+                                        .arg(verdict)},
+    });
+    compare_side_layout_->addWidget(kv);
+
+    // .dlist .drow：逐段对照基线，外观 / 色彩两项分开判，避免一格混判
+    if (states_.size() >= 2) {
+        compare_side_layout_->addWidget(SectionLabel(compare_side_, QStringLiteral("差异项")));
+        const auto& baseline = states_.front().state;
+        for (std::size_t i = 1; i < states_.size(); ++i) {
+            const StateLine& line = states_[i];
+            const bool appearance_changed = line.state.appearance != baseline.appearance;
+            const bool colors_changed = line.state.materials_colors != baseline.materials_colors;
+            const auto add = [this](const QString& key, bool changed) {
+                auto* row = new QWidget(compare_side_);
+                auto* row_layout = new QHBoxLayout(row);
+                // views.css:301 .dlist .drow { padding: 8px 2px; gap: 8px }
+                row_layout->setContentsMargins(kDiffRowPadH, kDiffRowPadV, kDiffRowPadH, kDiffRowPadV);
+                row_layout->setSpacing(8);
+                auto* name = new QLabel(key, row);
+                widgets::SetKind(name, "statemeta");
+                name->setStyleSheet(QStringLiteral("font-size: 12px;"));
+                row_layout->addWidget(name, 1);
+                auto* value = new QLabel(changed ? QStringLiteral("变化（预期内）")
+                                                  : QStringLiteral("一致"),
+                                         row);
+                // .dlist .drow 的 v 色：一律 status.ok，一变 status.warn
+                value->setStyleSheet(
+                    QStringLiteral("color: %1;")
+                        .arg(widget::CssRgb(changed ? theme::Current().statusWarn
+                                                    : theme::Current().statusOk)));
+                row_layout->addWidget(value);
+                compare_side_layout_->addWidget(row);
+            };
+            add(QStringLiteral("外观 / 服装"), appearance_changed);
+            add(QStringLiteral("色彩基调"), colors_changed);
+        }
+    }
+    compare_side_layout_->addStretch(1);
 }
 
 void ConsistencyView::ShowError(const QString& detail) {
