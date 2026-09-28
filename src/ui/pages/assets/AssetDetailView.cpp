@@ -62,6 +62,26 @@ constexpr std::array<LayerSpec, 4> kLayers{{
     return "warn";
 }
 
+// webui .vsec-h：accent 字符图标 + 13.5px w700 标题 + 右侧补充说明
+QWidget* MakeVSecHead(const QString& icon, const QString& text, QWidget* parent,
+                      QLabel** title_out = nullptr) {
+    auto* head = new QWidget(parent);
+    auto* row = new QHBoxLayout(head);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(9);
+    auto* glyph = new QLabel(icon, head);
+    widgets::SetKind(glyph, "vsecicon");
+    glyph->setFixedWidth(15);
+    row->addWidget(glyph);
+    auto* title = new QLabel(text, head);
+    widgets::SetKind(title, "vsechead");
+    row->addWidget(title);
+    row->addStretch(1);
+    if (title_out != nullptr) {
+        *title_out = title;
+    }
+    return head;
+}
 
 } // namespace
 std::string AssetDetailView::ArtifactPath(const LayerData& layer) {
@@ -88,11 +108,17 @@ void AssetDetailView::BuildUi() {
     auto* title_layout = new QVBoxLayout(titles);
     title_layout->setContentsMargins(0, 0, 0, 0);
     title_layout->setSpacing(2);
-    title_ = widgets::SectionTitle(QStringLiteral("资产详情 · 未选择"), titles);
+    // 分区一「设定集」：webui .vsec —— 无卡片框，靠底部发丝线与下一区分开
+    auto* vsec = new QWidget(this);
+    widgets::SetKind(vsec, "vsec");
+    auto* sec_layout = new QVBoxLayout(vsec);
+    sec_layout->setContentsMargins(0, 0, 0, 0);
+    sec_layout->setSpacing(theme::space::kSteps[2]);
+    title_layout->addWidget(
+        MakeVSecHead(QStringLiteral("◈"), QStringLiteral("资产详情 · 未选择"), titles, &title_));
     subtitle_ = new QLabel(QStringLiteral("选择资产后显示正脸、四视图、基础身体与服装。"), titles);
     subtitle_->setWordWrap(true);
     widgets::SetKind(subtitle_, "statedetail");
-    title_layout->addWidget(title_);
     title_layout->addWidget(subtitle_);
     runtime_label_ = new QLabel(titles);
     runtime_label_->setWordWrap(true);
@@ -113,9 +139,10 @@ void AssetDetailView::BuildUi() {
     export_->setToolTip(QStringLiteral("使用 SheetGrid 导出当前可用层与缺层占位"));
     export_->setEnabled(false);
     header_layout->addWidget(export_);
-    outer->addWidget(header);
+    sec_layout->addWidget(header);
+    outer->addWidget(vsec, 1);
 
-    auto* scroll = new QScrollArea(this);
+    auto* scroll = new QScrollArea(vsec);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -126,14 +153,24 @@ void AssetDetailView::BuildUi() {
     cards_layout_->setVerticalSpacing(theme::space::kSteps[2]);
     cards_layout_->setAlignment(Qt::AlignTop | Qt::AlignLeft);
     scroll->setWidget(cards_);
-    outer->addWidget(scroll, 1);
+    sec_layout->addWidget(scroll, 1);
 
-    auto* chain_title = SectionLabel(this, QStringLiteral("派生链"));
-    outer->addWidget(chain_title);
-    flow_ = new data::StageFlow(this);
-    flow_->setMinimumHeight(112);
-    flow_->setToolTip(QStringLiteral("正脸 → 四视图 → 基础身体 → 服装；点击节点可查看对应产物"));
-    outer->addWidget(flow_);
+    // 分区二「V0 派生链」：webui .derive —— 108px 节点 + 22px 连线
+    auto* chain_sec = new QWidget(this);
+    widgets::SetKind(chain_sec, "vsec");
+    auto* chain_layout = new QVBoxLayout(chain_sec);
+    chain_layout->setContentsMargins(0, 0, 0, 0);
+    chain_layout->setSpacing(theme::space::kSteps[1]);
+    chain_layout->addWidget(MakeVSecHead(
+        QStringLiteral("⑂"), QStringLiteral("V0 派生链 · 正脸 → 四视图 → 基础身体 → 服装"),
+        chain_sec));
+    derive_ = new QWidget(chain_sec);
+    derive_row_ = new QHBoxLayout(derive_);
+    derive_row_->setContentsMargins(2, 6, 2, 6);
+    derive_row_->setSpacing(0);
+    derive_row_->addStretch(1);
+    chain_layout->addWidget(derive_);
+    outer->addWidget(chain_sec);
 
     connect(export_, &QPushButton::clicked, this, &AssetDetailView::ExportSheet);
     policy_ = new AssetPolicyPanel(this);
@@ -243,9 +280,83 @@ void AssetDetailView::Clear() {
     if (policy_ != nullptr) {
         policy_->SetRuntimeState({}, {}, {}, false, false);
     }
-    if (flow_ != nullptr) {
-        flow_->SetGraph({}, {});
+    if (derive_row_ != nullptr) {
+        while (QLayoutItem* item = derive_row_->takeAt(0)) {
+            if (QWidget* widget = item->widget()) {
+                widget->deleteLater();
+            }
+            delete item;
+        }
+        derive_row_->addStretch(1);
     }
+}
+
+// webui .derive：横向节点链（节点 108px + 连线 22px）；已就绪的层填 accent 连线
+void AssetDetailView::RebuildDerive() {
+    if (derive_row_ == nullptr) {
+        return;
+    }
+    while (QLayoutItem* item = derive_row_->takeAt(0)) {
+        if (QWidget* widget = item->widget()) {
+            widget->deleteLater();
+        }
+        delete item;
+    }
+    for (std::size_t i = 0; i < layers_.size(); ++i) {
+        LayerData& data = layers_[i];
+        if (i > 0) {
+            auto* link = new QFrame(derive_);
+            widgets::SetKind(link, "derivelink");
+            link->setFixedSize(22, 2);
+            if (data.ready) {
+                link->setProperty("fill", QStringLiteral("true"));
+                widgets::Repolish(link);
+            }
+            derive_row_->addWidget(link);
+        }
+        auto* node = new QFrame(derive_);
+        widgets::SetKind(node, "derivenode");
+        node->setFixedWidth(108);
+        node->setToolTip(QStringLiteral("%1 · %2").arg(data.title, ArtifactState(
+            data.artifact ? data.artifact->status : "PENDING")));
+        auto* body = new QVBoxLayout(node);
+        body->setContentsMargins(0, 0, 0, 0);
+        body->setSpacing(0);
+
+        auto* thumb = new QLabel(QStringLiteral("▧"), node);
+        widgets::SetKind(thumb, "tlthumb");
+        thumb->setFixedHeight(64);
+        thumb->setAlignment(Qt::AlignCenter);
+        if (data.ready) {
+            const std::filesystem::path path = ResolvePath(ArtifactPath(data));
+            QImageReader reader(QString::fromStdString(util::PathToUtf8(path)));
+            reader.setAutoTransform(true);
+            const QImage image = reader.read();
+            if (!image.isNull()) {
+                thumb->setPixmap(QPixmap::fromImage(
+                    image.scaled(106, 64, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
+            }
+        }
+        body->addWidget(thumb);
+
+        auto* label = new QWidget(node);
+        auto* label_row = new QHBoxLayout(label);
+        label_row->setContentsMargins(8, 6, 8, 6);
+        label_row->setSpacing(5);
+        auto* dot = new QLabel(data.ready ? QStringLiteral("●") : QStringLiteral("○"), label);
+        widgets::SetKind(dot, "tlpin");
+        dot->setProperty("hot", data.ready ? QStringLiteral("true") : QString{});
+        widgets::Repolish(dot);
+        dot->setFixedSize(10, 10);
+        label_row->addWidget(dot);
+        auto* text = new widgets::ElidedLabel(data.title, label);
+        text->SetExpandable(false);
+        label_row->addWidget(text);
+        body->addWidget(label);
+
+        derive_row_->addWidget(node);
+    }
+    derive_row_->addStretch(1);
 }
 
 AssetPolicy AssetDetailView::Policy() const {
@@ -296,19 +407,17 @@ void AssetDetailView::SetRuntimeState(QString phase, QString detail, QStringList
 }
 
 void AssetDetailView::Rebuild() {
-    if (cards_layout_ == nullptr || flow_ == nullptr) {
+    if (cards_layout_ == nullptr || derive_row_ == nullptr) {
         return;
     }
     ClearLayout(cards_layout_);
 
-    title_->setText(QString::fromStdString(asset_.name));
+    title_->setText(QStringLiteral("资产详情 · %1").arg(QString::fromStdString(asset_.name)));
     subtitle_->setText(QStringLiteral("资产 #%1 · %2 · 状态 %3")
                            .arg(asset_.id)
                            .arg(QString::fromStdString(asset_.kind),
                                 QString::fromStdString(asset_.status)));
 
-    std::vector<data::StageFlow::Node> nodes;
-    std::vector<data::StageFlow::Link> links;
     int ready_count = 0;
     for (std::size_t i = 0; i < layers_.size(); ++i) {
         LayerData& data = layers_[i];
@@ -392,22 +501,8 @@ void AssetDetailView::Rebuild() {
         }
         body->addStretch(1);
         cards_layout_->addWidget(card, static_cast<int>(i / 2), static_cast<int>(i % 2));
-
-        data::StageFlow::Node node;
-        node.id = QString::fromStdString(data.key);
-        node.title = data.title;
-        node.state = data.ready ? data::StageFlow::NodeState::Done
-                     : data.artifact && data.artifact->status == "RUNNING"
-                         ? data::StageFlow::NodeState::Running
-                     : data.artifact && data.artifact->status == "FAILED"
-                         ? data::StageFlow::NodeState::Failed
-                         : data::StageFlow::NodeState::Todo;
-        nodes.push_back(std::move(node));
-        if (!data.parent_key.empty()) {
-            links.push_back({QString::fromStdString(data.parent_key), QString::fromStdString(data.key)});
-        }
     }
-    flow_->SetGraph(std::move(nodes), std::move(links));
+    RebuildDerive();
     export_->setEnabled(ready_count > 0);
     if (generate_all_ != nullptr) {
         generate_all_->setEnabled(asset_.status != "READY" && !runtime_active_);

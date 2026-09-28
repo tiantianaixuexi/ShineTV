@@ -28,6 +28,10 @@ class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 
+namespace shine::widgets {
+class Chip;
+} // namespace shine::widgets
+
 namespace shine::db::sqlite {
 class Database;
 }
@@ -146,7 +150,7 @@ class AssetWorkspace : public QWidget {
     QWidget* nav_box_ = nullptr;
     ConsistencyView* consistency_ = nullptr;
     RefLibraryView* references_ = nullptr;
-    std::array<QPushButton*, 5> kindButtons_{};
+    std::array<shine::widgets::Chip*, 5> kindButtons_{};
 };
 
 } // namespace shine::app

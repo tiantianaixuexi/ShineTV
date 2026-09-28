@@ -325,4 +325,57 @@ void Segmented::Select(int index) {
     }
 }
 
+// ======================================================================= Chip
+
+Chip::Chip(const QString& text, const char* tone, QWidget* parent) : QPushButton(text, parent) {
+    SetKind(this, "chip");
+    if (tone != nullptr && *tone != '\0') {
+        setProperty("tone", QString::fromLatin1(tone));
+    }
+    setCursor(Qt::PointingHandCursor);
+    setCheckable(true);
+    setFocusPolicy(Qt::StrongFocus);
+    setToolTip(text);
+    base_text_ = text;
+    connect(this, &QPushButton::clicked, this, [this] {
+        on_ = !on_;
+        Apply();
+        if (on_toggled_) {
+            on_toggled_(on_);
+        }
+    });
+    Apply();
+}
+
+void Chip::Apply() {
+    setChecked(on_);
+    setProperty("on", on_ ? QStringLiteral("true") : QString{});
+    Repolish(this);
+}
+
+void Chip::SetOn(bool on) {
+    if (on_ == on) {
+        return;
+    }
+    on_ = on;
+    Apply();
+}
+
+void Chip::SetBaseText(const QString& text) {
+    base_text_ = text;
+    setToolTip(text);
+    SetCount(count_);
+}
+
+// 计数直接进按钮文字：QPushButton 一旦挂 QLayout，子控件会和它自绘的文字抢位置
+// （文字被布局裁掉、计数压在文字上）。webui 的 .chip .cnt 是独立小胶囊，
+// Qt 这里退化为「标签 + 空格 + 计数」，语义一致、外观略简。
+void Chip::SetCount(int n) {
+    count_ = n;
+    setText(n < 0 ? base_text_
+                  : QStringLiteral("%1 %2").arg(base_text_).arg(n));
+    setToolTip(n < 0 ? base_text_
+                     : QStringLiteral("%1 · %2 项").arg(base_text_).arg(n));
+}
+
 } // namespace shine::widgets

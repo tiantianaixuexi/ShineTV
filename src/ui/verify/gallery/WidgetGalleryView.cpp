@@ -64,16 +64,33 @@ using shine::widgets::TextInput;
 using shine::widgets::Toggle;
 using shine::widgets::Toolbar;
 
-// 页面骨架：标题 + 若干行
+// 页面骨架：accent 字符图标 + 标题 + 副标题（webui .vw-head / .vw-title / .vw-sub）+ 若干行
 QWidget* Page(const QString& title) {
     auto* w = new QWidget();
     auto* col = new QVBoxLayout(w);
     col->setContentsMargins(16, 12, 16, 12);
     col->setSpacing(10);
-    auto* t = new QLabel(title, w);
+    auto* head = new QWidget(w);
+    auto* head_row = new QHBoxLayout(head);
+    head_row->setContentsMargins(0, 0, 0, 0);
+    head_row->setSpacing(14);
+    auto* icon = new QLabel(QStringLiteral("▦"), head);
+    SetKind(icon, "vsecicon");
+    icon->setFixedWidth(20);
+    head_row->addWidget(icon);
+    auto* texts = new QWidget(head);
+    auto* text_col = new QVBoxLayout(texts);
+    text_col->setContentsMargins(0, 0, 0, 0);
+    text_col->setSpacing(2);
+    auto* t = new QLabel(title, texts);
     SetKind(t, "statetitle");
     SetSemibold(t, true);
-    col->addWidget(t);
+    text_col->addWidget(t);
+    auto* sub = new QLabel(QStringLiteral("kit 控件 · 与 webui 设计稿逐元素对照"), texts);
+    SetKind(sub, "statemeta");
+    text_col->addWidget(sub);
+    head_row->addWidget(texts, 1);
+    col->addWidget(head);
     col->addStretch(1);
     return w;
 }

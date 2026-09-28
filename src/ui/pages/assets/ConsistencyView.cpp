@@ -140,10 +140,12 @@ void ConsistencyView::BuildUi() {
     outer->addWidget(compare_title);
     compare_mode_ = new widgets::Segmented(
         {QStringLiteral("并排"), QStringLiteral("滑动"), QStringLiteral("差异")}, this);
-    compare_mode_->SetCurrent(0);
+    // webui Assets 的「一致性对比」默认就是拖中线的滑动对比（.compare + handle）
+    compare_mode_->SetCurrent(1);
     outer->addWidget(compare_mode_);
 
     compare_ = new images::CompareView(this);
+    compare_->SetMode(images::CompareView::Mode::Wipe); // 与上方 Segmented 的「滑动」保持一致
     compare_->setMinimumHeight(300);
     outer->addWidget(compare_);
     compare_result_ = new QLabel(QStringLiteral("选择至少两张同角色镜头图后开始对比。"), this);

@@ -185,15 +185,14 @@ void AssetWorkspace::BuildUi() {
         QString::fromStdString(std::string{kAssetEntityKinds[2].key}),
         QString::fromStdString(std::string{kAssetEntityKinds[3].key})};
     for (std::size_t i = 0; i < kindButtons_.size(); ++i) {
-        kindButtons_[i] = new widgets::Button(filterLabels[i], widgets::Button::Variant::Ghost,
-                                              widgets::Button::Size::Sm, header);
-        kindButtons_[i]->setCheckable(true);
+        // webui .chip（h26 / r-pill / f12 w600）+ 尾部 .cnt 计数；选中 = accent 底 + accent 边
+        kindButtons_[i] = new widgets::Chip(filterLabels[i], "", header);
         kindButtons_[i]->setToolTip(i == 0
                                        ? QStringLiteral("显示全部支持 kind")
                                        : QStringLiteral("按 kind=%1 过滤实体树")
                                              .arg(filterKeys[i]));
         headerLayout->addWidget(kindButtons_[i]);
-        connect(kindButtons_[i], &widgets::Button::clicked, this,
+        connect(kindButtons_[i], &widgets::Chip::clicked, this,
                 [this, key = filterKeys[i]] { SetKindFilter(key); });
     }
 
@@ -1026,8 +1025,9 @@ void AssetWorkspace::SyncKindButtons() {
             }
         }
         const QString label = i == 0 ? QStringLiteral("全部") : KindLabelOf(key.toStdString());
-        kindButtons_[i]->setText(QStringLiteral("%1 %2").arg(label).arg(count));
-        kindButtons_[i]->setChecked(key == kindFilter_);
+        kindButtons_[i]->SetBaseText(label);
+        kindButtons_[i]->SetCount(count);
+        kindButtons_[i]->SetOn(key == kindFilter_);
     }
 }
 

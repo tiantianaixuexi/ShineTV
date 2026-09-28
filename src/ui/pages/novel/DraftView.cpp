@@ -18,8 +18,11 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QTextBlock>
+#include <QTextBlockFormat>
 #include <QTextCharFormat>
 #include <QTextCursor>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -78,6 +81,11 @@ DraftView::DraftView(QWidget* parent) : QWidget(parent) {
 
     // —— 正文区（可编辑；流式只追加末段 + 新增高亮 + 呼吸光边框）——
     edit_ = new QPlainTextEdit(this);
+    widgets::SetKind(edit_, "draftbody");
+    // webui .draft：f14 / line-height 1.9 / 段距 14px / text-indent 2em
+    ApplyDraftTypography();
+    connect(edit_->document(), &QTextDocument::contentsChange, this,
+            [this](int, int, int) { ApplyDraftTypography(); });
     edit_->setPlaceholderText(
         QStringLiteral("正文（P04-S6 DraftView）：流式生成时只追加末段并高亮新增；"
                        "手改后哈希实时重算，中断/失败的已收内容都会落盘。"));
@@ -145,6 +153,7 @@ void DraftView::SelectChapter(qint64 chapterId, const QString& title, const QStr
     applying_ = true;
     edit_->setPlainText(body);
     edit_->setExtraSelections({});
+    ApplyDraftTypography();
     applying_ = false;
     baseline_hash_ = QString::fromStdString(novelcore::Sha1Hex(body.toStdString()));
     body_hash_ = baseline_hash_;
@@ -279,6 +288,7 @@ void DraftView::AppendDelta(const QString& s) {
         sels.append(sel);
     }
     edit_->setExtraSelections(sels);
+    ApplyDraftTypography();
     auto* sb = edit_->verticalScrollBar();
     sb->setValue(sb->maximum());
 }
@@ -325,6 +335,31 @@ void DraftView::StartBreathing() {
         });
     }
     breath_->start();
+}
+
+// webui .draft：正文 14px、行高 1.9、段间距 14px、首行缩进 2em。
+// QSS 管不到 line-height / text-indent，这三项落在 QTextBlockFormat 上；
+// 流式追加与手改都会改块集合，所以统一由 contentsChange → 全文重刷（章节级文本，代价可忽略）。
+//
+// 已知边界（截图实证，2026-09-28）：QPlainTextEdit 的块格式会正确写进文档
+// （firstBlock().blockFormat().textIndent() == 28），但渲染层不消费 textIndent，
+// 首行缩进因此看不见；行高 / 段间距 / 14px 字号正常。要真正吃到 2em 缩进，
+// 只能换成富文本 QTextEdit（会改动 DraftView::Edit() 的类型与 P04 自检），本轮不做。
+void DraftView::ApplyDraftTypography() {
+    if (edit_ == nullptr || typing_) {
+        return; // setFormat 自身也会发 contentsChange —— 用 typing_ 掐断递归
+    }
+    typing_ = true;
+    for (QTextBlock block = edit_->document()->firstBlock(); block.isValid();
+         block = block.next()) {
+        QTextBlockFormat fmt = block.blockFormat();
+        fmt.setLineHeight(190.0, QTextBlockFormat::ProportionalHeight);
+        fmt.setTextIndent(kIndentPx);
+        fmt.setBottomMargin(14.0);
+        QTextCursor cursor(block);
+        cursor.setBlockFormat(fmt);
+    }
+    typing_ = false;
 }
 
 void DraftView::StopBreathing() {

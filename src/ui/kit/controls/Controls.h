@@ -15,6 +15,9 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <string>
+#include <vector>
+
 class QHBoxLayout;
 class QVBoxLayout;
 
@@ -150,6 +153,33 @@ class Segmented : public QFrame {
     std::vector<QPushButton*> items_;
     int current_ = 0;
     std::function<void(int)> on_changed_;
+};
+
+// Chip —— 筛选药丸（webui .chip：h26 / r-pill / f12 w600；选中 = accent 底 + accent 边）。
+// 与 Tag 的区别：Tag 是只读状态标记，Chip 是**可点**的筛选项（checked 态 + 回调）。
+// 用途：资产页类型筛选、分镜连续性 C1–C12 清单。
+class Chip : public QPushButton {
+  public:
+    // tone：""（中性）/ ok / warn / danger / idle —— 只影响描边与文字色，不改几何
+    Chip(const QString& text, const char* tone = "", QWidget* parent = nullptr);
+
+    void SetOn(bool on);
+    [[nodiscard]] bool IsOn() const { return on_; }
+    void SetOnToggled(std::function<void(bool)> cb) { on_toggled_ = std::move(cb); }
+
+    // 只换标签、不动计数（计数单独调 SetCount）
+    void SetBaseText(const QString& text);
+    // 尾部计数（webui .chip .cnt；负数 = 不显示）。计数并入按钮文字，
+    // 不用子 QLabel —— QPushButton 挂布局后自绘文字会被布局裁掉。
+    void SetCount(int n);
+
+  private:
+    void Apply();
+
+    bool on_ = false;
+    int count_ = -1;
+    QString base_text_;
+    std::function<void(bool)> on_toggled_;
 };
 
 } // namespace shine::widgets

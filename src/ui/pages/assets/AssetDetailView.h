@@ -19,13 +19,10 @@
 #include <vector>
 
 class QGridLayout;
+class QHBoxLayout;
 class QLabel;
 class QPushButton;
 class QWidget;
-
-namespace shine::data {
-class StageFlow;
-} // namespace shine::data
 
 namespace shine::app {
 
@@ -63,6 +60,7 @@ class AssetDetailView : public QWidget {
 
     void BuildUi();
     void Rebuild();
+    void RebuildDerive();
     void ShowError(const QString& detail);
     void ExportSheet();
     [[nodiscard]] std::filesystem::path ResolvePath(std::string_view relative) const;
@@ -87,7 +85,8 @@ class AssetDetailView : public QWidget {
     QWidget* cards_ = nullptr;
     QGridLayout* cards_layout_ = nullptr;
     QPushButton* generate_all_ = nullptr;
-    data::StageFlow* flow_ = nullptr;
+    QWidget* derive_ = nullptr;       // webui .derive 派生链容器
+    QHBoxLayout* derive_row_ = nullptr;
     AssetPolicyPanel* policy_ = nullptr;
 };
 

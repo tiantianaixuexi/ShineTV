@@ -71,6 +71,9 @@ class DraftView : public QWidget {
     void FinishStream(const std::expected<std::string, agent::AgentError>& r);
     void StartBreathing();
     void StopBreathing();
+    // webui .draft 排版：14px / 行高 1.9 / 段距 14px / 首行缩进 2em（2em = 2 × 14px）
+    void ApplyDraftTypography();
+    static constexpr qreal kIndentPx = 28.0;
     void MarkFailure(const QString& reason);
     void ClearFailureMarker();
     void SaveToDb(const QString& body);
@@ -86,6 +89,7 @@ class DraftView : public QWidget {
     QString body_hash_;     // 实时重算（Sha1Hex）
     bool streaming_ = false;
     bool applying_ = false; // 程序性改文本（载入/流式追加）≠ 手改
+    bool typing_ = false;   // 正在刷 .draft 块格式（防 contentsChange 递归）
     int run_id_ = 0;        // 运行代号：迟到的旧 worker 回调（中断/重试后）一律作废
     QString failed_reason_; // 非空 = 有失败段待重试
     int seg_start_ = 0;     // 当前流式段起点（只追加末段的锚）

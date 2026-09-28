@@ -6,12 +6,25 @@
 #include "ui/kit/controls/Feedback.h"
 #include "util/Encoding.h"
 
+#include <QHBoxLayout>
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include <array>
 #include <utility>
 
 namespace shine::app {
+namespace {
+
+// C1–C12 的规则名（与 novelcore::RunContinuityChecks 的 addIssue 码一一对应，
+// 名字取自 src/novel/NovelContinuity.cpp 里每条规则的判据）
+constexpr std::array<const char*, 12> kCheckCodes{
+    "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12"};
+constexpr std::array<const char*, 12> kCheckNames{
+    "出场", "位置", "朝向", "姿势", "手部", "服装",
+    "伤势", "道具持有", "道具状态", "光线", "环境", "机位"};
+
+} // namespace
 
 ContinuityView::ContinuityView(QWidget* parent) : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
@@ -19,13 +32,39 @@ ContinuityView::ContinuityView(QWidget* parent) : QWidget(parent) {
     outer->setSpacing(theme::space::kSteps[1]);
     auto* title = widgets::SectionTitle(QStringLiteral("连续性 · C1–C12"), this);
     outer->addWidget(title);
+
+    // C1–C12 清单（webui .chips：一排药丸，✓ 通过 / ✕ 违规 / 未校验）
+    chips_ = new QWidget(this);
+    auto* chips_layout = new QHBoxLayout(chips_);
+    chips_layout->setContentsMargins(0, 0, 0, 0);
+    chips_layout->setSpacing(6);
+    for (std::size_t i = 0; i < kCheckCodes.size(); ++i) {
+        auto* chip = new widgets::Chip(
+            QStringLiteral("%1 %2").arg(QString::fromLatin1(kCheckCodes[i]),
+                                        QString::fromUtf8(kCheckNames[i])),
+            "idle", chips_);
+        chip->setEnabled(false);
+        chip->setToolTip(QStringLiteral("%1：%2").arg(QString::fromLatin1(kCheckCodes[i]),
+                                                   QString::fromUtf8(kCheckNames[i])));
+        chips_layout->addWidget(chip);
+        chip_items_.push_back(chip);
+    }
+    chips_layout->addStretch(1);
+    outer->addWidget(chips_);
+
     status_ = new QLabel(QStringLiteral("选择章节后运行连续性校验。"), this);
     status_->setWordWrap(true);
     widgets::SetKind(status_, "statedetail");
     outer->addWidget(status_);
+    auto* run_row = new QWidget(this);
+    auto* rr = new QHBoxLayout(run_row);
+    rr->setContentsMargins(0, 0, 0, 0);
+    rr->setSpacing(theme::space::kSteps[1]);
     auto* run = new widgets::Button(QStringLiteral("运行 V8 连续性"), widgets::Button::Variant::Primary,
-                                    widgets::Button::Size::Sm, this);
-    outer->addWidget(run);
+                                    widgets::Button::Size::Sm, run_row);
+    rr->addWidget(run);
+    rr->addStretch(1);
+    outer->addWidget(run_row);
     list_ = new QWidget(this);
     auto* list_layout = new QVBoxLayout(list_);
     list_layout->setContentsMargins(0, 0, 0, 0);
@@ -81,6 +120,7 @@ void ContinuityView::ShowResult(const shine::novelcore::ContinuityOutcome& resul
 
 void ContinuityView::Rebuild() {
     if (list_ == nullptr) return;
+    RebuildChips();
     auto* layout = qobject_cast<QVBoxLayout*>(list_->layout());
     if (layout == nullptr) return;
     while (QLayoutItem* item = layout->takeAt(0)) {
@@ -113,8 +153,36 @@ void ContinuityView::Rebuild() {
     }
 }
 
-QString ContinuityView::ContinuityProbe() const {
-    return QStringLiteral("checked=%1; shots=%2; pairs=%3; failed=%4; unverified=%5; issues=%6; report=%7")
+// C1–C12 药丸着色：命中 issue = danger（✕），跑过且无 issue = ok（✓），没跑 = idle
+void ContinuityView::RebuildChips() {
+    for (std::size_t i = 0; i < chip_items_.size(); ++i) {
+        widgets::Chip* chip = chip_items_[i];
+        if (chip == nullptr || i >= static_cast<std::size_t>(kCheckCodes.size())) {
+            continue;
+        }
+        if (!has_result_) {
+            chip->setProperty("tone", QStringLiteral("idle"));
+            chip->SetBaseText(QStringLiteral("%1 %2").arg(QString::fromLatin1(kCheckCodes[i]),
+                                                     QString::fromUtf8(kCheckNames[i])));
+        } else {
+            bool failed = false;
+            for (const auto& issue : result_.issues) {
+                if (issue.code == kCheckCodes[i]) {
+                    failed = true;
+                    break;
+                }
+            }
+            chip->setProperty("tone", failed ? QStringLiteral("danger") : QStringLiteral("ok"));
+            chip->SetBaseText(QStringLiteral("%1 %2 %3")
+                              .arg(failed ? QStringLiteral("✕") : QStringLiteral("✓"),
+                                   QString::fromLatin1(kCheckCodes[i]),
+                                   QString::fromUtf8(kCheckNames[i])));
+        }
+        widgets::Repolish(chip);
+    }
+}
+
+QString ContinuityView::ContinuityProbe() const {    return QStringLiteral("checked=%1; shots=%2; pairs=%3; failed=%4; unverified=%5; issues=%6; report=%7")
         .arg(has_result_ ? QStringLiteral("1") : QStringLiteral("0"))
         .arg(result_.shots_seen)
         .arg(result_.pairs_checked)

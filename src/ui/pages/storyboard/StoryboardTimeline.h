@@ -39,6 +39,8 @@ class StoryboardTimeline : public QWidget {
     QPoint drag_start_;
     int drag_ord_ = 0;
     void Rebuild();
+    // duration_note（"3.5s" / "4.1"）→ 时长条百分比，webui 口径 min(100, secs/6*100)
+    static int SecondsOf(const std::string& note);
 };
 
 } // namespace shine::app

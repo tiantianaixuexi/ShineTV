@@ -111,13 +111,18 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
 
     // 模式按钮行（UI.md §2.1）：本 S 只接 [章节]（现有内容）与 [设定]（设定台 WorldBoardView）；
     // 其余按钮 disabled + tooltip「P04-Sx 接入」。
+    // webui .novel-modes .ntab：p8 12 / f13 / w600 / muted，选中 accent + 2px 下划线；
+    // 整条 h44 + 底部发丝线（modeRow 的 ntabbar 样式）。
     auto* modeRow = new QWidget(center);
+    widgets::SetKind(modeRow, "ntabbar");
+    modeRow->setFixedHeight(44);
     auto* mr = new QHBoxLayout(modeRow);
     mr->setContentsMargins(0, 0, 0, 0);
-    mr->setSpacing(theme::space::kSteps[1]);
+    mr->setSpacing(2);
     const auto makeMode = [modeRow](const QString& text) {
         auto* b = new widgets::Button(text, widgets::Button::Variant::Ghost,
                                       widgets::Button::Size::Sm, modeRow);
+        widgets::SetKind(b, "ntab"); // 覆盖 button 样式：下划线页签，不是按钮
         b->setCheckable(true);
         return b;
     };
@@ -183,6 +188,8 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     hr->addWidget(status_, 0, Qt::AlignVCenter);
     summary_ = new QLabel(chapterPage);
     summary_->setWordWrap(true);
+    // webui .chap-summary：fill-muted 底 + 3px accent 左条（引用块）
+    widgets::SetKind(summary_, "chapsummary");
     // 正文区（P04-S6 DraftView 接管）：流式逐 token 只追加末段 + 呼吸光 + 中断落盘 + 重试
     draft_ = new DraftView(chapterPage);
     cpl->addWidget(headRow);
@@ -368,11 +375,11 @@ void NovelWorkspace::LoadFromRef(const project::ProjectRef& ref, const std::stri
 
 void NovelWorkspace::SwitchCenter(int index) {
     centerStack_->setCurrentIndex(index);
+    // webui .ntab：选中 = accent 字 + 2px accent 下划线（颜色全走 QSS，不内联）
     const auto mark = [](QPushButton* b, bool on) {
         b->setChecked(on);
-        b->setStyleSheet(on ? QStringLiteral("color:%1;").arg(shine::widget::CssRgb(theme::Current().accentPrimary))
-                            : QString{});
-        widgets::SetSemibold(b, on);
+        b->setProperty("selected", on ? QStringLiteral("true") : QString{});
+        widgets::Repolish(b);
     };
     mark(modeChapters_, index == 0);
     mark(modeWorld_, index == 1);

@@ -564,6 +564,86 @@ QWidget#floatSep { background-color: %7; }
 QWidget#floatHost { background: transparent; border: none; }
 /* 节点画布：webui .flow-canvas 的底是 fill-muted（不是 bg.void），配 22px 点阵 */
 QGraphicsView { background-color: %26; border: none; }
+
+/* —— Chip：webui views.css .chip h26 / p0 11 / r-pill / line-normal / f12 / w600 ——
+   选中态 webui 用 accent-dim 底 + accent-glow 边；Qt 无同源半透明 token，
+   用 fill.selected（带强调色倾向的暗底）+ accent.primary 边等效。 */
+*[shineKind="chip"] {
+  border: 1px solid %7; border-radius: 999px; padding: 0 11px; min-height: 26px;
+  background-color: transparent; color: %10; font-size: 12px; font-weight: 600;
+}
+*[shineKind="chip"]:hover { border-color: %8; color: %9; }
+*[shineKind="chip"][shineState="hover"] { border-color: %8; color: %9; }
+*[shineKind="chip"]:pressed { background-color: %24; }
+*[shineKind="chip"][on="true"] { background-color: %25; border-color: %13; color: %13; }
+*[shineKind="chip"]:disabled { color: %11; border-color: %6; }
+*[shineKind="chip"][shineState="disabled"] { color: %11; border-color: %6; }
+*[shineKind="chip"]:focus { border: 2px solid %27; padding: 0 10px; }
+*[shineKind="chip"][shineState="focus"] { border: 2px solid %27; padding: 0 10px; }
+/* 连续性 / 校验清单语义色：webui 用 ok / danger 描边加同色文字 */
+*[shineKind="chip"][tone="ok"] { color: %18; border-color: %18; }
+*[shineKind="chip"][tone="danger"] { color: %20; border-color: %20; }
+*[shineKind="chip"][tone="warn"] { color: %19; border-color: %19; }
+*[shineKind="chip"][tone="idle"] { color: %11; border-color: %6; }
+*[shineKind="chip"][tone="ok"]:hover, *[shineKind="chip"][tone="danger"]:hover,
+*[shineKind="chip"][tone="warn"]:hover, *[shineKind="chip"][tone="idle"]:hover {
+  border-color: %8; color: %9;
+}
+/* .chip .cnt：计数小胶囊（f10.5 → 11px） */
+*[shineKind="chipcount"] { border-radius: 999px; padding: 0 6px; background-color: %26; color: %11; font-size: 11px; }
+*[shineKind="chip"][on="true"] *[shineKind="chipcount"] { background-color: %25; }
+
+/* —— .vsec 详情分区：无卡片框，靠发丝线分隔（p14 2 + border-bottom line-subtle） —— */
+*[shineKind="vsec"] { background: transparent; border: none; border-bottom: 1px solid %6; padding: 14px 2px; }
+*[shineKind="vsec"][last="true"] { border-bottom: none; }
+*[shineKind="vsechead"] { background: transparent; color: %9; font-size: 13px; font-weight: 700; }
+*[shineKind="vsecicon"] { background: transparent; border: none; color: %13; font-size: 13px; }
+
+/* —— .chap-summary 章节摘要：fill-muted 底 + 3px accent 左条 + r6 p10 14 f12 —— */
+*[shineKind="chapsummary"] {
+  background-color: %26; color: %10; border: 1px solid %6; border-left: 3px solid %13;
+  border-radius: 6px; padding: 10px 14px; font-size: 12px;
+}
+
+/* —— .draft 正文容器：f14；行高 1.9 / 段距 14px / 首行缩进 2em 由 QTextBlockFormat 设 —— */
+*[shineKind="draftbody"] { background-color: %2; border: none; padding: 0; font-size: 14px; }
+
+/* —— 故事板 .tl-card：w128 / 圆角 10 / fill-muted 底 + line-normal 边 —— */
+*[shineKind="tlcard"] { background-color: %26; border: 1px solid %7; border-radius: 10px; }
+*[shineKind="tlcard"][selected="true"] { border-color: %13; }
+*[shineKind="tlthumb"] { background: transparent; border: none; border-radius: 0px; color: %11; }
+*[shineKind="tlcode"] {
+  background: transparent; border: none; color: %13;
+  font-family: "Cascadia Mono", "Consolas", monospace; font-size: 11px; font-weight: 700;
+}
+*[shineKind="tldur"] { background: transparent; border: none; color: %11; font-size: 11px; }
+
+/* —— .derive 派生链节点 / .tl 关联时间线 —— */
+*[shineKind="derivenode"] { background-color: %26; border: 1px solid %7; border-radius: 10px; }
+*[shineKind="derivenode"][selected="true"] { border-color: %13; }
+*[shineKind="derivelink"] { background-color: %7; border: none; }
+*[shineKind="derivelink"][fill="true"] { background-color: %13; }
+*[shineKind="tlaxis"] { background-color: %7; border: none; border-radius: 2px; }
+*[shineKind="tltick"] { background-color: %8; border: none; }
+*[shineKind="tlpin"] { border: 2px solid %2; border-radius: 999px; background-color: %11; }
+*[shineKind="tlpin"][hot="true"] { background-color: %13; }
+*[shineKind="tlcap"] { background: transparent; border: none; color: %10; font-size: 11px; }
+*[shineKind="tlcap"][hot="true"] { color: %13; font-weight: 700; }
+
+/* —— 小说 .ntab 模式页签：p8 12 / f13 / w600 / text-muted；选中 accent + 2px 下划线 —— */
+*[shineKind="ntabbar"] { background: transparent; border: none; border-bottom: 1px solid %6; }
+*[shineKind="ntab"] {
+  background: transparent; border: none; border-bottom: 2px solid transparent;
+  border-radius: 0px; padding: 8px 12px; min-height: 44px;
+  color: %10; font-size: 13px; font-weight: 600;
+}
+*[shineKind="ntab"]:hover { color: %9; background-color: %26; }
+*[shineKind="ntab"][shineState="hover"] { color: %9; background-color: %26; }
+*[shineKind="ntab"]:pressed { background-color: %24; }
+*[shineKind="ntab"][selected="true"] { color: %13; border-bottom: 2px solid %13; background-color: transparent; }
+*[shineKind="ntab"]:disabled { color: %11; }
+*[shineKind="ntab"]:focus { border-bottom: 2px solid transparent; }
+*[shineKind="ntab"][selected="true"]:focus { border-bottom: 2px solid %13; }
 )QSS";
 
 // 全部替换 %28..%1（降序，避免 %1 误伤 %10 之类）
