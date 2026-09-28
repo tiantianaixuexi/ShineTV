@@ -1,8 +1,9 @@
 #pragma once
 // shine::app —— 主窗口（P03）：以项目为中心的两态外壳。
-//   启动首屏 = ProjectHubView（项目列表）；打开项目后 = 工坊七区
-//   （顶栏 / 活动栏 / 侧栏 / 中央工作区 / 右栏 / 底栏 / 状态栏），
-//   分栏可拖（QSplitter）、可折叠（Ctrl+B 侧栏 / Ctrl+J 底栏，动画 motion.base）。
+//   启动首屏 = ProjectHubView（项目列表）；打开项目后 = 工坊三区
+//   （顶栏 / 活动栏+中央区+右侧检查器 / 底栏 / 状态栏），
+//   中央区吃掉全部剩余宽度并有硬下限（kCenterMinW），右侧检查器默认收起、
+//   Ctrl+I 或顶栏按钮开合，底栏 Ctrl+J 开合（动画 motion.base）。
 //   布局持久化：%APPDATA%/ShineTVStudio/layout.dat（geometry/state + 分栏比例 + 标签状态 +
 //   最近项目根）；文件被手改坏 → 回退默认布局 + Toast（P03 风险表），不崩。
 #include "ui/pages/shell/StatusBar.h"
@@ -36,7 +37,6 @@ class VideoFlowWorkspace;
 class PipelineWorkspace;
 class StoryboardWorkspace;
 class RightPanel;
-class SidePanel;
 class TopBar;
 
 class MainWindow : public QMainWindow {
@@ -60,9 +60,9 @@ class MainWindow : public QMainWindow {
     void ShowWorkshop();
     void SetTestLayout(); // 固定的非默认布局（验收：重启后逐项还原）
     void PersistNow() { SaveLayout(); }
-    // 验收设施：折叠判定（Ctrl+B / Ctrl+J 同路径）与状态栏详情抽屉（S8 判据）。
+    // 验收设施：折叠判定（Ctrl+I / Ctrl+J 同路径）与状态栏详情抽屉（S8 判据）。
     // 返回抽屉本体（Drawer 是独立顶层，外部抓帧须抓它；导航型项返回 nullptr）。
-    void ToggleSidePanel();
+    void ToggleInspector();
     void ToggleBottomDock();
     [[nodiscard]] widgets::Drawer* ShowStatusDetail(StatusItem item);
     // P04 自动化：活动栏切工作区；取当前标签页里的小说工作区页（无则 nullptr）
@@ -106,22 +106,23 @@ class MainWindow : public QMainWindow {
 
     TopBar* top_bar_ = nullptr;
     ActivityRail* rail_ = nullptr;
-    SidePanel* side_ = nullptr;
     RightPanel* right_ = nullptr;
     BottomDock* bottom_ = nullptr;
     StatusBar* status_bar_ = nullptr;
     Breadcrumb* crumb_ = nullptr;
     CommandPalette* palette_ = nullptr;
 
+    // 三区：hsplit_ 只有两格 = [中央区, 右侧检查器]；活动栏是固定宽的兄弟节点。
+    static constexpr int kCenterMinW = 720; // 中央区硬下限：低于此值左中右会互相压扁
     QSplitter* hsplit_ = nullptr;
     QTabBar* doc_tabs_ = nullptr;
     QStackedWidget* doc_stack_ = nullptr;
 
-    shine::motion::Tween* side_tween_ = nullptr;
+    shine::motion::Tween* inspector_tween_ = nullptr;
     shine::motion::Tween* bottom_tween_ = nullptr;
-    bool side_visible_ = true;
+    bool inspector_visible_ = false; // 检查器默认收起
     bool bottom_visible_ = true;
-    int side_last_w_ = 240;
+    int inspector_last_w_ = 320;
     int bottom_last_h_ = 220;
     bool layout_restored_ = true;
     std::filesystem::path last_project_root_;

@@ -9,8 +9,14 @@
 #include <vector>
 
 #include <QFrame>
+#include <QStringList>
 
 namespace shine::app {
+
+// 六个工作区的显示名 —— **唯一来源**。活动栏是它们在 UI 上的归属控件，
+// 标签页标题 / 面包屑 / 命令面板 / 外壳下标全部从这里取，改一处即可。
+// （原先挂在 SidePanel 上，但 SidePanel 只是一块 P03 占位面板，已随三区重构删除。）
+const QStringList& WorkspaceNames();
 
 class ActivityRail : public QFrame {
   public:

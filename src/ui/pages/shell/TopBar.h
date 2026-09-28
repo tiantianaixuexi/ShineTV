@@ -21,11 +21,13 @@ class TopBar : public QFrame {
     void SetOnCloseProject(std::function<void()> cb);     // 「关闭项目」
     void SetOnRevealProject(std::function<void()> cb);    // 「在资源管理器中显示」
     void SetOnOpenPalette(std::function<void()> cb);      // Ctrl+K 搜索
+    void SetOnToggleInspector(std::function<void()> cb);  // Ctrl+I 右侧检查器开合
     void SetOnRun(std::function<void()> cb);
     void SetOnStop(std::function<void()> cb);
     void SetOnSettings(std::function<void()> cb);
     void SetOnThemeChanged(std::function<void()> cb);     // 换肤后（状态栏主题名刷新）
 
+    void SetInspectorActive(bool on); // 检查器开合时按钮态跟着走
     void PopupThemeMenu(); // 主题菜单（状态栏「主题名」点击复用，避免两处菜单分叉）
 
   private:
@@ -33,10 +35,12 @@ class TopBar : public QFrame {
 
     shine::widgets::Button* project_btn_ = nullptr;
     shine::widgets::Button* theme_btn_ = nullptr;
+    shine::widgets::Button* inspector_btn_ = nullptr;
     std::function<void()> on_show_hub_;
     std::function<void()> on_close_project_;
     std::function<void()> on_reveal_project_;
     std::function<void()> on_open_palette_;
+    std::function<void()> on_toggle_inspector_;
     std::function<void()> on_run_;
     std::function<void()> on_stop_;
     std::function<void()> on_settings_;

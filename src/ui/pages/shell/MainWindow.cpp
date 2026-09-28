@@ -15,7 +15,6 @@
 #include "ui/pages/videoflow/VideoFlowWorkspace.h"
 #include "ui/pages/pipeline/PipelineWorkspace.h"
 #include "ui/pages/storyboard/StoryboardWorkspace.h"
-#include "ui/pages/shell/SidePanel.h"
 #include "ui/pages/shell/TopBar.h"
 #include "core/Settings.h"
 #include "ui/kit/data/Panels.h"
@@ -131,19 +130,19 @@ class DocTabBar : public QTabBar {
 
 // P04：小说工作区在活动栏/侧栏的稳定索引（WorkspaceNames：总控/小说/视觉资产/分镜/出图/出片）
 [[nodiscard]] int NovelWorkspaceIndex() {
-    return SidePanel::WorkspaceNames().indexOf(QStringLiteral("小说"));
+    return shine::app::WorkspaceNames().indexOf(QStringLiteral("小说"));
 }
 
 [[nodiscard]] int AssetWorkspaceIndex() {
-    return SidePanel::WorkspaceNames().indexOf(QStringLiteral("视觉资产"));
+    return shine::app::WorkspaceNames().indexOf(QStringLiteral("视觉资产"));
 }
 
 [[nodiscard]] int StoryboardWorkspaceIndex() {
-    return SidePanel::WorkspaceNames().indexOf(QStringLiteral("分镜"));
+    return shine::app::WorkspaceNames().indexOf(QStringLiteral("分镜"));
 }
 
 [[nodiscard]] int ImageWorkspaceIndex() {
-    return SidePanel::WorkspaceNames().indexOf(QStringLiteral("出图"));
+    return shine::app::WorkspaceNames().indexOf(QStringLiteral("出图"));
 }
 
 void OpenImageForRef(ImageFlowWorkspace& workspace, const project::ProjectRef& ref) {
@@ -151,7 +150,7 @@ void OpenImageForRef(ImageFlowWorkspace& workspace, const project::ProjectRef& r
 }
 
 [[nodiscard]] int VideoWorkspaceIndex() {
-    return SidePanel::WorkspaceNames().indexOf(QStringLiteral("出片"));
+    return shine::app::WorkspaceNames().indexOf(QStringLiteral("出片"));
 }
 
 void OpenVideoForRef(VideoFlowWorkspace& workspace, const project::ProjectRef& ref) {
@@ -194,9 +193,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     BuildWorkshop();
     BuildPaletteCommands();
 
-    // 快捷键（UI.md §2.3）：Ctrl+B 侧栏 / Ctrl+J 底栏 / Ctrl+K 命令面板
-    connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+B")), this), &QShortcut::activated,
-            this, &MainWindow::ToggleSidePanel);
+    // 快捷键（UI.md §2.3）：Ctrl+I 检查器 / Ctrl+J 底栏 / Ctrl+K 命令面板
+    connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+I")), this), &QShortcut::activated,
+            this, &MainWindow::ToggleInspector);
     connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+J")), this), &QShortcut::activated,
             this, &MainWindow::ToggleBottomDock);
     connect(new QShortcut(QKeySequence(QStringLiteral("Ctrl+K")), this), &QShortcut::activated,
@@ -276,7 +275,6 @@ void MainWindow::EnterProject(const project::ProjectRef& ref) {
     // 回到该项目上次的工作区 / 标签状态（project.json ui.*）
     if (const project::ProjectFile* file = svc_.CurrentFile(); file != nullptr) {
         rail_->SetCurrent(WorkspaceIndexFromId(file->lastWorkspace), false);
-        side_->SetWorkspace(rail_->Current());
     }
     UpdateBreadcrumb();
     LoadNovelPages(ref); // P04：小说工作区按当前书（ui.lastNovel）载入 书→卷→章
@@ -406,8 +404,7 @@ AssetWorkspace* MainWindow::AssetPage() const {
 }
 
 void MainWindow::SwitchWorkspace(int index) {
-    rail_->SetCurrent(index, false); // 验收设施：显式接线（下方三步与 SetOnChanged 同路径，幂等）
-    side_->SetWorkspace(index);
+    rail_->SetCurrent(index, false); // 验收设施：显式接线（下方两步与 SetOnChanged 同路径，幂等）
     UpdateBreadcrumb();
     if (index == NovelWorkspaceIndex()) {
         EnsureNovelDocTab();
@@ -427,7 +424,7 @@ void MainWindow::SwitchWorkspace(int index) {
 }
 
 void MainWindow::EnsureNovelDocTab() {
-    const QString name = SidePanel::WorkspaceNames().value(NovelWorkspaceIndex());
+    const QString name = shine::app::WorkspaceNames().value(NovelWorkspaceIndex());
     for (int i = 0; i < doc_tabs_->count(); ++i) {
         if (doc_tabs_->tabText(i) == name) {
             doc_tabs_->setCurrentIndex(i);
@@ -440,7 +437,7 @@ void MainWindow::EnsureNovelDocTab() {
 }
 
 void MainWindow::EnsureAssetDocTab() {
-    const QString name = SidePanel::WorkspaceNames().value(AssetWorkspaceIndex());
+    const QString name = shine::app::WorkspaceNames().value(AssetWorkspaceIndex());
     for (int i = 0; i < doc_tabs_->count(); ++i) {
         if (doc_tabs_->tabText(i) == name) {
             doc_tabs_->setCurrentIndex(i);
@@ -453,7 +450,7 @@ void MainWindow::EnsureAssetDocTab() {
 }
 
 void MainWindow::EnsureStoryboardDocTab() {
-    const QString name = SidePanel::WorkspaceNames().value(StoryboardWorkspaceIndex());
+    const QString name = shine::app::WorkspaceNames().value(StoryboardWorkspaceIndex());
     for (int i = 0; i < doc_tabs_->count(); ++i) {
         if (doc_tabs_->tabText(i) == name) {
             doc_tabs_->setCurrentIndex(i);
@@ -466,7 +463,7 @@ void MainWindow::EnsureStoryboardDocTab() {
 }
 
 void MainWindow::EnsureImageDocTab() {
-    const QString name = SidePanel::WorkspaceNames().value(ImageWorkspaceIndex());
+    const QString name = shine::app::WorkspaceNames().value(ImageWorkspaceIndex());
     for (int i = 0; i < doc_tabs_->count(); ++i) {
         if (doc_tabs_->tabText(i) == name) {
             doc_tabs_->setCurrentIndex(i);
@@ -479,7 +476,7 @@ void MainWindow::EnsureImageDocTab() {
 }
 
 void MainWindow::EnsureVideoDocTab() {
-    const QString name = SidePanel::WorkspaceNames().value(VideoWorkspaceIndex());
+    const QString name = shine::app::WorkspaceNames().value(VideoWorkspaceIndex());
     for (int i = 0; i < doc_tabs_->count(); ++i) {
         if (doc_tabs_->tabText(i) == name) {
             doc_tabs_->setCurrentIndex(i);
@@ -497,16 +494,22 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
         if (auto ref = svc_.Current()) pipeline->SetContext(ref->rootDir);
         return pipeline;
     }
-    if (title == SidePanel::WorkspaceNames().value(NovelWorkspaceIndex())) {
+    if (title == shine::app::WorkspaceNames().value(NovelWorkspaceIndex())) {
         auto* nw = new NovelWorkspace(doc_stack_);
         if (auto ref = svc_.Current()) {
             const std::string lastNovel =
                 svc_.CurrentFile() != nullptr ? svc_.CurrentFile()->lastNovel : std::string{};
             nw->LoadFromRef(*ref, lastNovel);
         }
+        // 页面不再自摆右栏：把它的属性内容挂到外壳检查器上
+        if (QWidget* body = nw->InspectorBody(); body != nullptr) {
+            right_->ClearSections();
+            right_->AddSection(QStringLiteral("章节属性"), body);
+            right_->SetSelection(QStringLiteral("选中一个章节后显示其属性"));
+        }
         return nw;
     }
-    if (title == SidePanel::WorkspaceNames().value(AssetWorkspaceIndex())) {
+    if (title == shine::app::WorkspaceNames().value(AssetWorkspaceIndex())) {
         auto* assets = new AssetWorkspace(doc_stack_);
         if (auto ref = svc_.Current()) {
             const std::string lastNovel =
@@ -515,19 +518,19 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
         }
         return assets;
     }
-    if (title == SidePanel::WorkspaceNames().value(StoryboardWorkspaceIndex())) {
+    if (title == shine::app::WorkspaceNames().value(StoryboardWorkspaceIndex())) {
         auto* storyboard = new StoryboardWorkspace(doc_stack_);
         if (auto ref = svc_.Current()) {
             OpenStoryboardForRef(*storyboard, *ref);
         }
         return storyboard;
     }
-    if (title == SidePanel::WorkspaceNames().value(ImageWorkspaceIndex())) {
+    if (title == shine::app::WorkspaceNames().value(ImageWorkspaceIndex())) {
         auto* image = new ImageFlowWorkspace(doc_stack_);
         if (auto ref = svc_.Current()) OpenImageForRef(*image, *ref);
         return image;
     }
-    if (title == SidePanel::WorkspaceNames().value(VideoWorkspaceIndex())) {
+    if (title == shine::app::WorkspaceNames().value(VideoWorkspaceIndex())) {
         auto* video = new VideoFlowWorkspace(doc_stack_);
         if (auto ref = svc_.Current()) OpenVideoForRef(*video, *ref);
         return video;
@@ -570,6 +573,7 @@ void MainWindow::BuildWorkshop() {
         }
     });
     top_bar_->SetOnOpenPalette([this] { palette_->OpenPalette(); });
+    top_bar_->SetOnToggleInspector([this] { ToggleInspector(); });
     top_bar_->SetOnRun([] {
         shine::widgets::Toast::Show(QStringLiteral("全流程运行由 P09 接入（当前为占位按钮）"),
                                     shine::widgets::Toast::Tone::Info);
@@ -662,7 +666,6 @@ void MainWindow::BuildWorkshop() {
         if (i == VideoWorkspaceIndex()) {
             EnsureVideoDocTab();
         }
-        side_->SetWorkspace(i);
         UpdateBreadcrumb();
         if (i == NovelWorkspaceIndex()) {
             EnsureNovelDocTab(); // P04：切到小说工作区 → 确保「小说」页签在
@@ -671,17 +674,25 @@ void MainWindow::BuildWorkshop() {
             EnsureAssetDocTab(); // P05：切到视觉资产工作区 → 确保资产页签在
         }
     });
-    side_ = new SidePanel(workshop_);
-    right_ = new RightPanel(workshop_);
+    right_ = new RightPanel(workshop_); // 右侧检查器（默认收起，Ctrl+I / 顶栏按钮开合）
+
+    // 三区骨架：活动栏（固定 56）│ 中央工作区（吃掉全部剩余宽度）│ 右侧检查器（可收起）
+    // 上一版是 56/240/900/280 四列常驻且中央区没有最小宽度，左中右一起抢空间，
+    // 章节树被压成残条；这里把中央区设为唯一可拉伸项并给硬下限，检查器默认收起。
+    auto* row = new QHBoxLayout();
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(0);
+    rail_->setFixedWidth(56);
+    row->addWidget(rail_);
 
     hsplit_ = new shine::widgets::Splitter(Qt::Horizontal, workshop_);
-    hsplit_->addWidget(rail_);
-    hsplit_->addWidget(side_);
+    center->setMinimumWidth(kCenterMinW);
     hsplit_->addWidget(center);
     hsplit_->addWidget(right_);
-    hsplit_->setStretchFactor(2, 1);
-    hsplit_->setSizes({56, 240, 900, 280});
-    lay->addWidget(hsplit_, 1);
+    hsplit_->setStretchFactor(0, 1);   // 只有中央区可拉伸
+    hsplit_->setCollapsible(1, true);  // 检查器可收到 0
+    row->addWidget(hsplit_, 1);
+    lay->addLayout(row, 1);
 
     bottom_ = new BottomDock(workshop_);
     bottom_->SetOnTabChanged([this](int) { UpdateBreadcrumb(); });
@@ -694,37 +705,38 @@ void MainWindow::BuildWorkshop() {
     pages_->addWidget(workshop_);
 }
 
-// ────────────────────────────── 折叠（Ctrl+B / Ctrl+J）──────────────────────────────
+// ────────────────────────────── 折叠（Ctrl+I / Ctrl+J）──────────────────────────────
 
-void MainWindow::ToggleSidePanel() {
-    // 以「实时尺寸」判定方向（双击把手折叠后状态不漂）
+void MainWindow::ToggleInspector() {
+    // 检查器是最后一格：收起 = 宽度归零（sizes{*,0}），展开 = 回到上次宽度
     const QList<int> sizes = hsplit_->sizes();
-    const int cur = sizes.size() >= 4 ? sizes[1] : 0;
+    const int cur = sizes.size() >= 2 ? sizes[1] : 0;
     const bool collapsed = cur <= 0;
-    const int target = collapsed ? (side_last_w_ > 0 ? side_last_w_ : 240) : 0;
-    if (collapsed) {
-        side_->show();
+    const int target = collapsed ? (inspector_last_w_ > 0 ? inspector_last_w_ : 320) : 0;
+    if (!collapsed) {
+        inspector_last_w_ = std::max(280, cur);
     } else {
-        side_last_w_ = cur;
+        right_->show();
     }
-    if (side_tween_ == nullptr) {
-        side_tween_ = new shine::motion::Tween(theme::motion::kStandard, this);
+    if (inspector_tween_ == nullptr) {
+        inspector_tween_ = new shine::motion::Tween(theme::motion::kStandard, this);
     }
-    side_tween_->Run(cur, target, theme::motion::kDurBaseMs, [this](const QVariant& v) {
+    inspector_tween_->Run(cur, target, theme::motion::kDurBaseMs, [this](const QVariant& v) {
         QList<int> s = hsplit_->sizes();
-        if (s.size() < 4) {
+        if (s.size() < 2) {
             return;
         }
         const int val = std::max(0, v.toInt());
         const int delta = val - s[1];
         s[1] = val;
-        s[2] = std::max(240, s[2] - delta);
+        s[0] = std::max(kCenterMinW, s[0] - delta); // 中央区永不低于下限
         hsplit_->setSizes(s);
     });
     if (shine::motion::ReduceMotion()) {
-        side_tween_->Settle();
+        inspector_tween_->Settle();
     }
-    side_visible_ = target > 0;
+    inspector_visible_ = target > 0;
+    top_bar_->SetInspectorActive(inspector_visible_);
 }
 
 void MainWindow::ToggleBottomDock() {
@@ -834,7 +846,7 @@ shine::widgets::Drawer* MainWindow::ShowStatusDetail(StatusItem item) {
 void MainWindow::UpdateBreadcrumb() {
     QStringList crumbs;
     crumbs << (svc_.Current() ? QString::fromStdString(svc_.Current()->name) : QStringLiteral("无项目"));
-    crumbs << SidePanel::WorkspaceNames().value(rail_ != nullptr ? rail_->Current() : 0);
+    crumbs << shine::app::WorkspaceNames().value(rail_ != nullptr ? rail_->Current() : 0);
     crumbs << (doc_tabs_ != nullptr && doc_tabs_->currentIndex() >= 0
                    ? doc_tabs_->tabText(doc_tabs_->currentIndex())
                    : QStringLiteral("—"));
@@ -876,7 +888,7 @@ void MainWindow::BuildPaletteCommands() {
         shine::widgets::Toast::Show(QStringLiteral("章节操作由 P04 接入（当前为占位命令）"),
                                     shine::widgets::Toast::Tone::Info);
     });
-    cmd(QStringLiteral("切换侧栏"), QStringLiteral("Ctrl+B"), [this] { ToggleSidePanel(); });
+    cmd(QStringLiteral("切换检查器"), QStringLiteral("Ctrl+I"), [this] { ToggleInspector(); });
     cmd(QStringLiteral("切换底栏"), QStringLiteral("Ctrl+J"), [this] { ToggleBottomDock(); });
     cmd(QStringLiteral("样式编辑器…"), {}, [this] {
         auto* dlg = new StyleEditorDialog();
@@ -895,11 +907,10 @@ void MainWindow::BuildPaletteCommands() {
         });
     }
 
-    const QStringList& names = SidePanel::WorkspaceNames();
+    const QStringList& names = shine::app::WorkspaceNames();
     for (int i = 0; i < names.size(); ++i) {
         pageItem(QStringLiteral("前往：%1").arg(names[i]), [this, i] {
             rail_->SetCurrent(i);
-            side_->SetWorkspace(i);
             ShowWorkshop();
         });
     }
@@ -971,9 +982,9 @@ void MainWindow::SaveLayout() {
     o[QStringLiteral("magic")] = QStringLiteral("shinetv-layout-1");
     o[QStringLiteral("geometry")] = QString::fromLatin1(saveGeometry().toBase64());
     o[QStringLiteral("windowState")] = QString::fromLatin1(saveState().toBase64());
-    o[QStringLiteral("sideVisible")] = side_visible_;
+    o[QStringLiteral("inspectorVisible")] = inspector_visible_;
     o[QStringLiteral("bottomVisible")] = bottom_visible_;
-    o[QStringLiteral("sideLastW")] = side_last_w_;
+    o[QStringLiteral("inspectorLastW")] = inspector_last_w_;
     o[QStringLiteral("bottomLastH")] = bottom_last_h_;
     QJsonArray hs;
     for (const int s : hsplit_->sizes()) {
@@ -1012,22 +1023,28 @@ void MainWindow::RestoreLayout() {
     }
     restoreGeometry(QByteArray::fromBase64(o[QStringLiteral("geometry")].toString().toLatin1()));
     restoreState(QByteArray::fromBase64(o[QStringLiteral("windowState")].toString().toLatin1()));
-    side_visible_ = o[QStringLiteral("sideVisible")].toBool(true);
+    // 旧版 layout.dat 写的是四列 {56,240,900,280}（sideVisible/sideLastW），
+    // 读不到新键时按「检查器收起」处理并提示一次，避免把旧的 240 当检查器宽度恢复。
+    const bool has_new = o.contains(QStringLiteral("inspectorVisible"));
+    inspector_visible_ = has_new ? o[QStringLiteral("inspectorVisible")].toBool(false) : false;
     bottom_visible_ = o[QStringLiteral("bottomVisible")].toBool(true);
-    side_last_w_ = o[QStringLiteral("sideLastW")].toInt(240);
+    inspector_last_w_ = o[QStringLiteral("inspectorLastW")].toInt(320);
     bottom_last_h_ = o[QStringLiteral("bottomLastH")].toInt(220);
 
     QList<int> sizes;
     for (const QJsonValue& v : o[QStringLiteral("hSizes")].toArray()) {
         sizes.append(v.toInt());
     }
-    if (sizes.size() >= 4) {
+    if (has_new && sizes.size() >= 2) {
         hsplit_->setSizes(sizes);
-        side_->setVisible(sizes[1] > 0);
+    } else {
+        // 首次 / 旧版：检查器收起，中央区吃掉除活动栏外的全部宽度
+        hsplit_->setSizes({std::max(kCenterMinW, hsplit_->width() - 56), 0});
     }
+    right_->setVisible(inspector_visible_);
+    top_bar_->SetInspectorActive(inspector_visible_);
     bottom_->setVisible(bottom_visible_);
     rail_->SetCurrent(o[QStringLiteral("workspace")].toInt(0), false);
-    side_->SetWorkspace(rail_->Current());
     bottom_->SetCurrentTab(o[QStringLiteral("bottomTab")].toInt(0));
 
     // 工作区标签状态（标题逐字还原，双击改名也保得住）
@@ -1069,7 +1086,7 @@ QString MainWindow::LayoutProbe() const {
     out << QStringLiteral("window=%1x%2").arg(width()).arg(height());
     out << QStringLiteral("workspace=%1").arg(rail_->Current());
     out << QStringLiteral("bottomTab=%1").arg(bottom_->CurrentTab());
-    out << QStringLiteral("side=%1").arg(hsplit_->sizes().value(1, 0) > 0 ? 1 : 0);
+    out << QStringLiteral("inspector=%1").arg(hsplit_->sizes().value(1, 0) > 0 ? 1 : 0);
     out << QStringLiteral("bottom=%1").arg(bottom_->isHidden() ? 0 : 1);
     out << QStringLiteral("hSizes=%1").arg(sizes.join(QLatin1Char(',')));
     out << QStringLiteral("docTabs=%1").arg(doc_tabs_->count());
@@ -1081,8 +1098,10 @@ void MainWindow::SetTestLayout() {
     // 固定的非默认布局（验收：重启后逐项还原，全默认值比不出「还原」）
     resize(1400, 880);
     rail_->SetCurrent(2, false);
-    side_->SetWorkspace(2);
-    hsplit_->setSizes({56, 300, 800, 240});
+    right_->setVisible(true);
+    inspector_visible_ = true;
+    inspector_last_w_ = 300;
+    hsplit_->setSizes({std::max(kCenterMinW, 1400 - 56 - 300), 300});
     bottom_->setVisible(true);
     bottom_->SetCurrentTab(1);
     if (QWidget* page = doc_stack_->widget(0); page != nullptr) {

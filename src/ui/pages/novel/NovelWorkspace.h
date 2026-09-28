@@ -56,6 +56,8 @@ class NovelWorkspace : public QWidget {
     bool SelectChapterAt(int flatIndex); // 选章即时切换（树/卡双向同步）
     [[nodiscard]] QString SelectionProbe() const;
     [[nodiscard]] QListWidget* CardList() const { return cards_; }
+    // 交给外壳右侧检查器承载的属性内容（页面自己不再摆右栏，见 NovelWorkspace.cpp 布局段）
+    [[nodiscard]] QWidget* InspectorBody() const { return inspector_body_; }
     // 设定台（P04-S2）：模式行 [设定] 的内容页；S3+ 的关系/伏笔页也落在这里
     [[nodiscard]] WorldBoardView* WorldBoard() const { return world_; }
     // 初始化链（P04-S4）：模式行 [初始化] 的内容页（I1–I16 流水线 + 门禁 N1–N14 + 前情导入）
@@ -123,6 +125,7 @@ class NovelWorkspace : public QWidget {
     QLabel* summary_ = nullptr;
     DraftView* draft_ = nullptr; // 正文草稿（P04-S6 DraftView：流式/中断/重试/哈希）
     data::KeyValue* props_ = nullptr;
+    QWidget* inspector_body_ = nullptr;
     QStackedWidget* centerStack_ = nullptr; // 中栏：[章节]/[设定]/[初始化]/[流水线]/[评审]/[模型]/[状态]/[自动] 八页
     WorldBoardView* world_ = nullptr;
     InitChainView* init_ = nullptr;

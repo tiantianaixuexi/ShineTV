@@ -57,6 +57,18 @@ TopBar::TopBar(QWidget* parent) : QFrame(parent) {
     });
     lay->addWidget(palette);
 
+    // 右侧检查器开合（Ctrl+I）—— 检查器默认收起，这里是它的显式入口，
+    // 免得用户不知道有这个东西可以打开
+    inspector_btn_ = new shine::widgets::Button(QStringLiteral("检查器"),
+                                                shine::widgets::Button::Variant::Ghost,
+                                                shine::widgets::Button::Size::Md, this);
+    shine::widgets::Tooltip::Attach(inspector_btn_, QStringLiteral("显示 / 隐藏右侧检查器"),
+                                    QStringLiteral("Ctrl+I"));
+    connect(inspector_btn_, &shine::widgets::Button::clicked, this, [this] {
+        if (on_toggle_inspector_) on_toggle_inspector_();
+    });
+    lay->addWidget(inspector_btn_);
+
     // ▶ 运行 / ⏹ 停止（P09 接入前为占位，点了给中文提示）
     auto* run = new shine::widgets::Button(QStringLiteral("▶ 运行"),
                                            shine::widgets::Button::Variant::Primary,
@@ -102,10 +114,20 @@ void TopBar::SetOnShowHub(std::function<void()> cb) { on_show_hub_ = std::move(c
 void TopBar::SetOnCloseProject(std::function<void()> cb) { on_close_project_ = std::move(cb); }
 void TopBar::SetOnRevealProject(std::function<void()> cb) { on_reveal_project_ = std::move(cb); }
 void TopBar::SetOnOpenPalette(std::function<void()> cb) { on_open_palette_ = std::move(cb); }
+void TopBar::SetOnToggleInspector(std::function<void()> cb) { on_toggle_inspector_ = std::move(cb); }
 void TopBar::SetOnRun(std::function<void()> cb) { on_run_ = std::move(cb); }
 void TopBar::SetOnStop(std::function<void()> cb) { on_stop_ = std::move(cb); }
 void TopBar::SetOnSettings(std::function<void()> cb) { on_settings_ = std::move(cb); }
 void TopBar::SetOnThemeChanged(std::function<void()> cb) { on_theme_changed_ = std::move(cb); }
+
+void TopBar::SetInspectorActive(bool on) {
+    if (inspector_btn_ == nullptr) {
+        return;
+    }
+    inspector_btn_->setText(on ? QStringLiteral("检查器 ◨") : QStringLiteral("检查器"));
+    inspector_btn_->setCheckable(true);
+    inspector_btn_->setChecked(on);
+}
 
 void TopBar::PopupThemeMenu() {
     ShowThemeMenu(theme_btn_->mapToGlobal(QPoint(0, theme_btn_->height())));

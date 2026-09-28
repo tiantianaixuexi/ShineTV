@@ -160,7 +160,7 @@ class InitChainView : public QWidget {
     struct GateRowUi {
         QString nId;
         QLabel* name = nullptr;
-        QLabel* verdict = nullptr;
+        widgets::ElidedLabel* verdict = nullptr; // 省略 + hover 全文 + 点击展开（长判定文本）
         QLabel* mode = nullptr;
         QPushButton* ignoreBtn = nullptr;  // 忽略并人工确认（申请）
         QPushButton* approveBtn = nullptr; // 人工审批（显式确认 + audit_logs）

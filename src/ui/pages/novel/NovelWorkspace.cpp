@@ -221,31 +221,31 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     });
     SwitchCenter(0);
 
-    // ── 右栏：属性 / 预览 ──
-    auto* right = new QWidget(this);
-    right->setMinimumWidth(240);
-    auto* rl = new QVBoxLayout(right);
-    rl->setContentsMargins(0, 0, 0, 0);
-    rl->setSpacing(theme::space::kSteps[2]);
-    auto* propCap = new QLabel(QStringLiteral("属性"), right);
-    props_ = new data::KeyValue(right);
-    auto* prevCap = new QLabel(QStringLiteral("预览"), right);
-    auto* prev = new QLabel(
-        QStringLiteral("预览区（P05/P07 接入：\n资产基线图 / 出图结果）"), right);
-    prev->setAlignment(Qt::AlignCenter);
-    prev->setWordWrap(true);
-    rl->addWidget(propCap);
-    rl->addWidget(props_);
-    rl->addWidget(prevCap);
-    rl->addWidget(prev, 1);
+    // ── 右栏：不再由本页自建 ──
+    // 上一版这里自己又摆了一列「属性 / 预览区（P05/P07 接入…）」，和外壳的右栏叠在一起，
+    // 一屏就变成 活动栏 + 页内左 + 页内中 + 页内右 + 外壳右 共五列，中央被挤扁。
+    // 现在页面只留「章节导航 | 内容」两列，属性改由外壳的右侧检查器承载（InspectorBody()）。
 
     auto* split = new QSplitter(Qt::Horizontal, this);
+    left->setMinimumWidth(240);
+    center->setMinimumWidth(720); // 硬下限：低于此值内部表格与门禁行必然互相压扁
     split->addWidget(left);
     split->addWidget(center);
-    split->addWidget(right);
-    split->setStretchFactor(1, 1);
-    split->setSizes({320, 720, 260});
+    split->setStretchFactor(1, 1); // 只有内容列可拉伸
+    split->setCollapsible(0, true);
+    split->setSizes({300, 1200});
     outer->addWidget(split, 1);
+
+    // 属性内容交给外壳检查器承载（默认收起，Ctrl+I / 顶栏「检查器」打开）。
+    // 仍然在本页构建：RefreshProps 一类的更新路径不用改，只是父级换成了检查器。
+    auto* inspector = new QWidget(this);
+    auto* il = new QVBoxLayout(inspector);
+    il->setContentsMargins(0, 0, 0, 0);
+    il->setSpacing(theme::space::kSteps[2]);
+    props_ = new data::KeyValue(inspector);
+    il->addWidget(props_);
+    il->addStretch();
+    inspector_body_ = inspector;
 
     // 选章即时切换：树 ↔ 卡片双向同步（syncing_ 防回环）
     connect(cards_, &QListWidget::currentRowChanged, this, [this](int row) {

@@ -3,8 +3,10 @@
 #include "ui/kit/theme/CssColor.h"
 
 #include <QEvent>
+#include <QMouseEvent>
 #include <QStyle>
 
+#include <algorithm>
 #include <functional>
 
 namespace shine::widgets {
@@ -100,6 +102,66 @@ QLabel* SectionTitle(const QString& text, QWidget* parent, bool semibold) {
         SetSemibold(label, true);
     }
     return label;
+}
+
+// ============================== ElidedLabel ==============================
+
+ElidedLabel::ElidedLabel(const QString& text, QWidget* parent) : QLabel(parent) {
+    full_ = text;
+    setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    setToolTip(text);
+    if (expandable_) {
+        setCursor(Qt::PointingHandCursor);
+    }
+    Recompute();
+}
+
+void ElidedLabel::SetFullText(const QString& full) {
+    full_ = full;
+    setToolTip(full);
+    Recompute();
+}
+
+void ElidedLabel::SetExpanded(bool on) {
+    if (!expandable_ || expanded_ == on) {
+        return;
+    }
+    expanded_ = on;
+    Recompute();
+    updateGeometry();
+    update();
+}
+
+void ElidedLabel::Refresh() { Recompute(); }
+
+void ElidedLabel::Recompute() {
+    if (expanded_) {
+        setWordWrap(true);
+        QLabel::setText(full_);
+        setMinimumWidth(0);
+        setMinimumHeight(0); // 高度交给 wordWrap 的 sizeHint
+        updateGeometry();
+        return;
+    }
+    setWordWrap(false);
+    const int avail = std::max(0, width() - 2);
+    shown_ = fontMetrics().elidedText(full_, Qt::ElideRight, avail);
+    QLabel::setText(shown_);
+    setToolTip(full_); // 省略时 hover 出全文
+}
+
+void ElidedLabel::resizeEvent(QResizeEvent* ev) {
+    QLabel::resizeEvent(ev);
+    Recompute();
+}
+
+void ElidedLabel::mouseReleaseEvent(QMouseEvent* ev) {
+    if (expandable_ && ev->button() == Qt::LeftButton && rect().contains(ev->position().toPoint())) {
+        SetExpanded(!expanded_);
+        ev->accept();
+        return;
+    }
+    QLabel::mouseReleaseEvent(ev);
 }
 
 } // namespace shine::widgets

@@ -306,18 +306,23 @@ QWidget* InitChainView::BuildGatesArea() {
         hl->setContentsMargins(0, 0, 0, 0);
         hl->setSpacing(theme::space::kSteps[1]);
         row.name = new QLabel(QString("%1　%2").arg(row.nId, QString::fromUtf8(g.name)), line);
-        row.name->setMinimumWidth(320);
+        row.name->setMinimumWidth(260);
         row.mode = new QLabel(QStringLiteral("启用 enforce"), line);
-        row.verdict = new QLabel(QStringLiteral("未判定"), line);
+        // 判定文本可能很长（失败详情 + 修法），普通 QLabel 既不省略也不限宽，
+        // 会把同一行的按钮顶出容器并在右栏上叠字。改用 ElidedLabel：
+        // 单行按可用宽度省略、hover 出全文、点击就地展开成多行。
+        row.verdict = new widgets::ElidedLabel(QStringLiteral("未判定"), line);
+        row.verdict->setMinimumWidth(200);
+        widgets::SetKind(row.verdict, "fieldhelp");
         row.ignoreBtn = new widgets::Button(QStringLiteral("忽略并人工确认"), widgets::Button::Variant::Ghost,
                                             widgets::Button::Size::Sm, line);
         row.approveBtn = new widgets::Button(QStringLiteral("人工审批"), widgets::Button::Variant::Ghost,
                                              widgets::Button::Size::Sm, line);
         row.enforceBtn = new widgets::Button(QStringLiteral("启用"), widgets::Button::Variant::Ghost,
                                              widgets::Button::Size::Sm, line);
-        hl->addWidget(row.name, 1);
+        hl->addWidget(row.name, 3);
         hl->addWidget(row.mode);
-        hl->addWidget(row.verdict);
+        hl->addWidget(row.verdict, 4);
         hl->addWidget(row.ignoreBtn);
         hl->addWidget(row.approveBtn);
         hl->addWidget(row.enforceBtn);
@@ -1239,7 +1244,7 @@ void InitChainView::RebuildGates() {
             }
             row.name->setToolTip(QStringLiteral("%1 %2　%3").arg(nId, l.name, l.detail));
         }
-        row.verdict->setText(verdictText);
+        row.verdict->SetFullText(verdictText);
         widgets::SetTextColor(row.verdict, token);
         row.ignoreBtn->setEnabled(cfg.mode == QLatin1String("enforce"));
         row.approveBtn->setEnabled(cfg.mode == QLatin1String("ignore-approved") && !cfg.approved);

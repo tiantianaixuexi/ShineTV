@@ -31,10 +31,10 @@ void RegisterP03WindowChecks(MainWindow& window) {
             std::printf("[p03-bootstrap] FAILED: %s\n", ref.error().message.c_str());
         }
     }
-    // P03-S6 判定：SHINE_P03_FOLD=<文件> 折叠动画耗时（Ctrl+B / Ctrl+J 同路径，判据档 = motion.base 200ms）
+    // P03-S6 判定：SHINE_P03_FOLD=<文件> 折叠动画耗时（Ctrl+I / Ctrl+J 同路径，判据档 = motion.base 200ms）
     if (const std::filesystem::path foldOut = EnvironmentPath(L"SHINE_P03_FOLD"); !foldOut.empty()) {
         QTimer::singleShot(800, &window, [&window, foldOut] {
-            window.ToggleSidePanel();
+            window.ToggleInspector();
             window.ToggleBottomDock();
             auto* elapsed = new QElapsedTimer();
             elapsed->start();
@@ -43,7 +43,7 @@ void RegisterP03WindowChecks(MainWindow& window) {
             QObject::connect(poll, &QTimer::timeout, &window,
                              [&window, foldOut, elapsed, poll] {
                 const QString probe = window.LayoutProbe();
-                const bool folded = probe.contains(QStringLiteral("side=0")) &&
+                const bool folded = probe.contains(QStringLiteral("inspector=0")) &&
                                     probe.contains(QStringLiteral("bottom=0"));
                 if (folded || elapsed->elapsed() > 3000) {
                     poll->stop();

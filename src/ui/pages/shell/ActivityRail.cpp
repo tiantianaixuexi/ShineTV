@@ -27,6 +27,14 @@ inline constexpr RailEntry kEntries[] = {
 inline constexpr double kIndicatorW = 2.5; // UI.md §2.3：2.5px 指示条
 } // namespace
 
+const QStringList& WorkspaceNames() {
+    // 顺序 = kEntries 顺序 = ActivityRail 下标；改这里等于改工作区数量
+    static const QStringList kNames = {QStringLiteral("总控"), QStringLiteral("小说"),
+                                       QStringLiteral("视觉资产"), QStringLiteral("分镜"),
+                                       QStringLiteral("出图"), QStringLiteral("出片")};
+    return kNames;
+}
+
 ActivityRail::ActivityRail(QWidget* parent) : QFrame(parent) {
     setObjectName(QStringLiteral("activityRail"));
     setFixedWidth(56);

@@ -513,8 +513,6 @@ add_executable(ShineTVStudio
   src/ui/pages/shell/TopBar.cpp
   src/ui/pages/shell/ActivityRail.h
   src/ui/pages/shell/ActivityRail.cpp
-  src/ui/pages/shell/SidePanel.h
-  src/ui/pages/shell/SidePanel.cpp
   src/ui/pages/shell/RightPanel.h
   src/ui/pages/shell/RightPanel.cpp
   src/ui/pages/shell/BottomDock.h
