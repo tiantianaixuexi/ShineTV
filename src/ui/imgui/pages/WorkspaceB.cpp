@@ -1,4 +1,4 @@
-﻿#include "ui/imgui/pages/WorkspacePages.h"
+#include "ui/imgui/pages/WorkspacePages.h"
 
 #include "core/Async.h"
 #include "core/Log.h"
@@ -28,6 +28,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -184,6 +185,17 @@ struct BookShot {  // 分镜页的镜头（shots 表一行）
     std::string canonStatus;
 };
 
+// 检查器「关联」段的**场 → 伏笔**链路（scenes + scene_foreshadows + foreshadows）。
+// ⚠️ 住在这个匿名命名空间里，Shell 看不到：它只需要 RebuildBookSide 产出的
+//    BookRelationView。这三张表在 shots 之外，镜行本身没有场标题与伏笔，
+//    所以在 worker 侧先按场聚好，回投时只带纯数据。
+struct BookSceneLink {
+    RowId id = 0;
+    int ord = 0;  // scenes.ord；0 = 取不到场序
+    std::string title;
+    std::vector<std::string> foreshadows;  // 伏笔标题（不是 id —— id 不是可读文案）
+};
+
 struct BookAsset {  // 资产页一行（实体 + 它的主视觉资产 + 形象层进度）
     RowId entityId = 0;
     std::string kind;
@@ -220,12 +232,14 @@ struct BookState {
     std::vector<BookChapter> chapters;
     std::vector<BookAsset> assets;
     std::vector<BookShot> shots;  // 当前章
+    std::vector<BookSceneLink> sceneLinks;  // 当前章：场序 + 场标题 + 该场伏笔标题
     BookContinuity continuity;    // 当前章
     // V1–V7 有阶段产物 / V8 跑过连续性 —— 逐项来自真实表，不整条一起亮
     bool vStage[8] = {false, false, false, false, false, false, false, false};
 
     int selectedChapter = 0;  // chapters 下标
     int selectedShot = 0;     // shots 下标
+    int selectedAsset = 0;    // assets 下标（与只读视图的 selectedAsset 同口径）
 
     [[nodiscard]] RowId chapterId() const {
         return selectedChapter >= 0 && selectedChapter < static_cast<int>(chapters.size())
@@ -345,28 +359,9 @@ void AssetTone(const std::string& status, std::string& label, theme::Tone& tone)
     }
 }
 
-// entities.kind / visual_assets.kind → 中文标签。表外原样回显，不编一个名字。
-std::string KindLabel(const std::string& kind) {
-    if (kind == "person" || kind == "character") {
-        return "角色";
-    }
-    if (kind == "location") {
-        return "地点";
-    }
-    if (kind == "item" || kind == "prop" || kind == "treasure") {
-        return "物品";
-    }
-    if (kind == "clothing") {
-        return "服装";
-    }
-    if (kind == "faction") {
-        return "势力";
-    }
-    if (kind == "event") {
-        return "事件";
-    }
-    return kind.empty() ? kDash : kind;
-}
+// ⚠️ entities.kind → 中文分类名的映射**不在这里**：它必须导出给外壳
+//    （WorkspacePages.h 的 AssetKindLabel），所以定义在匿名命名空间**之外**、
+//    本文件靠后那一节。资产页卡片与详情里的调用点也走同一份，不写第二张表。
 
 // ---- worker 侧：开库 + 查询，产出一份**纯数据**快照（无句柄）----
 // wantChapter = 用户选中的章下标（-1 = 取第一章）。镜头 / 阶段产物 / 连续性
@@ -460,6 +455,37 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
         return 0;
     };
 
+    // —— 检查器「关联」段的伏笔：场 → scene_foreshadows → foreshadows.title ——
+    // ⚠️ ListOpenForeshadows 只给未回收的那一档（PLANNED|PLANTED|DEVELOPING，
+    //    见 NovelGraph.h 的注释）：已经 REVEALED / RESOLVED 的伏笔在
+    //    foreshadows 表里有行、但这里取不到标题。这是业务层的口径，UI 侧照实
+    //    呈现 —— 不把 id 当标题显示，也不绕开它回表再查一次。
+    // ⚠️ 伏笔表可能是空的（没跑过 T9 伏笔计划）：那就是空，不造数据。
+    std::map<RowId, std::string> foreshadowTitle;
+    if (auto opened = graph.ListOpenForeshadows()) {
+        for (const novelcore::ForeshadowRow& f : *opened) {
+            if (!f.title.empty()) {
+                foreshadowTitle[f.id] = f.title;
+            }
+        }
+    }
+    for (const novelcore::SceneRow& sc : scenes) {
+        BookSceneLink link;
+        link.id = sc.id;
+        link.ord = sc.ord;
+        link.title = sc.title;
+        if (auto rows = graph.ListSceneForeshadows(sc.id)) {
+            for (const novelcore::SceneForeshadowRow& fr : *rows) {
+                // 查不到标题就**跳过这一条**：显示一串 id 不如什么都不显示。
+                if (const auto it = foreshadowTitle.find(fr.foreshadowing_id);
+                    it != foreshadowTitle.end()) {
+                    link.foreshadows.push_back(it->second);
+                }
+            }
+        }
+        out.sceneLinks.push_back(std::move(link));
+    }
+
     if (auto listed = visual.ListShotsByChapter(chapterId)) {
         for (const novelcore::ShotRow& s : *listed) {
             BookShot row;
@@ -514,6 +540,16 @@ BookSideView& BookSideCache() {
     return view;
 }
 
+// 资产工作区的 kind 筛选存处。⚠️ 必须是**函数内 static**，不能是 BookSideView 的
+// 字段：视图每次 RebuildBookSide 都被整块重建（`v = BookSideView{}`），
+// 存在里面必被冲掉 —— 症状是筛完立刻弹回「全部」。
+// 值是 entities.kind 的**英文原文**（空串 = 全部），不存中文标签：分组名走
+// AssetKindLabel()，筛选值必须与 BookSideView::assets 的 kind 同源。
+std::string& BookKindFilterSlot() {
+    static std::string kind;
+    return kind;
+}
+
 // 从刚落地的快照重建视图。
 // ⚠️ 只能读**合并后**的 s：ApplyBook 里 `s = std::move(next)` 之后 next 已经被搬空，
 //    这时候再遍历 next.chapters 只会拿到空列表（症状：侧栏树永远只有一行空态）。
@@ -552,14 +588,69 @@ void RebuildBookSide(const BookState& s) {
         row.durationSec = shot.durationSec;  // <=0 = timeline_json 里没有，别当成 0 秒
         v.shots.push_back(std::move(row));
     }
+    // ---- 资产工作区侧栏：全量实体，**不按 kind 预筛** ----
+    // ⚠️ 筛选是工作区 UI 态（BookKindFilterSlot），筛完的树拿着这里的
+    //    BookAssetView::index 回指，所以 index 必须**等于** BookState::assets
+    //    里的下标 —— 一旦这里再排序或再筛，侧栏点谁都会点错。
+    v.assets.reserve(s.assets.size());
+    for (std::size_t i = 0; i < s.assets.size(); ++i) {
+        const BookAsset& asset = s.assets[i];
+        BookAssetView row;
+        row.index = static_cast<int>(i);
+        row.entityId = static_cast<int>(asset.entityId);
+        row.kind = asset.kind;
+        row.name = asset.name;
+        row.summary = asset.summary;
+        row.hasAsset = asset.hasAsset;
+        row.assetStatus = asset.assetStatus;
+        row.layers = asset.layers;
+        row.layersDone = asset.layersDone;
+        row.degraded = asset.degraded;
+        // 色调与中文标签都复用资产页那份 AssetTone（唯一的状态→颜色映射）。
+        // label 也存进视图：AssetTone() 在本文件的匿名命名空间里，Shell 的检查器
+        // 够不着，让它自己再映射一遍就是第二份状态词表。
+        AssetTone(asset.hasAsset ? asset.assetStatus : std::string(), row.statusLabel, row.tone);
+        v.assets.push_back(std::move(row));
+    }
+    // 选中下标必须夹进新快照的范围：换工程 / 库打不开时 assets 是空的。
+    v.selectedAsset = s.assets.empty()
+                          ? 0
+                          : std::clamp(s.selectedAsset, 0, static_cast<int>(s.assets.size()) - 1);
+
+    // ---- 检查器「关联」段：伏笔 / 场 / 镜三组 ----
+    // 口径：这一段锚在**当前选中的那一镜**上，三组一起有或一起空。
+    // 没选中镜（本章一个镜都没有，s.shot() == nullptr）时三组全留空 ——
+    // 不拿「本章第一场」去补一个场 tag：空镜码配一个「场景 12」会被读成
+    // 「这一镜属于第 12 场」，而实际上没有选中任何镜，那是误导而不是空态。
+    v.relation = BookRelationView{};
+    if (const BookShot* selected = s.shot(); selected != nullptr) {
+        v.relation.shotCode = ShotCode(selected->ord);  // 侧栏 / 故事板 / 检查器同一份
+        for (const BookSceneLink& link : s.sceneLinks) {
+            if (link.id != selected->sceneId) {
+                continue;
+            }
+            v.relation.sceneOrd = link.ord;
+            v.relation.sceneTitle = link.title;
+            v.relation.foreshadows = link.foreshadows;
+            break;
+        }
+        // sceneId 在本章的 sceneLinks 里找不到（scenes 表为空 / shots.scene_id
+        // 指向别章的场）时：sceneOrd 留 0、sceneTitle 与 foreshadows 留空 ——
+        // 0 序即「不落在任何场上」，不编一个占位场出来。
+    }
 }
 
 // 把 worker 产出的快照并进状态。selectedChapter 由 worker 按 wantChapter 定好，
-// 这里只把选中的镜头夹回新快照的范围。
+// 这里只把选中的镜头 / 资产夹回新快照的范围。
 void ApplyBook(BookState& s, BookState&& next) {
     const int keepShot = s.selectedShot;
+    // ⚠️ 资产选中同理：LoadBook 开头的 `out = BookState{}` 会把 selectedAsset 抹成 0，
+    //    不保留的话切一章或点一次「重新读取」，侧栏高亮就跳回第一个实体 ——
+    //    而实体列表本身并没有换。RebuildBookSide 里那处夹范围只防越界，不防丢失。
+    const int keepAsset = s.selectedAsset;
     s = std::move(next);
     s.selectedShot = keepShot >= 0 && keepShot < static_cast<int>(s.shots.size()) ? keepShot : 0;
+    s.selectedAsset = keepAsset >= 0 && keepAsset < static_cast<int>(s.assets.size()) ? keepAsset : 0;
     s.loading = false;
     // ApplyBook 跑在 UI 线程（worker 结果经 async::PostToUi 回投后才调它），
     // 所以在这里重建外壳视图是安全的 —— worker 不会同时碰这个缓存。
@@ -641,6 +732,55 @@ void BindStoryboardProject(std::filesystem::path root) { BindBook(std::move(root
 //    否则 Shell 在 SetProjectRoot 里链接不到它们。
 // 只读视图。UI 线程读，不做任何 IO；没绑工程时返回的是一份全 0 / 空列表的默认视图。
 const BookSideView& BookSide() { return BookSideCache(); }
+
+// entities.kind / visual_assets.kind → 中文分类名。表外原样回显，不编一个名字。
+// ⚠️ 必须定义在匿名命名空间**之外**（声明见 WorkspacePages.h），否则 Shell 的
+//    kind 筛选树链接不到它。**就是**本文件原先那个内部 KindLabel —— 一份映射，
+//    改名导出而已；下面资产页卡片 / 详情那两处调用点也走它。
+std::string AssetKindLabel(const std::string& kind) {
+    if (kind == "person" || kind == "character") {
+        return "角色";
+    }
+    if (kind == "location") {
+        return "地点";
+    }
+    if (kind == "item" || kind == "prop" || kind == "treasure") {
+        return "物品";
+    }
+    if (kind == "clothing") {
+        return "服装";
+    }
+    if (kind == "faction") {
+        return "势力";
+    }
+    if (kind == "event") {
+        return "事件";
+    }
+    return kind.empty() ? kDash : kind;
+}
+
+// 资产工作区的 kind 筛选。存处在匿名命名空间里的 BookKindFilterSlot（函数内
+// static）—— 不在 BookSideView 里，理由见那处的注释：视图会被整块重建。
+// 空串 = 全部。
+const std::string& BookKindFilter() { return BookKindFilterSlot(); }
+void SetBookKindFilter(std::string kind) { BookKindFilterSlot() = std::move(kind); }
+
+// 侧栏资产树点叶子 → 改选中实体。index 是 **BookSideView::assets 的下标**
+// （与 BookState::assets 同序），不是筛后树的序号。
+// 越界只可能是过期点击或旧工程的下标，先判界、后夹范围，和 SelectBookChapter
+// 同一套写法；改完立刻重建视图 —— 外壳读的是缓存，不重建就还是上一格高亮。
+void SelectBookAsset(int index) {
+    BookState& s = Book();
+    if (s.assets.empty()) {
+        return;  // 没实体 = 没东西可切
+    }
+    const int last = static_cast<int>(s.assets.size()) - 1;
+    if (index < 0 || index > last) {
+        return;
+    }
+    s.selectedAsset = std::clamp(index, 0, last);
+    RebuildBookSide(s);
+}
 
 // 侧栏点击 → 改选中项。越界直接什么都不做。
 // ⚠️ 不能"夹回去接着用"：越界只可能是过期点击或旧工程的下标，拿一个猜出来的下标
@@ -1034,7 +1174,7 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                                 ColorText(), name, true);
                 DrawTextClipped(draw, FontAt(11.5f), 11.5f,
                                 ImVec2(card.min.x + 12.0f, card.min.y + 30.0f), cardW - 24.0f,
-                                ColorTextMuted(), KindLabel(a.kind), true);
+                                ColorTextMuted(), AssetKindLabel(a.kind), true);
                 DrawTextClipped(draw, FontAt(11.5f), 11.5f,
                                 ImVec2(card.min.x + 12.0f, card.min.y + 50.0f), cardW - 24.0f,
                                 ColorTextMuted(), a.summary, true);
@@ -1124,18 +1264,48 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
         return;
     }
     selected_ = std::clamp(selected_, 0, static_cast<int>(s.assets.size()) - 1);
+
+    // ⚠️ kind 筛选是**侧栏与主区共享**的一份状态（设计稿 Assets.jsx:130 和 Shell.jsx:523
+    //    读同一个 entityKind）。只筛侧栏的话，点完 chip 主区纹丝不动，看着像 chip 坏了。
+    //    这里读同一份 BookKindFilter()，不另存一份 —— 存两份迟早只改得动一边。
+    //
+    //    详情**不**跟着筛：设计稿的 cur 取自未筛选的全集（Assets.jsx:131），所以筛到一个
+    //    不含当前选中项的 kind 时详情页不空。照这个口径，否则点完 chip 主体变空态。
+    const std::string& kindFilter = BookKindFilter();
+    std::vector<int> visible;
+    visible.reserve(s.assets.size());
+    for (int i = 0; i < static_cast<int>(s.assets.size()); ++i) {
+        if (kindFilter.empty() || s.assets[static_cast<std::size_t>(i)].kind == kindFilter) {
+            visible.push_back(i);
+        }
+    }
+
     const BookAsset& asset = s.assets[static_cast<std::size_t>(selected_)];
 
     if (overview_) {
+        if (visible.empty()) {
+            BookEmpty(body, draw, "masks",
+                      "这一类还没有实体。在左侧侧栏换回「全部」看看这个工程里有哪些实体");
+            return;
+        }
         const int columns = AutoGridCols(body.width(), 210.0f, 14.0f);
         const float cardW =
             (body.width() - 14.0f * static_cast<float>(columns - 1)) / static_cast<float>(columns);
-        for (int i = 0; i < static_cast<int>(s.assets.size()); ++i) {
+        for (int slot = 0; slot < static_cast<int>(visible.size()); ++slot) {
+            const int i = visible[static_cast<std::size_t>(slot)];  // 真实下标
             const BookAsset& row = s.assets[static_cast<std::size_t>(i)];
-            const int column = i % columns;
-            const int r = i / columns;
-            const Rect card{body.min.x + (cardW + 14.0f) * static_cast<float>(column),
-                            body.min.y + (192.0f + 14.0f) * static_cast<float>(r), cardW, 192.0f};
+            const int column = slot % columns;
+            const int r = slot / columns;
+            // ⚠️ 这里原来把宽高直接写进了 Rect 的四参构造，而 kit::Rect 的四参是
+            //    **(minX, minY, maxX, maxY)**，不是 (x, y, w, h)。于是 max.x = cardW(208)
+            //    小于 min.x = 296，DrawRoundRect 的 `max.x <= min.x` 直接 return：
+            //    总览网格的卡片**整张没画、也点不到**，界面上只剩名字和状态两行文字浮在
+            //    背景上。thumb 用了 card.max.x，同一个原因一起消失。
+            //    编译不报错、运行不崩，截图看得出「卡没了」但看不出是哪儿 —— 见
+            //    kit::Rect 四参构造上的警告。宽高一律走 RectAt。
+            const Rect card = RectAt(body.min.x + (cardW + 14.0f) * static_cast<float>(column),
+                                     body.min.y + (192.0f + 14.0f) * static_cast<float>(r), cardW,
+                                     192.0f);
             const bool on = (i == selected_);
             DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
                          on ? ColorAccent() : ColorLineSubtle(), 1.0f);
@@ -1177,6 +1347,15 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
     draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
     y += 14.0f;
 
+    // 当前选中项被 kind 筛选排除在外时，明说它不在筛选结果里 —— 照设计稿的 cur 口径
+    // （Assets.jsx:131 从未筛选的全集取）详情照样显示，但用户会以为筛选没生效。
+    if (!kindFilter.empty() && std::find(visible.begin(), visible.end(), selected_) == visible.end()) {
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, y), body.width(),
+                        ColorTextMuted(),
+                        "当前这一项不在「" + AssetKindLabel(kindFilter) + "」的筛选结果里", true);
+        y += 18.0f;
+    }
+
     // 真实字段：类别 / 实体状态 / 资产名 / canon / 生产态 / 设定图路径 / 形象层进度。
     // 旧版的"别名 老沈""出处 第 1 章""降级策略 保留上一版"在 entities 表里**没有列**，
     // 所以这些行不画 —— 不用相邻字段冒充。
@@ -1184,7 +1363,7 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
                                                  std::to_string(asset.layers) + " 层就绪")
                                               : std::string(kDash);
     KeyValues(draw, Rect{body.min.x, y, body.min.x + 640.0f, y + 150.0f},
-              {{"类别", KindLabel(asset.kind)},
+              {{"类别", AssetKindLabel(asset.kind)},
                {"实体 ID", "#" + std::to_string(asset.entityId)},
                {"实体状态", asset.entityStatus.empty() ? kDash : asset.entityStatus},
                {"视觉资产", asset.hasAsset ? (asset.assetName.empty() ? kDash : asset.assetName)

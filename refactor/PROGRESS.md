@@ -293,7 +293,21 @@ last_verified: 2026-09-30
 | 2026-09-30 | 门禁 | **加判据三：受控图不许重样** | 第三/四段的图都是显式驱动出来的，彼此重样就说明有一张没拍到它承诺的状态。只对这批做判据 —— `ws-*` 与 `theme-<base>-*` 拍的是同一工作区同一主题，只因累积界面状态不同才没撞上，拿它们互比就成了碰运气 | ✅ |
 | 2026-09-30 | 一致性 | 镜码与时长两处口径不一 | 侧栏 `S001` / 故事板 `镜 #1`、检查器 `5s` / 故事板 `4.5s` —— 同一个镜三个名字、同一时长两个值。镜码提成 `WorkspacePages.h` 的 `ShotCode()` 三处共用，时长统一 `%.1fs` | ✅ |
 | 2026-09-30 | 验证 | 侧栏 / 检查器取证 | **45/45 saved · md5 45 张全唯一 · `identical-driven-pairs: 0` · `chapter-switch: converged` · `overall=PASS`**；fixture 是一份 76 张表的 `novel.db`（DDL 从 `NovelDb.cpp` 程序化抽取，见 `out/_fixture_schema.sql`） | ✅ |
-| 2026-09-30 | 已知小瑕疵 | `WorkspaceB.cpp` 带 BOM | 全树 37 个源文件里**只有它**带 UTF-8 BOM，且 HEAD 里本来就有（非本轮引入）。能编译，与「无 BOM」的说法不符；清掉会产生整文件 diff，留作独立任务 | ⚠️ |
+| 2026-09-30 | 缺口 6 | **资产工作区 kind 筛选树** | `BookSideView` 增 `assets`（全量实体镜像）+ `relation`；`BookKindFilter()` 是侧栏与主区**共享**的工作区 UI 态。侧栏画「全部 + 实际 kind」chip 行 + 「kind 分组 → 实体」两层树；主区总览网格吃同一份筛选。⚠️ 设计稿的 chip 写死 5 个候选（`Shell.jsx:522`）而分组名从数据推 —— `entities.kind` 有 30 个英文取值且无 CHECK 约束，照抄那 5 个会让绝大多数 kind 筛不出来，所以 chip 也从数据推 | ✅ |
+| 2026-09-30 | 缺口 7 | **检查器「关联」段接真数据** | 设计稿是一行平铺三个 Tag（`伏笔 #3` / `场景 12` / `镜 S05`，`Shell.jsx:173-179`），是**内联字面量**、无数据结构、不可点。换成真数据：伏笔走 `ListSceneForeshadows` + `ListOpenForeshadows`、场走已在内存的 `scenes`、镜走当前选中镜。取不到的组**不出 tag** —— 「伏笔 #3」这种假 tag 比没有更糟 | ✅ |
+| 2026-09-30 | 缺陷 | **检查器三段的折叠箭头是纯装饰** | `const Section sections[] = {{"属性",true},…}` 是**每帧新建的 const 局部数组**，没有任何东西写回展开态、段头也没有点击处理 ⇒「关联」段永远打不开。和上一轮那个死模态同一类。展开态提到 `Shell::sectionOpen_[3]`，初值照设计稿 `{a:true,b:true,c:false}` | ✅ |
+| 2026-09-30 | 缺口 8 | **小说侧栏「快速跳转」按钮组** | 2×2（资产 / 分镜 / 出图 / 出片），`.jump-btn` 视觉：h24 r6 + accent-glow 边 + accent-dim 底，hover 换 `jumpBtnBg`。点击 = `SetWorkspace(ws)` + 一条 toast，与设计稿 `setWorkspace` 同语义（不带 tab、不带选中项，章节上下文靠全局选中态自然带过去）。⚠️ `ButtonVariant` 没有 jump 这一档，自绘不去硬凑 Ghost | ✅ |
+| 2026-09-30 | 缺陷 | **toast 是空函数** | `toastTimer_` 是死字段、`DrawOverlays` 是 `(void)draw;` —— 设计稿到处在用的 `notify(...)` 一次都没出现过。补 `.toast`（fixed right 16 / bottom 40 / min-w 260 / 3px 左色调条 / 尾部 0.4s 淡出），走 `GetForegroundDrawList()`（页面在 `BeginChild` 里，同一个 z 序坑） | ✅ |
+| 2026-09-30 | 缺陷 | **资产总览网格的卡片整张没画、也点不到** | `Rect{x, y, cardW, 192.0f}` —— `kit::Rect` 的四参构造是 **(minX, minY, maxX, maxY)** 不是 (x, y, w, h)。`max.x = cardW(208) < min.x = 296` ⇒ `DrawRoundRect` 的 `max.x <= min.x` 直接 return，thumb 用了 `card.max.x` 一起消失，界面上只剩名字与状态两行文字浮在背景上。编译不报错、运行不崩。改走 `RectAt` | ✅ |
+| 2026-09-30 | 缺陷 | **底栏页签条的选中下划线画到了屏幕顶栏** | 同型：`Rect{area.min.x+12, area.min.y, 400.0f, 32.0f}` ⇒ `bounds.height()` = `32 - 745` = **-713**。`Tabs` 按 `bounds.height()` 排每个页签，文字位置碰巧还对，但选中页签那条 2px accent 线被画到 y≈31 | ✅ |
+| 2026-09-30 | 门禁 | **`tools/find-rect-wh-misuse.ps1`** | 上面两个缺陷同型且**都不报编译错**，靠肉眼翻不出来。加一个括号配对扫描器：取出每个 `Rect{...}` 的顶层实参，命中「第 3 参像尺寸、第 4 参是裸字面量」就报出来（保守，宁可多报）。全树扫出 2 处，都已修 | ✅ |
+| 2026-09-30 | 缺陷 | **资产工作区的检查器显示上一段的镜属性** | 资产页点实体，右侧却还显示小说侧栏选中的镜（S001 / 场 / 动作…）—— 两边说的不是一回事。`属性` 段按工作区分流：资产工作区给实体的八行真实字段（名称 / 类别 / 实体 ID / 摘要 / 视觉资产 / 生产状态 / 形象层 / 降级产物） | ✅ |
+| 2026-09-30 | 一致性 | 资产状态词表只留一份 | `AssetTone()` 在 `WorkspaceB.cpp` 的匿名命名空间里，Shell 够不着；让检查器自己再映射一遍就是第二份状态词表。改为在 `RebuildBookSide` 里把 `tone` **和** `statusLabel` 一起算好存进 `BookAssetView` | ✅ |
+| 2026-09-30 | 门禁 | **取证流程不自愈** | `SeedReportFixture()` 只写 `work/ch<NNN>/v08_continuity.json`，**不建 novel.db**；上一轮的库是手工拷进取证输出目录的。缺库时侧栏 / 检查器 / 资产树全部退化成诚实空态，而旧门禁只查「图写出来了」，整轮照样 PASS，只是图是空的。改由 `out/_run_review.ps1` 拷库 + 校验自检文件，缺库直接失败；新增 `out/_make_fixture.ps1` 与 `out/_fixture_seed.sql`（伏笔 3 条，其中 1 条 `REVEALED` 用来验「取不到就不出 tag」） | ✅ |
+| 2026-09-30 | 已知小瑕疵 | **`.ps1` 必须带 UTF-8 BOM** | PowerShell 5.1 读无 BOM 的 `.ps1` 会按系统 ANSI 码页（中文 Windows = GBK/936）解码，每行中文注释都被拆成错字节；某些组合会凑出引号 / 括号把后面的代码吃掉，报 `ParserError: Unexpected token ')'`，**报错行号与真正的原因毫无关系**。同源问题还有：自检里个别行回显为空（值是对的，门禁比字符串能证明），以及 `Get-Content` 必须显式 `-Encoding UTF8` 才不乱码。写 `.ps1` 一律带 BOM | ✅ |
+| 2026-09-30 | 小修 | `WorkspaceB.cpp` 去 BOM | 全树 37 个源文件里**只有它**带 UTF-8 BOM（HEAD 里本来就有，非本轮引入）。纯字节去掉 3 字节，diff 只有第 1 行 | ✅ |
+| 2026-09-30 | 验证 | 资产树 / 关联段 / 跳转按钮取证 | **52/52 saved · md5 52 张全唯一 · `identical-driven-pairs: 0` · `asset-snapshot: converged` · `relation=ok tags=4` · `overall=PASS`**；新增第五段 6 张（`assets-kind-tree` / `assets-leaf-selected` / `assets-kind-filtered` / `assets-grid-filtered` / `assets-grid-all` / `inspector-relations` / `side-jump-buttons`）。**四道门禁全过**：check-layers / check-theme / check-colors / check-i18n | ✅ |
+| 2026-09-30 | 已知小瑕疵 | ~~`WorkspaceB.cpp` 带 BOM~~ | 已于 2026-09-30 清除，见上方变更记录。 | ✅ |
 
 ---
 
@@ -307,7 +321,7 @@ last_verified: 2026-09-30
 | S1–S12 停止规则表 | `pipeline/StopPolicy` | 只判 5 组，且没有可枚举的规则表（同 `src/ui/pages/pipeline/StopReportView.h` 的旧结论）。页面当前显示 S1–S8，是**实有的 5 组 + 3 条 LLM 判据**，不补齐就不该声称是 S1–S12。 |
 | 章节×阶段双轴甘特 | `pipeline::Ledger` | `LedgerEntry` 只有 `{stage, input_hash, output_path, degradation}`，`Flush` 写出的 `_manifest.json` 里也没有章节字段 —— **章节维度在数据层根本不存在**，不是 UI 少画了一根轴。补它要改 `Ledger`。 |
 | 侧栏树 / 检查器的**卷层级** | `shine_core` | `NovelGraph` 只有 `UpsertVolume`，**没有 `ListVolumes`**（`src/novel/NovelGraph.h` 全文确认）。卷标题与卷序取不到，设计稿的「书 / 卷 / 章」三层因此只能画两层。 |
-| 侧栏树 / 检查器主体 | 页面层 | **已实现**：`WorkspacePages.h` 开 `BookSide()` 只读视图（`BookSideView` 纯数据拷贝，`ApplyBook` 落地时重建），侧栏画「章 → 镜」树、点选换章换镜，检查器「属性」给九行真实字段。镜码 `ShotCode()` 三处共用一份实现。仍缺：资产工作区的 kind 筛选树、节点的「快捷跳转」按钮、关联段（伏笔 / 场景 / 镜）。 |
+| 侧栏树 / 检查器主体 | 页面层 | **已实现**：`WorkspacePages.h` 开 `BookSide()` 只读视图（`BookSideView` 纯数据拷贝，`ApplyBook` 落地时重建），侧栏画「章 → 镜」树、点选换章换镜，检查器「属性」给九行真实字段。镜码 `ShotCode()` 三处共用一份实现。资产工作区的 kind 筛选树、节点「快捷跳转」、检查器「关联」段（伏笔 / 场 / 镜）也已于 2026-09-30 接上真数据。**仍缺**：镜与镜之间的关联（哪一对连续性不过）—— `ContinuityIssue` 没有 shot id，要归因必须改 `src/novel/`。 |
 
 另有一条**已接受降级**：`Derived::gateBg` / `checkRowBg` 当年按纯 alpha 算，
 与设计稿的实色差一个底。字段按「只加不减」冻结，要 1:1 请用新增的

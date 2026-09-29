@@ -7,6 +7,7 @@
 
 #include "ui/imgui/kit/Views.h"
 #include "ui/imgui/kit/Widgets.h"
+#include "ui/imgui/theme/Theme.h"
 
 #include <filesystem>
 #include <string>
@@ -69,16 +70,52 @@ struct BookChapterView {
     int words = 0;
 };
 
+// 资产工作区侧栏的一行。kind 是**实体 kind 的英文原文**（entities.kind，
+// `namespace kind` 里有 30 个取值，库里无 CHECK 约束）——不要在这里翻成中文，
+// 分类由消费者按 AssetKindLabel() 走，侧栏与资产页共用那一份映射。
+struct BookAssetView {
+    int index = 0;  // 在 BookSideView::assets 里的下标；**筛选后的树按下标回指这里**
+    int entityId = 0;  // entities.id（别和 index 混：index 是位置，entityId 才是库主键）
+    std::string kind;
+    std::string name;
+    std::string summary;
+    bool hasAsset = false;       // 查得到主视觉资产（entities 有行但 visual_assets 没有）
+    std::string assetStatus;     // visual_assets.status 八值原文
+    int layers = 0;              // visual_artifacts 行数
+    int layersDone = 0;          // 其中 status == "DONE"
+    bool degraded = false;       // 任一产物走过降级
+    // 色调与中文标签都由 AssetTone() 从 assetStatus 映射，**在重建时算好存进来**。
+    // 不让消费者各自映射一遍：侧栏的状态点、检查器的状态行、资产页的 Tag 三处要同一份，
+    // 而 AssetTone() 在 WorkspaceB.cpp 的匿名命名空间里，Shell 够不着。
+    theme::Tone tone = theme::Tone::Idle;
+    std::string statusLabel;
+};
+
+// 检查器「关联」段的数据。设计稿那三个 tag（伏笔 #3 / 场景 12 / 镜 S05）是
+// Shell.jsx:173-179 的**内联字面量**，没有数据结构、不可点。换成真数据后取不到的组
+// 就不出 tag —— 空数组 / 0 序 = 这一组没有，不编一个占位 tag。
+struct BookRelationView {
+    std::string shotCode;                 // 选中镜的镜码；没选镜则空
+    int sceneOrd = 0;                     // 场序（0 = 这一项不落在任何场上）
+    std::string sceneTitle;               // 场标题，可空
+    std::vector<std::string> foreshadows; // 伏笔标题，来自 scene_foreshadows
+};
+
 struct BookSideView {
     bool bound = false;    // 绑没绑工程
     bool loading = false;  // worker 正在取
     std::string error;     // 业务层返回的中文原因；空 = 没出错
     int selectedChapter = 0;  // chapters 下标
     int selectedShot = 0;     // shots 下标
+    int selectedAsset = 0;    // assets 下标
     std::vector<BookChapterView> chapters;
     // ⚠️ 场 / 镜只对**当前选中章**取过（与 Qt 版「按章选镜」口径一致），
     //    所以这是那一章的镜，不是全书。别的章的镜要等选中它之后才会有。
     std::vector<BookShotView> shots;
+    // 资产是**全量**（与 ListEntities 的取法一致），**不按 kind 预筛**：
+    // 筛选是工作区 UI 态（见 BookKindFilter），筛完的树按下标回指这里。
+    std::vector<BookAssetView> assets;
+    BookRelationView relation;  // 随选中项重建，给检查器「关联」段
 };
 
 // 只读视图。UI 线程读，不做任何 IO。
@@ -101,6 +138,21 @@ inline std::string ShotCode(int ord) {
 void SelectBookChapter(int index);
 void SelectBookShot(int index);
 
+// 资产工作区的 kind 筛选（设计稿的 entityKind，Shell.jsx:522）。
+//
+// ⚠️ 它**不是**快照的一部分：设计稿里这是侧栏与主区网格**共享**的筛选态
+//    （Assets.jsx:130 和 Shell.jsx:523 读同一个 entityKind），属于工作区 UI 态。
+//    放进 BookSideView 会被 RebuildBookSide 整块重建冲掉 —— 就是上一轮那个
+//    「loading 翻真但视图没跟上」的同一类坑。kind 空串 = 全部。
+void SetBookKindFilter(std::string kind);
+[[nodiscard]] const std::string& BookKindFilter();
+void SelectBookAsset(int index);
+
+// entities.kind / visual_assets.kind → 中文分类名。侧栏树的分组标签、chip 文案、
+// 资产页的「类别」行**共用这一份**。库表里没有的中文映射按表外原样回显，不编名字。
+// 实现见 WorkspaceB.cpp（与该文件里已有的 KindLabel 是同一份，不是第二份）。
+[[nodiscard]] std::string AssetKindLabel(const std::string& kind);
+
 // ---- P5.2 小说（novel）—— 最大的一页：8 模式标签 + 8 套视图 ----
 class NovelPage {
 public:
@@ -116,6 +168,10 @@ class AssetsPage {
 public:
     void Draw(kit::Rect area, ImDrawList* draw);
     void setOverview(bool on) { overview_ = on; }
+    // 侧栏 kind 树点叶子后驱动主区：selected_ 原来是私有的，外壳点不到 ——
+    // 结果侧栏高亮与主区选中永远是两回事（同一类「只显示不联动」）。
+    // index 是 **BookSideView::assets 的下标**（与 s.assets 同序），不是筛后树的序号。
+    void setSelected(int index) { selected_ = index; }
 
 private:
     bool overview_ = false;

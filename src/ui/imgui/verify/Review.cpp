@@ -179,6 +179,8 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     //    图名和内容对不上，而 manifest 照样记 saved。
     bool reportScanConverged = false;
     bool bookSnapshotConverged = false;
+    // 资产快照也要显式等：kind 树的数据来自同一次 worker 读库，没落地就拍到空态。
+    bool assetSnapshotConverged = false;
     // 受控图的像素哈希。第三/四段的每张都是**显式驱动**出来的（开工程 / 选页签 /
     // 选条目 / 开浮层），彼此应该两两不同 —— 出现重样就说明其中一张没拍到它承诺的状态。
     // ⚠️ 只对这批做重样判据，不对全树做：`ws-*`（当前主题）与 `theme-<base>-*`
@@ -285,6 +287,76 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         bookSnapshotConverged = bookSnapshotConverged && switched;
         grabDriven("side-tree-empty-chapter", storyboard, base);
         pages::SelectBookChapter(0);
+
+        // ---- 第五段：资产 kind 筛选树 + 检查器「关联」段 + 快速跳转 ----
+        //
+        // 这三样都是本轮新接的，而且**都是只画不联动就会看不出错**的东西：
+        //   · kind 树 —— chip 点了主区网格不动、叶子点了详情不换，都只是"看着没反应"
+        //   · 关联段 —— 段头以前是 const 局部数组，箭头点了永远不展开
+        //   · 快速跳转 —— 按钮画出来不跳 workspace，截图上完全看不出
+        // 所以每张的前置动作都显式写全，等待结论也进 manifest。
+        const int assetsWs = static_cast<int>(pages::Workspace::Assets);
+        const int novelWs = static_cast<int>(pages::Workspace::Novel);
+        shell.SetWorkspace(assetsWs);
+        bookWaited = 0;
+        while ((pages::BookSide().loading || pages::BookSide().assets.empty()) &&
+               bookWaited < kReportWaitFrameCap) {
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            ++bookWaited;
+        }
+        const bool assetsReady =
+            !pages::BookSide().loading && !pages::BookSide().assets.empty();
+        WriteManifest(manifest, std::string("asset-snapshot=") +
+                                    (assetsReady ? "converged" : "TIMEOUT") + " assets=" +
+                                    std::to_string(pages::BookSide().assets.size()) + " after " +
+                                    std::to_string(bookWaited) + " frames");
+        assetSnapshotConverged = assetsReady;
+        grabDriven("assets-kind-tree", assetsWs, base);
+
+        // 点第 2 个实体（库里是「周姨」）。必须走 shell.SelectAsset 而不是分别写两个状态 ——
+        // 侧栏高亮与主区详情是同一份选中的两个投影，分开写迟早只改得动一边。
+        if (assetsReady) {
+            shell.SelectAsset(1);
+            grabDriven("assets-leaf-selected", assetsWs, base);
+        }
+
+        // 筛到「物品」：fixture 里 person×2 + item×1，所以这一类只剩 1 张卡。
+        // 换了筛选若网格张数不变，就是 chip 没接上主区。
+        shell.SetKindFilter("item");
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("assets-kind-filtered", assetsWs, base);
+        // ⚠️ 上一张停在**详情**态，证明不了 chip 也筛了**主区网格** —— 详情是按
+        //    未筛选全集取的（设计稿 Assets.jsx:131 的 cur 口径），怎么筛都显示周姨。
+        //    要证明共享筛选，必须切到总览再拍：筛「物品」后网格应只剩 1 张卡。
+        shell.SetAssetsOverview(true);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("assets-grid-filtered", assetsWs, base);
+        shell.SetKindFilter({});
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("assets-grid-all", assetsWs, base);
+        shell.SetAssetsOverview(false);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+
+        // 检查器「关联」段：默认收起（设计稿 Shell.jsx:146 的 c:false），必须显式展开。
+        // ⚠️ 这正是本轮修掉的死段头 —— 展开态以前是每帧新建的 const 局部数组。
+        pages::SelectBookShot(0);
+        shell.SetInspectorSection(2, true);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        const pages::BookRelationView relation = pages::BookSide().relation;
+        WriteManifest(manifest,
+                      std::string("relation=") + (relation.foreshadows.empty() ? "no-foreshadow" : "ok") +
+                          " tags=" + std::to_string(1 + (relation.foreshadows.empty() ? 0 : 1) +
+                                                   (relation.sceneOrd > 0 ? 1 : 0) +
+                                                   (relation.shotCode.empty() ? 0 : 1)));
+        grabDriven("inspector-relations", storyboard, base);
+        shell.SetInspectorSection(2, false);
+
+        // 小说侧栏的「快速跳转」按钮组：默认全展开，点一下真的会切工作区。
+        shell.SetWorkspace(novelWs);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("side-jump-buttons", novelWs, base);
+
         shell.SetProjectRoot(savedRoot, savedName);
         shell.SetDockTab(savedTab);
     }
@@ -325,14 +397,16 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     //    reportScanConverged / bookSnapshotConverged 也进判据：没拍成就是没拍成，
     //    不能因为「其它图都写出来了」就整轮报绿。
     const bool pass = result.failed == 0 && identicalPairs == 0 && drivenDuplicates == 0 &&
-                      reportScanConverged && bookSnapshotConverged;
+                      reportScanConverged && bookSnapshotConverged && assetSnapshotConverged;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
                                 "  identical-theme-pairs: " + std::to_string(identicalPairs) +
                                 "  identical-driven-pairs: " + std::to_string(drivenDuplicates) +
                                 "  report-scan: " + (reportScanConverged ? "converged" : "TIMEOUT") +
                                 "  book-snapshot: " +
-                                (bookSnapshotConverged ? "converged" : "TIMEOUT"));
+                                (bookSnapshotConverged ? "converged" : "TIMEOUT") +
+                                "  asset-snapshot: " +
+                                (assetSnapshotConverged ? "converged" : "TIMEOUT"));
     WriteManifest(manifest, std::string("overall=") + (pass ? "PASS" : "FAIL"));
     shine::log::Info("review done: {} saved, {} failed -> {}", result.captured, result.failed,
                      outputDir.string());

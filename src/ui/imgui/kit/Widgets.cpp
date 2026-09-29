@@ -468,6 +468,74 @@ std::string_view Segmented(ImDrawList* draw, Rect bounds,
     return picked;
 }
 
+// ------------------------------------------------------------------ 7b Chip
+// views.css:670-706。设计稿那处 chip 高度是**内联覆写**（Shell.jsx:540 的
+// style={{height:22, padding:'0 8px', fontSize:11}}），不是另一个变体 —— 所以走 compact
+// 参数，规格只有一份。计数底色在选中态要换成 accent 18%（.chip.on .cnt）。
+namespace {
+
+// .chip .cnt 的量宽：pad 0 6 + 10.5px 字宽。设计稿没给 min-width，纯按字宽。
+float ChipCountWidth(std::string_view count) {
+    ImFont* font = FontBoldAt(10.5f);  // .cnt 继承 .chip 的 600 字重
+    return 6.0f * 2.0f +
+           font->CalcTextSizeA(10.5f, 1e9f, 0.0f, count.data(), count.data() + count.size()).x;
+}
+
+} // namespace
+
+float ChipHeight(bool compact) { return compact ? 22.0f : 26.0f; }
+
+float ChipWidth(std::string_view label, const ChipSpec& spec) {
+    const float fontSize = spec.compact ? 11.0f : 12.0f;
+    const float pad = spec.compact ? 8.0f : 11.0f;
+    ImFont* font = FontBoldAt(fontSize);
+    float total =
+        pad * 2.0f + font->CalcTextSizeA(fontSize, 1e9f, 0.0f, label.data(), label.data() + label.size()).x;
+    if (!spec.count.empty()) {
+        total += 6.0f + ChipCountWidth(spec.count);  // gap 6（.chip 的 gap）
+    }
+    return total;
+}
+
+bool Chip(ImDrawList* draw, Rect bounds, std::string_view label, const ChipSpec& spec,
+          std::string_view id) {
+    const Hit hit = HitTest(bounds, id);
+    const float fontSize = spec.compact ? 11.0f : 12.0f;
+    const float pad = spec.compact ? 8.0f : 11.0f;
+    const float radius = bounds.height() * 0.5f;  // r-pill
+
+    // hover 只提边与字色（views.css:685-688），底色不动 —— 选中态的底是 accent-dim，
+    // hover 若也换底会和选中态糊在一起。
+    const ImU32 bg = spec.selected ? ColorAccentDim()
+                                  : (hit.hovered ? ColorFillMuted() : IM_COL32(0, 0, 0, 0));
+    const ImU32 border =
+        spec.selected ? ColorAccentGlow() : (hit.hovered ? ColorLineStrong() : ColorLineNormal());
+    const ImU32 fg = spec.selected ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextSecondary());
+    DrawRoundRect(draw, bounds.min, bounds.max, radius, bg, border, 1.0f);
+
+    ImFont* font = FontBoldAt(fontSize);
+    const float text =
+        font->CalcTextSizeA(fontSize, 1e9f, 0.0f, label.data(), label.data() + label.size()).x;
+    float x = bounds.min.x + pad;
+    const float cy = 0.5f * (bounds.min.y + bounds.max.y);
+    draw->AddText(font, fontSize, ImVec2(x, cy), fg, label.data(), label.data() + label.size());
+    x += text;
+
+    if (!spec.count.empty()) {
+        x += 6.0f;
+        const Rect countBox{x, cy - 8.5f, x + ChipCountWidth(spec.count), cy + 8.5f};
+        // 选中态计数底是 accent 18%（.chip.on .cnt），未选中是 fill-muted。
+        DrawRoundRect(draw, countBox.min, countBox.max, countBox.height() * 0.5f,
+                      spec.selected ? ColorAccentDim() : ColorFillMuted());
+        // .cnt 只覆盖 font-size，font-weight 600 从 .chip 继承下来，所以用粗体。
+        ImFont* cfont = FontBoldAt(10.5f);
+        draw->AddText(cfont, 10.5f,
+                      ImVec2(countBox.min.x + 6.0f, countBox.center().y), fg, spec.count.data(),
+                      spec.count.data() + spec.count.size());
+    }
+    return hit.clicked;
+}
+
 // ------------------------------------------------------------------ 8 Tabs
 std::string_view Tabs(ImDrawList* draw, Rect bounds, const std::vector<SegmentOption>& tabs,
                       std::string_view value, std::string_view id) {

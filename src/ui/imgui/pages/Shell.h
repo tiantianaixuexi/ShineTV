@@ -93,6 +93,21 @@ public:
     void ToggleDock();
     void ToggleInspector();
     void ToggleCommandPalette();
+    // 资产选中：**唯一**的写入口。侧栏 kind 树点叶子和取证脚本都走它 ——
+    // 拆成两处调用（一个改 BookSideView、一个改 AssetsPage::selected_）迟早会漏一边，
+    // 表现就是侧栏高亮和主区详情对不上。
+    void SelectAsset(int index);
+    // 取证用：展开 / 收起检查器第 index 段（0 属性 / 1 预览 / 2 关联）。
+    // 段头箭头以前是**纯装饰** —— sections 是每帧新建的 const 局部数组，没有任何东西
+    // 写回展开态，于是「关联」段永远打不开。和上轮那个死模态同一类。
+    void SetInspectorSection(int index, bool open);
+    // 取证用：资产侧栏 kind 筛选（空 = 全部）。
+    void SetKindFilter(std::string kind) { SetBookKindFilter(std::move(kind)); }
+    // 取证用：资产页 详情 / 总览 切换。分不清这两态就没法证明 kind chip 也筛了
+    // **主区网格** —— 只在详情态截图的话，chip 有没有接上网格根本看不出来。
+    void SetAssetsOverview(bool on) { assets_.setOverview(on); }
+    // toast：设计稿的 notify(...)。以前 toastTimer_ 是死字段、DrawOverlays 是空函数。
+    void Notify(std::string text, shine::theme::Tone tone = shine::theme::Tone::Idle);
     [[nodiscard]] kit::Rect workspaceRect() const { return workspace_; }
     // 项目中心（webui Shell.jsx 的 onHub）：品牌标 / 项目胶囊点击都进它。
     // 进项目中心时整个外壳让位，Esc 或再点一次退出。
@@ -118,6 +133,11 @@ private:
     void DrawTopBar(kit::Rect area, ImDrawList* draw);
     void DrawRail(kit::Rect area, ImDrawList* draw);
     void DrawSidePanel(kit::Rect area, ImDrawList* draw);
+    // 资产工作区的 kind 筛选树（Shell.jsx:519-580）。与章 / 镜树是**两套**：
+    // 数据源、展开态、点击语义都不同，不合并成「一棵参数化树」。
+    void DrawAssetSideTree(kit::Rect area, ImDrawList* draw, float y);
+    // 小说侧栏的「快速跳转」2×2 按钮组（Shell.jsx:605-624）。
+    void DrawJumpButtons(kit::Rect bounds, ImDrawList* draw);
     void DrawInspector(kit::Rect area, ImDrawList* draw);
     void DrawDock(kit::Rect area, ImDrawList* draw);
     void DrawStatusBar(kit::Rect area, ImDrawList* draw);
@@ -155,6 +175,16 @@ private:
     project::ProjectService projects_;
     kit::Rect workspace_;
     float toastTimer_ = 0.0f;
+    std::string toastText_;
+    theme::Tone toastTone_ = theme::Tone::Idle;
+    // 检查器三段的展开态（0 属性 / 1 预览 / 2 关联）。设计稿的初值是
+    // { a: true, b: true, c: false }（Shell.jsx:146），即「关联」默认收起。
+    bool sectionOpen_[3] = {true, true, false};
+    // 资产 kind 树里被手动收起的分组。设计稿默认**全展开**（Shell.jsx:524 的
+    // useState(() => Object.fromEntries(groups.map(g => [g, true])))，所以这里存
+    // 「收起的」而不是「展开的」—— 存反了的话新分组会默认收起，与设计稿相反。
+    // 存成员上而不是每帧新建的局部变量，否则点一下展开、下一帧立刻收回。
+    std::vector<std::string> collapsedKinds_;
     std::vector<std::string> logLines_;
     bool paletteOpen_ = false;
     char paletteQuery_[128] = {};
