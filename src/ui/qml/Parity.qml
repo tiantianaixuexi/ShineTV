@@ -138,16 +138,16 @@ Rectangle {
             Row {
                 x: 0; y: 28
                 spacing: 8
-                Button { text: "主要"; primary: true }
-                Button { text: "次要"; primary: false }
-                Button { text: "禁用"; primary: true; enabled: false }
+                Button { text: "主要"; variant: "primary" }
+                Button { text: "次要"; variant: "secondary" }
+                Button { text: "禁用"; variant: "primary"; enabled: false }
             }
             Row {
                 x: 0; y: 70
                 spacing: 8
-                Button { text: "生成"; primary: true }
-                Button { text: "重试"; primary: false }
-                Button { text: "禁用次要"; primary: false; enabled: false }
+                Button { text: "生成"; variant: "primary" }
+                Button { text: "重试"; variant: "secondary" }
+                Button { text: "禁用次要"; variant: "secondary"; enabled: false }
             }
             Text {
                 x: 0; y: 116
