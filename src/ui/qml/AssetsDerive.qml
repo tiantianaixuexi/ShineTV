@@ -68,6 +68,9 @@ Ctl {
             }
 
             // 缩略图（顶部圆角 + 自裁切，等价 .dnode 的 overflow hidden）
+            // 数据源 = AssetPageModel 的 Page.deriveChain，每项带 absPath（真实产物
+            // 绝对路径，仅当产物落盘就绪时才非空）。就绪画真图，没就绪画占位 ——
+            // 绝不用 Art 的 seed 占位图冒充真实产物。
             Rectangle {
                 id: dthumb
                 x: 0
@@ -78,10 +81,28 @@ Ctl {
                 topRightRadius: root.rMd
                 color: "transparent"
                 clip: true
-                Art {
-                    width: dthumb.width
-                    height: dthumb.height
-                    seed: 5 + node.index      // jsx: <Art seed={5 + i} />
+                Image {
+                    anchors.fill: parent
+                    visible: node.modelData.ready === true && node.modelData.absPath !== ""
+                    source: node.modelData.absPath !== ""
+                           ? "file:///" + node.modelData.absPath : ""
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                    sourceSize.width: Math.round(node.width * 2)
+                    sourceSize.height: Math.round(root.thumbH * 2)
+                    // 无产物时的说明位（缺层文案：已登记未落盘 / 尚未生成）
+                    Text {
+                        anchors.centerIn: parent
+                        visible: !node.modelData.ready
+                        width: parent.width - 8
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
+                        text: node.modelData.state === "run" ? "已登记\n未落盘" : "未生成"
+                        color: ThemeBridge.colors["text.muted"]
+                        font.family: ThemeBridge.fontFamily
+                        font.pixelSize: 9
+                        lineHeight: 1.2
+                    }
                 }
             }
 

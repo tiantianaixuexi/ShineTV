@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GallerySelect.qml —— 下拉选择（ui.css:323-329 的 .select）
+// src/ui/qml/Select.qml —— 下拉选择（ui.css:323-329 的 .select）
 //
 // 几何与 .input 完全一致（h30 / p0 10 / r-sm / fill-muted + line-normal），
 // 只是右侧 p-right 26 留给 10×6 的 chevron 箭头（ui.css:325 的 data-uri SVG）。

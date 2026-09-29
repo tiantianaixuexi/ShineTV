@@ -37,10 +37,10 @@
 //     与设计稿的路径算式对不上，且山脊高度与 UI.jsx:214-216 的三条 d 全不相同。
 //   · GalleryArt 的 Shapes + PathSvg 直接吃 SVG 路径串，是三者里唯一与 UI.jsx 逐字符同源的。
 //
-// ⚠️ 踩过的坑（Shape 系，GalleryArtInk.qml:20-30 与 docs ⑩ 有完整版）：
+// ⚠️ 踩过的坑（Shape 系，ArtInk.qml:20-30 与 docs ⑩ 有完整版）：
 //   1. ShapePath 的默认描边是「不透明白色、宽 1」——纯填充**必须**显式写
 //      `strokeColor: "transparent"; strokeWidth: 0`，否则每座山脊上留一圈白轮廓
-//      （GalleryArtInk 实测：单层不透明填充时边缘 alpha 冲到 87）。
+//      （ArtInk 实测：单层不透明填充时边缘 alpha 冲到 87）。
 //   2. ShapePath **没有** opacity 属性，SVG 的 fill-opacity 只能折算进 fillColor 的 alpha
 //      （纯色填充下两者渲染结果完全一致）。
 //   3. ShapePath 派生自 QQuickPath（QObject，不是 QQuickItem），**不能**当 Repeater 的 delegate；

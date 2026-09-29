@@ -11,6 +11,9 @@ source_of_truth:
   - src/ui/kit/theme/QssBuilder.h
   - src/ui/kit/controls/WidgetCommon.h
   - src/ui/kit/canvas/FlowCanvas.h
+  - src/ui/pages/assets/AssetPageModel.h
+  - src/ui/pages/assets/AssetVisualData.h
+  - src/ui/pages/assets/QmlAssetsPage.h
   - src/ui/pages/shell/MainWindow.h
   - src/ui/pages/shell/ActivityRail.h
   - src/ui/pages/shell/CommandPalette.h
@@ -120,6 +123,23 @@ transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTe
 `kit::canvas::FlowCanvas` 的节点自绘同样走 `theme::Current()` token
 （节点 w150 / r10 / 1.5px 边 / 标题 12px w700 + accent 标记 / 端口 11px muted），
 四套主题下节点与连线随主题变化。
+
+## QML 资产页（2026-09-29 接进产品）
+
+`MainWindow` 的资产工作区是 `src/ui/pages/assets/QmlAssetsPage.h`（QWidget 外壳 + 三个
+`kit/qml/QuickHost`：内容 / 左栏导航 / 右栏检查器）。对外接口刻意与已退役的
+`AssetWorkspace` 同名同义，外壳接线未变。QML 侧的接缝纪律、组件契约与坑位清单在
+[`10-modules/qml-kit.md`](qml-kit.md)，本节只记 C++ 侧的两个落点：
+
+| 文件 | 职责 |
+|---|---|
+| `pages/assets/AssetPageModel.h` | C++→QML 数据桥。全部 `Q_PROPERTY` + `NOTIFY changed`（方法调用在 QML 依赖图里是空的，会永久缓存）。复合值用 `QVariantList` of `QVariantMap`，QML 侧直接是 JS 数组+对象。**空态 map 必须带全零值键**（见 qml-kit 坑位清单）。 |
+| `pages/assets/AssetVisualData.h` | 形象层 / 一致性 / 时间线三块的**只读取数**与数据契约。只查真库（`visual_artifacts` / `visual_states` / `character_status` / `shots` / `generated_images`）+ 文件系统存在性，**不造假数据**。与 `AssetDetailView` / `ConsistencyView` 共用同一份，避免两边漂移。**不解码像素** —— 帧图差异在 worker 上算。 |
+
+⚠️ `AssetWorkspace` / `AssetDetailView` / `ConsistencyView` / `RefLibraryView` **仍在树里**
+（`P05Checks.cpp` 有 9 处 standalone 构造）。它们是导出整版 PNG、参考库导入/写回等
+真实能力的唯一实现，删之前必须先把这些能力接线到 QML。现状与缺口见
+[`90-reference/ui-design-parity-gaps.md`](../90-reference/ui-design-parity-gaps.md)。
 
 ## FlowCanvas
 

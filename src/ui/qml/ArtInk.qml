@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryArtInk.qml —— 水墨装饰（UI.jsx:223-250 的 ArtInk）
+// src/ui/qml/ArtInk.qml —— 水墨装饰（UI.jsx:223-250 的 ArtInk）
 //
 // ⚠️ 这是**设计稿有、Widgets 侧完全没有**的一块（对 src/ui 全仓 grep
 //    `ArtInk|远山|淡墨|焦墨|印章` 无任何匹配），本页补齐。

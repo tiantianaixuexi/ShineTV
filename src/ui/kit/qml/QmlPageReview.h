@@ -31,6 +31,9 @@ struct PageEntry {
     std::string_view res;
     int w;
     int h;
+    // 页面是否需要宿主注入 `Page`（AssetPageModel）上下文属性。
+    // 已接入产品的页面（Assets）走真数据入口，取证时必须注入，否则运行期 ReferenceError。
+    bool needs_page_model = false;
 };
 
 // 返回已注册页面（顺序即取证顺序）。注册表在 .cpp 的匿名命名空间里维护。

@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryField.qml —— 表单项（UI.jsx:103-111 的 Field）
+// src/ui/qml/Field.qml —— 表单项（UI.jsx:103-111 的 Field）
 //
 // column 布局 gap 6；label f12 w600 text-secondary；help 走 .tiny.dim（f12 muted）。
 // 高度按盒子模型算死：label 14 + gap 6 + 控件高。

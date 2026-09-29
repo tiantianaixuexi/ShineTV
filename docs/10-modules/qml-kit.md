@@ -105,7 +105,7 @@ running: <条件> && !root.reduce
 
 ### 9. 图标走槽位，不在页面里手摆
 
-设计稿的图标是内联 SVG（本仓是 `GalleryIcon` / `IconBtn` 那套 `PathSvg` 描边），`Button` / `IconBtn` 的字符位 `glyph` 只能画字符。所以共享件提供**图标槽**（`Button.iconSlot`，一个 `Component`），由共享件把它摆进 `.btn .icon` 定死的 15×15（sm 13×13）方盒里，跟着 `padding` 和 `gap` 一起算进 `implicitWidth`：
+设计稿的图标是内联 SVG（本仓是 `Icon` / `IconBtn` 那套 `PathSvg` 描边），`Button` / `IconBtn` 的字符位 `glyph` 只能画字符。所以共享件提供**图标槽**（`Button.iconSlot`，一个 `Component`），由共享件把它摆进 `.btn .icon` 定死的 15×15（sm 13×13）方盒里，跟着 `padding` 和 `gap` 一起算进 `implicitWidth`：
 
 ```qml
 Button {
@@ -113,7 +113,7 @@ Button {
     text: "主要"
     variant: "primary"
     iconSlot: Component {
-        GalleryIcon { anchors.fill: parent; name: "play"; glyphColor: b.fgColor }
+        Icon { anchors.fill: parent; name: "play"; glyphColor: b.fgColor }
     }
 }
 ```
@@ -141,13 +141,17 @@ Button {
 - `onWidthChanged` / `onHeightChanged` 的**单表达式体**会被 QQml 当成属性赋值；用块体 `onPaintKeyChanged: { requestPaint() }` 或合并成一个 `paintKey` 字符串。
 - Canvas 读 `ThemeBridge` 时用 `renderStrategy: Canvas.Immediate`（Cooperative 会把它挪到渲染线程）。
 - `PathAngleArc` 的角度：0° 在 3 点钟方向，y 轴向下，**正角度在屏幕上顺时针**（90°=6 点，180°=9 点，270°=12 点）。要画顶部一段写 `startAngle: -135; sweepAngle: 90`。
-- **`PathSvg` 没有 `viewBox`**：路径串里的坐标按 1:1 设备像素画，不做任何缩放。从 `Icon.jsx` 抄 24 视口的路径进一个 15×15 的盒子，几何会原样画成 24×24 并往右下溢出。正确做法是给承载的 `Shape` 一个 `transformOrigin: Item.TopLeft` + `scale: width / 24` 的**整体缩放**，描边宽用设计稿原值（随 scale 一起变小）。⚠️ 只把 `strokeWidth` 乘 `width/24` 换算是**半截修复**，几何没缩，结果就是「图标比文字大、吊在文字下面、没居中」——`GalleryIcon.qml` 曾长期如此。
-- `Loader.item` 的静态类型是 `QObject`，直接读 `implicitHeight` 会被 qmllint 报 `missing-property`；显式声明成 `Item` 又变成 `incompatible-type`。量正文高度用 `loader.childrenRect.height`（`GalleryCard.qml` 是参考实现）。
+- **`PathSvg` 没有 `viewBox`**：路径串里的坐标按 1:1 设备像素画，不做任何缩放。从 `Icon.jsx` 抄 24 视口的路径进一个 15×15 的盒子，几何会原样画成 24×24 并往右下溢出。正确做法是给承载的 `Shape` 一个 `transformOrigin: Item.TopLeft` + `scale: width / 24` 的**整体缩放**，描边宽用设计稿原值（随 scale 一起变小）。⚠️ 只把 `strokeWidth` 乘 `width/24` 换算是**半截修复**，几何没缩，结果就是「图标比文字大、吊在文字下面、没居中」——`Icon.qml` 曾长期如此。
+- `Loader.item` 的静态类型是 `QObject`，直接读 `implicitHeight` 会被 qmllint 报 `missing-property`；显式声明成 `Item` 又变成 `incompatible-type`。量正文高度用 `loader.childrenRect.height`（`PanelCard.qml` 是参考实现）。
 - 上面那条的另一半：被 `Loader` 加载的正文，**根对象必须自写 `height: implicitHeight`**。不写的话 Loader 会接管高度，和外面读 `childrenRect` 的那层形成绑定环（`Binding loop detected`）。
+- **`setContextProperty` 必须在 `Load()` 之前调**（`QmlAssetsPage::AcquireHost` 是参考实现）。`Load()` 内部会同步创建根对象并**首次求值所有绑定**，那一刻属性还没进上下文 → 绑定求值成 `undefined` 且被**永久缓存**，之后再注入也救不回来。症状是一屏 `ReferenceError: Page is not defined` + 连带 `TypeError`，而 `QQuickWidget` 自己一声不吭、`Load()` 还返回 true。`QmlPageReview` 的 `assets` 页同此纪律。
+- **桥上的空态 map 必须带全零值键**。只回 `{none: true}` 的话，QML 侧 `Page.runtime.detail` / `.layer` / `.phaseLabel` 读到 `undefined` → `Unable to assign [undefined] to QString/QColor`，一次空态刷一片红。判「有没有」用 `none` 这类标志位，不要对字段做 truthiness。同 `Assets.qml` 的 `emptyAsset`。
+- **主题键名写错不会报错，只会取到 `undefined`**：`fill.selected`（不是 `fill.active`）—— 赋给 `color` 报 `Unable to assign [undefined] to QColor`，整块底色不画。核对的土办法：把某套主题 JSON 的 `colors` 键名提出来，与 `ThemeBridge.colors["…"]` 的实参做差集。
+- **QML 里不要写 `#RRGGBB` / `rgba(0,0,0,…)`**：`check-colors` 门禁会拦。要遮罩用 `Qt.alpha(ThemeBridge.colors["bg.void"], 0.86)`。
 
 ## 资源打包
 
-`qt_add_resources` 用 `GLOB "src/ui/qml/*.qml"` + `CONFIGURE_DEPENDS`，**扁平**、同目录隐式导入。共享件用无前缀名即可直接 `<Button />`；页私有件靠页面前缀避免撞名。**新增共享件不需要改 CMake。**
+`qt_add_resources` 用 `GLOB "src/ui/qml/*.qml"` + `CONFIGURE_DEPENDS`，**扁平**、同目录隐式导入。共享件用无前缀名即可直接 `<Button />`；**新增共享件不需要改 CMake**，重命名也会被自动重新扫描。命名纪律见下面「去掉 `Gallery` 前缀」一节 —— 页私有件**不该**带页面前缀。
 
 ## 已淘汰的页私有件（2026-09-29）
 
@@ -169,6 +173,33 @@ Button {
 | `GalleryFlow.qml` | `Flex.qml`（并补上 `align` / `justify`，末行可居中） |
 
 `src/ui/qml` 的 `.qml` 文件数：去重前 **59**（`369065c^`）→ 去重后 **43**（`0471d2d`）→ 加进 `AutoGrid` / `Flex`、删掉 `GalleryFlow` 后 **44**。用 `git ls-tree -r --name-only <rev> -- src/ui/qml` 复核。
+
+## 去掉 `Gallery` 前缀（2026-09-29）
+
+`Gallery.qml` 是**组件陈列页**（对标 `webui/src/views/Gallery.jsx`），它下面 10 个 `Gallery*`
+子件全部只被它一处引用 —— 前缀不表达任何依赖关系，只是命名污染。契约同「第二个页面也用得上
+就是共享件」：用不上就去前缀。
+
+| 旧名 | 新名 |
+|---|---|
+| `GalleryIcon.qml` | `Icon.qml` |
+| `GalleryEmpty.qml` | `Empty.qml` |
+| `GalleryArtInk.qml` | `ArtInk.qml` |
+| `GalleryKbd.qml` | `Kbd.qml` |
+| `GalleryTabs.qml` | `Tabs.qml` |
+| `GalleryTable.qml` | `Table.qml` |
+| `GalleryField.qml` | `Field.qml` |
+| `GalleryInput.qml` | `Input.qml` |
+| `GallerySelect.qml` | `Select.qml` |
+| `GalleryTextArea.qml` | `TextArea.qml` |
+| `GalleryToggle.qml` | `Toggle.qml` |
+| `GalleryCard.qml` | `PanelCard.qml`（**不是 `Card2`**） |
+
+⚠️ 去前缀会撞上已有共享件 `Card.qml`（面壳：`bg-panel` / `line-subtle` / `r-md`）。
+`GalleryCard` 是**带标题栏 + 内容区的完整外壳**，语义不同。**不要用 `Card2` 这种序号后缀** ——
+那比原前缀更糟，它把「撞名」记下来却不解决语义。按语义命名才是 `PanelCard`。
+
+`GLOB` + `CONFIGURE_DEPENDS` 会自动重新扫描，改完重编即可；改名不必动 CMake。
 
 
 ## 自检

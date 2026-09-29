@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryKbd.qml —— 快捷键键帽（ui.css:147-162 的 .kbd）
+// src/ui/qml/Kbd.qml —— 快捷键键帽（ui.css:147-162 的 .kbd）
 //
 // min-width 18 / h18 / p0 5 / r-xs / 1px 边 + 2px 下边（模拟键帽厚度）
 import QtQuick

@@ -1,4 +1,4 @@
-﻿// src/ui/qml/Gallery.qml —— 组件画廊（对应 webui/src/views/Gallery.jsx）
+// src/ui/qml/Gallery.qml —— 组件画廊（对应 webui/src/views/Gallery.jsx）
 //
 // 设计稿：views.css:394-405 的 .gal-grid / .gal-row + views.css:132-152 的
 // .vw / .vw-head，以及 ui.css 里逐个控件的定义。本页是**部件级复刻**：
@@ -15,7 +15,7 @@
 // 2. **页面里不再出现任何高度常数**。旧版在 `cards` 数组里给 9 张卡各写死一个
 //    `ch`（112 / 76 / 147 / 234 …），内容比常数高就溢出、**压住下一行的卡片**
 //    （实测：Button 卡压住 Field 卡标题，中间一道黑带），比常数矮就留死白。
-//    现在卡片高度 = `GalleryCard.bodyH` = 加载后正文的 `implicitHeight`，
+//    现在卡片高度 = `PanelCard.bodyH` = 加载后正文的 `implicitHeight`，
 //    页面**一个高度数字都不用写**。共享组件改尺寸也不会再连带出布局错。
 //
 // 3. 卡片这一层交给共享 `AutoGrid.qml`（CSS `repeat(auto-fit, minmax(340px, 1fr))`
@@ -108,7 +108,7 @@ Ctl {
             width: root.width - root.padX * 2
             height: root.headH
 
-            GalleryIcon {
+            Icon {
                 id: headIcon
                 x: 0
                 anchors.verticalCenter: parent.verticalCenter
@@ -164,7 +164,7 @@ Ctl {
 
             Repeater {
                 model: root.cards
-                delegate: GalleryCard {
+                delegate: PanelCard {
                     id: card
                     required property var modelData
 
@@ -195,7 +195,7 @@ Ctl {
     Component {
         id: cButton
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 12                          // .col gap-3
 
@@ -208,7 +208,7 @@ Ctl {
                     text: "主要"
                     variant: "primary"
                     iconSlot: Component {
-                        GalleryIcon { anchors.fill: parent; name: "play"; glyphColor: b1.fgColor }
+                        Icon { anchors.fill: parent; name: "play"; glyphColor: b1.fgColor }
                     }
                 }
                 Button {
@@ -216,7 +216,7 @@ Ctl {
                     text: "次要"
                     variant: "secondary"
                     iconSlot: Component {
-                        GalleryIcon { anchors.fill: parent; name: "layers"; glyphColor: b2.fgColor }
+                        Icon { anchors.fill: parent; name: "layers"; glyphColor: b2.fgColor }
                     }
                 }
                 Button {
@@ -224,7 +224,7 @@ Ctl {
                     text: "幽灵"
                     variant: "ghost"
                     iconSlot: Component {
-                        GalleryIcon { anchors.fill: parent; name: "eye"; glyphColor: b3.fgColor }
+                        Icon { anchors.fill: parent; name: "eye"; glyphColor: b3.fgColor }
                     }
                 }
                 Button {
@@ -232,7 +232,7 @@ Ctl {
                     text: "危险"
                     variant: "danger"               // Gallery.jsx:39 / ui.css:77-85
                     iconSlot: Component {
-                        GalleryIcon { anchors.fill: parent; name: "alert"; glyphColor: b4.fgColor }
+                        Icon { anchors.fill: parent; name: "alert"; glyphColor: b4.fgColor }
                     }
                 }
             }
@@ -267,7 +267,7 @@ Ctl {
     Component {
         id: cTag
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 12
             Flex {
@@ -304,12 +304,12 @@ Ctl {
                     font.family: ThemeBridge.fontFamily
                     font.pixelSize: 12
                 }
-                GalleryKbd { text: "Ctrl" }
-                GalleryKbd { text: "K" }
-                GalleryKbd { text: "Ctrl" }
-                GalleryKbd { text: "B" }
-                GalleryKbd { text: "Ctrl" }
-                GalleryKbd { text: "Enter" }
+                Kbd { text: "Ctrl" }
+                Kbd { text: "K" }
+                Kbd { text: "Ctrl" }
+                Kbd { text: "B" }
+                Kbd { text: "Ctrl" }
+                Kbd { text: "Enter" }
             }
         }
     }
@@ -318,7 +318,7 @@ Ctl {
     Component {
         id: cSeg
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 12
             // ⚠️ 共享 Seg 的槽位是 `options: [{value, label}]` + `value: string` +
@@ -333,7 +333,7 @@ Ctl {
                 value: root.segValue
                 onPicked: (v) => { root.segValue = v }
             }
-            GalleryTabs {
+            Tabs {
                 width: parent.width
                 tabs: ["剧本", "分镜", "渲染", "设定集"]
                 current: root.tabIndex
@@ -408,27 +408,27 @@ Ctl {
     Component {
         id: cField
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 12
-            GalleryField {
+            Field {
                 width: parent.width
                 label: "项目名称"
                 help: "例如：灯语回声"
-                GalleryInput { width: parent.width; placeholder: "输入项目名称…" }
+                Input { width: parent.width; placeholder: "输入项目名称…" }
             }
             // .row gap-4：左 Field(flex:1) + 右侧 col(paddingTop 18)
             Item {
                 width: parent.width
                 // 高 = 右列（18 上内边距 + 19 开关行 + 8 + 17 复选框 = 62）
                 height: 62
-                GalleryField {
+                Field {
                     x: 0
                     y: 0
                     // 右侧列自然宽 ≈ 95（「允许超期降级」复选框），行间距 gap-4 = 16
                     width: parent.width - 16 - 100
                     label: "供应商"
-                    GallerySelect {
+                    Select {
                         width: parent.width
                         options: ["小米 MiMo", "OpenAI 兼容", "自定义端点"]
                     }
@@ -453,16 +453,16 @@ Ctl {
                             font.family: ThemeBridge.fontFamily
                             font.pixelSize: 12
                         }
-                        GalleryToggle { x: 48; y: 0; on: root.sw }
+                        Toggle { x: 48; y: 0; on: root.sw }
                     }
-                    GalleryToggle { check: true; on: root.ck; text: "允许超期降级" }
+                    Toggle { check: true; on: root.ck; text: "允许超期降级" }
                 }
             }
-            GalleryField {
+            Field {
                 width: parent.width
                 label: "备注"
                 controlH: 58
-                GalleryTextArea {
+                TextArea {
                     width: parent.width
                     rows: 2
                     placeholder: "TextArea · 可拖拽调整高度…"
@@ -477,7 +477,7 @@ Ctl {
     //    不再依赖外部高度是否够（上一版用 anchors.fill，末行被卡片底边切掉）。
     Component {
         id: cTable
-        GalleryTable {
+        Table {
             width: parent.width
             height: implicitHeight
             headers: ["#", "镜号", "情绪", "时长", "状态"]
@@ -497,7 +497,7 @@ Ctl {
     Component {
         id: cFlow
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 12
             StageFlow {
@@ -552,7 +552,7 @@ Ctl {
     Component {
         id: cArt
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 10
             Flex {
@@ -588,10 +588,10 @@ Ctl {
     Component {
         id: cInk
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 10
-            GalleryArtInk {
+            ArtInk {
                 width: parent.width
                 height: 150
                 seed: 2
@@ -612,10 +612,10 @@ Ctl {
     Component {
         id: cEmpty
         Column {
-            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 GalleryCard 注释）
+            height: implicitHeight      // 正文自钉高度，别让 Loader 接管（见 PanelCard 注释）
             width: parent.width
             spacing: 10
-            GalleryEmpty {
+            Empty {
                 width: parent.width
                 icon: "folder"
                 title: "还没有项目"

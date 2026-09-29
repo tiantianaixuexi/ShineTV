@@ -1,7 +1,7 @@
-﻿// src/ui/qml/GalleryTextArea.qml —— 多行输入（ui.css:300-305 的 .textarea）
+// src/ui/qml/Input.qml —— 单行输入（ui.css:288-299 的 .input）
 //
-// p8 10 / r-sm / fill-muted + line-normal 边 / line-height 1.6；
-// 设计稿里它是可拖拽调高的，本页只静态复刻 rows=2 的高度。
+// h30 / p0 10 / r-sm / fill-muted 底 + line-normal 边；hover 换 line-strong，
+// focus 换 line-focus + 3px accent-dim 光圈（= --accent-dim）。
 import QtQuick
 import Shine 1.0
 
@@ -10,11 +10,8 @@ Ctl {
 
     property string placeholder: ""
     property string text: ""
-    property int rows: 2
 
-    readonly property int lineH: Math.round(ThemeBridge.baseFontPx * 1.6)   // 21
-
-    implicitHeight: 16 + root.rows * lineH          // p8 上下
+    implicitHeight: 30
     implicitWidth: 160
 
     radius: root.rSm
@@ -26,20 +23,21 @@ Ctl {
         ColorAnimation { duration: root.reduce ? 0 : root.durFast }
     }
 
-    TextEdit {
+    TextInput {
         id: input
         anchors.fill: parent
-        anchors.margins: 8
         anchors.leftMargin: 10
         anchors.rightMargin: 10
+        verticalAlignment: TextInput.AlignVCenter
         text: root.text
         color: ThemeBridge.colors["text.primary"]
         font.family: ThemeBridge.fontFamily
         font.pixelSize: ThemeBridge.baseFontPx
-        wrapMode: TextEdit.Wrap
         selectByMouse: true
+        clip: true
 
         Text {
+            anchors.verticalCenter: parent.verticalCenter
             visible: input.text.length === 0
             text: root.placeholder
             color: ThemeBridge.colors["text.muted"]

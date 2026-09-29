@@ -523,7 +523,7 @@ TypeError: Property 'token' of object Shine/ThemeBridge is not a function
 运行期报 `Delegate must be of Item type`，**一个 segment 也创建不出来**。
 
 qmllint 查不出来（`Shape` 能解析、`ShapePath` 也能解析，只有运行期组合才炸）。修法是
-把 N 段显式展开成 N 个字面量 `ShapePath`。已命中两处：`GalleryArtInk.qml`（14 层模糊）、
+把 N 段显式展开成 N 个字面量 `ShapePath`。已命中两处：`ArtInk.qml`（14 层模糊）、
 `ImageFlowLink.qml`（12 段弦）。`Gallery` 那边还纠正了一个更隐蔽的错误：用 `M dx dy`
 前缀给路径做平移是**无效的** —— 单独的 `moveto` 只移动当前点，图形其实原地没动，
 7 层等于原地叠了 7 遍。
@@ -708,12 +708,22 @@ ShapePath {
 **已注册到取证页注册表**（`QmlPageReview.cpp` 的 `kPages`）：`Parity`（验证页）/ `Gallery` /
 `Assets` / `Storyboard` / `ImageFlow`。
 
-> ⚠️ **这里的「已迁移」只指注册进了离屏取证页注册表，不代表已迁进产品。**
-> 2026-09-29 复核：全仓 `QuickHost` 只被 `kit/qml/QmlPageReview.cpp` 与 `AppEntry.cpp`
-> 引用，`src/ui/pages/**` **零处** QML 宿主；`MainWindow` 只构造 QWidget 工作台。
-> 这 5 个页面的 QML 也全部是写死 mock（`.qml` 里 `Shine.*` 调用数为 0）。
-> 即：**产品仍是纯 QWidget + QSS，QML 是并行的视觉比对轨，两者尚未接线。**
-> 规划迁移时不要把本节读成「已经迁完了」。
+> ✅ **资产页已接进产品**（2026-09-29）。`MainWindow` 现在构造的是
+> `src/ui/pages/assets/QmlAssetsPage.h`（三个 `QuickHost`：内容 + 左栏导航 + 右栏检查器），
+> `AssetWorkspace` 已不在主程序运行路径。数据经
+> `src/ui/pages/assets/AssetPageModel.h`（C++→QML 桥）注入，形象层 / 一致性 / 时间线
+> 的取数收敛在 `src/ui/pages/assets/AssetVisualData.h`，只读真库
+> （`visual_artifacts` / `visual_states` / `character_status` / `shots` /
+> `generated_images`）+ 文件系统存在性，**不再有 mock**。帧图像素差异在 worker 上算。
+>
+> ⚠️ **但 QWidget 版暂留未删**，因为它仍是若干真实能力的唯一实现：导出整版 PNG
+> （多图合成 + 写盘 + 文件对话框）、参考库导入 / 标记 / 绑定 / 删除、跨镜头像素差异
+> （QML 侧已接，但 Widgets 侧口径更全）、分层缩略预览。对应 QML 按钮
+> （导出整版 / 导入图片 / 绑定当前实体）按下时给**明确提示**，不是静默失败。
+> 另两块仍未迁：全局图库 `GalleryWorkspace`、策略面板 `AssetPolicyPanel`。
+>
+> 其余 4 页（Parity / Gallery / Storyboard / ImageFlow）**仍是离屏取证轨**，
+> `src/ui/pages/**` 里除资产页外零 QML 宿主。规划迁移时不要把本节读成「已经迁完了」。
 
 取证判据：5 套主题全部 saved、**stderr 零 QML 错误**、四道门禁 PASS。页面层缺陷的定位靠**裁图目视**
 （见 ⑩⑪⑫ 三条：这三类错运行时和静态检查都不报错，只有看图才发现）。

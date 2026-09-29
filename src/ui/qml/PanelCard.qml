@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryCard.qml —— 设计稿 .card 的完整外壳：标题栏 + 内容区
+// src/ui/qml/PanelCard.qml —— 设计稿 .card 的完整外壳：标题栏 + 内容区
 //
 // 面壳复用冻结的 Card.qml（bg-panel / line-subtle / r-md），这里只补三件
 // Card.qml 不提供的事：
@@ -92,7 +92,7 @@ Item {
                 gap: ThemeBridge.spaces["2"]          // .card-h gap 8
                 align: "center"                        // align-items: center
 
-                GalleryIcon {
+                Icon {
                     width: 15
                     height: 15
                     visible: root.icon !== ""

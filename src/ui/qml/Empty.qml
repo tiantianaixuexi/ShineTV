@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryEmpty.qml —— 空态（ui.css:688-719 的 .empty）
+// src/ui/qml/Empty.qml —— 空态（ui.css:688-719 的 .empty）
 //
 // column 居中 gap 10 / p40 20；52px 虚线圆角框（r-lg / fill-muted / dashed
 // line-normal）内一枚 24px 图标；标题 f13 w600 text-secondary；副文案 .tiny.dim。
@@ -41,7 +41,7 @@ Ctl {
             border.color: ThemeBridge.colors["line.normal"]
         }
 
-        GalleryIcon {
+        Icon {
             anchors.centerIn: parent
             width: root.iconBox
             height: root.iconBox

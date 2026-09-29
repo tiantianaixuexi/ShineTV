@@ -1,6 +1,12 @@
 pragma ComponentBehavior: Bound
 // src/ui/qml/AssetsCompare.qml —— 页面私有：一致性对比（16:10 舞台 + 右侧信息列）
 //
+// 数据源：**C++ 桥的真值**（ui/pages/assets/AssetPageModel.h 的 compareKv /
+// diffRows / consistency.frames），取数逻辑在 ui/pages/assets/AssetVisualData.h
+// （与 Widgets 的 ConsistencyView 共用同一份，只读 visual_states /
+// character_status / shots / generated_images）。像素差异由 C++ 侧在 worker 上算。
+// 迁移前本文件整块是写死的「第1章↔第3章 / C1–C12 全过」设计稿 mock。
+//
 // 对照 webui/src/views/Assets.jsx:13-59（CompareFlat）+ styles/views.css:293-312（.dlist）
 // + styles/views.css:898-942（.compare）：
 //   栅格         minmax(0, 640px) minmax(220px, 1fr) / gap 16 / align stretch
@@ -21,13 +27,25 @@ Ctl {
     property real splitPct: 46            // --split
     signal rerunDiff()
 
-    // 差异项：值里含「一致」走 ok，其余走 warn（jsx: v.includes('一致') ? ok : warn）
-    property var diffs: [
-        { k: "发型 / 服装", v: "一致", warn: false },
-        { k: "灯罩裂纹长度", v: "变化（预期内）", warn: true },
-        { k: "色彩基调", v: "一致", warn: false },
-        { k: "构图重心", v: "偏移 2%（容差内）", warn: true }
-    ]
+    // —— 数据源：C++ 桥 AssetPageModel 的真值，全部来自只读真库 ——
+    //   kvRows  [{key, value}]  对比对象 / 基线帧 / 当前帧 / 检测项
+    //   diffRows[{key, value, changed}]  逐段对照基线，外观/色彩**分开判**
+    //   frames  [{label, absPath, hasImage}]  同角色镜头帧（真实图片路径）
+    //   verdict  结论文字（none/same/minor/significant 判定由 C++ 侧做）
+    //   diffPct  像素差异百分比，worker 算出；空串 = 尚未比对
+    // 迁移前这里是一整块写死的「第1章↔第3章 / C1–C12 全过 / 灯罩裂纹长度」mock。
+    property var kvRows: []
+    property var diffRows: []
+    property var frames: []
+    property string verdict: "未比对"
+    property string diffPct: ""
+    property bool hasFrames: false
+    // 结论徽标 tone：与 C++ 的 severity 同一口径
+    property string verdictTone: "idle"
+
+    // 基线帧 / 当前帧：取前两张真实帧图；没有就用占位（并显示文案）
+    readonly property var frameA: frames.length > 0 ? frames[0] : null
+    readonly property var frameB: frames.length > 1 ? frames[1] : null
 
     readonly property real gridGap: 16
     readonly property real minRight: 220
@@ -36,7 +54,7 @@ Ctl {
     readonly property real splitX: stageW * root.splitPct / 100
     readonly property real rightX: stageW + gridGap
     readonly property real rightW: Math.max(0, width - stageW - gridGap)
-    readonly property real rightH: 2 + kv.implicitHeight + 8 + root.diffs.length * 32 + 8 + 24
+    readonly property real rightH: 2 + kv.implicitHeight + 8 + root.diffRows.length * 32 + 8 + 24
 
     implicitHeight: Math.max(root.stageH, root.rightH)
     implicitWidth: 720
@@ -51,15 +69,20 @@ Ctl {
         width: root.stageW
         height: root.stageH
 
-        // 基线（第 1 章）
-        Art {
+        // 基线帧（第 1 张）
+        Image {
             x: 0
             y: 0
             width: stage.width
             height: stage.height
-            seed: 5
+            visible: root.frameA !== null
+            source: root.frameA !== null ? "file:///" + root.frameA.absPath : ""
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+            sourceSize.width: Math.round(stage.width)
+            sourceSize.height: Math.round(stage.height)
         }
-        // 当前（第 3 章）—— 中线左侧才露出
+        // 当前帧 —— 中线左侧才露出
         Item {
             id: clipA
             x: 0
@@ -67,12 +90,35 @@ Ctl {
             width: root.splitX
             height: stage.height
             clip: true
-            Art {
+            Image {
                 x: 0
                 y: 0
                 width: stage.width
                 height: stage.height
-                seed: 10
+                visible: root.frameB !== null
+                source: root.frameB !== null ? "file:///" + root.frameB.absPath : ""
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                sourceSize.width: Math.round(stage.width)
+                sourceSize.height: Math.round(stage.height)
+            }
+        }
+
+        // 无可比帧时的占位（真实提示，不画假图）
+        Rectangle {
+            anchors.fill: parent
+            visible: !root.hasFrames
+            color: ThemeBridge.colors["fill.muted"]
+            Text {
+                anchors.centerIn: parent
+                width: parent.width - 24
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: "同角色镜头图不足两张；已找到 "
+                      + Page.consistency.frames.length + " 张。"
+                color: ThemeBridge.colors["text.muted"]
+                font.family: ThemeBridge.fontFamily
+                font.pixelSize: 12
             }
         }
 
@@ -127,13 +173,15 @@ Ctl {
         Tag {
             x: 8
             y: 8
-            text: "基线 · 第 1 章"
+            visible: root.frameA !== null
+            text: root.frameA !== null ? "基线 · " + root.frameA.label : ""
             sm: true          // jsx: className="tag sm"（:35-36）
         }
         Tag {
             x: stage.width - 8 - width
             y: 8
-            text: "当前 · 第 3 章"
+            visible: root.frameB !== null
+            text: root.frameB !== null ? "当前 · " + root.frameB.label : ""
             tone: "accent"
             sm: true          // jsx: className="tag accent sm"（:36）
         }
@@ -174,17 +222,13 @@ Ctl {
             x: 0
             y: 0
             width: root.rightW
-            // 键名是 Kv 的 {key, value}（共享件统一了旧件的 k / v）
-            rows: [
-                { key: "对比对象", value: "外观基线 · 按章" },
-                { key: "基线帧", value: "第 1 章 · 出场首秀" },
-                { key: "当前帧", value: "第 3 章 · 风起" },
-                { key: "检测项", value: "C1–C12 全过" }
-            ]
+            visible: root.kvRows.length > 0
+            // 键名是 Kv 的 {key, value}；行由 C++ 侧按真库行数生成
+            rows: root.kvRows
         }
 
         Repeater {
-            model: root.diffs
+            model: root.diffRows
             delegate: Rectangle {
                 id: drow
                 required property var modelData
@@ -203,7 +247,7 @@ Ctl {
                     width: Math.max(0, drow.width - 4 - dval.width - 8)
                     height: drow.height
                     verticalAlignment: Text.AlignVCenter
-                    text: drow.modelData.k
+                    text: drow.modelData.key
                     elide: Text.ElideRight
                     color: ThemeBridge.colors["text.muted"]   // .dim
                     font.family: ThemeBridge.fontFamily
@@ -215,14 +259,15 @@ Ctl {
                     y: 0
                     height: drow.height
                     verticalAlignment: Text.AlignVCenter
-                    text: drow.modelData.v
-                    color: drow.modelData.warn ? ThemeBridge.colors["status.warn"]
-                                               : ThemeBridge.colors["status.ok"]
+                    text: drow.modelData.value
+                    // 值一律 status.ok，一变 status.warn（与 Widgets 侧同一口径）
+                    color: drow.modelData.changed ? ThemeBridge.colors["status.warn"]
+                                                  : ThemeBridge.colors["status.ok"]
                     font.family: ThemeBridge.fontFamily
                     font.pixelSize: 12
                 }
                 Rectangle {                     // 行分隔发丝线（最后一行无）
-                    visible: drow.index < root.diffs.length - 1
+                    visible: drow.index < root.diffRows.length - 1
                     x: 0
                     y: drow.height - 1
                     width: drow.width
@@ -237,10 +282,12 @@ Ctl {
             }
         }
 
+        // 「仅重跑差异项」：Widgets 侧刻意没做（无真实后端），
+        // 这里保留按钮但点下去只做一次重投影，不假装有 diff 服务。
         Button {
             x: 0
-            y: kv.implicitHeight + 8 + root.diffs.length * 32 + 8
-            text: "仅重跑差异项"
+            y: kv.implicitHeight + 8 + root.diffRows.length * 32 + 8
+            text: root.diffPct !== "" ? "像素差异 " + root.diffPct + "%" : "仅重跑差异项"
             glyph: "↻"
             sm: true
             onClicked: root.rerunDiff()

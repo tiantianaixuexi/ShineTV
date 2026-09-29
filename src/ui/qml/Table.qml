@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryTable.qml —— 紧凑表格（ui.css:721-768 的 .table.compact）
+// src/ui/qml/Table.qml —— 紧凑表格（ui.css:721-768 的 .table.compact）
 //
 // 表头 f11 w600 text-muted + letter-spacing .03em + 1px line-normal 下边线；
 // 单元格上下 9 / 左右 12，1px line-subtle 下边线；hover 走 fill-hover，

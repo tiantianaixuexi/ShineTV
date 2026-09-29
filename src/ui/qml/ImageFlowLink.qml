@@ -14,7 +14,7 @@
 //   delegate 必须是 Item。两者语义直接冲突，运行期必报
 //   `Delegate must be of Item type`（一个 delegate 都创建不出来）。
 //   qmllint 查不出来 —— Shape 能解析、ShapePath 能解析，只有运行期组合才炸。
-//   同款坑见 verify 侧的 GalleryArtInk.qml（14 层模糊同样字面量展开）。
+//   同款坑见 verify 侧的 ArtInk.qml（14 层模糊同样字面量展开）。
 //
 // ⚠️ Qt 6.11 的 ShapePath **没有** strokeGradient，也没有 opacity：
 //   `fillGradient` 只作用于填充。所以渐变靠「把三次贝塞尔切成 12 段弦、每段

@@ -31,7 +31,7 @@ class BottomDock;
 class CommandPalette;
 class NovelWorkspace;
 class ProjectHubView;
-class AssetWorkspace;
+class QmlAssetsPage;
 class ImageFlowWorkspace;
 class VideoFlowWorkspace;
 class PipelineWorkspace;
@@ -70,7 +70,7 @@ class MainWindow : public QMainWindow {
     // P04 自动化：活动栏切工作区；取当前标签页里的小说工作区页（无则 nullptr）
     void SwitchWorkspace(int index);
     [[nodiscard]] NovelWorkspace* NovelPage() const;
-    [[nodiscard]] AssetWorkspace* AssetPage() const;
+    [[nodiscard]] QmlAssetsPage* AssetPage() const;
     [[nodiscard]] StoryboardWorkspace* StoryboardPage() const;
 
   protected:

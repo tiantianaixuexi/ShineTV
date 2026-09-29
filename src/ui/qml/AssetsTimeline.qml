@@ -1,6 +1,12 @@
 pragma ComponentBehavior: Bound
 // src/ui/qml/AssetsTimeline.qml —— 页面私有：关联时间线（章刻度 + 事件 + 下方镜头/参考图）
 //
+// 数据源：**C++ 桥的真值**（AssetPageModel 的 timeline / consistency），取数在
+// ui/pages/assets/AssetVisualData.h 的 AssetCollectTimeline —— 只读 visual_states
+// （外观基线）+ chapters/shots（绑定镜头，character_ids_json 含本实体）+
+// generated_images（镜头参考图）。**全部空态都有真实现由**，没有条目就显示「暂无」。
+// 迁移前本文件整块是写死的（三条固定事件 / S01,S02,S05 / 四个 seed 参考图）。
+//
 // 对照 webui/src/views/Assets.jsx:62-125（RelTimeline）+ styles/views.css:765-847：
 //   .tl            height 92 / margin 2px 10px 0
 //   .tl .axis      top 44 / height 2 / line-normal
@@ -19,11 +25,17 @@ import Shine 1.0
 Ctl {
     id: root
 
-    property int artSeed: 5                  // 当前实体的 seed（出处事件 / 参考图用）
-    property var shots: ["S01", "S02", "S05"]
-    // 参考图的四张：[3, 6, 9, 12].map(...)（Assets.jsx:110）
-    property var refSeeds: [3, 6, 9, 12]
-    property int chapterCount: 6
+    // —— 数据源：C++ 桥的真值（AssetPageModel 的 timeline / consistency）——
+    //   events   [{chapterOrd, label, hot, shotId, isShot}]  外观基线 + 绑定镜头事件
+    //   shots    [{id, label, refs:[absPath]}]               绑定镜头及其参考图
+    //   refImages [absPath]                                  全部镜头参考图
+    //   chapterCount  章刻度跨度
+    // 迁移前这三项全是写死的（events 三条固定文案 / shots S01,S02,S05 / refSeeds 四个 seed）。
+    property var events: []
+    property var shots: []
+    property var refImages: []
+    property int chapterCount: 1
+    property bool hasData: false
     signal eventPicked(string label)
 
     readonly property real sidePad: 10        // .tl margin 10 / .tl-below padding 10
@@ -38,14 +50,12 @@ Ctl {
     antialiasing: true
 
     function pctOf(ch) {
-        return ((ch - 0.5) / root.chapterCount) * 100
+        // chapterOrd 可能为 0（章节未定位）—— 钉在轴最左端，别除以 0 也不要移出画面
+        var c = Math.max(1, ch)
+        return ((c - 0.5) / Math.max(1, root.chapterCount)) * 100
     }
 
-    readonly property var events: [
-        { ch: 1, label: "外观基线 ①", hot: false, seed: 5 },
-        { ch: 3, label: "外观基线 ② · 当前", hot: true, seed: 10 },
-        { ch: 4, label: "出处 · 出场", hot: false, seed: root.artSeed }
-    ]
+    // events 由外部（Page.timeline.events）传入，见文件头的数据源说明
 
     // —— 时间轴本体 ——
     Item {
@@ -64,7 +74,7 @@ Ctl {
             color: ThemeBridge.colors["line.normal"]
         }
 
-        // 章刻度：第 1–6 章
+        // 章刻度：按真实章跨度
         Repeater {
             model: root.chapterCount
             delegate: Item {
@@ -93,13 +103,13 @@ Ctl {
             }
         }
 
-        // 事件
+        // 事件（外观基线 / 绑定镜头，全部来自真库）
         Repeater {
             model: root.events
             delegate: Item {
                 id: ev
                 required property var modelData
-                x: tl.width * root.pctOf(ev.modelData.ch) / 100 - ev.width / 2
+                x: tl.width * root.pctOf(ev.modelData.chapterOrd) / 100 - ev.width / 2
                 y: evMouse.containsMouse && !root.reduce ? 10 : 12
                 width: Math.max(10, evLabel.implicitWidth)
                 height: 10 + 4 + evLabel.implicitHeight   // pin 10 + gap 4 + 标签行
@@ -207,7 +217,7 @@ Ctl {
                 delegate: Chip {
                     required property var modelData
                     height: 24               // jsx 行内 style height: 24
-                    text: modelData
+                    text: modelData.label
                     glyph: "▤"              // <Icon name="clapper" 11px>
                 }
             }
@@ -215,6 +225,7 @@ Ctl {
 
         Text {                           // .cap 参考图（margin-left 10）
             id: capRefs
+            visible: root.refImages.length > 0
             x: shotRow.x + shotRow.width + 8 + 10
             y: (below.height - height) / 2
             text: "参考图"
@@ -225,11 +236,12 @@ Ctl {
 
         Row {
             id: refRow
+            visible: root.refImages.length > 0
             x: capRefs.x + capRefs.width + 8
             y: 0
             spacing: 8
             Repeater {
-                model: root.refSeeds
+                model: root.refImages
                 delegate: Rectangle {
                     id: refThumb
                     required property var modelData
@@ -238,10 +250,15 @@ Ctl {
                     radius: root.rSm
                     color: "transparent"
                     clip: true
-                    Art {
+                    // 真实镜头参考图（generated_images 里 source_kind=="shot" 的产物）
+                    Image {
                         width: parent.width
                         height: parent.height
-                        seed: refThumb.modelData + root.artSeed   // seed + cur.art
+                        source: "file:///" + refThumb.modelData
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        sourceSize.width: Math.round(root.thumbW * 2)
+                        sourceSize.height: Math.round(root.thumbBoxH * 2)
                     }
                 }
             }

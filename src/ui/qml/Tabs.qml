@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryTabs.qml —— 下划线标签页（ui.css:245-275 的 .tabs）
+// src/ui/qml/Tabs.qml —— 下划线标签页（ui.css:245-275 的 .tabs）
 //
 // gap2 + line-subtle 下边线；标签 p8 12 / f13 w600，选中项走 accent 色
 // 并在 bottom: -1px 处长一条 2px accent 圆头下划线（两侧内缩 10px）。

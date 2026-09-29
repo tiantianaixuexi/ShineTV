@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryIcon.qml —— 线性图标（复刻 webui/src/components/Icon.jsx）
+// src/ui/qml/Icon.qml —— 线性图标（复刻 webui/src/components/Icon.jsx）
 //
 // 逐条照抄 Icon.jsx 的 P 表：同一份 24 视口路径、同一 stroke-width 1.6、
 // 同一 round cap / round join。

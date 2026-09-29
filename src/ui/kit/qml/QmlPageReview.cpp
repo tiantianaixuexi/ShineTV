@@ -1,4 +1,6 @@
-﻿#include "ui/kit/qml/QmlPageReview.h"
+#include "ui/kit/qml/QmlPageReview.h"
+
+#include "ui/pages/assets/AssetPageModel.h"
 
 #include "ui/kit/qml/QuickHost.h"
 #include "ui/kit/theme/Theme.h"
@@ -17,6 +19,8 @@
 #include <QUrl>
 
 #include <algorithm>
+#include <QQmlContext>
+#include <QQuickItem>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -38,12 +42,15 @@ namespace {
 // 是为了让各页截图在同一条件下可比；Parity 是控制页，用它自己的 1100x720。
 const std::vector<PageEntry> kPages{
     // 设计稿对齐验证页（架构层自检；对照 webui tokens.css + ui.css）
-    {"parity", ":/qt/qml/Parity.qml", 1100, 720},
+    {"parity", ":/qt/qml/Parity.qml", 1100, 720, false},
     // —— 业务页：与 webui/src/views/*.jsx 一一对应 ——
-    {"gallery", ":/qt/qml/Gallery.qml", 1440, 900},
-    {"assets", ":/qt/qml/Assets.qml", 1440, 900},
-    {"storyboard", ":/qt/qml/Storyboard.qml", 1440, 900},
-    {"imageflow", ":/qt/qml/ImageFlow.qml", 1440, 900},
+    {"gallery", ":/qt/qml/Gallery.qml", 1440, 900, false},
+    // assets 已接入产品（QmlAssetsPage），数据源是 C++ 注入的 `Page`。
+    // 取证时注入一个**未打开书库**的模型，于是出的是空态图 —— 这是真实行为，
+    // 有数据的形态由 P05 的产品取证负责，这里不再造假数据。
+    {"assets", ":/qt/qml/Assets.qml", 1440, 900, true},
+    {"storyboard", ":/qt/qml/Storyboard.qml", 1440, 900, false},
+    {"imageflow", ":/qt/qml/ImageFlow.qml", 1440, 900, false},
 };
 
 struct State {
@@ -181,6 +188,12 @@ void ShootPage(State* state, const PageEntry& page) {
                           " (超采样倍率超过桌面尺寸，请调低 kSupersampleMax)");
         LiveHosts().push_back(host);
         return;
+    }
+
+    // 已接入产品的页面需要 `Page` 上下文属性，否则运行期 ReferenceError。
+    // 必须在 Load 之前设：setSource 之后根对象才存在，但绑定求值发生在那之前。
+    if (page.needs_page_model) {
+        host->rootContext()->setContextProperty(QStringLiteral("Page"), new shine::app::AssetPageModel(host));
     }
 
     if (!host->Load(res)) {

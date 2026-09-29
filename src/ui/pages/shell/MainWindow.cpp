@@ -11,7 +11,7 @@
 #include "ui/pages/shell/RightPanel.h"
 #include "ui/pages/shell/SidePanel.h"
 #include "ui/pages/novel/NovelWorkspace.h"
-#include "ui/pages/assets/AssetWorkspace.h"
+#include "ui/pages/assets/QmlAssetsPage.h"
 #include "ui/pages/imageflow/ImageFlowWorkspace.h"
 #include "ui/pages/videoflow/VideoFlowWorkspace.h"
 #include "ui/pages/pipeline/PipelineWorkspace.h"
@@ -253,7 +253,7 @@ void OpenStoryboardForRef(StoryboardWorkspace& workspace, const project::Project
     (void)workspace.OpenBook(ref.dbPath, ref.rootDir, &err);
 }
 
-void OpenAssetForRef(AssetWorkspace& workspace, const project::ProjectRef& ref,
+void OpenAssetForRef(QmlAssetsPage& workspace, const project::ProjectRef& ref,
                      const std::string& lastNovel) {
     const auto books = project::ListBooks(ref);
     const project::BookRef* pick = nullptr;
@@ -425,7 +425,7 @@ void MainWindow::LoadAssetPages(const project::ProjectRef& ref) {
     const std::string lastNovel =
         svc_.CurrentFile() != nullptr ? svc_.CurrentFile()->lastNovel : std::string{};
     for (int i = 0; i < doc_stack_->count(); ++i) {
-        if (auto* assets = dynamic_cast<AssetWorkspace*>(doc_stack_->widget(i)); assets != nullptr) {
+        if (auto* assets = dynamic_cast<QmlAssetsPage*>(doc_stack_->widget(i)); assets != nullptr) {
             OpenAssetForRef(*assets, ref, lastNovel);
         }
     }
@@ -493,9 +493,9 @@ NovelWorkspace* MainWindow::NovelPage() const {
     return nullptr;
 }
 
-AssetWorkspace* MainWindow::AssetPage() const {
+QmlAssetsPage* MainWindow::AssetPage() const {
     for (int i = 0; i < doc_stack_->count(); ++i) {
-        if (auto* assets = dynamic_cast<AssetWorkspace*>(doc_stack_->widget(i)); assets != nullptr) {
+        if (auto* assets = dynamic_cast<QmlAssetsPage*>(doc_stack_->widget(i)); assets != nullptr) {
             return assets;
         }
     }
@@ -613,7 +613,7 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
         return nw;
     }
     if (title == shine::app::WorkspaceNames().value(AssetWorkspaceIndex())) {
-        auto* assets = new AssetWorkspace(doc_stack_);
+        auto* assets = new QmlAssetsPage(doc_stack_);
         if (auto ref = svc_.Current()) {
             const std::string lastNovel =
                 svc_.CurrentFile() != nullptr ? svc_.CurrentFile()->lastNovel : std::string{};

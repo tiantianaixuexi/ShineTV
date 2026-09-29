@@ -1,4 +1,4 @@
-﻿// src/ui/qml/GalleryToggle.qml —— 开关 / 复选框（ui.css:360-427）
+// src/ui/qml/Toggle.qml —— 开关 / 复选框（ui.css:360-427）
 //
 // `check: false` → .switch：34×19 / r-pill / bg-elevated + line-normal 边，
 //   滑块 13px 圆点在 top2 left2，开态平移 15px、底色走 accent、滑块走 accent-fg。

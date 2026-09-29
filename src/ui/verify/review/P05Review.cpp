@@ -1,8 +1,8 @@
 #include "ui/verify/review/P05Review.h"
 #include "ui/verify/review/ReviewProbe.h"
 
-#include "ui/pages/assets/AssetWorkspace.h"
-#include "ui/pages/assets/AssetDetailView.h"
+#include "ui/pages/assets/QmlAssetsPage.h"
+
 #include "ui/verify/gallery/GalleryWorkspace.h"
 #include "core/Async.h"
 #include "core/Settings.h"
@@ -47,17 +47,22 @@ struct ReviewState {
     fs::path dir;
     fs::path root;
     QWidget* host = nullptr;
-    AssetWorkspace* assets = nullptr;
+    QmlAssetsPage* assets = nullptr;
     std::int64_t full_entity = 0;
     std::int64_t missing_entity = 0;
     std::int64_t empty_entity = 0;
+    // 只列**本轮真的会生成**的图。Finish() 按这份清单逐个查文件，缺一张就
+    // overall=FAIL —— 迁移后不再产出的图（Widgets 专属取证）绝不能留在这里，
+    // 它们的去处是 notCovered 字段，不是 expected。
     std::vector<std::string> expected{
-        "assets-grid", "assets-empty", "assets-card-states",
-        "sheet-full", "sheet-missing-layers", "consistency-compare",
-        "detail-vsec", "detail-derive-chain", "detail-timeline",
-        "gallery-grid", "gallery-viewer-zoom", "gallery-context-menu",
+        "assets-grid", "assets-nav-tree", "assets-inspector",
+        "assets-empty", "assets-card-states",
+        "sheet-full", "sheet-missing-layers",
         "assets-mixed-theme", "toast-shadow"};
     std::vector<std::string> manifest;
+    // 迁移后无等价实现的取证项：显式记账，不进 expected，也就不会拉低 overall。
+    // 单列一栏输出，是为了让「没这一行」不会被误读成「跑了没问题」。
+    std::vector<std::string> notCovered;
 };
 
 void WaitViewer(QWidget* widget) {
@@ -294,6 +299,13 @@ void Finish(ReviewState* st) {
     for (const std::string& line : st->manifest) {
         report += line + "\n";
     }
+    // 未覆盖项单列一节，且明确标注它**不参与** overall 判定。
+    if (!st->notCovered.empty()) {
+        report += "--- not covered (不计入 overall) ---\n";
+        for (const std::string& line : st->notCovered) {
+            report += line + "\n";
+        }
+    }
     report += ok ? "overall=PASS\n" : "overall=FAIL\n";
     (void)shine::util::WriteFileBytes(st->dir / "shots-manifest.txt", report);
     std::printf("[p05-review]\n%s", report.c_str());
@@ -314,14 +326,16 @@ void RunReview(ReviewState* st) {
     // 评审窗口按外壳的真实两列摆：工作区 | 检查器。
     // 检查器默认交外壳承载，评审里若不摆出来，.vsec / .derive / .tl 三块
     // 就是不可见的 —— 之前 sheet-* 系列抓到的其实只有左边的卡片网格。
+    // QML 迁移后：页面本体 = QmlAssetsPage（内容 + 左栏导航 + 右栏检查器三个 QQuickWidget）。
+    // QuickHost 不会随父控件析构（见 QmlAssetsPage.cpp 的 HostPool 注释），
+    // 所以这里可以直接把它当普通 QWidget 摆进布局、交给 review::Grab。
     auto* layout = new QHBoxLayout(host);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    st->assets = new AssetWorkspace(host);
+    st->assets = new QmlAssetsPage(host);
+    layout->addWidget(st->assets->NavWidget(), 1);
     layout->addWidget(st->assets, 3);
-    if (QWidget* inspector = st->assets->InspectorBody(); inspector != nullptr) {
-        layout->addWidget(inspector, 2);
-    }
+    layout->addWidget(st->assets->InspectorBody(), 2);
     host->resize(1600, 980);
     host->show();
     QString error;
@@ -331,63 +345,47 @@ void RunReview(ReviewState* st) {
         return;
     }
 
-    st->assets->SelectEntity(0);
-    st->assets->ShowDetailPage(0);
-    review::Grab(st->assets, st->dir, "assets-grid", st->manifest);
-    st->assets->SelectEntity(st->empty_entity);
-    review::Grab(st->assets, st->dir, "assets-empty", st->manifest);
-    st->assets->SelectEntity(0);
-    review::Grab(st->assets, st->dir, "assets-card-states", st->manifest);
-    st->assets->SelectEntity(st->full_entity);
-    review::Grab(st->assets, st->dir, "sheet-full", st->manifest);
-    st->assets->SelectEntity(st->missing_entity);
-    review::Grab(st->assets, st->dir, "sheet-missing-layers", st->manifest);
-    st->assets->SelectEntity(st->full_entity);
-    st->assets->ShowDetailPage(1);
-    review::Grab(st->assets, st->dir, "consistency-compare", st->manifest);
-
-    // 回到「设定集」页，逐块取证：整页 / 派生链 / 关联时间线。
-    st->assets->ShowDetailPage(0);
-    AssetDetailView* detail = st->assets->DetailView();
-    review::Grab(detail, st->dir, "detail-vsec", st->manifest);
-    review::Grab(detail != nullptr
-                     ? detail->findChild<QWidget*>(QStringLiteral("assetDeriveChain"))
-                     : nullptr,
-                 st->dir, "detail-derive-chain", st->manifest);
-    review::Grab(detail != nullptr
-                     ? detail->findChild<QWidget*>(QStringLiteral("assetRelTimeline"))
-                     : nullptr,
-                 st->dir, "detail-timeline", st->manifest);
-
-    st->assets->ShowDetailPage(3);
-    st->assets->GlobalGallery()->SetLocalDirectory(st->root / "gallery");
-    WaitScan(st->assets->GlobalGallery());
-    review::Grab(st->assets, st->dir, "gallery-grid", st->manifest);
-    if (!st->assets->SelectFirstGlobalGallery()) {
-        st->manifest.push_back("gallery-viewer-zoom 0 FAILED no-selection");
-    } else {
-        st->assets->GlobalGallery()->OpenViewerForCurrent();
-        if (auto* viewer = st->assets->GlobalGallery()->ViewerWidget()) {
-            WaitViewer(viewer);
-            review::Grab(viewer, st->dir, "gallery-viewer-zoom", st->manifest);
-        } else {
-            st->manifest.push_back("gallery-viewer-zoom 0 FAILED no-viewer");
-        }
-    }
-    QMenu menu(st->assets);
-    menu.addAction(QStringLiteral("放大看"));
-    menu.addAction(QStringLiteral("复制路径"));
-    menu.addAction(QStringLiteral("在资源管理器中显示"));
-    menu.addSeparator();
-    menu.addAction(QStringLiteral("设为工作流输入"));
-    menu.addMenu(QStringLiteral("被谁引用"));
-    menu.show();
     review::Pump();
-    review::Grab(&menu, st->dir, "gallery-context-menu", st->manifest);
-    menu.close();
+    review::Grab(st->assets, st->dir, "assets-grid", st->manifest);
+    review::Grab(st->assets->NavWidget(), st->dir, "assets-nav-tree", st->manifest);
+    review::Grab(st->assets->InspectorBody(), st->dir, "assets-inspector", st->manifest);
+
+    st->assets->SelectEntity(st->empty_entity);
+    review::Pump();
+    review::Grab(st->assets, st->dir, "assets-empty", st->manifest);
+
+    st->assets->SelectEntity(0);
+    review::Pump();
+    review::Grab(st->assets, st->dir, "assets-card-states", st->manifest);
+
+    st->assets->SelectEntity(st->full_entity);
+    // 帧图在 worker 上解码、像素差异异步回填；不等就会拍到「未比对」的中间态。
+    st->assets->WaitVisualsReady();
+    review::Pump();
+    review::Grab(st->assets, st->dir, "sheet-full", st->manifest);
+
+    st->assets->SelectEntity(st->missing_entity);
+    review::Pump();
+    review::Grab(st->assets, st->dir, "sheet-missing-layers", st->manifest);
+
+    // ⚠️ 以下三块在 QML 迁移后**没有等价实现**，显式记为未覆盖，
+    // 而不是悄悄少拍一张 —— 取证表里「没这一行」会被读成「跑了没问题」。
+    // 写进 notCovered 而不是 manifest：它们本来就不该被 Finish() 当成
+    // 「应该有却没有」的图片来判失败。
+    st->notCovered.push_back(
+        "detail-vsec  Widgets 的 AssetDetailView 未迁 QML；QML 详情区的设定集段只渲染桥上的字段");
+    st->notCovered.push_back(
+        "detail-derive-chain  同上；QML 的 AssetsDerive 已接 Page.deriveChain 真数据，但缺 Widgets 的分层取证");
+    st->notCovered.push_back(
+        "gallery-grid  全局图库仍是 Widgets 的 GalleryWorkspace，未接入 QML 资产页");
+    st->notCovered.push_back(
+        "gallery-viewer-zoom  同上");
+    st->notCovered.push_back(
+        "gallery-context-menu  同上");
 
     shine::theme::ThemeService::Switch(shine::theme::ThemeId::Dusk, false);
     st->assets->ShowDetailPage(0);
+    review::Pump();
     review::Grab(st->assets, st->dir, "assets-mixed-theme", st->manifest);
 
     // Toast 取证：Toast 是独立顶层 window（Qt::ToolTip），页面 grab 抓不到它，

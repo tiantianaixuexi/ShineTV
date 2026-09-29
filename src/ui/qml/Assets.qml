@@ -25,9 +25,10 @@ pragma ComponentBehavior: Bound
 // Chip / Ctl。本页不再有这 6 件的私有副本 —— 尺寸与配色以共享件为准（它们逐条对过
 // CSS），本页只提供数据与摆放。
 //
-// 数据：设计稿的 mock 数据（webui/src/data/mock.js 的 ENTITIES / ENTITY_STATUS /
-// DERIVE_CHAIN）。本页不接 C++ 模型（本轮只迁视觉层），所以这些实体是页面私有的
-// 静态数据；宿主接真数据时替换 entities 一处即可。
+// 数据：真值全部来自 C++ 注入的 `Page`（ui/pages/assets/AssetPageModel.h），
+// 取数逻辑在 ui/pages/assets/AssetVisualData.h。由 QmlAssetsPage 在
+// OpenBook / 选中变化时驱动重算。本文件不持有业务真值，只保留
+// 「用哪个视图形态」这一条纯 UI 状态。
 import QtQuick
 import Shine 1.0
 
@@ -36,86 +37,107 @@ Ctl {
 
     color: ThemeBridge.colors["bg.void"]      // body 的底（.vw 自身无底）
 
-    // —— 页面状态（宿主可写）——
-    property string kindFilter: "全部"
-    property string selectedId: "e1"
-    property bool overview: false
+    // ============================================================
+    // 数据源：全部来自 C++ 注入的 `Page`（AssetPageModel），**本页无 mock**。
+    // 迁移前这里是一整块写死的 ENTITIES/ENTITY_STATUS（mock.js），
+    // 页面里 400 多行的渲染代码一行没动 —— 只有数据入口换成了桥。
+    //
+    // 三块真数据的取数在 ui/pages/assets/AssetVisualData.h（只读真库 + 文件系统
+    // 存在性），与 Widgets 的 AssetDetailView / ConsistencyView 共用同一份：
+    //   设定集 / 派生链  Page.deriveChain（visual_artifacts + 产物落盘）
+    //   一致性对比      Page.consistency / compareKv / diffRows
+    //                    （visual_states / character_status / 镜头图像素差异）
+    //   关联时间线      Page.timeline（按章基线 + 绑定镜头 + 镜头参考图）
+    // 像素差异与图像解码都在 worker 上做，UI 线程只渲染。
+    //
+    // 口径对齐（易踩）：
+    //  * 卡片的 kind 用 C++ 的 key（person/location/item/faction），
+    //    中文标签在 kindLabel；筛选值也是 key，别拿 label 去比。
+    //  * 筛选用 Page.setKindFilter()（触发重查），选中用 Page.selectAsset()。
+    //    别在 QML 侧改本地副本 —— C++ 侧才是真状态。
+    // ============================================================
 
-    // —— 设计稿数据：mock.js ENTITIES + ENTITY_STATUS ——
-    readonly property var entities: [
-        { id: "e1", name: "林晚", kind: "人物", role: "主角 · 守灯人", art: 5,
-          statusLabel: "已就绪", statusTone: "ok" },
-        { id: "e2", name: "陈拾", kind: "人物", role: "邮差", art: 6,
-          statusLabel: "已就绪", statusTone: "ok" },
-        { id: "e3", name: "老周", kind: "人物", role: "钟表匠", art: 7,
-          statusLabel: "参考就绪", statusTone: "info" },
-        { id: "e4", name: "回声灯", kind: "物品", role: "核心道具", art: 8,
-          statusLabel: "已就绪", statusTone: "ok" },
-        { id: "e5", name: "纸鸢", kind: "物品", role: "信物", art: 9,
-          statusLabel: "待生成", statusTone: "idle" },
-        { id: "e6", name: "灯下街", kind: "地点", role: "主场景", art: 10,
-          statusLabel: "已就绪", statusTone: "ok" },
-        { id: "e7", name: "钟表铺", kind: "地点", role: "支线场景", art: 11,
-          statusLabel: "失败", statusTone: "danger" },
-        { id: "e8", name: "守灯人公会", kind: "势力", role: "组织", art: 12,
-          statusLabel: "待生成", statusTone: "idle" }
-    ]
-    // Shell.jsx:522 的 5 个 kind
-    readonly property var kinds: ["全部", "人物", "地点", "物品", "势力"]
-    // mock.js DERIVE_CHAIN
-    readonly property var deriveChain: [
-        { name: "正脸", state: "done" },
-        { name: "四视图", state: "done" },
-        { name: "基础身体", state: "run" },
-        { name: "服装", state: "todo" }
-    ]
+    // —— 页面状态（宿主可写）——
+    property bool overview: false
+    property int viewIndex: 0          // 0=总览 1=详情（QmlAssetsPage::ShowDetailPage 写）
+    // 产物大图预览（点「查看大图」时置位）
+    property var previewLayer: null
+    property bool previewVisible: false
+
+    readonly property var entities: Page.assets      // = 迁移前的 entities（设计稿 .asset-grid 每张卡）
+    readonly property var kinds: Page.kinds          // [{key,label,count,on}]，带真计数
+    readonly property var deriveChain: Page.deriveChain  // 真产物就绪状态（visual_artifacts + 落盘）
+    readonly property var consistency: Page.consistency
+    readonly property var timeline: Page.timeline
+
+    // C++ 的 severity（none/same/minor/significant）→ Tag 的 tone 词表
+    readonly property string severityTone: {
+        switch (root.consistency.severity) {
+        case "same":        return "ok"
+        case "minor":       return "warn"
+        case "significant": return "danger"
+        default:            return "idle"
+        }
+    }
+    // 时间线副标题：有绑定镜头才提参考图，别常年挂着设计稿那句「全部条目可点击」
+    readonly property string timelineMeta: root.timeline.shots.length > 0
+        ? "外观基线 " + root.timeline.events.length + " 条 · 绑定镜头 "
+          + root.timeline.shots.length + " 个 · 参考图 " + root.timeline.refImages.length + " 张"
+        : "尚未登记外观基线；在 visual_states 登记后按章显示。"
+
     // Assets.jsx:144 的 Segmented 两项
     readonly property var viewOptions: [
         { value: "detail", label: "详情" },
         { value: "overview", label: "总览" }
     ]
 
-    function countOf(kind) {
-        var n = 0
-        for (var i = 0; i < entities.length; ++i) {
-            if (kind === "全部" || entities[i].kind === kind) {
-                n += 1
-            }
+    readonly property string kindFilter: Page.kindFilter
+    readonly property string selectedId: Page.selectedAssetId
+
+    function countOfKind(key) {
+        for (var i = 0; i < Page.kinds.length; ++i) {
+            if (Page.kinds[i].key === key) { return Page.kinds[i].count }
         }
-        return n
+        return 0
+    }
+
+    function setKind(key) { Page.setKindFilter(key) }
+    function selectAsset(id) { Page.selectAsset(id) }
+
+    // 派生链层名：来自真实产物层（Page.deriveChain），空链显示「暂无产物」
+    readonly property string deriveNames: {
+        if (!root.deriveChain || root.deriveChain.length === 0) { return "暂无产物" }
+        var names = []
+        for (var i = 0; i < root.deriveChain.length; ++i) {
+            names.push(root.deriveChain[i].name)
+        }
+        return names.join(" → ")
     }
 
     function entityById(id) {
         for (var i = 0; i < entities.length; ++i) {
-            if (entities[i].id === id) {
-                return entities[i]
-            }
+            if (entities[i].id === id) { return entities[i] }
         }
-        return entities[0]
+        return entities.length > 0 ? entities[0] : null
     }
 
-    // 设定集 KV 的「别名」列（Assets.jsx:208 的三元表达式）
-    function aliasOf(name) {
-        if (name === "林晚") {
-            return "晚晚 / 小灯"
-        }
-        if (name === "陈拾") {
-            return "邮差阿拾"
-        }
-        return "—"
-    }
+    // C++ 侧已把 kind 过滤进 assets 本身，这里不再二次过滤。
+    readonly property var visibleEntities: entities
 
-    // 绑定里读了 kindFilter，所以它会随筛选重算
-    readonly property var visibleEntities: {
-        var out = []
-        for (var i = 0; i < entities.length; ++i) {
-            if (kindFilter === "全部" || entities[i].kind === kindFilter) {
-                out.push(entities[i])
-            }
-        }
-        return out
-    }
-    readonly property var current: entityById(selectedId)
+    // ⚠️ current **不能是 null**：详情区有十几处 `root.current.xxx` 绑定，
+    // 返回 null 会刷一片 TypeError（空态时必现）。也不能用 `{}`：那样字段是
+    // undefined，赋给 QString / int 属性又报 "Unable to assign"。
+    // 正确做法是给一份**带类型零值**的空资产，取字段得空串/0，两边都不报错。
+    // 「有没有资产」用 hasCurrent 判，不要用 truthiness 判 current。
+    readonly property var emptyAsset: ({
+        id: "", name: "", entityId: "", entityName: "",
+        kind: "", kindLabel: "", role: "", art: 0,
+        status: "", statusLabel: "", statusTone: "idle",
+        degraded: false, sheetRelPath: "", baseDesc: "", canonStatus: "",
+        runtime: ({ none: true })
+    })
+    readonly property bool hasCurrent: entities.length > 0
+    readonly property var current: hasCurrent ? entityById(selectedId) : root.emptyAsset
 
     // —— 总览网格：repeat(auto-fit, minmax(210px, 1fr)) / gap 14（views.css:708-712）——
     readonly property real ovPadT: 20        // .vw padding 20px 24px 26px
@@ -233,10 +255,11 @@ Ctl {
                         model: root.kinds
                         delegate: Chip {
                             required property var modelData
-                            text: modelData
-                            count: root.countOf(modelData)
-                            active: root.kindFilter === modelData
-                            onPicked: root.kindFilter = modelData
+                            // Page.kinds 的每项是 {key,label,count,on}，不再是裸字符串
+                            text: modelData.label
+                            count: modelData.count
+                            active: modelData.on
+                            onPicked: root.setKind(modelData.key)
                         }
                     }
                 }
@@ -283,7 +306,8 @@ Ctl {
                         artSeed: cell.modelData.art
                         selected: cell.modelData.id === root.selectedId
                         onActivated: function(id) {
-                            root.selectedId = id
+                            // 选中态的**真值在 C++ 侧**（Page.selectedAssetId），这里只发意图
+                            root.selectAsset(id)
                             root.overview = false
                         }
                     }
@@ -298,7 +322,7 @@ Ctl {
             y: 0
             width: flick.width
             height: root.detH
-            visible: !root.overview
+            visible: !root.overview && root.hasCurrent
 
             // 类型筛选胶囊：设计稿把它们放在外壳左栏（Shell.jsx:538-544），
             // Widgets 版放在页内头部（AssetWorkspace.cpp:314-332）——本页沿用页内
@@ -312,10 +336,10 @@ Ctl {
                     model: root.kinds
                     delegate: Chip {
                         required property var modelData
-                        text: modelData
-                        count: root.countOf(modelData)
-                        active: root.kindFilter === modelData
-                        onPicked: root.kindFilter = modelData
+                        text: modelData.label
+                        count: modelData.count
+                        active: modelData.on
+                        onPicked: root.setKind(modelData.key)
                     }
                 }
             }
@@ -352,16 +376,24 @@ Ctl {
                         glyph: "▶"
                         variant: "primary"
                         sm: true
+                        // 真实管线：四层连跑，状态经 Page.runtime 回灌
+                        onClicked: Page.startPipeline()
                     }
                     Button {
                         text: "导出整版"
                         glyph: "↓"
                         sm: true
+                        // ⚠️ 导出整版（多图合成 + 写盘 + 文件对话框）目前只有
+                        // Widgets 的 AssetDetailView 有实现，未迁 QML。
+                        // 在接线之前不装成能点的样子 —— 按下给明确提示，
+                        // 别让用户以为导出成功了却什么也没发生。
+                        onClicked: Page.exportingUnsupported("导出整版")
                     }
                     Button {
                         variant: "ghost"
                         sm: true
                         glyph: "↻"
+                        onClicked: Page.refreshAssets()
                     }
                 }
 
@@ -405,12 +437,14 @@ Ctl {
                         y: 0
                         width: sheetRight.width
                         // 键名是 Kv 的 {key, value}（共享件统一了旧件的 k / v）
-                        rows: [
-                            { key: "类别", value: root.current.kind + " · " + root.current.role },
-                            { key: "别名", value: root.aliasOf(root.current.name) },
-                            { key: "出处", value: "第 " + (1 + (root.current.art % 8)) + " 章（见下方时间线）" },
-                            { key: "降级策略", value: "允许超期降级（B 级）" }
-                        ]
+                        // 「别名」一行在 mock 时代是查表写死的（aliasOf 只有两条），
+                        // 真库里没有这一列 —— 改用 baseDesc，别再编假数据。
+                        rows: root.current ? [
+                            { key: "类别", value: root.current.kindLabel + " · " + root.current.role },
+                            { key: "描述", value: root.current.baseDesc },
+                            { key: "定稿", value: root.current.canonStatus },
+                            { key: "状态", value: root.current.statusLabel }
+                        ] : []
                     }
 
                     Row {                        // .row gap-2 wrap
@@ -422,24 +456,44 @@ Ctl {
                             text: "导入图片"
                             glyph: "↑"
                             sm: true
+                            // 参考库导入（文件对话框 + 拖拽 + 写回库）目前只有
+                            // Widgets 的 RefLibraryView 有实现，未迁 QML。
+                            onClicked: Page.exportingUnsupported("导入图片")
                         }
                         Button {
                             text: "绑定当前实体"
                             glyph: "↔"
                             sm: true
+                            // 参考图与实体的绑定写回库，同样未迁 QML。
+                            onClicked: Page.exportingUnsupported("绑定当前实体")
                         }
                         Button {
                             text: "查看大图"
                             glyph: "◎"
                             variant: "ghost"
                             sm: true
+                            // 打开正脸层产物（取第一个就绪层）。全都没有就绪层时
+                            // 明确提示，不装作打开了一张空图。
+                            onClicked: {
+                                var layers = Page.layers
+                                for (var i = 0; i < layers.length; ++i) {
+                                    if (layers[i].ready) {
+                                        root.previewLayer = layers[i]
+                                        root.previewVisible = true
+                                        return
+                                    }
+                                }
+                                Page.exportingUnsupported("查看大图（没有就绪的产物层）")
+                            }
                         }
                     }
 
                     Text {                        // .tiny.strong（color text-secondary）
                         x: 0
                         y: sheetBtns.y + sheetBtns.height + 12
-                        text: "V0 派生链 · 正脸 → 四视图 → 基础身体 → 服装"
+                        // 链名由真实产物层拼出（Page.deriveChain 每项带 name），
+                        // 别再写死「正脸 → 四视图 → 基础身体 → 服装」。
+                        text: "V0 派生链 · " + root.deriveNames
                         color: ThemeBridge.colors["text.secondary"]
                         font.family: ThemeBridge.fontFamily
                         font.pixelSize: 12
@@ -471,7 +525,7 @@ Ctl {
                 }
             }
 
-            // —— ② 一致性对比 ——
+            // —— ② 一致性对比（真数据：Page.consistency / compareKv / diffRows）——
             Item {
                 id: cmpSec
                 x: root.detPadX
@@ -486,9 +540,12 @@ Ctl {
                     height: 26
                     glyph: "◫"
                     title: "一致性对比 · 按章外观基线"
-                    tagText: "结论：轻微差异"
-                    tagTone: "ok"
-                    meta: "拖动中线对比"
+                    // 结论徽标来自真实像素差异判定（none/same/minor/significant）
+                    tagText: root.consistency.verdict
+                    tagTone: root.severityTone
+                    meta: root.consistency.diffPct !== ""
+                          ? "像素差异 " + root.consistency.diffPct + "%"
+                          : "拖动中线对比"
                 }
                 AssetsCompare {
                     id: cmpView
@@ -497,6 +554,12 @@ Ctl {
                     width: parent.width - root.vsecPadX * 2
                     height: implicitHeight
                     entityName: root.current.name
+                    kvRows: Page.compareKv
+                    diffRows: Page.diffRows
+                    frames: root.consistency.frames
+                    hasFrames: root.consistency.hasFrames
+                    verdict: root.consistency.verdict
+                    diffPct: root.consistency.diffPct
                 }
                 Rectangle {
                     x: 0
@@ -507,7 +570,7 @@ Ctl {
                 }
             }
 
-            // —— ③ 关联时间线（最后一段无下边框）——
+            // —— ③ 关联时间线（真数据：Page.timeline）——
             Item {
                 id: tlSec
                 x: root.detPadX
@@ -522,7 +585,7 @@ Ctl {
                     height: 26
                     glyph: "◷"
                     title: "关联时间线"
-                    meta: "外观基线 / 出处 / 绑定镜头 / 参考图 · 全部条目可点击"
+                    meta: root.timelineMeta
                 }
                 AssetsTimeline {
                     id: tlView
@@ -530,7 +593,11 @@ Ctl {
                     y: root.vsecPadT + 26 + root.vsecGap
                     width: parent.width - root.vsecPadX * 2
                     height: implicitHeight
-                    artSeed: root.current.art
+                    events: root.timeline.events
+                    shots: root.timeline.shots
+                    refImages: root.timeline.refImages
+                    chapterCount: root.timeline.chapterCount
+                    hasData: root.timeline.hasData
                 }
             }
         }
@@ -556,5 +623,60 @@ Ctl {
             radius: 2
             color: ThemeBridge.colors["bg.elevated"]
         }
+    }
+
+    // —— 产物大图预览 ——
+    // 只在 previewVisible 时存在：Esc / 点背景关闭。图片是**真实产物**
+    // （Page.layers[].absPath，仅就绪层非空），不是占位图。
+    Rectangle {
+        anchors.fill: parent
+        visible: root.previewVisible && root.previewLayer !== null
+        color: Qt.alpha(ThemeBridge.colors["bg.void"], 0.86)
+        MouseArea {
+            anchors.fill: parent
+            onClicked: root.previewVisible = false
+        }
+        Image {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 80, 900)
+            height: Math.min(parent.height - 80, 640)
+            source: root.previewLayer !== null ? "file:///" + root.previewLayer.absPath : ""
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            sourceSize.width: 1280
+            sourceSize.height: 960
+        }
+        Text {
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 18
+            text: root.previewLayer !== null ? root.previewLayer.title : ""
+            color: ThemeBridge.colors["text.primary"]
+            font.family: ThemeBridge.fontFamily
+            font.pixelSize: 13
+        }
+        Text {
+            anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottomMargin: 18
+            text: "点击任意处关闭"
+            color: ThemeBridge.colors["text.muted"]
+            font.family: ThemeBridge.fontFamily
+            font.pixelSize: 11
+        }
+    }
+
+    // —— 页级空态 ——
+    // 没打开书库、或当前筛选下没有资产时，上面两个分区（总览/详情）
+    // 都是 visible:false —— 不铺这一层的话整页只剩一块底色，看着像崩了。
+    Empty {
+        anchors.fill: parent
+        visible: !root.hasCurrent
+        title: Page.hasBook ? "没有可显示的资产" : "未打开书库"
+        text: Page.openError
+              ? Page.openError
+              : (Page.hasBook
+                 ? "当前筛选下没有资产。在左栏换一个实体，或清掉类型筛选。"
+                 : "打开一个项目并选中小说后，这里显示该书的视觉资产。")
     }
 }
