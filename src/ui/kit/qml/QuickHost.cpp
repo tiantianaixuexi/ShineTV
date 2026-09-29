@@ -138,11 +138,24 @@ bool QuickHost::Load(const QString& qml_file) {
     return true;
 }
 
+void QuickHost::SetSupersample(int factor) {
+    const int f = factor < 1 ? 1 : factor;
+    if (supersample_ == f) {
+        return;
+    }
+    supersample_ = f;
+    FillWithRoot();
+}
+
 void QuickHost::FillWithRoot() {
     // rootObject() 本身就直接是 QQuickItem*（QQuickWidget 的 contentItem 就是它），
     // 不是 QQuickWindow —— 没有 contentItem() 这一层。
     if (auto* root = rootObject()) {
-        root->setSize(size());
+        // 超采样下：根 item 保持**逻辑尺寸**（否则布局会按放大后的尺寸重排），
+        // 整体 setScale 放大，渲染目标本身已经是 N 倍 —— 于是每个细节都按 N 倍
+        // 分辨率光栅化，抓完再缩回就是 N×N SSAA。
+        root->setSize(size() / supersample_);
+        root->setScale(static_cast<float>(supersample_));
     }
 }
 
@@ -179,7 +192,7 @@ void QuickHost::GrabToImage(std::function<void(const QImage&, bool)> done) {
                      });
 }
 
-QImage QuickHost::GrabBlocking(int timeout_ms) {
+QImage QuickHost::GrabBlocking(int timeout_ms, const QSize& out_size) {
     QImage captured;
     bool finished = false;
     GrabToImage([&captured, &finished](const QImage& img, bool ok) {
@@ -192,6 +205,12 @@ QImage QuickHost::GrabBlocking(int timeout_ms) {
         QEventLoop loop;
         QTimer::singleShot(timeout_ms, &loop, &QEventLoop::quit);
         loop.exec();
+    }
+    // 缩回逻辑尺寸。必须用 SmoothTransformation：NearestNeighbor 等于白超采样，
+    // 反而会把锯齿原样放大成色块。
+    if (!captured.isNull() && out_size.isValid() && !out_size.isEmpty() &&
+        captured.size() != out_size) {
+        captured = captured.scaled(out_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     }
     return captured;
 }

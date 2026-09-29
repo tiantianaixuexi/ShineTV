@@ -536,6 +536,49 @@ review 里用 400ms。
 `Member enabled of the object Button_QMLTYPE_1 overrides a member of the base object`。
 直接用内建的：它顺带把整棵子树（含 `MouseArea`）一起禁用，正是 `.btn:disabled` 想要的。
 
+### ⑧ 取证出图要超采样，否则圆角看起来是斜切多边形
+
+⚠️ 这一条**不是设计问题，是取证画质问题**，别误判成「圆角刻度选错了」。
+
+Qt Quick 的 `Rectangle` 圆角走 `QSGRoundedRectNode`，是用**固定细分的多边形**
+逼近圆弧。软件场景图后端（本机离屏取证的常态）没有 MSAA 去掩盖这些面，
+3× 放大能看出亮色块的角被切成**斜切平面**、暗色块的角有缺口。
+同一元素在 Widgets 侧（QPainter + `QPainter::Antialiasing`）是顺的 ——
+**横向对比才看得出这是 QML 侧真实的画质回退**。
+
+已排除的三条「看起来像」的原因，都实测无效：
+
+| 试过的 | 实测结果 |
+|---|---|
+| `QQuickItem.antialiasing: true`（Qt 6.8+，默认 false） | 出图**字节数完全不变**（深空 49551 → 49551），对 `Rectangle` 圆角是空操作 |
+| `QT_SCALE_FACTOR=1` 去掉 1.25 缩放 | 出图**仍是 1375×900**；1.25 来自 Windows 桌面 125% 缩放（DELL U2417H），不是 Qt 的 high-DPI 开关 |
+| 换更大的 radius 刻度 | 设计稿核对无误：`.btn`=`--r-sm` 6px、`.card`=`--r-md` 10px、`.tag`=`--r-pill`。取值本来就对 |
+
+**采纳的解法：抓图时 2× 超采样**（`QuickHost::SetSupersample(2)`）。
+宿主按 N 倍尺寸建、QML 根 item 保持**逻辑尺寸**再整体 `setScale(N)`，
+渲染目标本身就是 N 倍分辨率，抓完用 `Qt::SmoothTransformation` 缩回逻辑尺寸
+—— 等价 2×2 SSAA，圆弧和文字一起变干净。
+
+- **运行时零成本**：只作用于取证路径，产品真实路径仍是 `supersample_ = 1`。
+- **对新写的页面自动生效**，不必逐页改 QML。
+- 顺带消除了 1.25 DPR 的歧义：出图回到 **1 QML 逻辑像素 = 1 图像像素**，
+  与设计稿的 px 值可以直接对照。
+
+**没选的解法**：`QtQuick.Shapes` 的 `Shape` + `PathQuad` 实测确实比 `Rectangle`
+更平滑（`Parity.qml` 的 `CornerProbe` 组件把两者并排放着，可直接看）。
+但每个控件多一个几何节点、运行时成本实打实，而且要动 `Card`/`Button`/`Tag` ——
+**若将来真的要在软件后端出货**，再把圆角换成 `Shape` 版本。
+
+### ⑨ 单文件静态自检
+
+`qmllint --bare -I C:/msys64/mingw64/share/qt6/qml <file>`。
+`Shine`（C++ 单例）没有 qmltypes，故 `Failed to import Shine` 及其连带的
+`Unqualified access` 是**预期噪音**；除此之外必须零告警。
+
+这个自检在写 QML 时非常值钱，实测当场抓到两类真错误：
+`PathQuad` 根本没有 `x2`/`y2`（那是 `PathArc` 的命名，它是 `x`/`y` + `controlX`/`controlY`）；
+内联组件里不写 `id:` 的话，组件名会被解析成**类型**而不是实例（`Member "r" not found on type "Item"`）。
+
 ### 端到端取证现状
 
 `SHINE_QML_REVIEW=<目录>` 触发，`SHINE_QML_PAGES=<页名,页名>` 可只拍指定页

@@ -30,6 +30,15 @@ Rectangle {
     // 所以这个开关必须来自 ThemeBridge 的自动探测，不能写死 true。
     readonly property bool shadows: ThemeBridge.layerEffectsAvailable
 
+    // 圆角抗锯齿。QQuickItem.antialiasing（Qt 6.8+）默认 **false**。
+    // 不开的话圆角是**硬阶梯**：3× 放大能看出亮色块的角被切成斜切多边形，
+    // 暗色块的角有缺口。软件场景图后端没有 MSAA 兜底，这个属性就是唯一的
+    // 抗锯齿来源（硬件后端默认走 MSAA，开不开差别小，但开着无害）。
+    //
+    // ⚠️ **只作用于本 item，不传递给子节点**。所以纯 Rectangle 的内联组件
+    // （色板方块一类）要自己再写一遍，别指望从基类继承。
+    antialiasing: true
+
     // 「减少动效」下统一退化为瞬时：所有动画挂载前先读 reduce
     Behavior on opacity {
         NumberAnimation { duration: ctl.reduce ? 0 : ctl.durFast; easing.type: Easing.OutCubic }

@@ -45,6 +45,26 @@ class QuickHost : public QQuickWidget {
     explicit QuickHost(QWidget* parent = nullptr, QQmlEngine* engine = nullptr);
     ~QuickHost() override;
 
+    // 超采样倍率（1 = 原生）。
+    //
+    // ⚠️ 为什么需要：Qt Quick 的 `Rectangle` 圆角走 QSGRoundedRectNode，是用**固定
+    // 细分的多边形**逼近圆弧；软件场景图后端没有 MSAA 去掩盖这些面，于是 3× 放大
+    // 能看出亮色块的角被切成斜切多边形。实测 `QQuickItem.antialiasing` 对此**无效**
+    // （深空主题出图字节数完全不变，49551 → 49551），`QT_SCALE_FACTOR=1` 也无效
+    // （1.25 来自 Windows 桌面 125% 缩放，不是 Qt 的 high-DPI 开关）。
+    //
+    // 两条路的取舍：
+    //   * 换成 Shape + PathQuad —— 确实更平滑（已实测对照），但每个控件多一个几何
+    //     节点，运行时成本实打实，而且会动到被页面依赖的 Card/Button/Tag。
+    //   * 抓图时超采样 —— 只影响取证路径，**运行时零成本**，且对新写的页面自动生效。
+    // 本仓取后者：把宿主放大 N 倍、QML 根 item 保持逻辑尺寸再整体 setScale(N)，
+    // 抓完用 SmoothTransformation 缩回逻辑尺寸。等于 2×2 SSAA，圆弧与文字都干净。
+    //
+    // 用法：构造后 SetSupersample(2)，尺寸要按 2× 设；GrabBlocking 时传 out_size
+    // 缩回逻辑尺寸。默认 1 = 产品真实路径，不做超采样。
+    void SetSupersample(int factor);
+    [[nodiscard]] int supersample() const noexcept { return supersample_; }
+
     // 加载一个 .qml 文件。失败返回 false，原因写入 errorString()。
     [[nodiscard]] bool Load(const QString& qml_file);
 
@@ -60,7 +80,10 @@ class QuickHost : public QQuickWidget {
 
     // 同步版：内部自己转事件循环等 ready。仅供 harness/启动前的单次取证使用，
     // 绝不要在 paintEvent 或 resizeEvent 里调用（会重入）。
-    [[nodiscard]] QImage GrabBlocking(int timeout_ms = 3000);
+    //
+    // out_size 非空时用 SmoothTransformation 缩放到该尺寸（超采样场景下缩回逻辑
+    // 尺寸）；为空则原样返回 supersample 倍的图。
+    [[nodiscard]] QImage GrabBlocking(int timeout_ms = 3000, const QSize& out_size = {});
 
     // 排干 UI 队列 + 事件 + **场景图帧**（harness 的 Pump 在 Widgets 侧，
     // QML 侧这一条是额外的：场景图有独立的 render loop）
@@ -75,6 +98,7 @@ class QuickHost : public QQuickWidget {
 
   private:
     std::unique_ptr<QQmlEngine> owned_engine_;
+    int supersample_ = 1;
 };
 
 } // namespace shine::qml

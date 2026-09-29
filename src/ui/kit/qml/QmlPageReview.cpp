@@ -49,6 +49,11 @@ struct State {
     std::vector<std::string> manifest;
 };
 
+// 取证超采样倍率。见 QuickHost::SetSupersample 的注释：
+// 软件场景图后端下 Rectangle 圆角是细分多边形，3× 放大可见斜切面；
+// 这里用 2×2 SSAA + SmoothTransformation 缩回来，只影响取证、运行时零成本。
+constexpr int kSupersample = 2;
+
 bool SplitFilter(std::string_view filter, std::string_view name) {
     const std::size_t comma = filter.find(',');
     if (comma == std::string_view::npos) {
@@ -88,7 +93,9 @@ void ShootPage(State* state, const PageEntry& page) {
     // 会在 setSource 里访问违例（0xC0000005，见 gaps 文档 五之二 ④），
     // 所以**一页一宿主、拍完即弃**，不要试图复用或提前建好下一批。
     auto* host = new QuickHost();
-    host->setFixedSize(page.w, page.h);
+    // 宿主按 N 倍尺寸建，QML 根 item 仍是逻辑尺寸（QuickHost 内部 setScale）
+    host->setFixedSize(page.w * kSupersample, page.h * kSupersample);
+    host->SetSupersample(kSupersample);
     host->show();
 
     if (!host->Load(res)) {
@@ -116,7 +123,7 @@ void ShootPage(State* state, const PageEntry& page) {
         theme::ThemeService::Switch(id, false);
         host->Pump(400);
 
-        const QImage shot = host->GrabBlocking(5000);
+        const QImage shot = host->GrabBlocking(5000, QSize{page.w, page.h});
         const std::string stem = "qml-" + std::string{page.name} + "-" + suffix;
         const std::filesystem::path path = state->dir / (stem + ".png");
         const bool ok = !shot.isNull() && shot.save(QString::fromStdString(util::PathToUtf8(path)),
