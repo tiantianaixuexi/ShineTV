@@ -1,8 +1,10 @@
 #include "ui/kit/data/Table.h"
 
+#include "ui/kit/theme/Theme.h"
 #include "util/Encoding.h"
 #include "util/File.h"
 
+#include <QAbstractItemView>
 #include <QContextMenuEvent>
 #include <QEvent>
 #include <QFile>
@@ -11,6 +13,7 @@
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QScrollBar>
 #include <QSortFilterProxyModel>
 #include <QStandardItemModel>
@@ -65,6 +68,65 @@ std::filesystem::path WidthsPath(const QString& tableId) {
 
 } // namespace
 
+// ================================================================ RowChrome
+
+namespace {
+// 最左侧可见列：选中条的落点。冻结列开启时它就是逻辑第 0 列；
+// 列被隐藏过时不能画在看不见的格子上。isColumnHidden 是 QTableView 的接口，
+// QAbstractItemView 没有，故这里按表视图取。
+int FirstVisualColumn(const QAbstractItemView* view) {
+    const auto* table = qobject_cast<const QTableView*>(view);
+    const QAbstractItemModel* m = view != nullptr ? view->model() : nullptr;
+    if (m == nullptr) {
+        return 0;
+    }
+    for (int c = 0; c < m->columnCount(); ++c) {
+        if (table == nullptr || !table->isColumnHidden(c)) {
+            return c;
+        }
+    }
+    return 0;
+}
+} // namespace
+
+void RowChrome::paint(QPainter* painter, const QStyleOptionViewItem& option,
+                      const QModelIndex& index) const {
+    QStyleOptionViewItem opt = option;
+    initStyleOption(&opt, index);
+
+    const bool selected = opt.state.testFlag(QStyle::State_Selected);
+    const bool hovered = index.isValid() && index.row() == hovered_;
+
+    // hover 底（ui.css:750 `tr:hover { background: var(--fill-hover) }`）。
+    // QSS 没有 ::row:hover，只能在代理里先铺一层再让基类画选中/文字。
+    // 选中时底色交给 QSS 的 item:selected，这里不重复铺，避免两套色打架。
+    if (hovered && !selected) {
+        painter->save();
+        painter->fillRect(opt.rect, widgets::TokenQColor(theme::Current().fillHover));
+        painter->restore();
+        // 强制非选中态，否则基类仍会按 State_MouseOver 走 hover 样式分支
+        opt.state &= ~QStyle::State_MouseOver;
+    }
+
+    // 基类负责文字 / 图标 / 已选中的底色（QSS 兑现）
+    QStyledItemDelegate::paint(painter, opt, index);
+
+    if (!selected) {
+        return;
+    }
+    // 选中行左侧 2px accent 条（ui.css:755 `box-shadow: inset 2px 0 0 var(--accent)`）。
+    // QSS 的 inset 阴影不存在，border-left 又会被 td 的下边线视觉吃掉，
+    // 故自绘。只画在**第一列**上：代理逐 cell 调用，每格都画会变成 N 根竖条。
+    const QAbstractItemView* view = qobject_cast<const QAbstractItemView*>(parent());
+    if (view == nullptr || index.column() != FirstVisualColumn(view)) {
+        return;
+    }
+    painter->save();
+    painter->fillRect(QRect(opt.rect.left(), opt.rect.top(), 2, opt.rect.height()),
+                      widgets::TokenQColor(theme::Current().accentPrimary));
+    painter->restore();
+}
+
 // ================================================================ DataTable
 
 DataTable::DataTable(const QString& tableId, QWidget* parent)
@@ -85,6 +147,21 @@ DataTable::DataTable(const QString& tableId, QWidget* parent)
     setWordWrap(false);
     setMouseTracking(true);
     // 框选（Rubber）由 SetSelectable 打开
+
+    // 行 hover 底 + 选中左条：QSS 拿不到 ::row:hover 与 inset 阴影（见 RowChrome）
+    chrome_ = std::make_unique<RowChrome>(this);
+    setItemDelegate(chrome_.get());
+
+    // 选中变化时要重画：左侧 accent 条是自绘的，不随选中态自动刷新
+    if (selectionModel() != nullptr) {
+        connect(selectionModel(), &QItemSelectionModel::selectionChanged, this,
+                [this](const QItemSelection&, const QItemSelection&) {
+                    viewport()->update();
+                    if (frozen_ != nullptr) {
+                        frozen_->viewport()->update();
+                    }
+                });
+    }
 }
 
 DataTable::~DataTable() { SaveWidths(); }
@@ -190,6 +267,10 @@ void DataTable::SetupFrozen() {
     }
     frozen_->setHorizontalScrollMode(ScrollPerPixel);
     frozen_->setSortingEnabled(false);
+    // 冻结窗格是独立的 QTableView，必须挂自己的代理，否则它那几列
+    // 既没有 hover 底也没有选中左条（主表的选中状态是共享的）
+    chromeFrozen_ = std::make_unique<RowChrome>(frozen_);
+    frozen_->setItemDelegate(chromeFrozen_.get());
     frozen_->viewport()->stackUnder(viewport());
     connect(verticalScrollBar(), &QScrollBar::valueChanged, frozen_->verticalScrollBar(),
             &QScrollBar::setValue);
@@ -221,6 +302,38 @@ void DataTable::SyncFrozen() {
 void DataTable::resizeEvent(QResizeEvent* ev) {
     QTableView::resizeEvent(ev);
     SyncFrozen();
+}
+
+void DataTable::mouseMoveEvent(QMouseEvent* ev) {
+    QTableView::mouseMoveEvent(ev);
+    // hover 底要跟着鼠标走（design: tr:hover）。indexAt 命中的是代理模型的行号，
+    // 代理模型与源模型行号一致，两个视图共用同一个号。
+    const QModelIndex idx = indexAt(ev->pos());
+    SetHoveredRow(idx.isValid() ? idx.row() : -1);
+}
+
+void DataTable::leaveEvent(QEvent* ev) {
+    QTableView::leaveEvent(ev);
+    SetHoveredRow(-1); // 指针移出表格，hover 底必须收掉（否则整行常亮）
+}
+
+void DataTable::SetHoveredRow(int row) {
+    if (hovered_row_ == row) {
+        return; // 同行移动不重绘
+    }
+    hovered_row_ = row;
+    if (chrome_ != nullptr) {
+        chrome_->SetHoveredRow(row);
+    }
+    if (chromeFrozen_ != nullptr) {
+        chromeFrozen_->SetHoveredRow(row);
+    }
+    if (model() != nullptr) {
+        viewport()->update(); // 只刷可见区域，万行表不整表重绘
+        if (frozen_ != nullptr) {
+            frozen_->viewport()->update();
+        }
+    }
 }
 
 std::vector<int> DataTable::SelectedRows() const {

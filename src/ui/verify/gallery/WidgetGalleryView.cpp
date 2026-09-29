@@ -65,6 +65,7 @@ using shine::widgets::Slider;
 using shine::widgets::Spinner;
 using shine::widgets::Splitter;
 using shine::widgets::State;
+using shine::widgets::StatusDot;
 using shine::widgets::Tabs;
 using shine::widgets::Tag;
 using shine::widgets::TextArea;
@@ -1009,6 +1010,26 @@ void BuildAll(WidgetGalleryView* self, QListWidget* nav, QStackedWidget* stack) 
         errPb->SetState("error");
         errPb->SetInlineText(QStringLiteral("失败 8/12"));
         AddRow(p, QStringLiteral("determinate(内嵌文字) / indeterminate / error"), HBox({det, indet, errPb}));
+        // .prog.thin（ui.css:452，4px）与 .prog.run（微光）——离屏抓图看不到动画相位，
+        // 但几何与 chunk 底色可验：thin 必须明显比 6px 细。
+        auto* thin = new ProgressBar();
+        thin->setValue(42);
+        thin->SetThin(true);
+        thin->setTextVisible(false);
+        auto* run = new ProgressBar();
+        run->setValue(78);
+        run->SetShimmer(true);
+        run->setTextVisible(false);
+        AddRow(p, QStringLiteral("thin（4px）/ run（微光）"), HBox({thin, run}));
+        // .dot 7px 正圆；.dot.run 脉冲（QTimer 自绘，「减少动效」下退化为静态点）
+        AddRow(p, QStringLiteral("StatusDot 常态 / run 脉冲"), HBox({
+            new StatusDot("ok"), new StatusDot("warn"), new StatusDot("danger"), new StatusDot("busy"),
+            [] {
+                auto* d = new StatusDot("ok");
+                d->SetPulse(true);
+                return static_cast<QWidget*>(d);
+            }(),
+        }));
         AddRow(p, QStringLiteral("Spinner sm / md / lg"), HBox({
             new Spinner(Spinner::Size::Sm), new Spinner(Spinner::Size::Md), new Spinner(Spinner::Size::Lg),
         }));
@@ -1121,6 +1142,9 @@ void BuildAll(WidgetGalleryView* self, QListWidget* nav, QStackedWidget* stack) 
         table->SetActionColumn(QStringLiteral("操作"), [](int) {});
         table->SetFixedColumns(1); // 首列冻结
         table->SetSelectable(shine::data::DataTable::Select::Rubber);
+        // 选中第 3 行：左条是 RowChrome 自绘的（QSS 无 inset 阴影），
+        // 不选中就截不到，选中态是这张图唯一的判据。hover 底需真实鼠标，离屏抓不到。
+        table->selectRow(2);
         table->setMinimumHeight(320);
         AddRow(p, QStringLiteral("40 行样例（同机制虚拟化支撑万行；SHINE_TABLE_BENCH=1 跑 10k 基准）"), table);
 

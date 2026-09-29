@@ -10,6 +10,7 @@
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/controls/WidgetCommon.h"
+#include "ui/layout/FlowLayout.h"
 #include "db/sqlite/SqliteDb.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
@@ -749,11 +750,13 @@ void AssetDetailView::RebuildTimeline() {
         return;
     }
 
-    auto* below = new QWidget(timeline_body_);
-    auto* row = new QHBoxLayout(below);
+    // .tl-below 是 flex-wrap（views.css:840）。用 kit 的 FlowContainer 当
+    // QHBoxLayout 的替身：放不下就折到下一行，不再靠「设 Minimum 让它溢出」。
+    // FlowContainer 自己把高度对齐到 heightForWidth，故底部不会被父容器裁掉。
+    auto* below = new util::FlowContainer(timeline_body_);
+    auto* row = below->Flow();
     row->setContentsMargins(0, theme::space::kSteps[1], 0, 0);
     row->setSpacing(8); // views.css:839 .tl-below gap
-
     const auto caption = [below](const QString& text) {
         auto* label = new QLabel(text, below);
         widgets::SetKind(label, "tlcap");
@@ -761,9 +764,9 @@ void AssetDetailView::RebuildTimeline() {
     };
 
     if (bound_shots_.empty()) {
-        row->addWidget(caption(QStringLiteral("绑定镜头 无")));
+        row->AddWidget(caption(QStringLiteral("绑定镜头 无")));
     } else {
-        row->addWidget(caption(QStringLiteral("绑定镜头")));
+        row->AddWidget(caption(QStringLiteral("绑定镜头")));
         for (const BoundShot& shot : bound_shots_) {
             // 复刻 kit::widgets::Chip（不得在页面里新造第二份药丸）。
             // 文案压到「第1章·镜1」：设计稿的 .tl-below chip 是 S01/S02 这种短码，
@@ -776,9 +779,8 @@ void AssetDetailView::RebuildTimeline() {
             chip->setToolTip(shot.image_rel.isEmpty()
                                  ? QStringLiteral("镜头 #%1 · 尚未出图").arg(shot.id)
                                  : QStringLiteral("镜头 #%1 · %2").arg(shot.id).arg(shot.image_rel));
-            // webui .tl-below 是 flex-wrap；Qt 没有流式布局，行放不下时 QHBoxLayout
-            // 会压缩子控件把 chip 里的字截断（评审抓图实测过）。横向策略设为 Minimum，
-            // 即「sizeHint 就是下限、只许变宽」，让它宁可在窄栏溢出也不截字。
+            // 换行由 FlowLayout 负责，chip 不再需要「设 Minimum 宁溢出」的兜底；
+            // 但仍保留 Minimum 策略：断行位置按 sizeHint 判定，压到 sizeHint 以下会截字。
             chip->setSizePolicy(QSizePolicy::Minimum, chip->sizePolicy().verticalPolicy());
             connect(chip, &widgets::Chip::clicked, this, [this, shot] {
                 widgets::Toast::Show(
@@ -793,14 +795,18 @@ void AssetDetailView::RebuildTimeline() {
                               .arg(shot.image_rel),
                     widgets::Toast::Tone::Info);
             });
-            row->addWidget(chip);
+            row->AddWidget(chip);
         }
     }
 
-    row->addSpacing(theme::space::kXs); // webui Assets.jsx:99 的 marginLeft 10
-    row->addWidget(caption(QStringLiteral("参考图")));
+    // webui Assets.jsx:99 的 marginLeft 10：原实现是 addSpacing(10)，FlowLayout 只有
+    // 统一间距，用一个定宽空隙块表达同一段留白（放在 chip 组与「参考图」之间）。
+    auto* gap10 = new QWidget(below);
+    gap10->setFixedWidth(theme::space::kXs);
+    row->AddWidget(gap10);
+    row->AddWidget(caption(QStringLiteral("参考图")));
     if (ref_images_.empty()) {
-        row->addWidget(caption(QStringLiteral("无")));
+        row->AddWidget(caption(QStringLiteral("无")));
     } else {
         for (const QString& rel : ref_images_) {
             auto* thumb = new QLabel(below);
@@ -818,10 +824,10 @@ void AssetDetailView::RebuildTimeline() {
             } else {
                 thumb->setText(QStringLiteral("▧"));
             }
-            row->addWidget(thumb);
+            row->AddWidget(thumb);
         }
     }
-    row->addStretch(1);
+    row->AddStretch(); // 行尾弹性留白，把内容推到左侧（等价原 addStretch(1)）
     timeline_layout_->addWidget(below);
 }
 

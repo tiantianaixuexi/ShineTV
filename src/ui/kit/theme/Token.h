@@ -108,6 +108,15 @@ inline constexpr int kXxl = 40; // 超大间距：页面级留白（32 与 48 �
 
 namespace font {
 inline constexpr std::string_view kFamily = "Microsoft YaHei UI, Segoe UI, sans-serif"; // font.family
+// QSS 用字面族串（tokens.css :root 的 --font-ui 原样抄）。
+// 为什么不直接用上面的 kFamily：那条是给 C++ 侧 QFont 用的简写，缺 PingFang SC /
+// system-ui，且族序与设计稿不同；QSS 的 font-family 要按设计稿逐族回退。
+inline constexpr std::string_view kFamilyQss =
+    "\"Segoe UI\", \"Microsoft YaHei UI\", \"PingFang SC\", system-ui, -apple-system, sans-serif";
+// tokens.css:195 [data-theme="inkwash"] 覆盖的 --font-ui（衬线族）。
+// 只水墨一套主题覆盖；其余四套沿用 :root 的 --font-ui。
+inline constexpr std::string_view kFamilyQssSerif =
+    "\"Segoe UI\", \"Noto Serif SC\", \"Source Han Serif SC\", \"SimSun\", serif";
 inline constexpr std::string_view kMonoFamily =
     "Cascadia Code, JetBrains Mono, Consolas, monospace"; // --font-mono
 inline constexpr std::array<int, 6> kSizes = {12, 13, 14, 16, 20, 28}; // font.size.xs/sm/md/lg/xl/display

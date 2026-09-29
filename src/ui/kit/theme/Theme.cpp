@@ -50,6 +50,15 @@ constexpr std::array<ThemeMeta, kAllThemes.size()> kThemes = {{
     {ThemeId::PolarNight, "polarnight", "极夜", "极夜"},
 }};
 
+// 每主题 UI 字体族（webui tokens.css 的 --font-ui）。下标与 kAllThemes 同序。
+// 五套主题里只有水墨覆盖了 --font-ui（衬线族，tokens.css:195），其余四套沿用
+// :root 的 --font-ui（tokens.css:30）。**刻意不进 ColorToken**：色值表的字段序
+// 即 QSS 的 %N 序号与 JSON 键序，插入非颜色字段会整体错位。
+constexpr std::array<std::string_view, kAllThemes.size()> kFontFamilies = {
+    font::kFamilyQss,     font::kFamilyQss, font::kFamilyQss,
+    font::kFamilyQssSerif, font::kFamilyQss,
+};
+
 std::array<ColorToken, kAllThemes.size()> g_themes{};
 std::array<bool, kAllThemes.size()> g_loaded{};
 ThemeId g_current = ThemeId::DeepSpace;
@@ -139,6 +148,13 @@ bool LoadThemesFrom(const std::filesystem::path& dir) {
 const ColorToken& ThemeColorsOf(ThemeId id) { return g_themes[IndexOf(id)]; }
 ThemeId CurrentThemeId() noexcept { return g_current; }
 void SetCurrentTheme(ThemeId id) noexcept { g_current = id; }
+
+std::string_view ThemeFontFamilyOf(ThemeId id) { return kFontFamilies[IndexOf(id)]; }
+
+std::string_view CurrentFontFamily() {
+    // 自定义主题从内置颜色派生，没有字体概念 —— 沿用当前内置主题的族
+    return kFontFamilies[IndexOf(g_current)];
+}
 const ColorToken& Current() {
     if (g_customActive >= 0) {
         return g_customs[static_cast<std::size_t>(g_customActive)].second;

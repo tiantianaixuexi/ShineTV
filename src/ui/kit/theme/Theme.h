@@ -33,6 +33,16 @@ inline constexpr std::array<ThemeId, 5> kAllThemes = {
 void SetCurrentTheme(ThemeId id) noexcept;
 [[nodiscard]] const ColorToken& Current();
 
+// —— 每主题字体族（webui tokens.css 的 --font-ui）——
+// ⚠️ 为什么字体**不进 ColorToken**：ColorToken 的字段顺序就是 QSS 的 %N 占位符顺序，
+// 也是 ColorTokenToJson/FromJson 的键序（两者必须逐位一致，插入即错位）。
+// 字体是**字符串**不是色值，硬塞进去会让「每个 token 都被 QSS 消费」的自检判据
+// 失真，也会让 5 套主题 JSON 的 31 个色值契约多一个非颜色字段。
+// 故另立一张按下标寻址的小表，与 kAllThemes 同序；自定义主题没有字体覆盖，
+// 回落 :root 的 --font-ui。序列化契约与 %N 顺序因此零改动。
+[[nodiscard]] std::string_view ThemeFontFamilyOf(ThemeId id);
+[[nodiscard]] std::string_view CurrentFontFamily();
+
 // ColorToken → kColorTokenCount 值数组（序 = kColorTokenNames；QssBuilder 的 %N 占位用）
 [[nodiscard]] std::array<std::uint32_t, kColorTokenCount> TokenValues(const ColorToken& c);
 

@@ -105,7 +105,8 @@ void ThemeService::SetReduceMotionPersisted(bool on) {
 const std::string& ThemeService::QssFor(ThemeId id) {
     const std::size_t i = IndexOf(id);
     if (!g_qssBuilt[i]) {
-        g_qssCache[i] = QssBuilder::Build(ThemeColorsOf(id));
+        // 字体族跟着主题一起下发（tokens.css 的 --font-ui；水墨是衬线族）
+        g_qssCache[i] = QssBuilder::Build(ThemeColorsOf(id), ThemeFontFamilyOf(id));
         g_qssBuilt[i] = true;
     }
     return g_qssCache[i];
