@@ -19,6 +19,7 @@
 #include "util/Encoding.h"
 #include "util/File.h"
 #include "util/Random.h"
+#include "visual/ReferenceLibrary.h"
 #include <QColor>
 
 #include <QApplication>
@@ -58,6 +59,8 @@ struct ReviewState {
         "assets-grid", "assets-nav-tree", "assets-inspector",
         "assets-empty", "assets-card-states",
         "sheet-full", "sheet-missing-layers",
+        // 高视口全页：覆盖折叠线以下的详情区（参考库 / 依赖策略两块）
+        "assets-detail-tall",
         "assets-mixed-theme", "toast-shadow"};
     std::vector<std::string> manifest;
     // 迁移后无等价实现的取证项：显式记账，不进 expected，也就不会拉低 overall。
@@ -274,6 +277,23 @@ shine::util::EnsureDir(root / "db");
         }
     }
 
+    // 项目参考库：给 full_entity 绑一张真参考图。
+    // 不铺这张图，详情区下半部分的参考库面板只会显示「0 张」空态 ——
+    // 那等于**没取证**：面板的列表 / 标记 / 绑定一行都不会被渲染到。
+    const fs::path ref_src = root / "assets" / "refs" / "role-ref.png";
+    if (!SaveImage(ref_src, QColor(198, 168, 138))) {
+        return false;
+    }
+    shine::visual::ReferenceLibrary reflib(root);
+    if (auto loaded = reflib.Load(); !loaded) {
+        return false;
+    }
+    if (auto imported = reflib.Import(ref_src, st->full_entity, *full_asset,
+                                      {std::string("正脸"), std::string("灰风衣")});
+        !imported) {
+        return false;
+    }
+
     const fs::path gallery = root / "gallery";
     fs::create_directories(gallery);
     for (int i = 0; i < 8; ++i) {
@@ -367,6 +387,21 @@ void RunReview(ReviewState* st) {
     st->assets->SelectEntity(st->missing_entity);
     review::Pump();
     review::Grab(st->assets, st->dir, "sheet-missing-layers", st->manifest);
+
+    // 详情区**下半部分**（④ 项目参考库 / ⑤ 依赖等待与降级策略）默认落在
+    // 980px 视口的折叠线以下 —— 上面那几张永远拍不到它们。缺了这一张，
+    // 这两块就等于**没有取证**，而取证表里「没这一行」会被读成「跑了没问题」。
+    //
+    // 做法：临时把评审窗口拉高抓一张全页，抓完立刻复原，免得影响后面的取证。
+    // 不用「滚动到底再抓」是因为滚动位置会跟着实体选择变，写进 expected 的
+    // 判据必须是确定的一帧。
+    st->assets->SelectEntity(st->full_entity);
+    st->assets->WaitVisualsReady();
+    host->resize(1600, 2400);
+    review::Pump();
+    review::Grab(st->assets, st->dir, "assets-detail-tall", st->manifest);
+    host->resize(1600, 980);
+    review::Pump();
 
     // ⚠️ 以下几块在 QML 迁移后**没有等价实现**，显式记为未覆盖，
     // 而不是悄悄少拍一张 —— 取证表里「没这一行」会被读成「跑了没问题」。

@@ -150,6 +150,9 @@ S7/S8（全局图库三来源扫描 / 图片用量跳转）**显式记 NOT-COVER
 至今未迁 QML，`GlobalGalleryProbe()` 固定返回 `gallery=unavailable`，
 照原样跑只会对着桩报假绿。跑场景：`scripts/run_p05.ps1`。
 
+参考库与策略面板两块落在 980px 视口的折叠线以下，由 `P05Review` 的
+`assets-detail-tall`（1600×2400 全页）覆盖，该图在 `expected` 里、缺一张即 FAIL。
+
 ## FlowCanvas
 
 `kit::FlowCanvas` 是 Qt `QGraphicsView`，只接收 `FlowCanvasNode`/`FlowCanvasLink` DTO。它支持选择、删除、复制、全选、缩放、适配视图、连线和内嵌原生编辑器；出图与出片工作区共用这一实现。
