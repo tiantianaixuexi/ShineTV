@@ -36,6 +36,8 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+#include <string>
 #include <utility>
 
 namespace {
@@ -126,7 +128,87 @@ bool RubricVerdictFail(const std::vector<RubricScore>& scores, std::string_view 
     return fail;
 }
 
+const char* ReviewVerdictText(ReviewVerdict v) {
+    switch (v) {
+        case ReviewVerdict::Pass:
+            return "通过";
+        case ReviewVerdict::Conditional:
+            return "有条件通过";
+        case ReviewVerdict::Fail:
+            break;
+    }
+    return "不通过";
+}
+
 namespace {
+
+// widgets::Tag 只暴露只读 Text()，改文案 / 色调走「内部 QLabel + 动态属性 +
+// repolish」，与 kit 里 Chip 的 tone 用法同构，不动 kit 本身
+// （同 src/ui/pages/storyboard/StoryboardWorkspace.cpp 的 SetTagText）。
+void SetTagText(widgets::Tag* tag, const QString& text, const char* tone) {
+    if (tag == nullptr) {
+        return;
+    }
+    if (auto* label = tag->findChild<QLabel*>(); label != nullptr) {
+        label->setText(text);
+    }
+    tag->setProperty("tone", QString::fromLatin1(tone));
+    widgets::Repolish(tag);
+}
+
+// 遗留 issue 的最高级别（空串 = 无 issue）。
+// 字段名两处都读：设计稿 mock.js:527-529 用 `level`，真实 critic 产物与
+// P04ReviewChecks 的用例用 `severity`（`06` §2.4）。取三档里最高的一档。
+[[nodiscard]] QString MaxIssueLevel(std::string_view criticJson) {
+    constexpr const char* kRanks[3] = {"low", "medium", "high"}; // 升序
+    const auto doc = util::json::ParseDoc(criticJson);
+    yyjson_val* issues = doc ? util::json::GetArr(doc.root(), "issues") : nullptr;
+    if (issues == nullptr) {
+        return {};
+    }
+    int best = -1;
+    for (std::size_t i = 0; i < yyjson_arr_size(issues); ++i) {
+        yyjson_val* item = yyjson_arr_get(issues, i);
+        std::string_view sev = util::json::GetStr(item, "severity");
+        if (sev.empty()) {
+            sev = util::json::GetStr(item, "level");
+        }
+        for (int r = 0; r < 3; ++r) {
+            if (sev == kRanks[r]) {
+                best = std::max(best, r);
+            }
+        }
+    }
+    return best < 0 ? QString{} : QString::fromLatin1(kRanks[best]);
+}
+
+// rubric 8 维的算术平均 = 汇总进度条与 rubric Tag 的取值。
+// 设计稿 webui/src/data/mock.js:246-251 的 8 个分（86/78/91/84/72/95/80/88）
+// 均值 84.25，mock.js:524 的 `rubric.average` 写作 84.3 —— 即保留一位小数。
+[[nodiscard]] double RubricAverage(const std::vector<RubricScore>& scores) {
+    if (scores.empty()) {
+        return 0.0;
+    }
+    double sum = 0.0;
+    for (const RubricScore& s : scores) {
+        sum += s.score;
+    }
+    return sum / static_cast<double>(scores.size());
+}
+
+// 三态判定：FAIL 优先（rubric 低于阈值 / high issue / 机器 high 失败，
+// 判据见 RubricVerdictFail 与 `06` §2.4）；没到 FAIL 但还留着 issue 或机器
+// 校验有非 high 的失败项 → 中态「有条件通过」；两处都干净才是「通过」。
+// 设计稿给的就是中态那一例（mock.js:516-533：机器 25/26 提示级不阻塞 +
+// 留一条 medium issue）。
+[[nodiscard]] ReviewVerdict DeriveVerdict(bool fail, const QString& issueLevel,
+                                          int machineFailCount) {
+    if (fail) {
+        return ReviewVerdict::Fail;
+    }
+    return (!issueLevel.isEmpty() || machineFailCount > 0) ? ReviewVerdict::Conditional
+                                                           : ReviewVerdict::Pass;
+}
 
 // —— rubric 条形 + 阈值刻度线（token 派生，零内联）——
 // webui views.css:615 `.rubric .r-row { grid-template-columns: 76px 1fr 44px; gap:12px }`：
@@ -286,43 +368,87 @@ ReviewView::~ReviewView() {
 }
 
 QWidget* ReviewView::BuildHead() {
+    // 汇总区结构照设计稿 webui Novel.jsx:208-218：卡片体是 `col gap-3`
+    // —— 上面一行 `row gap-3`（结论 + 三个 Tag + 修复轮 + 动作），
+    // 下面一条汇总进度条。gap-3 = --sp-3 = 12px（tokens.css:18）→
+    // theme::space::kSteps[4]。
     auto* head = new QWidget(this);
-    auto* hl = new QHBoxLayout(head);
+    auto* hv = new QVBoxLayout(head);
+    hv->setContentsMargins(0, 0, 0, 0);
+    hv->setSpacing(theme::space::kSteps[4]); // 12px：.col gap-3
+
+    auto* row = new QWidget(head);
+    auto* hl = new QHBoxLayout(row);
     hl->setContentsMargins(0, 0, 0, 0);
-    hl->setSpacing(theme::space::kSteps[1]);
+    hl->setSpacing(theme::space::kSteps[4]); // 12px：.row gap-3
 
-    verdict_ = new QLabel(QStringLiteral("结论: —"), head);
+    // Novel.jsx:210 `<span className="strong" style={{ fontSize: 15 }}>结论：<span
+    // style={{ color: 'var(--warn)' }}>有条件通过</span></span>`：
+    // 前缀「结论：」只有 .strong（base.css:122 = font-weight 600）+ 15px，
+    // 不改字色；tone 只落在右侧那个状态词上。15 是整数 px，不用取整。
+    verdict_ = new QLabel(QStringLiteral("结论："), row);
     QFont vf = verdict_->font();
-    vf.setBold(true);
+    vf.setPixelSize(15); // Novel.jsx:210 内联 fontSize 15
+    vf.setWeight(QFont::DemiBold); // base.css:122 .strong = 600
     verdict_->setFont(vf);
-    widgets::SetTextColor(verdict_, theme::Current().textSecondary);
+    verdict_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    widgets::SetTextColor(verdict_, theme::Current().textPrimary);
 
-    round_ = new QLabel(QStringLiteral("修复轮 0/3"), head);
+    verdict_word_ = new QLabel(QString::fromLatin1(ReviewVerdictText(verdict_state_)), row);
+    verdict_word_->setFont(vf);
+    verdict_word_->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    widgets::SetTextColor(verdict_word_, theme::Current().statusDanger);
+
+    // 三个汇总 Tag（Novel.jsx:211-213，tone 逐个照抄）：
+    //   rubric → info / 机器 → ok / issue → warn。
+    // Tag 自身的几何/配色由 kit + QSS 落地（QssBuilder.cpp:368-371 的
+    // .tag h20 p0 8 r-pill f11.5→11 w600 + 底 tone 12% / 边 tone 35%）。
+    // 「还没评审」时用 idle（QssBuilder.cpp:386 的 .tag.idle 中性档）。
+    rubric_tag_ = new widgets::Tag(QStringLiteral("rubric —"), "idle", false, row);
+    machine_tag_ = new widgets::Tag(QStringLiteral("机器 0/0"), "idle", false, row);
+    issue_tag_ = new widgets::Tag(QStringLiteral("无 issue"), "idle", false, row);
+
+    round_ = new QLabel(QStringLiteral("修复轮 0/3"), row);
     widgets::SetTextColor(round_, theme::Current().textSecondary);
 
     repair_btn_ = new widgets::Button(QStringLiteral("进入修复轮"), widgets::Button::Variant::Primary,
-                                      widgets::Button::Size::Sm, head);
+                                      widgets::Button::Size::Sm, row);
     repair_btn_->setToolTip(QStringLiteral("按 FAIL 项重评 + 最小修改（累计 ≤3 轮；T12 FAIL → T13）"));
     repair_btn_->setEnabled(false);
     connect(repair_btn_, &widgets::Button::clicked, this, [this] { Repair(); });
 
     ignore_btn_ = new widgets::Button(QStringLiteral("忽略并继续"),
                                       widgets::Button::Variant::Ghost,
-                                      widgets::Button::Size::Sm, head);
+                                      widgets::Button::Size::Sm, row);
     ignore_btn_->setToolTip(QStringLiteral("人工确认放行本次评审（只改 UI 态，不动产物与账）"));
     ignore_btn_->setEnabled(false);
     connect(ignore_btn_, &widgets::Button::clicked, this, [this] { IgnoreAndContinue(); });
 
     hint_ = new QLabel(QStringLiteral("选一章后自动读 `work/chNNN/10_review.json` 并跑 K01–K29。"),
-                       head);
+                       row);
     hint_->setWordWrap(true);
     widgets::SetTextColor(hint_, theme::Current().textSecondary);
 
     hl->addWidget(verdict_);
+    hl->addWidget(verdict_word_);
+    hl->addWidget(rubric_tag_);
+    hl->addWidget(machine_tag_);
+    hl->addWidget(issue_tag_);
     hl->addWidget(round_);
     hl->addWidget(repair_btn_);
     hl->addWidget(ignore_btn_);
     hl->addWidget(hint_, 1);
+    hv->addWidget(row);
+
+    // Novel.jsx:217 `<Progress value={84.3} />` —— 非 thin 的 .prog：
+    // h6 / r-pill / 底 fill-muted / 条 accent（ui.css:430-443）。几何走
+    // kit ProgressBar + QSS（QssBuilder.cpp:547-550），这里只给值。
+    // 设计稿的 .prog 内无文字（UI.jsx:145-151 只渲染一条 <i>），故关掉百分比。
+    summary_bar_ = new widgets::ProgressBar(head);
+    summary_bar_->setTextVisible(false);
+    summary_bar_->setValue(0);
+    summary_bar_->setToolTip(QStringLiteral("rubric 8 维均值（设计稿 rubric.average）"));
+    hv->addWidget(summary_bar_);
     return head;
 }
 
@@ -409,6 +535,12 @@ void ReviewView::Refresh() {
     verdict_fail_ = rubricFail || machine_high_fail_ > 0;
     verdict_text_ = verdict_fail_ ? QStringLiteral("FAIL") : QStringLiteral("PASS");
     verdict_why_ = why;
+    // 三态判定（中态补齐）：FAIL 判据一字未改，在其之上按遗留 issue 与机器
+    // 校验的非 high 失败项落「有条件通过」（DeriveVerdict，词表见
+    // ReviewVerdictText）。汇总 Tag / 进度条都取自这四个值。
+    issue_level_ = MaxIssueLevel(critic_json_);
+    verdict_state_ = DeriveVerdict(verdict_fail_, issue_level_, fail_count_);
+    rubric_avg_ = RubricAverage(scores_);
 
     // —— 刷新 UI ——
     auto* rows = new QVBoxLayout(rubric_rows_);
@@ -436,12 +568,48 @@ void ReviewView::Refresh() {
     }
     check_table_->SetRows(std::move(table));
 
-    verdict_->setText(QStringLiteral("结论: %1（rubric %2 · 机器 %3/%4）")
-                          .arg(verdict_text_,
-                               rubricFail ? QStringLiteral("FAIL") : QStringLiteral("PASS"))
-                          .arg(ran_count_ - fail_count_)
-                          .arg(ran_count_));
-    widgets::SetTextColor(verdict_, verdict_fail_ ? theme::Current().statusDanger : theme::Current().statusOk);
+    // —— 汇总区（webui Novel.jsx:210-217）——
+    const bool noReview = critic_json_.empty();
+    // 状态词上色：通过=ok / 有条件通过=warn（Novel.jsx:210 的 --warn）/
+    // 不通过=danger。还没评审时是「—」+ 中性字色。
+    const std::uint32_t stateToken = verdict_state_ == ReviewVerdict::Pass
+                                         ? theme::Current().statusOk
+                                         : (verdict_state_ == ReviewVerdict::Conditional
+                                                ? theme::Current().statusWarn
+                                                : theme::Current().statusDanger);
+    verdict_word_->setText(noReview ? QStringLiteral("—")
+                                    : QString::fromLatin1(ReviewVerdictText(verdict_state_)));
+    widgets::SetTextColor(verdict_word_, noReview ? theme::Current().textMuted : stateToken);
+
+    // rubric Tag（Novel.jsx:211 `tone="info"` · "rubric 84.3"）：均值保留一位
+    // 小数 —— mock.js:524 的 average 就是这么写的（8 维均值 84.25 → 84.3）。
+    if (noReview) {
+        SetTagText(rubric_tag_, QStringLiteral("rubric —"), "idle");
+    } else {
+        SetTagText(rubric_tag_, QStringLiteral("rubric %1").arg(rubric_avg_, 0, 'f', 1), "info");
+    }
+    // 机器 Tag（Novel.jsx:212 `tone="ok"` · "机器 25/26"）：设计稿那一例缺的
+    // 1 条是「提示级，不阻塞」（mock.js:526），所以仍给 ok；只有真判 FAIL
+    // （含机器 high 失败）才转 danger。
+    SetTagText(machine_tag_, QStringLiteral("机器 %1/%2")
+                                  .arg(ran_count_ - fail_count_)
+                                  .arg(ran_count_),
+               noReview ? "idle" : (verdict_fail_ ? "danger" : "ok"));
+    // issue Tag（Novel.jsx:213 `tone="warn"` · "存在 medium issue"）：文案跟着
+    // 遗留 issue 的最高级别走；一条不留时是「无 issue / ok」。
+    if (noReview) {
+        SetTagText(issue_tag_, QStringLiteral("无 issue"), "idle");
+    } else if (issue_level_.isEmpty()) {
+        SetTagText(issue_tag_, QStringLiteral("无 issue"), "ok");
+    } else {
+        SetTagText(issue_tag_, QStringLiteral("存在 %1 issue").arg(issue_level_),
+                   issue_level_ == QStringLiteral("high") ? "danger" : "warn");
+    }
+
+    // 汇总进度条（Novel.jsx:217 `value={84.3}`）：QProgressBar 取 int，个位取整。
+    summary_bar_->setValue(std::clamp(static_cast<int>(std::lround(rubric_avg_)), 0, 100));
+    summary_bar_->setVisible(!noReview);
+
     round_->setText(QStringLiteral("修复轮 %1/%2%3")
                         .arg(revisions_used_)
                         .arg(max_revisions_)
@@ -455,7 +623,11 @@ void ReviewView::Refresh() {
                     .arg(revisions_used_)
                     .arg(max_revisions_),
                 theme::Current().statusWarn);
-    } else if (!critic_json_.empty()) {
+    } else if (verdict_state_ == ReviewVerdict::Conditional) {
+        SetHint(QStringLiteral("%1 —— 结论：有条件通过；不阻塞放行，可进修复轮消掉")
+                    .arg(why),
+                theme::Current().statusWarn);
+    } else if (!noReview) {
         SetHint(QStringLiteral("rubric 8 维达阈值、无 high issue（`06` §2.4）"), theme::Current().statusOk);
     }
 }
@@ -513,8 +685,8 @@ void ReviewView::SetHint(const QString& text, std::uint32_t token) {
 void ReviewView::IgnoreAndContinue() {
     ignored_ = true;
     verdict_text_ = QStringLiteral("PASS（人工确认）");
-    verdict_->setText(QStringLiteral("结论: PASS（人工确认放行）"));
-    widgets::SetTextColor(verdict_, theme::Current().statusWarn);
+    verdict_word_->setText(QStringLiteral("通过（人工确认放行）"));
+    widgets::SetTextColor(verdict_word_, theme::Current().statusWarn);
     round_->setText(QStringLiteral("修复轮 %1/%2（已人工确认放行）").arg(revisions_used_).arg(max_revisions_));
     SetHint(QStringLiteral("已人工确认放行（不动产物与账；`03` §2.7 的审计由门禁侧记）"),
             theme::Current().textSecondary);
@@ -585,6 +757,14 @@ QString ReviewView::RubricProbe() const {
     QString out = QStringLiteral("rubric verdict=%1 dims=%2\n")
                       .arg(verdict_fail_ ? QStringLiteral("FAIL") : QStringLiteral("PASS"))
                       .arg(scores_.size());
+    // 汇总区三态 + 三个 Tag / 进度条的取值（`verdict=` 那一行保持二态不变，
+    // P04ReviewChecks.cpp:139-141 按字面量断言 verdict=PASS / verdict=FAIL）。
+    out += QStringLiteral("rubric verdict3=%1 rubric-avg=%2 issue=%3 machine=%4/%5\n")
+               .arg(QString::fromLatin1(ReviewVerdictText(verdict_state_)),
+                    QString::number(rubric_avg_, 'f', 1))
+               .arg(issue_level_.isEmpty() ? QStringLiteral("none") : issue_level_)
+               .arg(ran_count_ - fail_count_)
+               .arg(ran_count_);
     for (const RubricScore& s : scores_) {
         out += QStringLiteral("dim %1|%2|%3|%4|below=%5\n")
                    .arg(QString::fromStdString(s.key), s.name)

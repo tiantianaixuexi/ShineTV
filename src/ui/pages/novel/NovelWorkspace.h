@@ -131,6 +131,8 @@ class NovelWorkspace : public QWidget {
     void RebuildTree();
     void RebuildCards();
     void ShowCurrent();
+    // 「本章产物」三行：按当前章刷 tooltip 里的真实产物路径
+    void RefreshArtifacts();
     void SyncPage(int page);       // 只给**可见页**同步当前章（S1 选章耗时判据）
     void SwitchCenter(int index); // 模式行切换：0=[章节] 1=[设定]
 
@@ -156,6 +158,7 @@ class NovelWorkspace : public QWidget {
     DraftView* draft_ = nullptr; // 正文草稿（P04-S6 DraftView：流式/中断/重试/哈希）
     data::KeyValue* props_ = nullptr;
     QWidget* inspector_body_ = nullptr;
+    std::vector<QWidget*> artifact_rows_; // 「本章产物」三行（同序 kChapterArtifacts），只用来刷 tooltip
     // 借给外壳左侧栏的导航容器（章节树 + 章节卡片）；外壳收回时重新挂回 nav_box_
     QWidget* nav_host_ = nullptr;
     QWidget* nav_box_ = nullptr;

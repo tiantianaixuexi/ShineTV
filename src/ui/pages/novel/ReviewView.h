@@ -31,6 +31,8 @@ class Database;
 }
 namespace shine::widgets {
 class Button;
+class ProgressBar;
+class Tag;
 } // namespace shine::widgets
 
 namespace shine::app {
@@ -57,6 +59,16 @@ struct RubricScore {
 // 总判定：任一维 < 阈值 或 issues 含 high → FAIL（`06` §2.4 公式）
 [[nodiscard]] bool RubricVerdictFail(const std::vector<RubricScore>& scores,
                                      std::string_view criticJson, QString* why);
+
+// —— 汇总区的三态判定 ——
+// 词表取自设计稿 webui/src/data/mock.js:520 的 `review_003.json`
+// （`verdict: '有条件通过'`）：rubric 均值 84.3 ≥ 阈值 75、机器 25/26
+// （mock.js:526 注明缺的那条是「提示级，不阻塞」），但 issues 里留着一条
+// medium（mock.js:528）。即：没到 FAIL，但也还没到干净通过 —— 这就是原来
+// 二态判定漏掉的中态。FAIL / Pass 的判据仍由 RubricVerdictFail 给出。
+enum class ReviewVerdict { Pass, Conditional, Fail };
+// 三态词表（判定区直接显示的中文结论）
+[[nodiscard]] const char* ReviewVerdictText(ReviewVerdict v);
 
 class ReviewView : public QWidget {
   public:
@@ -127,16 +139,26 @@ class ReviewView : public QWidget {
 
     // 控件
     QLabel* verdict_ = nullptr;
+    QLabel* verdict_word_ = nullptr; // 「结论：」右侧那个按 tone 上色的状态词
     QLabel* hint_ = nullptr;
     QLabel* round_ = nullptr;
     widgets::Button* repair_btn_ = nullptr;
     widgets::Button* ignore_btn_ = nullptr;
+    // 汇总区三 Tag（webui Novel.jsx:211-213：rubric / 机器 / issue）
+    widgets::Tag* rubric_tag_ = nullptr;
+    widgets::Tag* machine_tag_ = nullptr;
+    widgets::Tag* issue_tag_ = nullptr;
+    widgets::ProgressBar* summary_bar_ = nullptr; // 汇总进度条（webui Novel.jsx:217）
     QScrollArea* rubric_scroll_ = nullptr;
     QStackedWidget* rubric_stack_ = nullptr;
     QWidget* rubric_rows_ = nullptr;
     QScrollArea* check_scroll_ = nullptr;
     data::DataTable* check_table_ = nullptr;
     int machine_high_fail_ = 0; // 机器校验 high 失败数（并入总判定）
+    // 汇总区数据（三态判定 + 三个 Tag / 进度条的取值来源）
+    ReviewVerdict verdict_state_ = ReviewVerdict::Fail;
+    double rubric_avg_ = 0.0;  // rubric 8 维均值（设计稿 rubric.average）
+    QString issue_level_;      // 遗留 issue 的最高级别（high/medium/low，空 = 无）
 };
 
 } // namespace shine::app

@@ -16,7 +16,9 @@
 #include "ui/kit/controls/Controls.h"
 #include "novel/NovelDb.h"
 #include "novel/NovelGraph.h"
+#include "novel/NovelStageLedger.h" // StageFileName：`03` §2.7 产物文件名的单一权威
 #include "project/Project.h"
+#include "util/Encoding.h" // PathToUtf8：路径 → UI 文本
 
 #include <QElapsedTimer>
 #include <QHBoxLayout>
@@ -31,6 +33,7 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <iterator> // std::size（kChapterArtifacts 的行数）
 #include <utility>
 
 namespace shine::app {
@@ -67,6 +70,46 @@ namespace {
 // 阅读测量线：webui .chap-summary（views.css:598）与 .draft（:572）同取 720px，
 // 正文与摘要因此始终排在同一条竖线上。DraftView.cpp 里另有一份同名常量。
 constexpr int kMeasureMaxW = 720;
+
+// webui `.mono { font-family:var(--font-mono); font-size:12px }`（base.css:114-117）。
+// kit 未提供字体工厂，这里按 theme::font::kMonoFamily 的族序逐档回退（与 StateDiffView
+// 的同名辅助同口径）。
+[[nodiscard]] QFont MonoFont(const QFont& base, int pixelSize) {
+    QFont f = base;
+    f.setFamilies({QString::fromLatin1("Cascadia Code"), QString::fromLatin1("JetBrains Mono"),
+                    QString::fromLatin1("Consolas"), QString::fromLatin1("monospace")});
+    f.setPixelSize(pixelSize);
+    return f;
+}
+
+// 本章产物一行（webui Novel.jsx:471 的 `[[f, t, icon]]` 三元组）。
+// 文件名**不写死**：一律问 novelcore::StageFileName 要（`03` §2.7 的单一权威）。
+struct ChapterArtifact {
+    const char* code;  // T 段号（设计稿「大纲 · T3」那一列）
+    const char* label; // 阶段中文名
+    const char* stage; // §2.2 阶段代码 → StageFileName；空串 = 库内字段（不落 work/）
+    const char* glyph; // 行首字符图标（kit 字符图标约定：<Icon name> 的字符替身）
+};
+// T3 那行填 SCENE_EVENT_ORDER：`03` §2.2 的 T2–T4/T6–T9 合并执行，大纲没有自己的
+// 文件、产物并入 09_chapter_plan.json —— 与 ChapterFlowView::ShowStage 同一条规则
+// （ChapterFlowView.cpp:562-563）。T11 正文是库内字段 chapters.body：P4 正文落盘前
+// 不写库，§2.7 的文件名表里也没有草稿（NovelStageLedger.h:12-13）。
+// glyph：设计稿 text / chip 两个 <Icon> → 仓内已在用的字符 ▤（VideoFlowWorkspace.cpp:149）
+// 与 ◈（FilmStrip.cpp:57）。
+constexpr ChapterArtifact kChapterArtifacts[] = {
+    {"T3", "大纲", "SCENE_EVENT_ORDER", "▤"},
+    {"T11", "正文", "", "▤"},
+    {"T12", "评审", "CHAPTER_REVIEW", "◈"},
+};
+
+[[nodiscard]] QString ArtifactFileName(const ChapterArtifact& a) {
+    if (a.stage[0] == '\0') {
+        return QStringLiteral("chapters.body");
+    }
+    const std::string_view f = novelcore::StageFileName(a.stage);
+    return f.empty() ? QStringLiteral("—")
+                     : QString::fromLatin1(f.data(), static_cast<int>(f.size()));
+}
 
 } // namespace
 
@@ -369,11 +412,83 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
     auto* inspector = new QWidget(this);
     auto* il = new QVBoxLayout(inspector);
     il->setContentsMargins(0, 0, 0, 0);
-    il->setSpacing(theme::space::kSteps[2]);
+    // 段距逐条对齐设计稿的 margin（每段自带 margin，CSS 里没有 flex gap），
+    // 所以这一层 spacing 归零，段间留白一律用下面的 addSpacing 显式给。
+    il->setSpacing(0);
     props_ = new data::KeyValue(inspector);
     il->addWidget(props_);
+
+    // —— 「本章产物」（webui Novel.jsx:469-479）——
+    // ⚠️ 设计稿上一段的「预览」占位画（<Art seed>）本页**没实现**：占位画目前只有
+    // QML 侧的实现（src/ui/qml/AssetsArt.qml），Widgets 侧无对应件，本页不拿假图充数。
+    // 该段在设计稿里只有「占位画 + 一行写死的说明文案」，两者都无真实数据源。
+    il->addSpacing(theme::space::kSteps[5]); // 16：段标题 margin-top 16px（Novel.jsx:469 的 '16px 0 8px'）
+    auto* artHead = widgets::SectionTitle(QStringLiteral("本章产物"), inspector);
+    {
+        QFont f = artHead->font();
+        // .small = 12.5px（base.css:121），按「就近取整」落 12px 档（Token.h:122-128）
+        f.setPixelSize(theme::font::kSizes[0]);
+        artHead->setFont(f);
+    }
+    il->addWidget(artHead);
+    il->addSpacing(theme::space::kSteps[3]); // 8：段标题 margin-bottom 8px（同上）
+    // .dlist：竖排、块间无 gap（views.css:293-296）
+    auto* artList = new QWidget(inspector);
+    auto* al = new QVBoxLayout(artList);
+    al->setContentsMargins(0, 0, 0, 0);
+    al->setSpacing(0);
+    for (std::size_t i = 0; i < std::size(kChapterArtifacts); ++i) {
+        const ChapterArtifact& a = kChapterArtifacts[i];
+        // .drow（views.css:297-306）：p8 2 + gap 8 + 发丝线分隔。底色 / 字号 / 内距
+        // 由 kit 的 shineKind="drow"（QssBuilder.cpp:779-782）给出，layout 不再叠一遍
+        // 内距（否则 8px 变 16px）。QSS 没有 :last-child，末行由构造方摘掉底边。
+        auto* row = new QWidget(artList);
+        widgets::SetKind(row, "drow");
+        if (i + 1 == std::size(kChapterArtifacts)) {
+            row->setProperty("shineKind", QString{}); // views.css:307-309
+        }
+        auto* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(0, 0, 0, 0);
+        rl->setSpacing(theme::space::kSteps[3]); // gap 8px（views.css:300）
+        auto* mark = new QLabel(QString::fromUtf8(a.glyph), row);
+        widgets::SetKind(mark, "stateicon");
+        {
+            QFont f = mark->font();
+            f.setPixelSize(13); // 行首 <Icon> 13×13（Novel.jsx:473）
+            mark->setFont(f);
+        }
+        widgets::SetTextColor(mark, theme::Current().accentSecondary); // var(--accent-2)（Novel.jsx:473）
+        auto* name = new QLabel(ArtifactFileName(a), row);
+        name->setFont(MonoFont(name->font(), theme::font::kSizes[0])); // .grow .mono（Novel.jsx:474）
+        name->setMinimumWidth(0); // .grow 的 min-width:0（base.css:107）：窄栏下让行可压缩
+        auto* sub = new QLabel(QStringLiteral("%1 · %2").arg(QLatin1String(a.label),
+                                                            QLatin1String(a.code)),
+                               row);
+        widgets::SetKind(sub, "statemeta"); // .dim = --text-muted
+        sub->setFont(MonoFont(sub->font(), theme::font::kSizes[0])); // .mono .tiny（Novel.jsx:475）
+        // statemeta 的 QSS 字号是 11px（QssBuilder.cpp:574），.tiny 要 12px：按
+        // PipelineWorkspace.cpp:504-505 的既有做法只顶字号，颜色仍留给 QSS 的 muted。
+        sub->setStyleSheet(QStringLiteral("font-size: 12px;"));
+        auto* chev = new QLabel(QStringLiteral("›"), row);
+        widgets::SetKind(chev, "stateicon"); // --text-muted（Novel.jsx:476）
+        {
+            QFont f = chev->font();
+            f.setPixelSize(10); // 尾部 <Icon> 10×10（Novel.jsx:476）
+            chev->setFont(f);
+        }
+        rl->addWidget(mark, 0, Qt::AlignVCenter);
+        rl->addWidget(name, 1);
+        rl->addWidget(sub, 0, Qt::AlignVCenter);
+        rl->addWidget(chev, 0, Qt::AlignVCenter);
+        al->addWidget(row);
+        artifact_rows_.push_back(row);
+    }
+    il->addWidget(artList);
+    // 设计稿 Novel.jsx:480 的尾注「点击产物 → 格式化查看」本页不画：Widgets 侧还没有
+    // 产物查看器（设计稿的全局 FileViewer 只存在于 webui），点不动的行不配承诺文案。
     il->addStretch();
     inspector_body_ = inspector;
+    RefreshArtifacts();
 
     // 选章即时切换：树 ↔ 卡片双向同步（syncing_ 防回环）
     connect(cards_, &QListWidget::currentRowChanged, this, [this](int row) {
@@ -601,10 +716,50 @@ void NovelWorkspace::ShowCurrent() {
                       {QStringLiteral("状态"), label},
                       {QStringLiteral("字数"), QString::number(n.words)},
                       {QStringLiteral("行 id"), QString::number(n.id)}});
+    RefreshArtifacts();
     // 只同步**当前可见页**（S1 判据：千章 100 次选章总耗时有上限）。
     // 不可见页留到 [模式] 被激活时再按需同步（见 SyncPage）——避免每次选章都
     // 重开 SQLite / 读阶段产物 / 跑 K01–K29 全表。
     SyncPage(centerStack_->currentIndex());
+}
+
+// 「本章产物」三行的 tooltip：给当前章的**真实**产物路径（webui 的 title 是「查看 <文件名>」，
+// 这里补上章号与目录，路径一律 PathToUtf8，别用 path.string()）。只刷 tooltip，不做
+// 存在性探测 —— 那要同步读盘，UI 线程不干同步 IO（AGENTS.md「UI 线程不做同步 IO」）。
+void NovelWorkspace::RefreshArtifacts() {
+    if (artifact_rows_.size() != std::size(kChapterArtifacts)) {
+        return;
+    }
+    int ord = 0;
+    std::filesystem::path work;
+    if (current_ >= 0 && current_ < static_cast<int>(chapters_.size())) {
+        const ChapterNode& n = chapters_[static_cast<std::size_t>(current_)];
+        ord = n.ord;
+        for (const BookNode& b : books_) {
+            if (b.title == n.book) {
+                work = b.workDir; // BookRef::workDir = <书根>/work（project/Project.h:103）
+                break;
+            }
+        }
+    }
+    const std::filesystem::path dir =
+        ord > 0 ? work / std::filesystem::path(
+                        QStringLiteral("ch%1").arg(ord, 3, 10, QLatin1Char('0')).toStdString())
+                : std::filesystem::path{};
+    for (std::size_t i = 0; i < artifact_rows_.size(); ++i) {
+        const ChapterArtifact& a = kChapterArtifacts[i];
+        QString tip;
+        if (ord <= 0) {
+            tip = QStringLiteral("先选一章，这里才有本章的产物");
+        } else if (a.stage[0] == '\0') {
+            // 库内字段：P4 正文落盘前不写 work/，也没有对应的库表路径
+            tip = QStringLiteral("第 %1 章 · chapters.body（库内字段，不落 work/）").arg(ord);
+        } else {
+            tip = QString::fromStdString(util::PathToUtf8(
+                dir / std::filesystem::path{ArtifactFileName(a).toStdString()}));
+        }
+        artifact_rows_[i]->setToolTip(tip);
+    }
 }
 
 void NovelWorkspace::SyncPage(int page) {

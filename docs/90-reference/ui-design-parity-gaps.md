@@ -651,7 +651,42 @@ function measure(s) { probe.text = s; return probe.width }   // 先写后读
 先查调用方传的属性名和组件声明的是不是同一个**。加属性时避开 Qt 基类成员名
 （`state`/`states`/`transitions`/`font`/`layer`/`transform`/`children`/`type`）。
 
-### 端到端取证现状
+### ⑬ `PathCubic` 的 `x`/`y` 在「路径首元素」上会被旁路
+
+`ShapePath` 派生自 `QQuickPath`，**路径起点是它的 `startX`/`startY`**。而
+`QQuickCurve::x()` 在「本元素是路径里第一个元素」时返回的是
+`path->startPoint()`，**不是它自己那个 `x` 属性**。所以只写
+
+```qml
+ShapePath {
+    PathCubic { x: ax; y: ay; relativeX: bx - ax; relativeY: by - ay; ... }
+}
+```
+
+曲线会一律从 **(0,0)** 起步，终点也变成 `0 + relativeX` —— 页面上多出一整簇
+从画布左上角扇向各端点的长斜线。**没有任何报错，`qmllint` 也查不出来。**
+
+修法：起点设在 **ShapePath** 上。
+
+```qml
+ShapePath {
+    startX: ax
+    startY: ay
+    PathCubic { x: ax; y: ay; relativeX: bx - ax; relativeY: by - ay; ... }
+}
+```
+
+本机权威依据：`C:\msys64\mingw64\share\qt6\qml\QtQuick\plugins.qmltypes` ——
+`QQuickPathCubic` → `QQuickCurve`（`x`/`y`/`relativeX`/`relativeY`）→
+`QQuickPathElement`，而 `QQuickPath`（路径容器）持有 `startX`/`startY`。
+
+⚠️ 这条**先后误导过三次**：先被当成 software 后端的陈旧几何残留（抓图前递归
+`QQuickItem::update()` 无效）、再被当成取景完成前那一帧的错误几何（加 `fitted`
+门控也无效）。两次都是无效改动，最后**用一次带颜色的二分构建**（把光晕
+`strokeColor` 临时改成纯红）才一次定性。**纯靠读图猜路径几何会连续猜错；
+给要辨认的那一层上醒目色，一眼就分清是谁画的。**
+
+### ⑭ 端到端取证现状
 
 `SHINE_QML_REVIEW=<目录>` 触发，`SHINE_QML_PAGES=<页名,页名>` 可只拍指定页
 （页面注册表在 `QmlPageReview.cpp` 的 `kPages`，**共享层**，页面作者只提供
