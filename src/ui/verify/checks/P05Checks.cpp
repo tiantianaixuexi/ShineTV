@@ -1,12 +1,13 @@
 #include "ui/verify/checks/P05Checks.h"
 #include "ui/app/AppEnvironment.h"
 // 资产页已从 QWidget 迁到 QML：验收对象是 QmlAssetsPage，AssetWorkspace /
-// AssetDetailView / GalleryWorkspace 三个 Widgets 类都不再是产品路径上的东西
-// （全局图库至今没迁，见 S7 的 [NOT-COVERED] 记账）。
+// AssetDetailView 早已不在产品路径上，全局图库也于 2026-09-29 随 S7/S8 一起迁完
+// （AssetPageModel 投影 shine::gallery），三个 Widgets 类均已删除。
 #include "ui/pages/assets/QmlAssetsPage.h"
 #include "ui/pages/shell/MainWindow.h"
 #include "db/sqlite/SqliteDb.h"
 #include "media/ExifOrientation.h"
+#include "media/Gallery.h"
 #include "novel/NovelDb.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelAssetPipeline.h"
@@ -983,79 +984,266 @@ shine::util::EnsureDir(root / "中文素材");
 
     // P05-S7 判定：三来源扫描 / 虚拟网格 / worker 解码 / 查看器缩放 / 工作流输入。
     //
-    // ⚠️ **整个场景 NOT-COVERED，不计入 overall。** 全局图库（GalleryWorkspace：
-    // 三来源扫描 / 虚拟网格 / ThumbGrid 按需解码 / ImageViewer 缩放 / 右键设工作流
-    // 输入）至今仍是 Widgets 实现，没有迁到 QML 资产页 ——
-    // QmlAssetsPage::GlobalGalleryProbe() 固定返回 gallery=unavailable，
-    // SelectFirstGlobalGallery() 固定返回 false。
-    //
-    // 这里**不再构造 GalleryWorkspace**：留着它就等于让这个门禁继续验一个已经不在
-    // 产品路径上的类，报出来的绿是假的。按 P05Review 的同一套纪律，未覆盖项显式记账
-    // （少一行会被读成「跑了没问题」），并且下面把页面真实返回值记下来作为证据。
+    // ✅ 2026-09-29 全局图库已迁 QML（AssetPageModel 投影 shine::gallery 的
+    // 三来源 / 模型 / 查看器），本场景恢复真断言。此前这里是 NOT-COVERED：
+    // GlobalGalleryProbe() 固定 gallery=unavailable、SelectFirstGlobalGallery()
+    // 固定 false，任何断言都只能对着桩跑出假绿。
     if (const std::filesystem::path s7Dir = EnvironmentPath(L"SHINE_P05_S7"); !s7Dir.empty()) {
         const std::filesystem::path s7Out = EnvironmentPath(L"SHINE_P05_S7_OUT");
         QTimer::singleShot(600, &window, [s7Out = s7Out.empty() ? s7Dir / "p05_s7_probe.txt" : s7Out] {
+            namespace fs = std::filesystem;
             std::string content;
-            const auto note = [&content](const std::string& name, const std::string& reason) {
-                const std::string row = "[NOT-COVERED] " + name + " — " + reason;
-                content += row + "\n";
-                std::printf("%s\n", row.c_str());
+            int fails = 0;
+            const auto line = [&content, &fails](const std::string& name, bool pass,
+                                                 const std::string& detail) {
+                content += std::string("[") + (pass ? "PASS" : "FAIL") + "] " + name + " — " + detail +
+                           "\n";
+                if (!pass) ++fails;
+                std::printf("[%s] %s\n", pass ? "PASS" : "FAIL", name.c_str());
             };
+            const auto contains = [](const std::string& hay, const std::string& needle) {
+                return hay.find(needle) != std::string::npos;
+            };
+            std::error_code ec;
+
+            const fs::path root =
+                fs::temp_directory_path() / ("shinetv-p05s7-" + shine::util::RandomHex(8));
+            const fs::path local = root / "gal-local";
+            const fs::path output = root / "gal-out";
+            const fs::path input = root / "gal-in";
+            shine::util::EnsureDir(local);
+            shine::util::EnsureDir(output);
+            shine::util::EnsureDir(input);
+            const auto write_image = [](const fs::path& path, const QColor& color) {
+                QImage image(96, 64, QImage::Format_RGB32);
+                image.fill(color);
+                return image.save(QString::fromStdString(shine::util::PathToUtf8(path)), "PNG");
+            };
+            const bool fixture = write_image(local / "a.png", Qt::white) &&
+                                 write_image(output / "b.png", Qt::lightGray) &&
+                                 write_image(input / "c.png", Qt::darkGray);
+            const shine::AppSettings saved = shine::Settings();
+            shine::Settings().galleryLocalDir = shine::util::PathToUtf8(local);
+            shine::Settings().comfyOutputDir = shine::util::PathToUtf8(output);
+            shine::Settings().comfyInputDir = shine::util::PathToUtf8(input);
+            shine::gallery::SetLastGraphDropPath(std::string{});
+            line("fixture", fixture, "本地 / Comfy 输出 / Comfy 输入三来源各有图片");
 
             shine::app::QmlAssetsPage workspace;
-            const std::string gallery = workspace.GlobalGalleryProbe().toStdString();
-            const bool selectable = workspace.SelectFirstGlobalGallery();
-            note("three-sources",
-                 "全局图库未迁 QML：QmlAssetsPage::GlobalGalleryProbe()=" + gallery);
-            note("virtual-decode", "虚拟网格 / worker 按需解码随全局图库一起未迁");
-            note("viewer-range", "ImageViewer 缩放边界未迁 QML");
-            note("workflow-input", "右键设工作流输入随全局图库一起未迁");
-            // 真实返回值，不是硬编码文案：这两个就是「没有等价实现」的直接证据。
-            content += "EVIDENCE: GlobalGalleryProbe=" + gallery +
-                      "; SelectFirstGlobalGallery=" + (selectable ? "1" : "0") + "\n";
-            content += "[P05-S7] overall: NOT-COVERED (不计入 overall)\n";
+            // 扫描是异步的（RequestScan → worker → AppEntry 的 Tick 回填），
+            // 必须等收敛再数条目，否则读到的还是上一来源的残留。
+            // ⚠️ GalleryState::source 的初值就是 Local，且已在该来源时
+            //    selectGallerySource 是空动作（Seg 语义）—— 那时用户的真实动作是
+            //    点「重扫」，走 RescanGallery 才真的发起一次扫描。
+            const auto wait_scan = [&workspace](shine::gallery::SourceKind source) {
+                if (source == shine::gallery::State().source) {
+                    workspace.RescanGallery();
+                } else {
+                    workspace.SelectGlobalGallerySource(source);
+                }
+                return workspace.WaitGalleryScan();
+            };
+
+            const bool local_ok = wait_scan(shine::gallery::SourceKind::Local);
+            const std::size_t local_count = shine::gallery::Model().Count();
+            const bool output_ok = wait_scan(shine::gallery::SourceKind::ComfyOutput);
+            const std::size_t output_count = shine::gallery::Model().Count();
+            const bool input_ok = wait_scan(shine::gallery::SourceKind::ComfyInput);
+            const std::size_t input_count = shine::gallery::Model().Count();
+            line("three-sources", local_ok && output_ok && input_ok && local_count == 1 &&
+                                    output_count == 1 && input_count == 1,
+                 "三来源逐一异步扫描并更新同一图库模型");
+
+            const bool selected = workspace.SelectFirstGlobalGallery();
+            // 「设为工作流输入」在 QML 侧由 Page.setGalleryAsWorkflowInput() 派发；
+            // 这里直接驱动同一入口，验的是 C++ 真动作而不是某个 QML 按钮的像素。
+            // 回到 Comfy 输入来源（已扫过，这里是重扫）再挑第一张。
+            (void)wait_scan(shine::gallery::SourceKind::ComfyInput);
+            const bool picked = workspace.SelectFirstGlobalGallery();
+            if (picked) {
+                workspace.SetGalleryAsWorkflowInput();
+            }
+            const std::string probe = workspace.GlobalGalleryProbe().toStdString();
+            line("virtual-decode", selected && contains(probe, "virtual=1"),
+                 "网格只请求可视行，缩略图在 worker 解码");
+            line("viewer-range", contains(probe, "viewerMin=0.1") && contains(probe, "viewerMax=16.0"),
+                 "查看器缩放边界保持 0.1–16×");
+            line("workflow-input", picked && contains(probe, "workflow=") &&
+                                      contains(probe, "c.png"),
+                 "同路径动作可把选中图片设为工作流输入");
+
+            shine::Settings() = saved;
+            content += "GALLERY-PROBE:\n" + probe + "\n";
+            content += fails == 0 ? "[P05-S7] overall: PASS" : "[P05-S7] overall: FAIL";
+            content += '\n';
             (void)shine::util::WriteFileBytes(s7Out, content);
             std::fflush(nullptr);
-            std::_Exit(0);
+            std::_Exit(fails == 0 ? 0 : 1);
         });
     }
 
     // P05-S8 判定：同一图片被资产、分镜、参考图绑定引用；列表可跳转。
     //
-    // ⚠️ **整个场景 NOT-COVERED，不计入 overall。** 「被引用列表 + 跳转」挂在全局
-    // 图库的查看器上（SelectFirstGlobalGallery → ReferenceUsageLabels →
-    // ActivateReferenceUsage），全局图库没迁 QML；QmlAssetsPage 这三个接口分别是
-    // 固定 false / 恒空 QStringList / 只做下标范围检查，照原样跑只能验一个桩。
-    //
-    // 与 S7 同一套纪律：不再构造已退役的 Widgets 页面，未覆盖项显式记账（少一行
-    // 会被读成「跑了没问题」），并把页面真实返回值记下来作为证据。
+    // ✅ 2026-09-29 恢复真断言：引用链解析现由 AssetPageModel 走
+    // visual::FindReferenceUsages（真查 visual_assets / visual_artifacts /
+    // generated_images / ReferenceLibrary 四处），不再恒空。
     if (const std::filesystem::path s8Dir = EnvironmentPath(L"SHINE_P05_S8"); !s8Dir.empty()) {
         const std::filesystem::path s8Out = EnvironmentPath(L"SHINE_P05_S8_OUT");
         QTimer::singleShot(600, &window, [s8Out = s8Out.empty() ? s8Dir / "p05_s8_probe.txt" : s8Out] {
+            namespace fs = std::filesystem;
             std::string content;
-            const auto note = [&content](const std::string& name, const std::string& reason) {
-                const std::string row = "[NOT-COVERED] " + name + " — " + reason;
-                content += row + "\n";
-                std::printf("%s\n", row.c_str());
+            int fails = 0;
+            const auto line = [&content, &fails](const std::string& name, bool pass,
+                                                 const std::string& detail) {
+                content += std::string("[") + (pass ? "PASS" : "FAIL") + "] " + name + " — " + detail +
+                           "\n";
+                if (!pass) ++fails;
+                std::printf("[%s] %s\n", pass ? "PASS" : "FAIL", name.c_str());
             };
 
+            std::error_code ec;
+            const fs::path root =
+                fs::temp_directory_path() / ("shinetv-p05s8-" + shine::util::RandomHex(8));
+            const fs::path shared_dir = root / "assets" / "shared";
+            const fs::path shared = shared_dir / "角色参考.png";
+            fs::create_directories(root / "db", ec);
+            shine::util::EnsureDir(shared_dir);
+            QImage shared_image(128, 96, QImage::Format_RGB32);
+            shared_image.fill(Qt::lightGray);
+            bool fixture = shared_image.save(
+                QString::fromStdString(shine::util::PathToUtf8(shared)), "PNG");
+
+            std::int64_t entityId = 0;
+            std::int64_t assetId = 0;
+            std::int64_t shotId = 0;
+            {
+                shine::db::sqlite::Database db;
+                auto opened = db.Open({.path = root / "db" / "novel.db"});
+                if (!opened) {
+                    fixture = false;
+                } else if (auto schema = shine::novelcore::NovelDb::ApplyCanonicalSchema(db); !schema) {
+                    fixture = false;
+                } else {
+                    shine::novelcore::NovelGraph graph(db);
+                    auto entity = graph.UpsertEntity({.kind = "person", .name = "引用角色"});
+                    auto volume = graph.UpsertVolume({.title = "第一卷", .ord = 1});
+                    if (!entity || !volume) {
+                        fixture = false;
+                    } else {
+                        entityId = *entity;
+                        auto chapter = graph.UpsertChapter({.volume_id = *volume, .ord = 1,
+                                                             .title = "第一章", .status = "done"});
+                        if (!chapter) {
+                            fixture = false;
+                        } else {
+                            auto scene = graph.UpsertScene({.chapter_id = *chapter, .ord = 1,
+                                                            .title = "引用场景"});
+                            if (!scene) {
+                                fixture = false;
+                            } else {
+                                shine::novelcore::NovelVisual visual(db);
+                                auto asset = visual.UpsertAsset({.entity_id = entityId,
+                                                                  .kind = "character",
+                                                                  .name = "引用角色",
+                                                                  .sheet_rel_path =
+                                                                      "assets/shared/角色参考.png",
+                                                                  .status = "READY"});
+                                if (!asset) {
+                                    fixture = false;
+                                } else {
+                                    assetId = *asset;
+                                    shine::novelcore::VisualArtifactRow artifact;
+                                    artifact.asset_id = assetId;
+                                    artifact.layer = "front";
+                                    artifact.rel_path = "assets/shared/角色参考.png";
+                                    artifact.status = "DONE";
+                                    fixture = visual.UpsertArtifact(artifact).has_value();
+                                    shine::novelcore::ShotRow shot;
+                                    shot.scene_id = *scene;
+                                    shot.ord = 1;
+                                    shot.character_ids_json = "[" + std::to_string(entityId) + "]";
+                                    shot.action = "走向镜头";
+                                    shot.expression = "警觉";
+                                    auto shot_saved = visual.UpsertShot(shot);
+                                    if (!shot_saved) {
+                                        fixture = false;
+                                    } else {
+                                        shotId = *shot_saved;
+                                        const shine::AppSettings saved_image = shine::Settings();
+                                        shine::Settings().imageBackend = "mock";
+                                        shine::Settings().imageOutputRelDir = "visual/gen";
+                                        shine::novelcore::ImageJobInput input;
+                                        input.prompt = "Su Li reference shot";
+                                        input.negative = "lowres";
+                                        input.shot_id = shotId;
+                                        input.width = 64;
+                                        input.height = 64;
+                                        auto image = shine::novelcore::RunImageJob(db, input);
+                                        shine::Settings() = saved_image;
+                                        if (!image) {
+                                            fixture = false;
+                                        } else if (auto update = db.Prepare(
+                                                       "UPDATE generated_images SET rel_path=?1 WHERE id=?2")) {
+                                            (void)update->BindText(1, "assets/shared/角色参考.png");
+                                            (void)update->BindInt(2, image->id);
+                                            fixture = update->Step().has_value();
+                                            fs::remove(root / shine::util::PathFromUtf8(image->rel_path), ec);
+                                        } else {
+                                            fixture = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            shine::visual::ReferenceLibrary references(root);
+            if (fixture) {
+                fixture = references.Import(shared, entityId, assetId, {"镜头", "基准"})
+                              .has_value();
+            }
+            line("fixture", fixture, "资产层 + 分镜任务 + 项目参考图绑定共享同一文件");
+
+            const shine::AppSettings saved = shine::Settings();
+            shine::Settings().galleryLocalDir = shine::util::PathToUtf8(shared_dir);
             shine::app::QmlAssetsPage workspace;
-            const std::string gallery = workspace.GlobalGalleryProbe().toStdString();
-            const bool selected = workspace.SelectFirstGlobalGallery();
+            QString open_error;
+            const bool opened = fixture && workspace.OpenBook(root / "db" / "novel.db", root,
+                                                                  &open_error) &&
+                                workspace.SelectEntity(entityId);
+            // 目录是在场景里才写进设置的，gallery::Init 早就跑完了 —— 所以这里
+            // 必须**重新扫一次**才能看见 shared_dir。已在该来源时切来源是空动作
+            // （Seg 语义），用户的真实动作是点「重扫」。
+            workspace.RescanGallery();
+            const bool scan_ok = workspace.WaitGalleryScan();
+
+            const bool selected = opened && scan_ok && workspace.SelectFirstGlobalGallery();
             const QStringList labels = workspace.ReferenceUsageLabels();
-            const bool activated = workspace.ActivateReferenceUsage(0);
-            note("usage-list", "被引用列表随全局图库查看器一起未迁 QML：labels=" +
-                                   std::to_string(labels.size()) + " 项");
-            note("usage-jump", "资产 / 分镜引用跳转依赖全局图库选中项，QML 侧未接");
-            // 真实返回值，不是硬编码文案。
-            content += "EVIDENCE: GlobalGalleryProbe=" + gallery +
-                      "; SelectFirstGlobalGallery=" + (selected ? "1" : "0") +
-                      "; ReferenceUsageLabels=" + std::to_string(labels.size()) +
-                      "; ActivateReferenceUsage(0)=" + (activated ? "1" : "0") + "\n";
-            content += "[P05-S8] overall: NOT-COVERED (不计入 overall)\n";
+            const QString joined = labels.join(QStringLiteral(" | "));
+            int asset_index = -1;
+            int shot_index = -1;
+            for (int i = 0; i < labels.size(); ++i) {
+                if (labels[i].startsWith(QStringLiteral("资产 #"))) {
+                    asset_index = i;
+                } else if (labels[i].startsWith(QStringLiteral("第 "))) {
+                    shot_index = i;
+                }
+            }
+            const bool asset_jump = asset_index >= 0 && workspace.ActivateReferenceUsage(asset_index);
+            const bool shot_jump = shot_index >= 0 && workspace.ActivateReferenceUsage(shot_index);
+            line("usage-list", selected && labels.size() == 3 && joined.contains(QStringLiteral("项目参考图")),
+                 QStringLiteral("被引用列表：%1").arg(joined).toStdString());
+            line("usage-jump", asset_jump && shot_jump,
+                 "资产引用切到实体详情，分镜引用打开分镜抽屉");
+
+            content += "REFERENCE-USAGES:\n" + joined.toStdString() + "\n";
+            content += fails == 0 ? "[P05-S8] overall: PASS" : "[P05-S8] overall: FAIL";
+            content += '\n';
             (void)shine::util::WriteFileBytes(s8Out, content);
             std::fflush(nullptr);
-            std::_Exit(0);
+            std::_Exit(fails == 0 ? 0 : 1);
         });
     }
 

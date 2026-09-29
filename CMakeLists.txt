@@ -652,10 +652,8 @@ add_executable(ShineTVStudio
   src/ui/pages/novel/AutoRunPanel.cpp
   src/ui/verify/gallery/WidgetGalleryView.h
   src/ui/verify/gallery/WidgetGalleryView.cpp
-  src/ui/verify/gallery/GalleryWorkspace.h
   src/ui/verify/checks/P06Checks.h
   src/ui/verify/checks/P06Checks.cpp
-  src/ui/verify/gallery/GalleryWorkspace.cpp
   src/ui/verify/gallery/QssStateProbe.h
   src/ui/verify/gallery/QssStateProbe.cpp
   src/ui/verify/gallery/Bench.h

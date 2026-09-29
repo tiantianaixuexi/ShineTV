@@ -21,8 +21,10 @@
 #include "novel/NovelAssetPipeline.h"
 #include "novel/NovelTypes.h"
 #include "novel/NovelVisual.h"
+#include "media/GalleryTypes.h"
 #include "ui/pages/assets/AssetPolicy.h"
 #include "ui/pages/assets/AssetVisualData.h"
+#include "visual/ReferenceChain.h"
 
 #include <QObject>
 #include <QString>
@@ -129,6 +131,22 @@ class AssetPageModel : public QObject {
     [[nodiscard]] Q_PROPERTY(QVariantMap exportState READ exportState NOTIFY changed)
     QVariantMap exportState() const;
 
+    // —— ⑥ 全局图库（shine::gallery 三来源：本地 / Comfy 输出 / Comfy 输入）——
+    // 条目（扫描结果，过滤排序后的视图）：{id,path,width,height,format,source}
+    // 空态也带全键 —— 网格里有十几处 item.xxx 绑定，少一个键就是一片红。
+    [[nodiscard]] Q_PROPERTY(QVariantList galleryItems READ galleryItems NOTIFY galleryChanged)
+    QVariantList galleryItems() const;
+
+    // 扫描状态：{source,sourceLabel,scanning,count,loaded,message,error,truncated}
+    [[nodiscard]] Q_PROPERTY(QVariantMap galleryState READ galleryState NOTIFY galleryChanged)
+    QVariantMap galleryState() const;
+
+    // 查看器：{open,id,path,zoom,minZoom,maxZoom}
+    // ⚠️ zoom 的上下界是**本类的常量**，QML 侧滑杆直接绑 minZoom/maxZoom ——
+    // 探针读的和 UI 拖到的必须是同一对数，两边各写一份必然漂。
+    [[nodiscard]] Q_PROPERTY(QVariantMap galleryViewer READ galleryViewer NOTIFY galleryChanged)
+    QVariantMap galleryViewer() const;
+
     [[nodiscard]] Q_PROPERTY(QString bookName READ bookName NOTIFY changed)
     QString bookName() const;
 
@@ -194,6 +212,32 @@ class AssetPageModel : public QObject {
     Q_INVOKABLE void setAllowDegrade(bool allow);
     Q_INVOKABLE void setSuspendMinutes(int minutes);
 
+    // —— ⑥ 全局图库 ——
+    // source 取 shine::gallery::SourceKind 的下标（0=本地 1=Comfy输出 2=Comfy输入）
+    Q_INVOKABLE void selectGallerySource(int source);
+    Q_INVOKABLE void rescanGallery();
+    Q_INVOKABLE void selectGalleryItem(quint64 id);
+    Q_INVOKABLE void setGalleryAsWorkflowInput();
+    Q_INVOKABLE void openGalleryViewer(quint64 id);
+    Q_INVOKABLE void closeGalleryViewer();
+    Q_INVOKABLE void setGalleryZoom(double zoom);
+    [[nodiscard]] Q_INVOKABLE bool galleryReady() const { return galleryCount_ > 0; }
+    // 验收等扫描收敛用（扫描是异步的，见 media/Gallery.cpp 的 RequestScan）
+    [[nodiscard]] bool WaitGalleryScan(int timeout_ms = 10000);
+
+    // 图库验收探针：字段口径由本函数定死（P05 的 S7 按它解析）
+    [[nodiscard]] QString GalleryProbe() const;
+    // 扫描异步且无完成信号，只能轮询：宿主用这个判「条目变了没有」。
+    // force=true 跳过短路，用于切来源 / 重扫 / 换书库后的立即重投影。
+    [[nodiscard]] bool PollGallery(bool force = false);
+    // 查看器 / 选中 / 缩放的投影。**这三类状态不改 ItemsGeneration**，
+    // PollGallery 会短路掉它们，故所有写这些状态的路径都要单独调本函数。
+    void ProjectGalleryViewer();
+    // 选中图被哪些实体 / 资产 / 分镜 / 参考库引用（visual::FindReferenceUsages）
+    [[nodiscard]] QStringList ReferenceUsageLabels() const;
+    // 按下标激活：资产/参考库 → 选中实体与资产；分镜 → 打开分镜引用抽屉
+    bool ActivateReferenceUsage(int index);
+
     void SetAssetPolicy(const AssetPolicy& policy) { policy_ = policy; }
     [[nodiscard]] const AssetPolicy& Policy() const { return policy_; }
 
@@ -218,6 +262,9 @@ class AssetPageModel : public QObject {
   signals:
     // QML 绑定的唯一重算入口
     void changed();
+    // 图库单独一条：扫描是异步的（RequestScan → worker → Tick 回填），
+    // 跟着 changed() 一起发会让整个页面为几张缩略图重算一遍。
+    void galleryChanged();
     // 视觉事实（帧图 + 像素差异）异步就绪时单独发一次，
     // 让取证/断言能等它而不必在 UI 侧硬 sleep。
     void visualsChanged();
@@ -236,6 +283,13 @@ class AssetPageModel : public QObject {
     void RebuildRefs();
     void ProjectRefs(const std::vector<AssetRefFact>& refs);
     void ProjectPolicy();
+    // ⑥ 全局图库：按 ItemsGeneration 变化重投影（扫描异步，由 AppEntry 的
+    // 15ms Tick 推进）。返回值 = generation 是否变了。
+    // 引用链只在「选中项变了 / 条目变了」时重算 —— FindReferenceUsages 要查
+    // 四张表，每次扫描都跑一遍是白费。
+    void RefreshGalleryUsages();
+    // 分镜引用的跳转落点：开一个只读抽屉（与迁移前的 Widgets 版同口径）
+    bool ShowShotReference(qint64 shot_id);
     bool StartRun(std::optional<novelcore::AssetLayer> layer);
     [[nodiscard]] QVariantMap AssetToMap(const AssetEntry& entry) const;
     [[nodiscard]] QVariantMap RuntimeToMap(qint64 assetId) const;
@@ -305,6 +359,24 @@ class AssetPageModel : public QObject {
 
     // —— 导出整版（①）——
     bool exportBusy_ = false;
+
+    // —— 全局图库（⑥）——
+    // 缩放边界是**本类的常量**：QML 滑杆绑它、GalleryProbe 报它，
+    // 两边各写一份必然漂。
+    static constexpr double kGalleryMinZoom = 0.1;
+    static constexpr double kGalleryMaxZoom = 16.0;
+    QVariantList galleryView_;
+    QVariantMap galleryStateView_;
+    QVariantMap galleryViewerView_;
+    std::uint64_t galleryGeneration_ = 0; // 上次投影时的 ItemsGeneration
+    // 首投影必须无条件发生：ItemsGeneration() 初值与 galleryGeneration_ 同为 0，
+    // 只比「变没变」会永远不投影，QML 首次求值就落在空表上。
+    bool galleryProjected_ = false;
+    std::size_t galleryCount_ = 0;
+    gallery::ImageId gallerySelected_ = 0;
+    double galleryZoom_ = 1.0;
+    // 引用链解析结果：选中图 → 用量列表（下标与 QML 列表一一对应）
+    std::vector<visual::ReferenceUsage> galleryUsages_;
 };
 
 } // namespace shine::app

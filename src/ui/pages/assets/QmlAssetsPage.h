@@ -16,6 +16,7 @@
 #include "media/GalleryTypes.h"
 #include "ui/pages/assets/AssetPageModel.h"
 
+#include <QTimer>
 #include <QWidget>
 
 #include <QString>
@@ -84,7 +85,17 @@ class QmlAssetsPage : public QWidget {
     [[nodiscard]] QString RefProbe() const;
     [[nodiscard]] QString GlobalGalleryProbe() const;
     void SelectGlobalGallerySource(shine::gallery::SourceKind source);
+    // 已经在该来源上时 SelectGlobalGallerySource 是空动作（Seg 语义），
+    // 要重新扫当前来源得走这个 —— 与 QML 的「重扫」按钮同一入口。
+    void RescanGallery();
+    // 扫描异步（RequestScan → worker → AppEntry 的 Tick 回填）。等它收敛用。
+    bool WaitGalleryScan(int timeout_ms = 10000);
+    // 选中第一张 / 设为工作流输入 —— 验收与 QML 侧共用同一批 C++ 入口
     bool SelectFirstGlobalGallery();
+    // 查看器开关：取证要的是「查看器打开那一帧」，不能靠 UI 像素去点按钮
+    void OpenFirstGalleryViewer();
+    void CloseGalleryViewer();
+    void SetGalleryAsWorkflowInput();
 
     [[nodiscard]] QStringList ReferenceUsageLabels() const;
     bool ActivateReferenceUsage(int index);
@@ -101,9 +112,9 @@ class QmlAssetsPage : public QWidget {
     shine::qml::QuickHost* content_ = nullptr;
     shine::qml::QuickHost* nav_ = nullptr;
     shine::qml::QuickHost* inspector_ = nullptr;
-    shine::gallery::SourceKind gallery_source_ = shine::gallery::SourceKind::Local;
-    QStringList ref_usage_labels_;
-    QString loadError_;
+    // 图库扫描是异步的（RequestScan → worker → AppEntry 的 15ms Tick 回填），
+    // 没有完成信号可挂，只能轮询 ItemsGeneration。间隔与 Tick 对齐。
+    QTimer* gallery_poll_ = nullptr;
 };
 
 } // namespace shine::app

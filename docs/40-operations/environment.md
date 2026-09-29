@@ -53,8 +53,13 @@ SHINE_SCENE_IMAGE_CHECK
 这些是源码内部验收入口，不是稳定用户 API；具体变量以对应 `Register*Checks` 实现为准。变量名使用 ASCII，值可用 UTF-8 路径；PowerShell 脚本本身保持 ASCII，避免 Windows PowerShell 5.1 误解码。
 
 P05 的八个场景有现成跑法：`scripts/run_p05.ps1`（离屏、逐场景清空同族环境变量、
-把报告写到 `build/p05/`，末行汇总哪些不是 PASS）。S7 / S8 是**预期的
-NOT-COVERED**（全局图库未迁 QML），不是失败。
+把报告写到 `build/p05/`，末行汇总哪些不是 PASS）。八个场景现在**全部真跑**，
+没有 NOT-COVERED。
+
+场景选择两种写法都收：`-Scenes S7,S8` 或直接位置参数 `S7,S8`（`powershell -File`
+会把每个 token 都塞进 `$args`，只读 `$args[0]` 会把 `-Scenes` 当成场景名 ——
+app 匹配不到任何检查就进正常主循环，harness 无限等）。每个场景有 **120s 硬超时**，
+超时按 TIMEOUT 计入而不是挂死。
 
 ## 评审沙盒
 

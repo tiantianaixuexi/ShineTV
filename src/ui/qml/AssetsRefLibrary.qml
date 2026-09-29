@@ -12,7 +12,7 @@ pragma ComponentBehavior: Bound
 //      markers / markerText）。少一个键在 QML 侧就是 undefined，赋给
 //      QString/int 报 "Unable to assign"。所以下面 selectedRef 的空态照
 //      Assets.qml 的 emptyAsset 给一份**带类型零值**的记录（不能是 null：
-//      十几处 selectedRef.xxx 绑���会把空态刷成一片 TypeError）。
+//      十几处 selectedRef.xxx 绑定会把空态刷成一片 TypeError）。
 //   2. **选中 id 必须是 Q_PROPERTY** —— C++ 侧只给 `Page.selectReference(id)` 这个
 //      写动作，方法调用在 QML 依赖图里是空的、只求值一次，首屏之后再选别的图
 //      绑定不会跟着重算。所以读侧补了 `Page.selectedRefId`（AssetPageModel.h），

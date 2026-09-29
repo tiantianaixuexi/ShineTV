@@ -2,9 +2,14 @@
 
 #include "core/Async.h"
 #include "db/sqlite/SqliteDb.h"
+#include "media/Gallery.h"
+#include "media/GalleryTypes.h"
+#include "media/ImageScanner.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
+#include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/kit/data/Panels.h"
 #include "ui/kit/images/Sheet.h"
 #include "util/Encoding.h"
 #include "visual/ReferenceLibrary.h"
@@ -18,6 +23,7 @@
 #include <QImageReader>
 #include <QPointer>
 #include <QTimer>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <array>
@@ -280,6 +286,10 @@ AssetPageModel::AssetPageModel(QObject* parent) : QObject(parent) {
     exportView_ = EmptyExportMap();
     // policyView_ 同理：策略面板在 QML 侧是「开页即绑」，空态缺键就是一片红。
     policyView_ = EmptyPolicyMap();
+    // 图库三张表也必须开页即带全键：gallery::ItemsGeneration() 初始为 0，
+    // 若靠「generation 变了才重投影」，第一次投影永远不会发生（0 == 0），
+    // QML 首次求值就落在空 QVariantMap 上。故此处强制投影一次。
+    (void)PollGallery(/*force=*/true);
     // deriveChain_ 不在此处写死：它由 RebuildVisualFacts 从 visual_artifacts
     // 与产物文件存在性算出（正脸/四视图/基础身体/服装的真实就绪状态）。
 }
@@ -328,6 +338,9 @@ bool AssetPageModel::OpenBook(const std::filesystem::path& dbPath,
     const bool ok = RefreshEntities() && RefreshAssets();
     RebuildRefs();   // ④ 参考库：换书库必须重开（projectDir_ 变了）
     ProjectPolicy();
+    // ⑥ 图库条目与书库无关，但「这张图被谁引用」要拿 db_ 查。
+    // 换书库后 generation 未必变化，所以强制重投影一次把用量列表接上。
+    (void)PollGallery(/*force=*/true);
     if (!ok && error != nullptr) {
         *error = openError_;
     }
@@ -793,6 +806,259 @@ void AssetPageModel::ProjectTimeline(const AssetTimelineFact& fact) {
 QVariantList AssetPageModel::refImages() const { return refView_; }
 QVariantMap AssetPageModel::policy() const { return policyView_; }
 QVariantMap AssetPageModel::exportState() const { return exportView_; }
+QVariantList AssetPageModel::galleryItems() const { return galleryView_; }
+QVariantMap AssetPageModel::galleryState() const { return galleryStateView_; }
+QVariantMap AssetPageModel::galleryViewer() const { return galleryViewerView_; }
+
+// —— ⑥ 全局图库 ——
+// 取数全部来自 shine::gallery（扫描 / 模型 / 查看器），本类只做**投影**。
+// 扫描是异步的（RequestScan → worker → AppEntry 的 15ms Tick 回填），
+// 没有完成信号可挂，所以靠 ItemsGeneration 判变化。
+//
+// force：跳过「generation 没变就不动」的短路。切来源 / 重扫时用它把来源标签
+// 立刻翻过去（扫描还在路上，generation 暂时没变）；`galleryProjected_`
+// 则保证首投影一定发生 —— ItemsGeneration() 的初值和 galleryGeneration_ 都是 0。
+bool AssetPageModel::PollGallery(bool force) {
+    const std::uint64_t generation = gallery::ItemsGeneration();
+    if (!force && galleryProjected_ && generation == galleryGeneration_) {
+        return false;
+    }
+    galleryProjected_ = true;
+    galleryGeneration_ = generation;
+
+    galleryView_.clear();
+    const auto& view = gallery::Model().View();
+    galleryView_.reserve(static_cast<qsizetype>(view.size()));
+    for (const gallery::ImageInfo& item : view) {
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), QVariant::fromValue<qulonglong>(item.id));
+        row.insert(QStringLiteral("path"), QString::fromStdString(util::PathToUtf8(item.path)));
+        row.insert(QStringLiteral("name"),
+                   QString::fromStdString(util::PathToUtf8(item.path.filename())));
+        row.insert(QStringLiteral("width"), static_cast<int>(item.width));
+        row.insert(QStringLiteral("height"), static_cast<int>(item.height));
+        row.insert(QStringLiteral("format"), QString::fromStdString(item.format));
+        row.insert(QStringLiteral("source"), static_cast<int>(item.source));
+        galleryView_.append(row);
+    }
+    galleryCount_ = view.size();
+
+    // 选中项若已不在列表里（切来源 / 重扫），清掉，别让详情停在不存在的条目上。
+    if (gallerySelected_ != 0 && gallery::Model().Find(gallerySelected_) == nullptr) {
+        gallerySelected_ = 0;
+        gallery::CloseViewer();
+    }
+
+    const gallery::GalleryState& state = gallery::State();
+    galleryStateView_.insert(QStringLiteral("source"), static_cast<int>(state.source));
+    galleryStateView_.insert(QStringLiteral("sourceLabel"),
+                             QString::fromStdString(gallery::SourceLabel(state.source)));
+    galleryStateView_.insert(QStringLiteral("scanning"), state.scanning);
+    galleryStateView_.insert(QStringLiteral("count"), static_cast<qlonglong>(galleryCount_));
+    galleryStateView_.insert(QStringLiteral("loaded"),
+                             static_cast<qlonglong>(gallery::LoadedCount()));
+    galleryStateView_.insert(QStringLiteral("message"), QString::fromStdString(state.message));
+    galleryStateView_.insert(QStringLiteral("error"), QString::fromStdString(state.error));
+    galleryStateView_.insert(QStringLiteral("truncated"), state.truncated);
+
+    const gallery::ImageInfo* current =
+        gallerySelected_ == 0 ? nullptr : gallery::Model().Find(gallerySelected_);
+    ProjectGalleryViewer();
+
+    RefreshGalleryUsages();
+    return true;
+}
+
+// ⚠️ 查看器 / 选中 / 缩放这三类状态**不改 ItemsGeneration**（那个只跟条目表走），
+//    所以不能指望 PollGallery 顺带刷新 —— 它会按「没变」短路，QML 侧读到的还是
+//    上一张 map。症状：探针报 viewerOpen=1（它直接问 gallery::ViewerOpen），
+//    而 QML 的 `gviewer.open` 仍是 false，查看器死活不显示。
+//    故这三类状态单独投影，所有写它的路径都必须调本函数。
+void AssetPageModel::ProjectGalleryViewer() {
+    const gallery::ImageInfo* current =
+        gallerySelected_ == 0 ? nullptr : gallery::Model().Find(gallerySelected_);
+    galleryViewerView_.insert(QStringLiteral("open"), gallery::ViewerOpen());
+    galleryViewerView_.insert(QStringLiteral("id"),
+                              QVariant::fromValue<qulonglong>(gallery::ViewerImageId()));
+    galleryViewerView_.insert(QStringLiteral("path"),
+                              current == nullptr
+                                  ? QString()
+                                  : QString::fromStdString(util::PathToUtf8(current->path)));
+    galleryViewerView_.insert(QStringLiteral("zoom"), galleryZoom_);
+    galleryViewerView_.insert(QStringLiteral("minZoom"), kGalleryMinZoom);
+    galleryViewerView_.insert(QStringLiteral("maxZoom"), kGalleryMaxZoom);
+}
+
+void AssetPageModel::RefreshGalleryUsages() {
+    galleryUsages_.clear();
+    const gallery::ImageInfo* current =
+        gallerySelected_ == 0 ? nullptr : gallery::Model().Find(gallerySelected_);
+    if (current == nullptr || db_ == nullptr) {
+        return;
+    }
+    galleryUsages_ = visual::FindReferenceUsages(*db_, projectDir_, current->path);
+}
+
+void AssetPageModel::selectGallerySource(int source) {
+    const int clamped = std::clamp(source, 0, 2);
+    if (static_cast<int>(gallery::State().source) == clamped) {
+        return;
+    }
+    gallery::RequestScan(static_cast<gallery::SourceKind>(clamped));
+    // 立刻重投影一次：来源标签要先切过去，条目随后由 generation 变化带出来。
+    if (PollGallery(/*force=*/true)) {
+        emit galleryChanged();
+    }
+}
+
+void AssetPageModel::rescanGallery() {
+    gallery::RescanCurrent();
+    if (PollGallery(/*force=*/true)) {
+        emit galleryChanged();
+    }
+}
+
+void AssetPageModel::selectGalleryItem(quint64 id) {
+    gallerySelected_ = static_cast<gallery::ImageId>(id);
+    RefreshGalleryUsages();
+    ProjectGalleryViewer();
+    emit galleryChanged();
+}
+
+void AssetPageModel::setGalleryAsWorkflowInput() {
+    const gallery::ImageInfo* current =
+        gallerySelected_ == 0 ? nullptr : gallery::Model().Find(gallerySelected_);
+    if (current == nullptr) {
+        return;
+    }
+    // 同路径动作：把选中图登记为下一张图的「工作流输入」（图节点拖放会读它）。
+    gallery::SetLastGraphDropPath(util::PathToUtf8(current->path));
+    widgets::Toast::Show(
+        QStringLiteral("已设为工作流输入：%1")
+            .arg(QString::fromStdString(util::PathToUtf8(current->path.filename()))),
+        widgets::Toast::Tone::Success);
+    (void)PollGallery();
+    emit galleryChanged();
+}
+
+void AssetPageModel::openGalleryViewer(quint64 id) {
+    if (id == 0) {
+        return;
+    }
+    gallerySelected_ = static_cast<gallery::ImageId>(id);
+    gallery::OpenViewer(gallerySelected_);
+    RefreshGalleryUsages();
+    ProjectGalleryViewer();
+    emit galleryChanged();
+}
+
+void AssetPageModel::closeGalleryViewer() {
+    gallery::CloseViewer();
+    ProjectGalleryViewer();
+    emit galleryChanged();
+}
+
+void AssetPageModel::setGalleryZoom(double zoom) {
+    galleryZoom_ = std::clamp(zoom, kGalleryMinZoom, kGalleryMaxZoom);
+    ProjectGalleryViewer();
+    emit galleryChanged();
+}
+
+bool AssetPageModel::WaitGalleryScan(int timeout_ms) {
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < timeout_ms) {
+        // ⚠️ 等待必须**自己**把驱动补齐，不能只靠 AppEntry 的 15ms 泵：
+        //    ① 扫描结果经 async::PostToUi 回队列 → 要先 DrainUiQueue 搬过来；
+        //    ② gallery::Tick() 只收拾「已经排干」的结果，它自己不碰 UI 队列。
+        //    顺序反了就是空转。本函数是**阻塞**循环，验收 / 取证都从定时器回调里
+        //    调它，实测那个泵并不可靠：扫描本身 0.1ms 完事，却等满 10s 超时。
+        shine::async::DrainUiQueue();
+        shine::gallery::Tick();
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 20);
+        if (PollGallery()) {
+            emit galleryChanged();
+        }
+        if (!gallery::State().scanning) {
+            // 收敛后再补一次：最后一次 Tick 的回填可能落在上面那次之后。
+            shine::async::DrainUiQueue();
+            shine::gallery::Tick();
+            if (PollGallery()) {
+                emit galleryChanged();
+            }
+            return true;
+        }
+    }
+    return !gallery::State().scanning;
+}
+
+QString AssetPageModel::GalleryProbe() const {
+    const gallery::GalleryState& state = gallery::State();
+    // viewerOpen / viewerId 追加在末尾：P05-S7 按 contains() 解析既有字段，
+    // 尾部追加不影响它；而取证需要能断言「查看器真的开了」——
+    // 只靠「拍出来的图里有深色遮罩」是目视判断，不算机器可验的判据。
+    return QStringLiteral("source=%1; items=%2; scanning=%3; sources=3; virtual=1; viewerMin=%4; "
+                          "viewerMax=%5; workflow=%6; viewerOpen=%7; viewerId=%8")
+        .arg(QString::fromStdString(gallery::SourceLabel(state.source)))
+        .arg(static_cast<qulonglong>(gallery::Model().Count()))
+        .arg(state.scanning ? QStringLiteral("1") : QStringLiteral("0"))
+        .arg(kGalleryMinZoom, 0, 'f', 1)
+        .arg(kGalleryMaxZoom, 0, 'f', 1)
+        .arg(QString::fromStdString(gallery::LastGraphDropPath()))
+        .arg(gallery::ViewerOpen() ? QStringLiteral("1") : QStringLiteral("0"))
+        .arg(static_cast<qulonglong>(gallery::ViewerImageId()));
+}
+
+QStringList AssetPageModel::ReferenceUsageLabels() const {
+    QStringList labels;
+    labels.reserve(static_cast<qsizetype>(galleryUsages_.size()));
+    for (const visual::ReferenceUsage& usage : galleryUsages_) {
+        labels.push_back(QString::fromStdString(usage.label));
+    }
+    return labels;
+}
+
+bool AssetPageModel::ActivateReferenceUsage(int index) {
+    if (index < 0 || index >= static_cast<int>(galleryUsages_.size())) {
+        return false;
+    }
+    const visual::ReferenceUsage usage = galleryUsages_[static_cast<std::size_t>(index)];
+    if (usage.kind == visual::ReferenceUsageKind::Shot) {
+        return ShowShotReference(usage.shot_id);
+    }
+    if (usage.entity_id > 0) {
+        selectEntity(QString::number(usage.entity_id));
+    }
+    if (usage.asset_id > 0) {
+        selectAsset(QString::number(usage.asset_id));
+    }
+    return usage.entity_id > 0 || usage.asset_id > 0;
+}
+
+bool AssetPageModel::ShowShotReference(qint64 shot_id) {
+    if (db_ == nullptr || shot_id <= 0) {
+        return false;
+    }
+    novelcore::NovelVisual visual(*db_);
+    auto shot = visual.GetShot(shot_id);
+    if (!shot) {
+        return false;
+    }
+    auto* drawer = new widgets::Drawer(QStringLiteral("分镜引用 #%1").arg(shot_id));
+    auto* values = new data::KeyValue(drawer);
+    values->SetPairs({
+        {QStringLiteral("场景"), QString::number(shot->scene_id)},
+        {QStringLiteral("镜序"), QString::number(shot->ord)},
+        {QStringLiteral("角色 JSON"), QString::fromStdString(shot->character_ids_json)},
+        {QStringLiteral("动作"), QString::fromStdString(shot->action)},
+        {QStringLiteral("表演"), QString::fromStdString(shot->expression)},
+        {QStringLiteral("情绪"), QString::fromStdString(shot->mood)},
+        {QStringLiteral("Prompt"), QString::fromStdString(shot->prompt_text)},
+    });
+    drawer->BodyLayout()->addWidget(values);
+    drawer->Open();
+    return true;
+}
 
 void AssetPageModel::ProjectRefs(const std::vector<AssetRefFact>& refs) {
     QVariantList view;

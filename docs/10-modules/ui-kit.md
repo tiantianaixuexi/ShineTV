@@ -139,21 +139,38 @@ transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTe
 | `qml/AssetsRefLibrary.qml` | 项目参考库面板（导入 / 标记 / 绑定 / 删除），数据取 `Page.refImages`。 |
 | `qml/AssetsPolicyPanel.qml` | 依赖策略面板，数据取 `Page.policy`，写回 `Page.setAllowDegrade` / `setSuspendMinutes`。 |
 
+| `qml/AssetsPolicyPanel.qml` | 依赖策略面板，数据取 `Page.policy`，写回 `Page.setAllowDegrade` / `setSuspendMinutes`。 |
+| `qml/AssetsGallery.qml` | 全局图库面板（来源 Seg / 虚拟化网格 / 查看器 / 选中行），数据取 `Page.galleryItems` / `galleryState` / `galleryViewer`。桥上只做**投影**，真值全在 `shine::gallery`。 |
+
 ✅ **Widgets 版已全部删除**（2026-09-29）：`AssetWorkspace` / `AssetDetailView` /
-`ConsistencyView` / `RefLibraryView` / `AssetPolicyPanel` 共约 150 KB 连同
-`CMakeLists.txt` 条目一并移除，全仓无残留编译期引用。删除前先把这三块真实能力
-接到了 QML：导出整版设定集 PNG、参考库导入/标记/绑定/删除、依赖策略面板。
-残留的仅是注释里的历史沿革说明，不是路径引用。
+`ConsistencyView` / `RefLibraryView` / `AssetPolicyPanel` / `GalleryWorkspace`
+共约 150 KB 连同 `CMakeLists.txt` 条目一并移除，全仓无残留编译期引用。删除前先把
+这四块真实能力接到了 QML：导出整版设定集 PNG、参考库导入/标记/绑定/删除、
+依赖策略面板、全局图库。残留的仅是注释里的历史沿革说明，不是路径引用。
 
-`P05Checks.cpp` 的 8 个场景也全部改到 `QmlAssetsPage` 上：S1–S6 真跑，
-S7/S8（全局图库三来源扫描 / 图片用量跳转）**显式记 NOT-COVERED** —— 全局图库
-至今未迁 QML，`GlobalGalleryProbe()` 固定返回 `gallery=unavailable`，
-照原样跑只会对着桩报假绿。跑场景：`scripts/run_p05.ps1`。
+`P05Checks.cpp` 的 8 个场景全部在 `QmlAssetsPage` 上**真跑**，无 NOT-COVERED。
+跑场景：`scripts/run_p05.ps1`（接 `-Scenes S7,S8` 或位置参数，两种写法都收；
+带 120s 硬超时 —— 场景没写报告就说明 app 掉进了正常主循环，等下去只会挂死）。
 
-参考库与策略面板两块落在视口的折叠线以下，由 `P05Review` 的
-`assets-detail-bottom` 覆盖：取证视口是真实分辨率 1920×1080，滚动位置由
-`QmlAssetsPage::SetScrollY` 显式钉死（**不是**把宿主拉高取一张全页）。
-该图在 `expected` 里、缺一张即 FAIL。
+⚠️ 图库这一块有三个**不写在代码里就会再犯**的坑：
+
+1. `gallery::ItemsGeneration()` 初值是 0。只按「变没变」判投影的话，
+   首投影永远不发生（0 == 0），QML 首次求值落在空 `QVariantMap` 上 ——
+   故有 `galleryProjected_` + `PollGallery(force)`。
+2. `GalleryState::source` 初值就是 `Local`，而「切来源」对已在该来源是空动作
+   （Seg 语义）。要重新扫当前来源必须走 `rescanGallery()`。
+3. 扫描异步且无完成信号。`WaitGalleryScan` 是阻塞循环，从定时器回调里调它时
+   没人驱动 `gallery::Tick` —— 所以等待循环**自己**调 Tick，别指望
+   `AppEntry` 的 15ms 泵。实测不这么做：扫描 0.1ms 完事，却等满 10s 超时。
+
+参考库 / 策略 / 图库三块落在视口的折叠线以下，由 `P05Review` 的
+`assets-detail-bottom` 覆盖，图库查看器另有 `assets-gallery-viewer`。
+取证视口是真实分辨率 1920×1080，滚动位置由 `QmlAssetsPage::SetScrollY`
+显式钉死（**不是**把宿主拉高取一张全页）。这两张图在 `expected` 里、缺一张即 FAIL。
+
+⚠️ 宿主写 QML 属性前先确认**有人在读**：`ShowDetailPage` 曾写 `viewIndex`，
+而全页没有一处读它（渲染看的是 `overview`）—— 切页调用静默失效，取证里
+「切到总览再拍」拍出来的仍是详情，同一份像素被两个图名覆盖，等于少了一张证据。
 
 ## FlowCanvas
 

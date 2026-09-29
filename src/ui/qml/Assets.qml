@@ -26,9 +26,9 @@ pragma ComponentBehavior: Bound
 // CSS），本页只提供数据与摆放。
 //
 // 页面私有的四件（AssetsSecHead / AssetsAssetCard / AssetsCompare / AssetsTimeline）
-// 之外又加了两件：AssetsRefLibrary（④ 参考库）与 AssetsPolicyPanel（⑤ 依赖策略），
-// 对应已删除的 Widgets 版参考库 / 策略面板 —— 同样只做渲染与动作派发，
-// 取数与真值全在 C++ 桥上。
+// 之外又加了三件：AssetsRefLibrary（④ 参考库）、AssetsPolicyPanel（⑤ 依赖策略）、
+// AssetsGallery（⑥ 全局图库），对应已删除的 Widgets 侧那一组面板 —— 同样只做渲染
+// 与动作派发，取数与真值全在 C++ 桥上。
 //
 // 数据：真值全部来自 C++ 注入的 `Page`（ui/pages/assets/AssetPageModel.h），
 // 取数逻辑在 ui/pages/assets/AssetVisualData.h。由 QmlAssetsPage 在
@@ -63,8 +63,11 @@ Ctl {
     // ============================================================
 
     // —— 页面状态（宿主可写）——
+    // ⚠️ 只有 overview 一个开关。原先还有个 `property int viewIndex`（0=总览 1=详情），
+    //    QmlAssetsPage::ShowDetailPage 写的就是它 —— 但**全页没有一处读它**，
+    //    于是切页调用静默失效：取证表里「切到总览再拍」拍出来的还是详情。
+    //    写属性前先确认有人在读。
     property bool overview: false
-    property int viewIndex: 0          // 0=总览 1=详情（QmlAssetsPage::ShowDetailPage 写）
 
     // 取证用：把内容滚动位置**显式钉死**（QmlAssetsPage::SetScrollY 写）。
     // ⚠️ 别改成「临时把宿主拉高再抓一张全页」—— 那是把视口撑成一个不存在的
@@ -248,13 +251,16 @@ Ctl {
     readonly property real tlSecH: vsecPadT + 26 + vsecGap + tlView.implicitHeight + vsecPadB
     readonly property real yTimeline: yCompare + cmpSecH
 
-    // ④ 项目参考库 / ⑤ 依赖策略：AssetsRefLibrary / AssetsPolicyPanel。
+    // ④ 参考库 / ⑤ 依赖策略 / ⑥ 全局图库：AssetsRefLibrary / AssetsPolicyPanel / AssetsGallery。
     // 页面**不写内容高度常数** —— 写死高度是 PanelCard 头注第 2 条记的旧账。
+    // 分区按声明顺序往下追加，谁是最后一段谁就不带下边框（那一段的高度算式里也就没有 +1）。
     readonly property real refsSecH: vsecPadT + 26 + vsecGap + refView.implicitHeight + vsecPadB + 1
     readonly property real yRefs: yTimeline + tlSecH
-    readonly property real policySecH: vsecPadT + 26 + vsecGap + policyView.implicitHeight + vsecPadB
+    readonly property real policySecH: vsecPadT + 26 + vsecGap + policyView.implicitHeight + vsecPadB + 1
     readonly property real yPolicy: yRefs + refsSecH
-    readonly property real detH: yPolicy + policySecH + detPadB
+    readonly property real galSecH: vsecPadT + 26 + vsecGap + galView.implicitHeight + vsecPadB
+    readonly property real yGallery: yPolicy + policySecH
+    readonly property real detH: yGallery + galSecH + detPadB
     readonly property real contentH: Math.max(flick.height, overview ? ovH : detH)
 
     // —— 内容滚动：.vw 是 min-height 100% 的长列，超出视口的部分要能滚 ——
@@ -756,6 +762,43 @@ Ctl {
                 }
                 AssetsPolicyPanel {
                     id: policyView
+                    x: root.vsecPadX
+                    y: root.vsecPadT + 26 + root.vsecGap
+                    width: parent.width - root.vsecPadX * 2
+                    height: implicitHeight
+                }
+                // ⚠️ 下面接了第 6 段，这一段不再是最后一段：补上 .vsec 的下边框，
+                //    高度算式里对应多一个 +1（见根上的 policySecH）。
+                Rectangle {
+                    x: 0
+                    y: parent.height - 1
+                    width: parent.width
+                    height: 1
+                    color: ThemeBridge.colors["line.subtle"]
+                }
+            }
+
+            // —— ⑥ 全局图库（真数据：Page.galleryItems / galleryState / galleryViewer）——
+            // 三来源（本地 / Comfy 输出 / Comfy 输入）共用一个虚拟化网格；
+            // 查看器叠在面板自己那一块里（见 AssetsGallery.qml 头注）。
+            Item {
+                id: gallerySec
+                x: root.detPadX
+                y: root.yGallery
+                width: flick.width - root.detPadX * 2
+                height: root.galSecH
+
+                AssetsSecHead {
+                    x: root.vsecPadX
+                    y: root.vsecPadT
+                    width: parent.width - root.vsecPadX * 2
+                    height: 26
+                    glyph: "▣"
+                    title: "全局图库 · 本地 / Comfy 输出 / Comfy 输入"
+                    meta: "扫描在 worker 上跑；缩略图异步解码，选中图可设为工作流输入"
+                }
+                AssetsGallery {
+                    id: galView
                     x: root.vsecPadX
                     y: root.vsecPadT + 26 + root.vsecGap
                     width: parent.width - root.vsecPadX * 2

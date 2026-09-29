@@ -3,7 +3,6 @@
 
 #include "ui/pages/assets/QmlAssetsPage.h"
 
-#include "ui/verify/gallery/GalleryWorkspace.h"
 #include "core/Async.h"
 #include "core/Settings.h"
 #include "db/sqlite/SqliteDb.h"
@@ -59,8 +58,10 @@ struct ReviewState {
         "assets-grid", "assets-nav-tree", "assets-inspector",
         "assets-empty", "assets-card-states",
         "sheet-full", "sheet-missing-layers",
-        // 真实视口下滚动到底：覆盖折叠线以下的详情区（参考库 / 依赖策略两块）
+        // 真实视口下滚动到底：覆盖折叠线以下的详情区（参考库 / 依赖策略 / 全局图库）
         "assets-detail-bottom",
+        // ⑥ 全局图库的查看器（叠在图库面板上，含缩放条）
+        "assets-gallery-viewer",
         "assets-mixed-theme", "toast-shadow"};
     std::vector<std::string> manifest;
     // 迁移后无等价实现的取证项：显式记账，不进 expected，也就不会拉低 overall。
@@ -97,24 +98,6 @@ bool SaveImage(const fs::path& path, const QColor& color, int w = 160, int h = 1
     image.fill(color);
     fs::create_directories(path.parent_path());
     return image.save(QString::fromStdString(shine::util::PathToUtf8(path)), "PNG");
-}
-
-void WaitScan(GalleryWorkspace* gallery) {
-    QEventLoop loop;
-    QTimer poll;
-    int elapsed = 0;
-    QObject::connect(&poll, &QTimer::timeout, &loop, [&] {
-        if ((!shine::gallery::State().scanning && elapsed > 50) || elapsed > 8000) {
-            poll.stop();
-            loop.quit();
-        }
-        elapsed += 20;
-    });
-    poll.start(20);
-    loop.exec(QEventLoop::ExcludeUserInputEvents);
-    if (gallery != nullptr) {
-        gallery->Sync();
-    }
 }
 
 bool CreateFixture(ReviewState* st) {
@@ -370,19 +353,29 @@ void RunReview(ReviewState* st) {
     }
 
     review::Pump();
+    // ⚠️ 必须显式切到总览再拍。原来靠「开页默认就是网格」，但开页默认是**详情**
+    //    （开页即选中第一个实体），于是 assets-grid 拍到的是详情第一帧 ——
+    //    与后面的 sheet-full 逐字节相同，一张图覆盖两个名字，等于少了一张证据。
+    st->assets->ShowDetailPage(0);
     review::Grab(st->assets, st->dir, "assets-grid", st->manifest);
     review::Grab(st->assets->NavWidget(), st->dir, "assets-nav-tree", st->manifest);
     review::Grab(st->assets->InspectorBody(), st->dir, "assets-inspector", st->manifest);
 
     st->assets->SelectEntity(st->empty_entity);
+    st->assets->ShowDetailPage(1);
     review::Pump();
     review::Grab(st->assets, st->dir, "assets-empty", st->manifest);
 
-    st->assets->SelectEntity(0);
+    // 卡片状态图：同一张总览网格，但选中环换到另一个实体。
+    // ⚠️ 不能用 SelectEntity(0) —— 卡片高亮绑的是 `Page.selectedAssetId`（资产），
+    //    清实体不会清资产，拍出来与 assets-grid 逐字节相同，一张图两个名字。
+    st->assets->SelectEntity(st->missing_entity);
+    st->assets->ShowDetailPage(0);
     review::Pump();
     review::Grab(st->assets, st->dir, "assets-card-states", st->manifest);
 
     st->assets->SelectEntity(st->full_entity);
+    st->assets->ShowDetailPage(1);
     // 帧图在 worker 上解码、像素差异异步回填；不等就会拍到「未比对」的中间态。
     st->assets->WaitVisualsReady();
     review::Pump();
@@ -392,7 +385,7 @@ void RunReview(ReviewState* st) {
     review::Pump();
     review::Grab(st->assets, st->dir, "sheet-missing-layers", st->manifest);
 
-    // 详情区**下半部分**（④ 项目参考库 / ⑤ 依赖等待与降级策略）落在视口的
+    // 详情区**下半部分**（④ 参考库 / ⑤ 依赖策略 / ⑥ 全局图库）落在视口的
     // 折叠线以下，上面那几张拍不到。缺了这一张就等于**没有取证**，而取证表里
     // 「没这一行」会被读成「跑了没问题」。
     //
@@ -402,9 +395,33 @@ void RunReview(ReviewState* st) {
     // 位置钉死用 SetScrollY，故它是确定的一帧，不随实体选择漂移。
     st->assets->SelectEntity(st->full_entity);
     st->assets->WaitVisualsReady();
+
+    // ⑥ 全局图库：目录是 CreateFixture 里铺好的（root/gallery 8 张），
+    // 但 gallery::Init 早就跑完了 —— 必须**重扫一次**面板里才会有条目。
+    // 已在该来源时切来源是空动作（Seg 语义），用户的真实动作是点「重扫」。
+    //
+    // ⚠️ 等待的返回值**不许丢**：丢了就等于把「没扫完」当成「扫完了」，
+    //    抓出来的图状态行会写着「扫描中 · 已载入 0 张」而 manifest 照样 saved。
+    st->assets->RescanGallery();
+    const bool scan_ok = st->assets->WaitGalleryScan();
+    const bool picked = st->assets->SelectFirstGlobalGallery();
+    st->manifest.push_back("assets-gallery-scan " + std::string(scan_ok ? "converged" : "TIMEOUT") +
+                           " picked=" + (picked ? "1" : "0"));
+
     st->assets->SetScrollY(1e9); // 钉到最底（QML 侧会 clamp 到 contentHeight - height）
     review::Pump();
     review::Grab(st->assets, st->dir, "assets-detail-bottom", st->manifest);
+
+    // 查看器：叠在图库面板自己那一块上（见 AssetsGallery.qml 头注），
+    // 所以要先把滚动钉在同一处，否则拍到的是另一个位置。
+    st->assets->OpenFirstGalleryViewer();
+    review::Pump();
+    review::Pump();
+    const bool viewer_shot = st->assets->GlobalGalleryProbe().contains(QStringLiteral("viewerOpen=1"));
+    st->manifest.push_back("assets-gallery-viewer-open " +
+                           std::string(viewer_shot ? "open" : "NOT-OPEN"));
+    review::Grab(st->assets, st->dir, "assets-gallery-viewer", st->manifest);
+    st->assets->CloseGalleryViewer();
     st->assets->SetScrollY(-1); // 交还控制权，别影响后面的取证
     review::Pump();
 
@@ -416,12 +433,12 @@ void RunReview(ReviewState* st) {
         "detail-vsec  QML 详情区的设定集段只渲染桥上的字段，没有分层展开取证");
     st->notCovered.push_back(
         "detail-derive-chain  同上；AssetsDerive 已接 Page.deriveChain 真数据，但缺分层取证");
+    // ⚠️ gallery-grid / gallery-viewer-zoom 已于 2026-09-29 随全局图库迁移
+    //    撤下这条记账：两者现在是 assets-detail-bottom / assets-gallery-viewer
+    //    两张真图，在 expected 里。右键菜单确实没有 QML 等价物，保留。
     st->notCovered.push_back(
-        "gallery-grid  全局图库仍是 Widgets 的 GalleryWorkspace，未接入 QML 资产页");
-    st->notCovered.push_back(
-        "gallery-viewer-zoom  同上");
-    st->notCovered.push_back(
-        "gallery-context-menu  同上");
+        "gallery-context-menu  Widgets 版 GalleryWorkspace 的网格右键菜单（选来源 / "
+        "设为工作流输入）没有 QML 等价物；面板改成头部 Seg + 选中行按钮");
 
     shine::theme::ThemeService::Switch(shine::theme::ThemeId::Dusk, false);
     st->assets->ShowDetailPage(0);

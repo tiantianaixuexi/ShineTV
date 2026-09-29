@@ -74,6 +74,17 @@ QmlAssetsPage::QmlAssetsPage(QWidget* parent) : QWidget(parent) {
     // AddSection 收的都是 QWidget*，所以左栏右栏不必改。
     nav_ = AcquireHost(QStringLiteral(":/qt/qml/AssetNav.qml"), model_);
     inspector_ = AcquireHost(QStringLiteral(":/qt/qml/AssetInspector.qml"), model_);
+
+    // 图库扫描没有完成信号可挂（结果由 AppEntry 的 Tick 回填到全局模型），
+    // 只能轮询 ItemsGeneration 变化。间隔与那个 15ms Tick 对齐。
+    gallery_poll_ = new QTimer(this);
+    gallery_poll_->setInterval(15);
+    connect(gallery_poll_, &QTimer::timeout, this, [this] {
+        if (model_->PollGallery()) {
+            content_->Pump(0);
+        }
+    });
+    gallery_poll_->start();
 }
 
 QmlAssetsPage::~QmlAssetsPage() {
@@ -167,11 +178,14 @@ std::size_t QmlAssetsPage::ImportReferences(const std::vector<std::filesystem::p
 }
 void QmlAssetsPage::RefreshReferences() { model_->refreshReferences(); }
 void QmlAssetsPage::ShowDetailPage(int index) {
-    // QML 根对象暴露 viewIndex（0=总览 1=详情），直接写属性而不是 invokeMethod：
+    // QML 根对象暴露 overview（bool），直接写属性而不是 invokeMethod：
     // 页面根是 Ctl(Rectangle)，invokeMethod 走 QMetaObject 反射找不到 JS 函数。
+    // ⚠️ 写的是 overview，不是原先那个 viewIndex —— 后者曾是个**没人读的死属性**，
+    //    写它等于什么都没发生：取证里「切到总览再拍」拍出来的仍是详情那一帧。
     if (auto* root = content_->rootObject()) {
-        root->setProperty("viewIndex", index);
+        root->setProperty("overview", index == 0);
     }
+    content_->Pump(0);
 }
 
 void QmlAssetsPage::SetScrollY(double y) {
@@ -235,16 +249,52 @@ QString QmlAssetsPage::DetailProbe() const { return model_->DetailProbe(); }
 QString QmlAssetsPage::PolicyProbe() const { return model_->PolicyProbe(); }
 QString QmlAssetsPage::ConsistencyProbe() const { return model_->ConsistencyProbe(); }
 QString QmlAssetsPage::RefProbe() const { return model_->RefProbe(); }
-QString QmlAssetsPage::GlobalGalleryProbe() const {
-    return QStringLiteral("gallery=unavailable");
-}
+QString QmlAssetsPage::GlobalGalleryProbe() const { return model_->GalleryProbe(); }
 void QmlAssetsPage::SelectGlobalGallerySource(gallery::SourceKind source) {
-    gallery_source_ = source;
+    model_->selectGallerySource(static_cast<int>(source));
+    content_->Pump(0);
 }
-bool QmlAssetsPage::SelectFirstGlobalGallery() { return false; }
-QStringList QmlAssetsPage::ReferenceUsageLabels() const { return ref_usage_labels_; }
+void QmlAssetsPage::RescanGallery() {
+    model_->rescanGallery();
+    content_->Pump(0);
+}
+bool QmlAssetsPage::SelectFirstGlobalGallery() {
+    const QVariantList items = model_->galleryItems();
+    if (items.isEmpty()) {
+        return false;
+    }
+    model_->selectGalleryItem(items.front().toMap().value(QStringLiteral("id")).toULongLong());
+    content_->Pump(0);
+    return true;
+}
+void QmlAssetsPage::OpenFirstGalleryViewer() {
+    if (!SelectFirstGlobalGallery()) {
+        return;
+    }
+    const QVariantList items = model_->galleryItems();
+    model_->openGalleryViewer(items.front().toMap().value(QStringLiteral("id")).toULongLong());
+    content_->Pump(0);
+}
+void QmlAssetsPage::CloseGalleryViewer() {
+    model_->closeGalleryViewer();
+    content_->Pump(0);
+}
+QStringList QmlAssetsPage::ReferenceUsageLabels() const { return model_->ReferenceUsageLabels(); }
 bool QmlAssetsPage::ActivateReferenceUsage(int index) {
-    return index >= 0 && index < ref_usage_labels_.size();
+    return model_->ActivateReferenceUsage(index);
+}
+void QmlAssetsPage::SetGalleryAsWorkflowInput() {
+    model_->setGalleryAsWorkflowInput();
+    content_->Pump(0);
+}
+
+bool QmlAssetsPage::WaitGalleryScan(int timeout_ms) {
+    if (!model_->WaitGalleryScan(timeout_ms)) {
+        return false;
+    }
+    content_->Pump(0);
+    inspector_->Pump(0);
+    return true;
 }
 
 QWidget* QmlAssetsPage::NavWidget() const { return nav_; }

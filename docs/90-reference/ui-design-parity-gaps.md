@@ -715,18 +715,30 @@ ShapePath {
 > （`visual_artifacts` / `visual_states` / `character_status` / `shots` /
 > `generated_images`）+ 文件系统存在性，**不再有 mock**。帧图像素差异在 worker 上算。
 >
-> **Widgets 版五个类（`AssetWorkspace` / `AssetDetailView` / `ConsistencyView` /
-> `RefLibraryView` / `AssetPolicyPanel`，约 150 KB）已随迁移删除**。删除前先把三项
-> 真实能力接到了 QML：导出整版设定集 PNG（`Page.exportSheet`）、参考库
-> 导入/标记/绑定/删除（`Page.importReferences` / `setReferenceMarkers` /
+> **Widgets 版六个类（`AssetWorkspace` / `AssetDetailView` / `ConsistencyView` /
+> `RefLibraryView` / `AssetPolicyPanel` / `GalleryWorkspace`，约 150 KB）已随迁移删除**。
+> 删除前先把四项真实能力接到了 QML：导出整版设定集 PNG（`Page.exportSheet`）、
+> 参考库导入/标记/绑定/删除（`Page.importReferences` / `setReferenceMarkers` /
 > `bindReferenceToEntity` / `removeReference`）、依赖策略面板
-> （`Page.setAllowDegrade` / `setSuspendMinutes`）。全仓无残留编译期引用。
+> （`Page.setAllowDegrade` / `setSuspendMinutes`）、全局图库
+> （`Page.galleryItems` / `galleryState` / `galleryViewer` + `selectGallerySource` /
+> `rescanGallery` / `selectGalleryItem` / `setGalleryAsWorkflowInput` /
+> `openGalleryViewer` / `setGalleryZoom`）。全仓无残留编译期引用。
 >
-> ⚠️ **全局图库仍未迁**（`src/ui/verify/gallery/GalleryWorkspace`）。因此
-> `QmlAssetsPage::GlobalGalleryProbe()` 固定返回 `gallery=unavailable`、
-> `SelectFirstGlobalGallery()` 固定 `false`、`ReferenceUsageLabels()` 恒空。
-> **P05 的 S7 / S8 已显式记 NOT-COVERED**（报告里单列一节、不计入 overall），
-> 而不是留着断言对着桩跑出假绿。
+> ✅ **全局图库已迁**（2026-09-29）。`AssetPageModel` 只做**投影**：三来源 / 条目表 /
+> 查看器全部取自 `shine::gallery`，QML 侧是 `src/ui/qml/AssetsGallery.qml`。
+> **P05 的 S7 / S8 已恢复真断言**（不再是 NOT-COVERED）：S7 验三来源逐一异步扫描 +
+> 缩放边界 0.1–16× + 设为工作流输入；S8 验 `visual::FindReferenceUsages` 的
+> 资产 / 分镜 / 参考图三条引用链与跳转。
+>
+> ⚠️ 扫描是异步的（`RequestScan` → worker → `AppEntry.cpp` 的 15ms `ui_pump` →
+> `gallery::Tick`），**没有完成信号可挂**，桥上靠 `gallery::ItemsGeneration()` 判变化，
+> 由 `QmlAssetsPage` 的 15ms 轮询调 `PollGallery()`。两个坑：
+> ① `ItemsGeneration()` 初值为 0，只比「变没变」会让**首投影永远不发生**，
+> QML 首次求值就落在空 `QVariantMap` 上（故有 `galleryProjected_` + `force` 参数）；
+> ② `GalleryState::source` 初值就是 `Local`，而「切来源」对已在该来源是空动作
+> （Seg 语义）—— 要重新扫当前来源必须走 `rescanGallery()`。P05 的 S7 / S8 与取证
+> 都踩过这两条。
 >
 > 其余 4 页（Parity / Gallery / Storyboard / ImageFlow）**仍是离屏取证轨**，
 > `src/ui/pages/**` 里除资产页外零 QML 宿主。规划迁移时不要把本节读成「已经迁完了」。
@@ -750,6 +762,28 @@ Flickable 自己的拖动/惯性改回去，抓不到钉住的那一帧；写 -1
 「没这一行」会被读成「跑了没问题」。夹具里也要给它们真数据（当前 fixture
 导入一张参考图并绑定实体），否则拍到的只是「0 张」空态，证明不了列表 /
 标记 / 绑定任何一行。
+
+⚠️ **`expected` 里有这张 ≠ 拍到了它**。「图名承诺的状态」和「实际拍到的帧」
+是两件事，本轮在同一份取证里同时踩了三种：
+
+1. **宿主写了没人读的属性**。`ShowDetailPage(0)` 写 `Assets.qml` 的 `viewIndex`，
+   而全页没有一处读它（渲染看的是 `overview`）—— 切页静默失效，
+   `assets-grid` 拍成了详情第一帧，与 `sheet-full` **逐字节相同**，
+   一份像素占两个图名，等于少一张证据。修法是写 `overview`，
+   并把死属性删掉（留着就还会有人写它）。
+2. **动作的语义层级不对**。`assets-card-states` 原本用 `SelectEntity(0)`
+   来「不选中」，但卡片高亮绑的是 `Page.selectedAssetId`（**资产**），
+   清实体不会清资产 —— 拍出来与 `assets-grid` 同样逐字节相同。
+   改成选另一个实体，选中环才真的移动。
+3. **等待结果被丢弃**。`(void)WaitGalleryScan()` 之后立刻抓图，扫没扫完
+   全看运气：实拍到状态行写着「扫描中 · 已载入 0 张」，而 manifest 照样 `saved`。
+   现在把返回值写进 manifest（`assets-gallery-scan converged|TIMEOUT`），
+   超时就是超时，不会被读成「跑了没问题」。
+
+**判据**：一次取证跑完，先把 `expected` 里所有图的 md5 排一遍。**两个名字
+同一 md5 就是有一张没拍到它该拍的东西** —— 这个检查比逐张看图快得多，
+而且能抓到「图名对不上内容」这类目视容易放过的问题。
+（本机离屏渲染跨进程有噪声，字节数会变；**逐字节相同的 md5 才是信号**。）
 
 **单文件静态自检**：`qmllint -I C:/msys64/mingw64/share/qt6/qml <file>`。
 **不要加 `--bare`**（与上文 ⑨ 的约定一致）：加了之后 qmllint 解析不到 QtQuick 的真实类型，
