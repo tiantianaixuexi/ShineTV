@@ -104,6 +104,19 @@ Ctl {
     function setKind(key) { Page.setKindFilter(key) }
     function selectAsset(id) { Page.selectAsset(id) }
 
+    // 派生链节点名是中文（「正脸」/「四视图」/…），而 C++ 的 startLayer 收的是
+    // key（front/turnaround/base_body/wardrobe）。**别拿中文去比** —— 靠
+    // deriveChain[i].name 反查 key，别在这里硬写一张中英对照表。
+    function startLayerByName(name) {
+        if (!root.deriveChain) { return }
+        for (var i = 0; i < root.deriveChain.length; ++i) {
+            if (root.deriveChain[i].name === name) {
+                Page.startLayer(root.deriveChain[i].key)
+                return
+            }
+        }
+    }
+
     // 派生链层名：来自真实产物层（Page.deriveChain），空链显示「暂无产物」
     readonly property string deriveNames: {
         if (!root.deriveChain || root.deriveChain.length === 0) { return "暂无产物" }
@@ -505,6 +518,11 @@ Ctl {
                         width: sheetRight.width
                         height: root.deriveH
                         items: root.deriveChain
+                        // 点某一层 = 提交该层的形象层任务（真实管线，走
+                        // AssetPageModel::startLayer → 资产运行器）。
+                        // 之前 nodePicked 无人监听，节点点了没反应 ——
+                        // 而 startLayer 一直在桥上没人调。
+                        onNodePicked: function(name) { root.startLayerByName(name) }
                     }
                     Text {                        // .tiny.dim（margin-top 4）
                         x: 0

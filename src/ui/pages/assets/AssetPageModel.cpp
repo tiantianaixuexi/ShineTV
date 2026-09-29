@@ -803,7 +803,12 @@ QString AssetPageModel::entityNameById(const QString& id) const {
 std::optional<novelcore::AssetLayer> AssetPageModel::LayerFromKey(const QString& key) const {
     if (key == QStringLiteral("front")) return novelcore::AssetLayer::Front;
     if (key == QStringLiteral("turnaround")) return novelcore::AssetLayer::Turnaround;
-    if (key == QStringLiteral("body")) return novelcore::AssetLayer::BaseBody;
+    // ⚠️ 真值是 `base_body`（visual_artifacts.layer / AssetVisualData.h 的层表），
+    // 这里原来只认 `body` —— 而 QML 的派生链节点传的是 deriveChain[i].key，
+    // 于是点「基础身体」会静默返回 false。「body」保留兼容外部旧调用。
+    if (key == QStringLiteral("base_body") || key == QStringLiteral("body")) {
+        return novelcore::AssetLayer::BaseBody;
+    }
     if (key == QStringLiteral("wardrobe")) return novelcore::AssetLayer::Wardrobe;
     return std::nullopt;
 }

@@ -148,6 +148,8 @@ Button {
 - **桥上的空态 map 必须带全零值键**。只回 `{none: true}` 的话，QML 侧 `Page.runtime.detail` / `.layer` / `.phaseLabel` 读到 `undefined` → `Unable to assign [undefined] to QString/QColor`，一次空态刷一片红。判「有没有」用 `none` 这类标志位，不要对字段做 truthiness。同 `Assets.qml` 的 `emptyAsset`。
 - **主题键名写错不会报错，只会取到 `undefined`**：`fill.selected`（不是 `fill.active`）—— 赋给 `color` 报 `Unable to assign [undefined] to QColor`，整块底色不画。核对的土办法：把某套主题 JSON 的 `colors` 键名提出来，与 `ThemeBridge.colors["…"]` 的实参做差集。
 - **QML 里不要写 `#RRGGBB` / `rgba(0,0,0,…)`**：`check-colors` 门禁会拦。要遮罩用 `Qt.alpha(ThemeBridge.colors["bg.void"], 0.86)`。
+- **枚举 → 字符串的对照表不要在 UI 层再抄一份**。`AssetLayer` 的真值来自 `novelcore::AssetLayerName()`（`front` / `turnaround` / **`base_body`** / `wardrobe`）；UI 层曾自己维护一张表并把基础身体写成 `body`，查表落空 → `startLayer` 静默返回 `false`，**按钮点了什么都不发生**。要转就调 `AssetLayerName`，不要硬写。同理 QML 侧按中文名反查 key 时，靠数据里的 `name` ↔ `key` 配对，别写中英对照表。
+- `Q_INVOKABLE` 方法返回 `false` 在 QML 侧**没有任何提示**。桥上的动作方法失败时要自己 `Toast` 说明，否则用户只看到「点了没反应」。
 
 ## 资源打包
 

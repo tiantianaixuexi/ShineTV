@@ -120,12 +120,11 @@ bool QmlAssetsPage::SelectAsset(qint64 id) {
     return true;
 }
 bool QmlAssetsPage::StartAssetLayer(novelcore::AssetLayer layer) {
-    static const char* keys[] = {"front", "turnaround", "body", "wardrobe"};
-    const int index = static_cast<int>(layer);
-    if (index < 0 || index >= 4) {
-        return false;
-    }
-    return model_->startLayer(QString::fromLatin1(keys[index]));
+    // 直接用 AssetLayerName（枚举自己的名字，就是 visual_artifacts.layer 的真值）。
+    // 原来这里维护了一张 keys[] 对照表且把基础身体写成 "body"，与真值 "base_body"
+    // 不符 → 经 AssetPageModel::startLayer 查表落空、静默返回 false。
+    // 枚举 → 名字是唯一真值，不要在 UI 层再抄一份。
+    return model_->startLayer(QString::fromStdString(std::string{novelcore::AssetLayerName(layer)}));
 }
 bool QmlAssetsPage::StartAssetPipeline() { return model_->startPipeline(); }
 
