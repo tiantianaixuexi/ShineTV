@@ -1,13 +1,17 @@
 #include "ui/kit/images/Grid.h"
 
+#include "core/Async.h"
 #include "ui/kit/motion/Easing.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/controls/Controls.h"
+#include "util/Encoding.h"
 
 #include <QLabel>
+#include <QImageReader>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QVBoxLayout>
@@ -322,6 +326,45 @@ void ImageCard::SetActions(const QString& label, std::function<void()> onClick) 
         }
     });
     BodyLayout()->addWidget(b, 0, Qt::AlignLeft);
+}
+
+void SetThumbAsync(QLabel* target, const std::filesystem::path& abs, const QSize& box,
+                   Qt::AspectRatioMode mode, const QString& fallback_text,
+                   std::function<void(const QImage&)> on_ready) {
+    if (target == nullptr || box.isEmpty()) {
+        return;
+    }
+    const QPointer<QLabel> guard(target);
+    const QString path = QString::fromStdString(shine::util::PathToUtf8(abs));
+    async::RunOnWorker([guard, path, box, mode, fallback_text, on_ready = std::move(on_ready)] {
+        QImageReader reader(path);
+        reader.setAutoTransform(true);
+        // 先按目标尺寸下采样再解码：避免把整张原图读进内存再缩。
+        const QSize original = reader.size();
+        if (original.isValid() && !original.isEmpty()) {
+            reader.setScaledSize(original.scaled(box, mode));
+        }
+        QImage image = reader.read();
+        if (!image.isNull()) {
+            image = image.scaled(box, mode, Qt::SmoothTransformation);
+        }
+        async::PostToUi([guard, image = std::move(image), fallback_text,
+                         on_ready = std::move(on_ready)] {
+            if (guard.isNull()) {
+                return; // 控件已析构，结果丢弃
+            }
+            if (image.isNull()) {
+                if (!fallback_text.isEmpty()) {
+                    guard->setText(fallback_text);
+                }
+                return;
+            }
+            if (on_ready) {
+                on_ready(image);
+            }
+            guard->setPixmap(QPixmap::fromImage(image));
+        });
+    });
 }
 
 } // namespace shine::images

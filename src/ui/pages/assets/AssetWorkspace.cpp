@@ -12,11 +12,8 @@
 #include "ui/kit/controls/Controls.h"
 #include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Feedback.h"
-#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/Surfaces.h"
-#include "ui/layout/QtLayout.h"
 #include "ui/kit/controls/WidgetCommon.h"
-#include "ui/layout/QtLayout.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
 #include "ui/kit/data/Panels.h"
@@ -47,6 +44,9 @@
 #include <array>
 #include <functional>
 #include <utility>
+#include "core/Async.h"
+#include "ui/kit/images/Grid.h"
+#include <QPointer>
 
 namespace shine::app {
 namespace {
@@ -740,23 +740,24 @@ void AssetWorkspace::RebuildAssets() {
         // ui.css:1075 .art（r-sm + fill-muted）就是设计稿里这块占位/封面的类；
         // 原来用的 statedetail 是「胶囊式说明条」（4px 8px 内距 + 描边），套在封面上不对。
         widgets::SetKind(thumb, "art");
-        QImage thumbImage;
         const std::filesystem::path relative = util::PathFromUtf8(entry.asset.sheet_rel_path);
         if (relative.empty()) {
             thumb->setText(QStringLiteral("参考图待导入\n（P07 出图接入）"));
         } else {
             const std::filesystem::path imagePath =
                 relative.is_absolute() ? relative : projectDir_ / relative;
-            QImageReader reader(QString::fromStdString(util::PathToUtf8(imagePath)));
-            reader.setAutoTransform(true);
-            const QImage image = reader.read();
-            if (image.isNull()) {
-                thumb->setText(QStringLiteral("参考图读取失败\n请检查路径或重新导入"));
-            } else {
-                // 缓存原图供 hover 缩放复用（views.css:720 scale(1.07)）
-                thumbImage = image.scaled(198, 132, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                thumb->setPixmap(QPixmap::fromImage(thumbImage));
-            }
+            // 解码走 worker（原来在 UI 线程逐张 read() 整个原图，资产一多就卡）。
+            // hover 放大要复用同一张图，所以拿到后再回填给 Card。
+            const QPointer<AssetCard> card_guard(card);
+            const QPointer<QLabel> thumb_guard(thumb);
+            images::SetThumbAsync(
+                thumb, imagePath, QSize(198, 132), Qt::KeepAspectRatio,
+                QStringLiteral("参考图读取失败\n请检查路径或重新导入"),
+                [card_guard, thumb_guard](const QImage& img) {
+                    if (!card_guard.isNull() && !thumb_guard.isNull()) {
+                        card_guard->SetThumbImage(thumb_guard, img);
+                    }
+                });
         }
         QVBoxLayout* body = card->BodyLayout();
         // 封面满幅：body 自身零边距、零间距（见上方注释：不能动 Card 的 QHBox 外层）
@@ -829,7 +830,6 @@ void AssetWorkspace::RebuildAssets() {
         }
         card->setToolTip(tooltip);
         card->SetOnClick([this, id = entry.asset.id] { SelectAsset(id); });
-        card->SetThumbImage(thumb, thumbImage);
         inner->addStretch(1);
 
         assetCards_.push_back(card);

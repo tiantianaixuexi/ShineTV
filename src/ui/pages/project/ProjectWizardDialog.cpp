@@ -38,6 +38,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "ui/kit/controls/WidgetCommon.h"
 
 namespace shine::app {
 namespace {
@@ -177,28 +178,6 @@ class StepDots final : public QWidget {
     int current_ = 0;
     int max_reachable_ = 0;
     std::function<void(int)> on_click_;
-};
-
-// 换肤后重挂页面局部 QSS（ThemeService 无信号，靠 QApplication 的 ThemeChange 事件）。
-class WizardStyleRefresher : public QObject {
-  public:
-    explicit WizardStyleRefresher(std::function<void()> apply, QObject* parent = nullptr)
-        : QObject(parent), apply_(std::move(apply)) {
-        if (qApp != nullptr) {
-            qApp->installEventFilter(this);
-        }
-    }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp && apply_) {
-            apply_();
-        }
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    std::function<void()> apply_;
 };
 
 // widgets::Tag 只暴露只读 Text()，改文案走「内部 QLabel + repolish」，
@@ -698,7 +677,7 @@ void ProjectWizardDialog::BuildUi() {
 
     // 页面局部 QSS：只落在本对话框子树内（#projWizard 前缀），与 kit 全局 QSS 互不干扰。
     setStyleSheet(WizardQss());
-    new WizardStyleRefresher([this] { setStyleSheet(WizardQss()); }, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(WizardQss()); });
 }
 
 QString ProjectWizardDialog::WizardQss() const {

@@ -37,23 +37,6 @@ namespace {
              shine::widget::CssRgb(t.textPrimary));
 }
 
-// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知。
-class PageStyleRefresher : public QObject {
-  public:
-    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
-        qApp->installEventFilter(this);
-    }
-    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    QWidget* page_;
-};
 
 // 一行 KV（webui .kv：左键名 muted、右值 primary）
 QWidget* MakeKvRow(const QString& key, const QString& value, QWidget* parent) {
@@ -107,7 +90,7 @@ RenderResultView::RenderResultView(QWidget* parent) : QWidget(parent) {
     layout->addWidget(rerun_);
     layout->addStretch();
 
-    new PageStyleRefresher(this, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
     Rebuild();
 }
 

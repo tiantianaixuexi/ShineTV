@@ -6,10 +6,13 @@
 #include <functional>
 #include <vector>
 
+#include <filesystem>
+
 #include <QAbstractItemView>
 #include <QHash>
 #include <QImage>
 #include <QPixmap>
+#include <QSize>
 #include <QString>
 #include <QWidget>
 
@@ -87,5 +90,24 @@ class ImageCard : public widgets::Card {
     QLabel* thumb_ = nullptr;
     QLabel* title_ = nullptr;
 };
+
+// 异步缩略图：把 abs 指向的图片解码、缩到 box，贴到 target 上。
+//
+// **立即返回，绝不在 UI 线程解码。** AGENTS.md 明确「图片解码放 worker」，
+// 而页面上原来是在循环里 `QImageReader::read()` 同步解整张图再 scaled 到
+// 52×36 的缩略图——一张 4000×3000 的 PNG 就能把资产页冻住。
+//
+// 两处关键：
+//  * 解码前先 `setScaledSize()`，让解码器按目标尺寸下采样，
+//    而不是把全分辨率读进内存再缩（峰值内存差两个数量级）；
+//  * target 用 QPointer 守着，回填时控件已析构就丢弃结果。
+//
+// 解码失败时若给了 fallback_text 就贴它，否则保持调用方自己设的占位。
+// on_ready 在成功解码后拿到**已缩放**的那张图，供调用方缓存
+// （资产卡的 hover 放大要复用它）。它在 UI 线程调用。
+void SetThumbAsync(QLabel* target, const std::filesystem::path& abs, const QSize& box,
+                   Qt::AspectRatioMode mode = Qt::KeepAspectRatio,
+                   const QString& fallback_text = QString(),
+                   std::function<void(const QImage&)> on_ready = nullptr);
 
 } // namespace shine::images

@@ -11,6 +11,7 @@
 #include <optional>
 #include <cstddef>
 #include <vector>
+#include <cstdint>
 
 class QLabel;
 class QVBoxLayout;
@@ -71,6 +72,9 @@ class ConsistencyView : public QWidget {
     std::vector<EmotionLine> emotions_;
     std::vector<ShotFrame> frames_;
     std::size_t shot_count_ = 0;
+    // 帧图解码在 worker 上异步进行；每次 Load/Clear 自增一次，
+    // 回填时只认当前 token，避免上一轮的迟到结果覆盖新一轮。
+    std::uint64_t load_token_ = 0;
     double difference_ = -1.0;
 
     QLabel* title_ = nullptr;

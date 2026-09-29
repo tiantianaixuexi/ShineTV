@@ -14,6 +14,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <functional>
 
 namespace shine::widgets {
 
@@ -79,6 +80,28 @@ class ElidedLabel : public QLabel {
 
 // repolish：改动态属性后刷新 QSS
 void Repolish(QWidget* w);
+
+// 换肤后重挂：注册一个回调，主题 / 调色板 / 样式任一变化时重跑。
+//
+// 背景：ThemeService 是纯静态类、没有信号。换肤只做两件事
+// （ThemeService.cpp::ApplyQss）：`app->setPalette()` + `app->setStyleSheet()`。
+//
+// ⚠️ **不要靠 qApp 的 QEvent::ThemeChange 感知换肤。** 这条路径上 Qt 从不发
+// ThemeChange —— 旧实现（9 个页面各写一份 PageStyleRefresher）就是这么写的，
+// 注释还写着「见 ApplyQss 里的 QEvent::ThemeChange」，但 ApplyQss 里根本没有
+// 任何 sendEvent / postEvent。结果是换肤后页面级 QSS 静默停在旧主题。
+// 离屏探针实测（Qt 6.11.2）：qApp 只收到 ApplicationPaletteChange(38)，
+// 控件收到 PaletteChange(39) / StyleChange(100)，ThemeChange(210) 永不到达。
+//
+// 本函数把过滤器挂在 owner 自己的事件流上，收 PaletteChange / StyleChange /
+// ThemeChange 三者任一即重跑 apply()。owner 析构自动注销。
+//
+// 用法（替代各页自写的 PageStyleRefresher）：
+//     widgets::RefreshOnThemeChange(this, [this] { page_->setStyleSheet(PageQss()); });
+//
+// 回调里通常会 setStyleSheet，这会再次给 owner 派发 StyleChange；
+// 本函数内置重入保护，不会自激。
+void RefreshOnThemeChange(QWidget* owner, std::function<void()> apply);
 
 // ================================================================ 阴影
 // 设计稿大量使用 box-shadow（--shadow-1 / --shadow-2 / --shadow-accent）。

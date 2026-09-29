@@ -14,7 +14,7 @@ source_of_truth:
   - src/ui/pages/shell/MainWindow.h
   - src/ui/pages/shell/ActivityRail.h
   - src/ui/pages/shell/CommandPalette.h
-last_verified: 2026-09-28
+last_verified: 2026-09-29
 ---
 
 # UI 套件与工作区
@@ -46,6 +46,31 @@ last_verified: 2026-09-28
 **源码事实**：应用此前只 `setStyleSheet`、从不 `setPalette`，未命中路径取的是系统浅色调色板，深色主题下表现为深底黑字。`ThemeService::ApplyQss` / `Preview` / `RevertPreview` 现在三条路径都同时下发调色板。
 
 **约束**：颜色一律走 QSS 的 `%N` 占位符或 `theme::Current()` token 拼串；不要用内联 `setStyleSheet("color: palette(...)")` 绕开这条链路。`tools/check-layers.ps1` rule 3 只拦字面色值，`palette(...)` 这类「不写色值但脱离 Token」的写法靠本节约定兜。
+
+### 换肤后重挂页面级 QSS：走 `widgets::RefreshOnThemeChange`，不要等 `QEvent::ThemeChange`
+
+页面根控件常有一份**页面专属 QSS**（`PageQss()` 之类），色值从 `theme::Current()` 现算，
+换肤后必须重算。统一入口：
+
+```cpp
+widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
+```
+
+> ⚠️ **不要在 `qApp` 上装事件过滤器等 `QEvent::ThemeChange`。**
+> 换肤走 `ThemeService::ApplyQss`，它只做 `app->setPalette()` + `app->setStyleSheet()`，
+> **全树没有任何地方 post `ThemeChange`**，所以那种过滤器永远不触发——换肤后
+> 页面 QSS 静默停在旧主题（全局 QSS 已更新，于是出现「局部旧、局部新」的混色）。
+> 旧代码的注释「见 ApplyQss 里的 QEvent::ThemeChange」是**错的**。
+>
+> 离屏探针实测（Qt 6.11.2）：`qApp` 只收到 `ApplicationPaletteChange(38)`；
+> 控件收到 `PaletteChange(39)` 与 `StyleChange(100)`；`ThemeChange(210)` 永不到达。
+> `RefreshOnThemeChange` 收的就是**控件级**这三个事件，并内置重入保护
+> （回调里 `setStyleSheet` 会再次派发 `StyleChange`）。
+>
+> 2026-09-29 已把 14 份各写各的 `PageStyleRefresher` / `ToolsStyleRefresher` /
+> `ShellStyleRefresher` 等收敛到这一个入口。
+
+`ApplyShadow` 内部也走同一机制（每个控件自带重挂回调），因此阴影色跟随换肤。
 
 ## 控件约定
 
@@ -113,12 +138,19 @@ transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTe
 
 - 页面可以持有 DTO 和模型，不直接持有网络线程对象；
 - 大列表使用模型/虚拟化，图片解码在 worker；
+- 缩略图统一走 `images::SetThumbAsync(QLabel*, path, box, mode, fallback, on_ready)`：
+  它在 worker 上 `setScaledSize()` **按目标尺寸下采样后再解码**（不是把原图读进内存再缩），
+  并用 `QPointer` 守着目标控件。**不要在 UI 线程循环里 `QImageReader::read()`**
+  ——资产页原来就是这么写的，一张 4000×3000 的 PNG 就能冻住整个页面；
 - 画布只通过 DTO 和回调与 `flow` 交互；
 - 可见性验收必须启动实际窗口并检查截图，编译通过不代表布局正确。
 
 ## 关键符号
 
 - `theme::Current` / `ThemeService::Switch`
+- `widgets::RefreshOnThemeChange`（换肤后重挂页面 QSS / 阴影）
+- `images::SetThumbAsync`（worker 解码缩略图）
+- `util::ClearLayout(lay, keep_tail)`（清布局；`keep_tail` 保留末尾 N 项，如常驻的 `addStretch`）
 - `widgets::SetForcedState`
 - `kit::FlowCanvas`
 - `app::MainWindow`

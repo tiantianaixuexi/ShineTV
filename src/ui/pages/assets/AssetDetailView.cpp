@@ -44,6 +44,11 @@
 #include <vector>
 
 #include <yyjson.h>
+#include "core/Async.h"
+#include "ui/kit/images/Grid.h"
+#include <QPointer>
+#include <utility>
+#include <vector>
 
 namespace shine::app {
 namespace {
@@ -814,16 +819,9 @@ void AssetDetailView::RebuildTimeline() {
             thumb->setFixedSize(52, 36); // webui Assets.jsx:101
             thumb->setAlignment(Qt::AlignCenter);
             thumb->setToolTip(QStringLiteral("查看 %1").arg(rel));
-            const std::filesystem::path abs = ResolvePath(rel.toStdString());
-            QImageReader reader(QString::fromStdString(util::PathToUtf8(abs)));
-            reader.setAutoTransform(true);
-            const QImage image = reader.read();
-            if (!image.isNull()) {
-                thumb->setPixmap(QPixmap::fromImage(
-                    image.scaled(52, 36, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
-            } else {
-                thumb->setText(QStringLiteral("▧"));
-            }
+            // 解码走 worker（原来在这里同步 read() 整张原图再缩到 52×36）
+            images::SetThumbAsync(thumb, ResolvePath(rel.toStdString()), QSize(52, 36),
+                                  Qt::KeepAspectRatioByExpanding, QStringLiteral("▧"));
             row->AddWidget(thumb);
         }
     }
@@ -868,14 +866,8 @@ void AssetDetailView::RebuildDerive() {
         thumb->setFixedHeight(64);
         thumb->setAlignment(Qt::AlignCenter);
         if (data.ready) {
-            const std::filesystem::path path = ResolvePath(ArtifactPath(data));
-            QImageReader reader(QString::fromStdString(util::PathToUtf8(path)));
-            reader.setAutoTransform(true);
-            const QImage image = reader.read();
-            if (!image.isNull()) {
-                thumb->setPixmap(QPixmap::fromImage(
-                    image.scaled(106, 64, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)));
-            }
+            images::SetThumbAsync(thumb, ResolvePath(ArtifactPath(data)), QSize(106, 64),
+                                  Qt::KeepAspectRatioByExpanding);
         }
         body->addWidget(thumb);
 
@@ -1116,39 +1108,67 @@ void AssetDetailView::ShowError(const QString& detail) {
 }
 
 void AssetDetailView::ExportSheet() {
-    images::SheetGrid sheet(2, QSize(360, 280));
+    // 先在 UI 线程把要导出的层收齐（只读元数据，不碰图像像素）。
+    std::vector<std::pair<QString, std::filesystem::path>> todo;
+    todo.reserve(layers_.size());
     for (LayerData& data : layers_) {
-        if (!data.ready) {
-            continue;
-        }
-        const std::filesystem::path path = ResolvePath(ArtifactPath(data));
-        QImageReader reader(QString::fromStdString(util::PathToUtf8(path)));
-        reader.setAutoTransform(true);
-        const QImage image = reader.read();
-        if (!image.isNull()) {
-            sheet.Add(image, data.title);
+        if (data.ready) {
+            todo.emplace_back(data.title, ResolvePath(ArtifactPath(data)));
         }
     }
-    if (sheet.Count() == 0) {
+    if (todo.empty()) {
         widgets::Toast::Show(QStringLiteral("没有可导出的形象层；请先生成至少一层。"),
                              widgets::Toast::Tone::Warning);
         return;
     }
 
-    const QString suggested = QString::fromStdString(asset_.name) + QStringLiteral("-角色设定集.png");
-    const QString target = QFileDialog::getSaveFileName(this, QStringLiteral("导出整版设定集"),
-                                                        suggested, QStringLiteral("PNG 图像 (*.png)"));
-    if (target.isEmpty()) {
-        return;
-    }
-    const std::filesystem::path path = util::PathFromUtf8(target.toStdString());
-    if (sheet.ExportPng(path)) {
-        widgets::Toast::Show(QStringLiteral("设定集已导出：%1").arg(target),
-                             widgets::Toast::Tone::Success);
-    } else {
-        widgets::Toast::Show(QStringLiteral("导出失败，请检查目标路径是否可写。"),
-                             widgets::Toast::Tone::Error);
-    }
+    // 解码 + 整版合成搬去 worker：原来是在 UI 线程逐张 read() 整个原图，
+    // 层数一多就是一次明显卡顿（AGENTS.md：图片解码放 worker）。
+    const QPointer<AssetDetailView> guard(this);
+    async::RunOnWorker([guard, todo] {
+        images::SheetGrid sheet(2, QSize(360, 280));
+        for (const auto& [title, path] : todo) {
+            QImageReader reader(QString::fromStdString(util::PathToUtf8(path)));
+            reader.setAutoTransform(true);
+            const QSize original = reader.size();
+            if (original.isValid() && !original.isEmpty()) {
+                reader.setScaledSize(original.scaled(QSize(360, 280), Qt::KeepAspectRatio));
+            }
+            QImage image = reader.read();
+            if (!image.isNull()) {
+                sheet.Add(image, title);
+            }
+        }
+        const QImage composed = sheet.Count() > 0 ? sheet.Compose() : QImage();
+        async::PostToUi([guard, composed] {
+            if (guard.isNull()) {
+                return;
+            }
+            const QString suggested =
+                QString::fromStdString(guard->asset_.name) + QStringLiteral("-角色设定集.png");
+            const QString target = QFileDialog::getSaveFileName(
+                guard, QStringLiteral("导出整版设定集"), suggested, QStringLiteral("PNG 图像 (*.png)"));
+            if (target.isEmpty()) {
+                return;
+            }
+            const std::filesystem::path path = util::PathFromUtf8(target.toStdString());
+            // 写盘同样是 IO，也放 worker。
+            async::RunOnWorker([target, path, composed] {
+                const bool ok = !composed.isNull() && composed.save(QString::fromStdString(
+                                                                             util::PathToUtf8(path)),
+                                                                     "PNG");
+                async::PostToUi([target, ok] {
+                    if (ok) {
+                        widgets::Toast::Show(QStringLiteral("设定集已导出：%1").arg(target),
+                                             widgets::Toast::Tone::Success);
+                    } else {
+                        widgets::Toast::Show(QStringLiteral("导出失败，请检查目标路径是否可写。"),
+                                             widgets::Toast::Tone::Error);
+                    }
+                });
+            });
+        });
+    });
 }
 
 std::filesystem::path AssetDetailView::ResolvePath(std::string_view relative) const {

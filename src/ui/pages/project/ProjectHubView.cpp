@@ -40,6 +40,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "ui/kit/controls/WidgetCommon.h"
 
 namespace shine::app {
 namespace {
@@ -289,29 +290,6 @@ void PaintHubBackdrop(QPainter& p, const QRect& r) {
 
 } // namespace
 
-// 换肤后重挂页面局部 QSS：ThemeService 是纯静态类没有信号，靠 QApplication 每次换肤
-// 发的 ThemeChange 事件感知（与 shell 的 ShellStyleRefresher 同一口径）。
-class HubStyleRefresher : public QObject {
-  public:
-    explicit HubStyleRefresher(std::function<void()> apply, QObject* parent = nullptr)
-        : QObject(parent), apply_(std::move(apply)) {
-        if (qApp != nullptr) {
-            qApp->installEventFilter(this);
-        }
-    }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp && apply_) {
-            apply_();
-        }
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    std::function<void()> apply_;
-};
-
 ProjectHubView::ProjectHubView(shine::project::ProjectService* svc, QWidget* parent)
     : QWidget(parent), svc_(svc) {
     setObjectName(QStringLiteral("projectHub"));
@@ -524,7 +502,7 @@ ProjectHubView::ProjectHubView(shine::project::ProjectService* svc, QWidget* par
     // 页面局部 QSS：只落本页根控件子树（#projectHub 前缀），与 kit 全局 QSS 互不干扰。
     setStyleSheet(HubQss());
     // 换肤后重挂（页面 QSS 里的具体色值要跟着新主题重算）。
-    new HubStyleRefresher([this] { setStyleSheet(HubQss()); }, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(HubQss()); });
 
     Refresh();
 }

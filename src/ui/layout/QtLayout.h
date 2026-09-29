@@ -11,11 +11,24 @@
 namespace shine::util {
 
 // 清空布局项并 deleteLater 子控件，保留布局本身。
-inline void ClearLayout(QLayout* lay) {
-    if (lay == nullptr) {
+//
+// keep_tail：末尾保留 N 个布局项不动（默认 0 = 全清）。
+// 列表布局常在末尾常驻一个 addStretch(1) 把内容顶到上面，重建列表时不能连它一起清，
+// 那种地方以前各自手写 `while (lay->count() > 1) { takeAt(0) … }`（6 个页面一模一样），
+// 现在统一走这里。
+//
+// ⚠️ 不要拿它覆盖别的意图：保留**首**项的（FilmStrip）、取出并归还控件的
+// （SidePanel::TakeCurrentNav）、拆壳但保留 body 的（RightPanel::ClearSections）、
+// 保留某个特定控件的（Breadcrumb）都不适用。
+inline void ClearLayout(QLayout* lay, int keep_tail = 0) {
+    if (lay == nullptr || keep_tail < 0) {
         return;
     }
-    while (QLayoutItem* it = lay->takeAt(0)) {
+    while (lay->count() > keep_tail) {
+        QLayoutItem* it = lay->takeAt(0);
+        if (it == nullptr) {
+            break;
+        }
         if (QWidget* w = it->widget(); w != nullptr) {
             w->deleteLater();
         }

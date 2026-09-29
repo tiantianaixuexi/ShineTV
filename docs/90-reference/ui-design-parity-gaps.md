@@ -27,7 +27,7 @@ source_of_truth:
   - src/ui/pages/novel/DraftView.cpp
   - src/ui/verify/review/P05Review.cpp
   - src/ui/verify/checks/P04ChapterChecks.cpp
-last_verified: 2026-09-30
+last_verified: 2026-09-29
 ---
 
 # 设计稿对不齐的地方：UI 缺口清单
@@ -705,18 +705,33 @@ ShapePath {
 证明 `JSON → ColorToken → ThemeBridge → QML 绑定 → 场景图 → grabToImage 像素` 整链成立，
 且 color-mix 与 QSS 共用 `ToneMix.h` 同一份实现。
 
-**已迁移页面**：`Parity`（验证页）/ `Gallery` / `Assets` / `Storyboard` / `ImageFlow`，
-均在 `kPages` 注册。取证判据：5 套主题全部 saved、**stderr 零 QML 错误**、
-四道门禁 PASS。页面层缺陷的定位靠**裁图目视**（见 ⑩⑪⑫ 三条：这三类错
-运行时和静态检查都不报错，只有看图才发现）。
+**已注册到取证页注册表**（`QmlPageReview.cpp` 的 `kPages`）：`Parity`（验证页）/ `Gallery` /
+`Assets` / `Storyboard` / `ImageFlow`。
 
-**单文件静态自检**：`qmllint --bare -I C:/msys64/mingw64/share/qt6/qml <file>`。
-`Shine`（C++ 单例）没有 qmltypes，故 `Failed to import Shine` 及其连带的
-`Unqualified access` 是**预期噪音**；除此之外必须零告警。
+> ⚠️ **这里的「已迁移」只指注册进了离屏取证页注册表，不代表已迁进产品。**
+> 2026-09-29 复核：全仓 `QuickHost` 只被 `kit/qml/QmlPageReview.cpp` 与 `AppEntry.cpp`
+> 引用，`src/ui/pages/**` **零处** QML 宿主；`MainWindow` 只构造 QWidget 工作台。
+> 这 5 个页面的 QML 也全部是写死 mock（`.qml` 里 `Shine.*` 调用数为 0）。
+> 即：**产品仍是纯 QWidget + QSS，QML 是并行的视觉比对轨，两者尚未接线。**
+> 规划迁移时不要把本节读成「已经迁完了」。
+
+取证判据：5 套主题全部 saved、**stderr 零 QML 错误**、四道门禁 PASS。页面层缺陷的定位靠**裁图目视**
+（见 ⑩⑪⑫ 三条：这三类错运行时和静态检查都不报错，只有看图才发现）。
+
+**单文件静态自检**：`qmllint -I C:/msys64/mingw64/share/qt6/qml <file>`。
+**不要加 `--bare`**（与上文 ⑨ 的约定一致）：加了之后 qmllint 解析不到 QtQuick 的真实类型，
+属性类型与枚举检查全部失效。`Shine`（C++ 单例）没有 qmltypes，故
+`Failed to import Shine` 及其连带的 `Unqualified access` 是**预期噪音**；除此之外必须零告警。
 
 **本节未覆盖**：各业务页面的 QML 迁移（页面由并行子 Agent 各自拥有，
-共享层不在其改动范围内）；`backdrop-filter` 在 QML 侧同样无解
-（见第一节，它是唯一真边界）。
+共享层不在其改动范围内）。
+
+`backdrop-filter` 在第一节被判为「真边界」。**2026-09-29 复核：该判定存疑。**
+`ShaderEffectSource` 有 `sourceItem` / `hideSource`，`MultiEffect` 有 `source` /
+`blurEnabled` / `blur`，二者组合是**同窗口内**的背景采样路径（不是跨窗口抓屏，
+Qt 仍然没有「抓别的窗口」的能力）。已在 `QT_QUICK_BACKEND=software` 下构造并运行成功。
+**尚未验证**：software 后端下 `ShaderEffectSource` 是否像 `layer.effect` 一样被吞掉
+（见 ⑤），也未做 `grabToImage` 像素比对。**在补验之前，别把它当已解决，也别当已证伪。**
 
 ---
 

@@ -253,25 +253,6 @@ void FlowCanvas::drawBackground(QPainter* painter, const QRectF& rect) {
     painter->setTransform(saved);
 }
 
-// 换肤后重刷工具条样式：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知
-// （与 WidgetCommon.cpp 的阴影重挂同一做法）。
-class ToolsStyleRefresher : public QObject {
-  public:
-    ToolsStyleRefresher(FlowCanvas* canvas, QObject* parent) : QObject(parent), canvas_(canvas) {
-        qApp->installEventFilter(this);
-    }
-    ~ToolsStyleRefresher() override { qApp->removeEventFilter(this); }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp) canvas_->StyleTools();
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    FlowCanvas* canvas_;
-};
-
 // 浮动缩放工具条（views.css .canvas-tools / .bl：p4 / gap4 / r-md / 左下 16）。
 // 出图页在左下（bl=16），出片页底部有胶片条，用 bl-up=118 让开。
 void FlowCanvas::BuildTools() {
@@ -298,7 +279,7 @@ void FlowCanvas::BuildTools() {
     tools->show();
     tools_ = tools;
     spin_ = spin;
-    new ToolsStyleRefresher(this, this);
+    widgets::RefreshOnThemeChange(this, [this] { StyleTools(); });
     connect(zoom_in, &QPushButton::clicked, this, [this] { SetZoom(zoom_ * 1.2); });
     connect(zoom_out, &QPushButton::clicked, this, [this] { SetZoom(zoom_ / 1.2); });
     connect(fit, &QPushButton::clicked, this, &FlowCanvas::FitView);

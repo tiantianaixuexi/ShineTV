@@ -18,6 +18,7 @@
 #include <QVBoxLayout>
 
 #include <array>
+#include "ui/layout/QtLayout.h"
 
 namespace shine::app {
 namespace {
@@ -39,23 +40,6 @@ namespace {
              shine::widget::CssRgb(t.textMuted));
 }
 
-// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知。
-class PageStyleRefresher : public QObject {
-  public:
-    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
-        qApp->installEventFilter(this);
-    }
-    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    QWidget* page_;
-};
 
 } // namespace
 
@@ -98,7 +82,7 @@ VideoTaskView::VideoTaskView(QWidget* parent) : QWidget(parent) {
     layout->addWidget(summary_);
     connect(enqueue, &QPushButton::clicked, this, &VideoTaskView::EnqueueAll);
     connect(run, &QPushButton::clicked, this, &VideoTaskView::ShowRunning);
-    new PageStyleRefresher(this, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
 }
 
 void VideoTaskView::SetShots(std::vector<std::pair<std::int64_t, QString>> shots) {
@@ -126,12 +110,7 @@ void VideoTaskView::ShowRunning() {
 }
 
 void VideoTaskView::Rebuild() {
-    while (list_lay_->count() > 1) {
-        QLayoutItem* item = list_lay_->takeAt(0);
-        if (item == nullptr) break;
-        if (QWidget* row = item->widget()) row->deleteLater();
-        delete item;
-    }
+    util::ClearLayout(list_lay_, 1); // 末尾常驻 addStretch(1)，保留
     const auto jobs = queue_.Snapshot();
     for (std::size_t i = 0; i < jobs.size(); ++i) {
         const auto& job = jobs[i];

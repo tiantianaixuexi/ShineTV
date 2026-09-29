@@ -30,6 +30,9 @@
 #include <utility>
 
 #include <yyjson.h>
+#include "core/Async.h"
+#include <QPointer>
+#include <tuple>
 
 namespace shine::app {
 namespace {
@@ -287,6 +290,7 @@ bool ConsistencyView::ShowAsset(shine::db::sqlite::Database& db, novelcore::Nove
     shot_count_ = matched_shots.size();
 
     auto generated = novelcore::ListGeneratedImages(db, 5000);
+    std::vector<std::tuple<novelcore::RowId, int, std::filesystem::path>> pending;
     if (generated) {
         for (const auto& image : *generated) {
             if (image.source_kind != "shot" || matched_shots.contains(image.source_id) == false ||
@@ -294,29 +298,50 @@ bool ConsistencyView::ShowAsset(shine::db::sqlite::Database& db, novelcore::Nove
                 continue;
             }
             const std::filesystem::path relative = util::PathFromUtf8(image.rel_path);
-            const std::filesystem::path path =
-                relative.is_absolute() ? relative : projectDir_ / relative;
+            pending.emplace_back(image.source_id, matched_shots[image.source_id],
+                                 relative.is_absolute() ? relative : projectDir_ / relative);
+        }
+    }
+
+    // 帧图解码搬去 worker：原来在 UI 线程逐张 read() 整个原图，镜头一多必卡。
+    const std::uint64_t token = ++load_token_;
+    const QPointer<ConsistencyView> guard(this);
+    async::RunOnWorker([guard, token, pending = std::move(pending)] {
+        std::vector<ShotFrame> decoded;
+        decoded.reserve(pending.size());
+        for (const auto& [shot_id, chapter_ord, path] : pending) {
             QImageReader reader(QString::fromStdString(util::PathToUtf8(path)));
             reader.setAutoTransform(true);
+            const QSize original = reader.size();
+            if (original.isValid() && !original.isEmpty()) {
+                reader.setScaledSize(original.scaled(QSize(360, 240), Qt::KeepAspectRatio));
+            }
             QImage loaded = reader.read();
             if (loaded.isNull()) {
                 continue;
             }
-            const int chapter_ord = matched_shots[image.source_id];
-            frames_.push_back({.shot_id = image.source_id,
+            decoded.push_back({.shot_id = shot_id,
                                .chapter_ord = chapter_ord,
                                .image = std::move(loaded),
                                .label = QStringLiteral("第 %1 章 / 镜头 #%2")
                                             .arg(chapter_ord)
-                                            .arg(image.source_id)});
+                                            .arg(shot_id)});
         }
-    }
+        async::PostToUi([guard, token, frames = std::move(decoded)] {
+            if (guard.isNull() || guard->load_token_ != token) {
+                return; // 视图已析构，或期间又换了一次实体
+            }
+            guard->frames_ = std::move(frames);
+            guard->Rebuild();
+        });
+    });
 
     Rebuild();
     return true;
 }
 
 void ConsistencyView::Clear() {
+    ++load_token_; // 作废在途的异步解码回填
     asset_ = {};
     entity_id_ = 0;
     projectDir_.clear();

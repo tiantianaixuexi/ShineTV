@@ -13,6 +13,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include "ui/layout/QtLayout.h"
 
 namespace shine::app {
 namespace {
@@ -38,23 +39,6 @@ namespace {
              shine::widget::CssRgb(t.textMuted), shine::widget::CssRgb(t.statusDanger));
 }
 
-// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知。
-class PageStyleRefresher : public QObject {
-  public:
-    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
-        qApp->installEventFilter(this);
-    }
-    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    QWidget* page_;
-};
 
 } // namespace
 
@@ -98,7 +82,7 @@ BindingView::BindingView(QWidget* parent) : QWidget(parent) {
     layout->addWidget(status_);
     connect(add, &QPushButton::clicked, this, &BindingView::AddDefaultBindings);
     connect(validate, &QPushButton::clicked, this, &BindingView::Validate);
-    new PageStyleRefresher(this, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
 }
 
 void BindingView::SetShotContext(const flow::BindingShotContext& shot) {
@@ -116,12 +100,7 @@ void BindingView::AddDefaultBindings() {
 
 void BindingView::Rebuild() {
     // 先摘掉旧行：布局项逐个 takeAt 后销毁，行控件本身由 list_ 父级链管
-    while (list_lay_->count() > 1) {
-        QLayoutItem* item = list_lay_->takeAt(0);
-        if (item == nullptr) break;
-        if (QWidget* row = item->widget()) row->deleteLater();
-        delete item;
-    }
+    util::ClearLayout(list_lay_, 1); // 末尾常驻 addStretch(1)，保留
     const auto& bindings = binder_.Bindings();
     for (std::size_t i = 0; i < bindings.size(); ++i) {
         const auto& binding = bindings[i];

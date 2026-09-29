@@ -48,24 +48,8 @@ namespace {
         .arg(shine::widget::CssRgb(t.lineSubtle));
 }
 
-// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知
-// （与 shell/MainWindow.cpp 的 ShellStyleRefresher 同一做法）。
-class PageStyleRefresher : public QObject {
-  public:
-    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
-        qApp->installEventFilter(this);
-    }
-    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    QWidget* page_;
-};
+// 换肤后重挂页面 QSS 由 widgets::RefreshOnThemeChange 统一负责（见构造处调用）。
+// 不要改回「在 qApp 上过滤 QEvent::ThemeChange」——ApplyQss 从不发那个事件。
 
 } // namespace
 
@@ -75,7 +59,7 @@ void VideoFlowWorkspace::BuildUi() {
     // 页面根控件：页面专属 QSS 的挂载点（选择器前缀 #vidFlowWs）
     setObjectName(QStringLiteral("vidFlowWs"));
     setStyleSheet(PageQss());
-    new PageStyleRefresher(this, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);

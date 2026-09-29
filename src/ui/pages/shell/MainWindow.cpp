@@ -57,6 +57,7 @@
 
 #include <algorithm>
 #include <vector>
+#include "ui/kit/controls/WidgetCommon.h"
 
 namespace shine::app {
 
@@ -217,29 +218,6 @@ class DocTabBar : public QTabBar {
         .arg(QString::number(theme::radius::kXs),  // %11 圆角 4
              shine::widget::CssRgb(t.textSecondary)); // %12 段标题字
 }
-
-// 换肤后重挂外壳 QSS：ThemeService 是纯静态类，靠 QApplication 发的 ThemeChange 感知
-// （同 kit/controls/WidgetCommon.cpp 的阴影重挂做法）。
-class ShellStyleRefresher : public QObject {
-  public:
-    explicit ShellStyleRefresher(std::function<void()> apply, QObject* parent = nullptr)
-        : QObject(parent), apply_(std::move(apply)) {
-        if (qApp != nullptr) {
-            qApp->installEventFilter(this);
-        }
-    }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp && apply_) {
-            apply_();
-        }
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    std::function<void()> apply_;
-};
 
 // P04：小说工作区在活动栏/侧栏的稳定索引（WorkspaceNames：总控/小说/视觉资产/分镜/出图/出片）
 [[nodiscard]] int NovelWorkspaceIndex() {
@@ -704,11 +682,13 @@ void MainWindow::BuildWorkshop() {
     workshop_->setObjectName(QStringLiteral("shineShell"));
     workshop_->setStyleSheet(ShellQss());
     // 换肤后重挂（主题 token 变了，外壳 QSS 里的具体色值要跟着重算）
-    new ShellStyleRefresher([this] {
+    // owner 取 MainWindow 而不是 workshop_：外壳比 workshop_ 活得久，
+    // 万一 workshop_ 被换掉，注册不会跟着失效。
+    widgets::RefreshOnThemeChange(this, [this] {
         if (workshop_ != nullptr) {
             workshop_->setStyleSheet(ShellQss());
         }
-    }, this);
+    });
     auto* lay = new QVBoxLayout(workshop_);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);

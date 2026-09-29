@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include "ui/layout/QtLayout.h"
 
 namespace shine::app {
 namespace {
@@ -42,23 +43,6 @@ namespace {
              shine::widget::CssRgb(t.textMuted));
 }
 
-// 换肤后重挂页面 QSS：ThemeService 是纯静态类，靠 qApp 发的 ThemeChange 事件感知。
-class PageStyleRefresher : public QObject {
-  public:
-    explicit PageStyleRefresher(QWidget* page, QObject* parent) : QObject(parent), page_(page) {
-        qApp->installEventFilter(this);
-    }
-    ~PageStyleRefresher() override { qApp->removeEventFilter(this); }
-
-  protected:
-    bool eventFilter(QObject* watched, QEvent* ev) override {
-        if (ev->type() == QEvent::ThemeChange && watched == qApp) page_->setStyleSheet(PageQss());
-        return QObject::eventFilter(watched, ev);
-    }
-
-  private:
-    QWidget* page_;
-};
 
 } // namespace
 
@@ -111,7 +95,7 @@ ImageReviewView::ImageReviewView(QWidget* parent) : QWidget(parent) {
         if (!has_report_) return;
         status_->setText(QStringLiteral("已将失败项加入重跑队列"));
     });
-    new PageStyleRefresher(this, this);
+    widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
     Rebuild();
 }
 
@@ -140,12 +124,7 @@ void ImageReviewView::Run() {
 }
 
 void ImageReviewView::Rebuild() {
-    while (checklist_lay_->count() > 1) {
-        QLayoutItem* item = checklist_lay_->takeAt(0);
-        if (item == nullptr) break;
-        if (QWidget* row = item->widget()) row->deleteLater();
-        delete item;
-    }
+    util::ClearLayout(checklist_lay_, 1); // 末尾常驻 addStretch(1)，保留
     // 未评审时先列五项固定清单（键与 flow::ImageReview 的固定项一致），
     // 有报告后按报告条目覆盖；没有报告就以待评审态展示骨架。
     struct Item { QString name; };
