@@ -11,8 +11,25 @@ endif()
 
 set(THIRD ${CMAKE_SOURCE_DIR}/third)
 
+# --- 前端开关（Qt → Dear ImGui 重构期共存，见 refactor/phases.md P0.2）---
+#
+# 迁移期两个前端同时留在树上，靠这两个开关切换：任何阶段都能退回 Qt 版
+# 与 webui 设计稿做 1:1 对照。P7 删掉 SHINE_UI_QT 与整棵 Qt 树。
+#   SHINE_UI_IMGUI=ON  →  src/ui/imgui/**  + third/imgui（不装 Qt 也能配过）
+#   SHINE_UI_QT=ON     →  src/ui/{kit,qml,pages,verify,app}（迁移期旧路）
+option(SHINE_UI_IMGUI "ImGui 前端（重构后默认）" ON)
+option(SHINE_UI_QT "Qt 前端（迁移期共存对照）" OFF)
+
+if(SHINE_UI_IMGUI AND SHINE_UI_QT)
+  message(FATAL_ERROR "SHINE_UI_IMGUI 与 SHINE_UI_QT 只能开一个：两者都产出 ShineTVStudio")
+endif()
+if(NOT SHINE_UI_IMGUI AND NOT SHINE_UI_QT)
+  message(FATAL_ERROR "两个前端都关了，没有可构建的前端")
+endif()
+
 # --- Qt 6（MSYS2 MinGW64 自带；与 GCC 16 同源，ABI 一致）---
-# UI 使用 Qt 6 Widgets；模块边界见 docs/00-overview/architecture.md。
+# 仅 SHINE_UI_QT=ON 时才需要：ImGui 前端零 Qt 依赖，P7 的验收判据就是
+# 「不装 Qt 也能 cmake -S . -B build-imgui 配过」。
 #
 # QML 分层（2026-09-29 架构层）：Quick/Qml 只给新页面用，既有 Widgets 全部保留。
 #   Widgets → QuickWidgets → Qml 逐层叠加，不反向依赖：
@@ -20,12 +37,14 @@ set(THIRD ${CMAKE_SOURCE_DIR}/third)
 #     shine_qml     新增：QQuickWidget 宿主 + 主题 token 的 QML 桥（只依赖 shine_kit）
 #     ShineTVStudio 前端同时链两层，页面按需二选一或嵌套
 #   QuickWidgets 必须显式列出：只写 Quick 拿不到 QQuickWidget 那个类。
-list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
-#   QuickEffects 必须显式列出：QtQuick.Effects（MultiEffect = box-shadow / 阴影）
-#   是独立 QML 模块，不写它 QML 侧 import QtQuick.Effects 会整页加载失败。
-find_package(Qt6 REQUIRED COMPONENTS Widgets Quick QuickWidgets Qml QuickEffects)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
+if(SHINE_UI_QT)
+  list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
+  #   QuickEffects 必须显式列出：QtQuick.Effects（MultiEffect = box-shadow / 阴影）
+  #   是独立 QML 模块，不写它 QML 侧 import QtQuick.Effects 会整页加载失败。
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Quick QuickWidgets Qml QuickEffects)
+  set(CMAKE_AUTOMOC ON)
+  set(CMAKE_AUTORCC ON)
+endif()
 
 # --- libhv: HTTP + WebSocket client (static only, no server/examples) ---
 set(BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -448,7 +467,11 @@ target_link_libraries(shine_core PUBLIC
 #
 # P01-S3：只收编 theme（Token/QssBuilder 骨架见 S5，控件实现 P02）。
 # 方向：shine_core ← shine_kit ← ShineTVStudio；kit 不许 include 业务类型头。
+#
+# ⚠️ 以下全部（shine_kit / shine_qml / Qt 版 ShineTVStudio）只在 SHINE_UI_QT=ON
+#    时构建，是迁移期的对照旧路。P7 整段删除（refactor/phases.md P7.1/P7.2）。
 # ============================================================================
+if(SHINE_UI_QT)
 add_library(shine_kit STATIC
   src/ui/kit/theme/Theme.cpp
   src/ui/kit/theme/ThemeService.cpp
@@ -671,3 +694,77 @@ add_custom_command(TARGET ShineTVStudio POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${CMAKE_SOURCE_DIR}/src/ui/kit/theme/Themes"
           "$<TARGET_FILE_DIR:ShineTVStudio>/themes")
+endif() # SHINE_UI_QT
+
+# ============================================================================
+# ImGui 前端 —— third/imgui + src/ui/imgui/**
+#
+# 目标分层（refactor/architecture.md §3）：
+#   shine_core（零 Qt 零 ImGui，完全不动）
+#        ▲
+#   shine_imgui（静态库：theme / font / kit / host / pages / verify）
+#        ▲
+#   ShineTVStudio（exe：只有一个 main.cpp）
+#
+# ⚠️ ImGui 是静态编译进 exe 的：d3d11/dxgi/d3dcompiler/dwmapi/user32/gdi32
+#    全是系统库，不需要像 Qt 那样部署运行库（392MB → 十几 MB 量级，P7.7 实测）。
+# ============================================================================
+if(SHINE_UI_IMGUI)
+  if(NOT EXISTS "${THIRD}/imgui/imgui.h")
+    message(FATAL_ERROR
+      "third/imgui 缺失。恢复方式：git checkout aa61046 -- third/imgui")
+  endif()
+
+  # 只编 8 个 .cpp：核心 5（含 demo 取证用）+ win32/dx11 后端 + stdlib。
+  # imgui_demo 保留是因为 P3.7 组件画廊与 P6 取证要 ShowDemoWindow 做对照。
+  add_library(shine_imgui_third STATIC
+    ${THIRD}/imgui/imgui.cpp
+    ${THIRD}/imgui/imgui_draw.cpp
+    ${THIRD}/imgui/imgui_tables.cpp
+    ${THIRD}/imgui/imgui_widgets.cpp
+    ${THIRD}/imgui/imgui_demo.cpp
+    ${THIRD}/imgui/backends/imgui_impl_win32.cpp
+    ${THIRD}/imgui/backends/imgui_impl_dx11.cpp
+    ${THIRD}/imgui/misc/cpp/imgui_stdlib.cpp
+  )
+  target_include_directories(shine_imgui_third PUBLIC
+    ${THIRD}/imgui ${THIRD}/imgui/backends)
+  # IMGUI_DEFINE_MATH_OPERATORS：全套件用 IM_COL32/RGBA 宏，缺它会编译不过。
+  # UNICODE/NOMINMAX/WIN32_LEAN_AND_MEAN 与 shine_core 保持一致，
+  # 否则同一份 D3D11/Win32 头在两侧宏不一致 → 结构体布局错、链接重复符号。
+  target_compile_definitions(shine_imgui_third PUBLIC
+    IMGUI_DEFINE_MATH_OPERATORS
+    UNICODE
+    _UNICODE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN)
+  target_link_libraries(shine_imgui_third PUBLIC d3d11 dxgi d3dcompiler dwmapi user32 gdi32)
+
+  # 前端源文件用 GLOB + CONFIGURE_DEPENDS：组件与页面是逐步长出来的，
+  # 写死列表会让「还没建的页面」把整个配置卡成硬错误。
+  # 只有一个例外：app/main.cpp 属于 exe，不进静态库。
+  file(GLOB_RECURSE SHINE_IMGUI_LIB_SRC CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/ui/imgui/*.cpp")
+  list(FILTER SHINE_IMGUI_LIB_SRC EXCLUDE REGEX "/src/ui/imgui/app/")
+  if(NOT SHINE_IMGUI_LIB_SRC)
+    message(FATAL_ERROR "src/ui/imgui 下没有任何 .cpp —— ImGui 前端被误删？")
+  endif()
+
+  add_library(shine_imgui STATIC ${SHINE_IMGUI_LIB_SRC})
+  target_include_directories(shine_imgui PUBLIC ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(shine_imgui PUBLIC shine_core shine_imgui_third)
+
+  # AppEnvironment.{h,cpp} 是**零 Qt** 的环境变量读宽路径工具，Qt 前端也在用。
+  # 两个前端共用同一个实现（改一份，两边同步）。P7 删 Qt 树时它随之外迁。
+  add_executable(ShineTVStudio
+    src/ui/imgui/app/main.cpp
+    src/ui/app/AppEnvironment.cpp)
+  target_include_directories(ShineTVStudio PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(ShineTVStudio PRIVATE shine_imgui)
+
+  # 主题 JSON 随程序分发：拷到 <exe目录>/themes（5 套主题，见 P2.1）
+  add_custom_command(TARGET ShineTVStudio POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/src/ui/imgui/theme/Themes"
+            "$<TARGET_FILE_DIR:ShineTVStudio>/themes")
+endif() # SHINE_UI_IMGUI
