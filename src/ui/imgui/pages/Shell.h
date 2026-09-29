@@ -18,6 +18,7 @@
 #include "project/Project.h"
 
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -74,6 +75,10 @@ public:
     void ToggleInspector();
     void ToggleCommandPalette();
     [[nodiscard]] kit::Rect workspaceRect() const { return workspace_; }
+    // 项目中心（webui Shell.jsx 的 onHub）：品牌标 / 项目胶囊点击都进它。
+    // 进项目中心时整个外壳让位，Esc 或再点一次退出。
+    void ToggleProjectHub();
+    [[nodiscard]] bool projectHubOpen() const { return hubOpen_; }
 
     // 打开/新建项目后登记工程根：顶栏胶囊、总控页、后续各工作区都从这里取。
     // root 为空表示「未打开项目」——总控页会显示真实空态，不编数字。
@@ -101,6 +106,24 @@ private:
     // 往底栏「日志」页追加一行（"03:12:44 [info] 文本"）。
     void PushLog(std::string_view level, std::string_view message);
 
+    // ---- P4.9 浮层：主题菜单 / 设置 / 项目中心 ----
+    // 主题菜单锚在顶栏「主题」幽灵按钮下方（webui Shell.jsx:51-70）。
+    void DrawThemeMenu(ImVec2 anchor, ImDrawList* draw);
+    // 「设置 · 三步开工」模态：读 AppSettings 真值，不造假配置。
+    void DrawSettingsModal();
+    // 项目中心整屏（WorkspaceB 的 DrawProjectHub）。
+    void DrawProjectHubScreen(kit::Rect area, ImDrawList* draw);
+    // 底栏「产物」页：扫 <project>/output，IO 放 worker，回投后按路径判定要不要重扫。
+    void RequestArtifactScan();
+    void DrawDockArtifacts(kit::Rect body, ImDrawList* draw);
+    // 底栏「任务队列」页：Comfy QueueModel 的真实快照。
+    void DrawDockQueue(kit::Rect body, ImDrawList* draw);
+    // 底栏「日志」页：运行期真实事件（PushLog 写入的行）。
+    void DrawDockLogs(kit::Rect body, ImDrawList* draw);
+    // 底栏「校验报告」页 + 点开后的逐项详情模态。
+    void DrawDockReports(kit::Rect body, ImDrawList* draw);
+    void DrawReportModal();
+
     ShellLayout layout_;
     // 项目服务实例：新建 / 打开 / 最近列表都走它（前端持有自己的实例，见 Project.h:139）。
     project::ProjectService projects_;
@@ -116,6 +139,29 @@ private:
     // 当前字体图集是不是衬线族。Host 初始化时已按启动主题建过一次，
     // 这里存同一份状态，SetTheme 只在**族变了**时重建图集。
     bool atlasIsSerif_ = false;
+
+    // ---- 浮层与面板的开关态（webui Shell.jsx:14 的 menu 状态）----
+    bool hubOpen_ = false;        // 项目中心整屏（品牌标 / 项目胶囊点击进入）
+    bool themeMenuOpen_ = false;  // 顶栏「主题」菜单
+    bool settingsOpen_ = false;   // 「设置 · 三步开工」模态
+    int reportDetail_ = -1;       // 底栏校验报告点开的条目下标，-1 = 未打开
+    // 主题菜单锚点（顶栏「主题」按钮左下角），上一帧 DrawTopBar 写下。
+    ImVec2 themeMenuAnchor_{0.0f, 0.0f};
+
+    // ---- 底栏「产物」页的真实文件列表 ----
+    // IO 走 worker：UI 线程只读这个缓存。scanRoot_ 记上次扫的是哪个工程根，
+    // 换工程或点刷新才重扫（避免每帧 std::filesystem）。
+    struct ArtifactRow {
+        std::string name;
+        std::filesystem::path path;
+        std::uintmax_t bytes = 0;
+        std::string kind;  // 扩展名
+    };
+    std::vector<ArtifactRow> artifacts_;
+    std::filesystem::path artifactRoot_;
+    std::filesystem::path artifactScanRoot_;
+    bool artifactScanning_ = false;
+    float artifactRefreshAt_ = 0.0f;
 
     // 流水线运行态（顶栏「运行 / 停止」二选一，webui Shell.jsx:44-48）。
     // Runner 是同步阻塞的，真正的执行放 worker；这里只存 UI 侧的状态。

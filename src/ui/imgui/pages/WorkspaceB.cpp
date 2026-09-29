@@ -1,17 +1,26 @@
 ﻿#include "ui/imgui/pages/WorkspacePages.h"
 
+#include "core/Async.h"
 #include "core/Log.h"
+#include "db/sqlite/SqliteDb.h"
+#include "novel/NovelContinuity.h"
+#include "novel/NovelGraph.h"
+#include "novel/NovelTypes.h"
+#include "novel/NovelVisual.h"
+#include "pipeline/StageMachine.h"
 #include "project/Project.h"
 #include "project/ProjectIndex.h"
 #include "project/ProjectTemplate.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
 #include "util/Strings.h"
+#include "visual/CharacterAsset.h"
 
 #include <objbase.h>  // 必须在 windows.h（util/Encoding.h 已经带进来）之后
 #include <shlobj.h>   // SHBrowseForFolderW：向导第 2 步的「浏览…」
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -19,6 +28,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -123,35 +133,504 @@ void VideoFlowPage::BuildGraph() {
     g_videoFlowNeedsFit = true;
 }
 
-// ================================================================ P5.4 分镜
-void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
-    Rect right;
-    Rect content = ViewHeader(area, draw, "clapper", "S012 · 转身", "分镜 · 12 / 48", &right);
+// ================================================================ 三页共用的 novel.db 真实数据源
+//
+// 小说 / 资产 / 分镜三页读的是同一本 novel.db。线程模型照 WorkspaceA.cpp 的总控页：
+//   * worker 线程开库 + 查询（`async::RunOnWorker`），UI 线程只读下面那份**快照**；
+//   * worker 用 `async::PostToUi` 回投，UI 线程全程不碰 sqlite 句柄、不做文件 IO；
+//   * 取不到就是取不到 —— 页面显示空态 + 业务层返回的中文原因，不补占位数字。
+//
+// ⚠️ 已知的业务层缺口（如实标注，不在 UI 侧绕过）：
+//   · shots 表**没有** `spatial` / `transition` / `performance` 专列 —— V9 只把它们
+//     存盘到 `work/ch<NNN>/storyboard.json`（`11` §2.2）。所以分镜页「空间」一行
+//     只能显示磁盘位置 + 空态，不能从库里取到一个假的值。
+//   · `Ledger` 没有章节维度 —— 总控页的账本是全书一本，分镜页不假装能按章切。
+//   · 某些 service 要先 `Configure(root)` / 开库才有数据：这里等价于**先打开
+//     novel.db**（`root/db/novel.db`，对应 project::ProjectRef::dbPath）。
+//   · `visual_assets` 没有 `ListVisualAssets` API —— 资产页照 Qt 版 AssetPageModel
+//     的同一口径，逐实体 `FindAssetByEntity` 取主视觉资产；查不到 = 该实体还没有资产。
+namespace {
+using novelcore::RowId;
 
-    const float tagW = TagWidth("待出图", false, true);
-    Tag(draw, RectAt(right.max.x - 320.0f, right.min.y, tagW, 20.0f), "待出图", theme::Tone::Idle,
+// 业务层没有这一项时的**诚实**占位（区别于编一个 0 / 写死一个哈希）
+constexpr const char* kDash = "—";
+
+struct BookChapter {  // 小说页「章节」模式 + 分镜页的当前章
+    RowId id = 0;
+    int ord = 0;
+    std::string title;
+    std::string status;
+    std::string summary;
+    std::string body;
+    int words = 0;
+    std::int64_t updated = 0;
+};
+
+struct BookShot {  // 分镜页的镜头（shots 表一行）
+    RowId id = 0;
+    RowId sceneId = 0;
+    int sceneOrd = 0;
+    int ord = 0;
+    std::string action;
+    std::string expression;
+    std::string mood;
+    std::string dialogue;
+    std::string narration;
+    std::string durationNote;
+    double durationSec = 0.0;  // timeline_json.duration_s；<=0 = 没有
+    RowId cameraId = 0;
+    RowId lightingId = 0;
+    std::string timelineJson;
+    std::string canonStatus;
+};
+
+struct BookAsset {  // 资产页一行（实体 + 它的主视觉资产 + 形象层进度）
+    RowId entityId = 0;
+    std::string kind;
+    std::string name;
+    std::string summary;
+    std::string entityStatus;
+    bool hasAsset = false;
+    std::string assetName;
+    std::string canonStatus;
+    std::string assetStatus;  // PENDING/PROMPTING/…/READY/FAILED/STALE
+    std::string sheetRelPath;
+    int layers = 0;      // visual_artifacts 行数
+    int layersDone = 0;  // 其中 status == DONE
+    bool degraded = false;
+};
+
+struct BookContinuity {  // V8 的真实三态结论（pass / fail / unverified）
+    bool ran = false;
+    int shotsSeen = 0;
+    int pairsChecked = 0;
+    int failed = 0;
+    int unverified = 0;
+    std::vector<novelcore::ContinuityIssue> issues;
+    std::vector<std::string> notes;
+};
+
+struct BookState {
+    std::filesystem::path root;
+    std::string dbPath;  // UTF-8，给界面显示用
+    bool bound = false;
+    bool loading = false;
+    std::string error;  // 业务层返回的中文原因；空 = 没出错
+
+    std::vector<BookChapter> chapters;
+    std::vector<BookAsset> assets;
+    std::vector<BookShot> shots;  // 当前章
+    BookContinuity continuity;    // 当前章
+    // V1–V7 有阶段产物 / V8 跑过连续性 —— 逐项来自真实表，不整条一起亮
+    bool vStage[8] = {false, false, false, false, false, false, false, false};
+
+    int selectedChapter = 0;  // chapters 下标
+    int selectedShot = 0;     // shots 下标
+
+    [[nodiscard]] RowId chapterId() const {
+        return selectedChapter >= 0 && selectedChapter < static_cast<int>(chapters.size())
+                   ? chapters[static_cast<std::size_t>(selectedChapter)].id
+                   : 0;
+    }
+    [[nodiscard]] const BookChapter* chapter() const {
+        return selectedChapter >= 0 && selectedChapter < static_cast<int>(chapters.size())
+                   ? &chapters[static_cast<std::size_t>(selectedChapter)]
+                   : nullptr;
+    }
+    [[nodiscard]] const BookShot* shot() const {
+        return selectedShot >= 0 && selectedShot < static_cast<int>(shots.size())
+                   ? &shots[static_cast<std::size_t>(selectedShot)]
+                   : nullptr;
+    }
+};
+
+BookState& Book() {
+    static BookState state;
+    return state;
+}
+
+// 只在 UI 线程读写的重载代号：worker 回投时用它丢弃过期结果。
+std::uint64_t g_bookGen = 0;
+
+// timeline_json = {"duration_s":N,…}。只取这一个数，取不到返回 <=0（不猜、不写死 6.0）。
+double DurationFromTimeline(const std::string& json) {
+    const std::size_t key = json.find("\"duration_s\"");
+    if (key == std::string::npos) {
+        return 0.0;
+    }
+    std::size_t i = json.find(':', key);
+    if (i == std::string::npos) {
+        return 0.0;
+    }
+    ++i;
+    while (i < json.size() && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' || json[i] == '\r')) {
+        ++i;
+    }
+    double value = 0.0;
+    bool any = false;
+    while (i < json.size() && json[i] >= '0' && json[i] <= '9') {
+        value = value * 10.0 + static_cast<double>(json[i] - '0');
+        ++i;
+        any = true;
+    }
+    if (i < json.size() && json[i] == '.') {
+        ++i;
+        double scale = 0.1;
+        while (i < json.size() && json[i] >= '0' && json[i] <= '9') {
+            value += static_cast<double>(json[i] - '0') * scale;
+            scale *= 0.1;
+            ++i;
+            any = true;
+        }
+    }
+    return any ? value : 0.0;
+}
+
+std::string TimeText(std::int64_t epochSeconds) {
+    if (epochSeconds <= 0) {
+        return kDash;
+    }
+    const std::time_t raw = static_cast<std::time_t>(epochSeconds);
+    std::tm parts{};
+    if (localtime_s(&parts, &raw) != 0) {
+        return kDash;
+    }
+    char buf[32];
+    return std::strftime(buf, sizeof(buf), "%m-%d %H:%M", &parts) == 0 ? kDash : std::string(buf);
+}
+
+// 章状态（chapters.status 规范四值：draft|writing|review|done）→ 标签 + 色调。
+void ChapterTone(const std::string& status, std::string& label, theme::Tone& tone) {
+    if (status == "writing") {
+        label = "写作中";
+        tone = theme::Tone::Busy;
+    } else if (status == "review") {
+        label = "待评审";
+        tone = theme::Tone::Warn;
+    } else if (status == "done") {
+        label = "已完成";
+        tone = theme::Tone::Ok;
+    } else {
+        label = status.empty() ? "未知" : status;
+        tone = theme::Tone::Idle;
+    }
+}
+
+// VisualAssetRow::status 的八值生产态（`11` §2.6）→ 标签 + 色调。
+void AssetTone(const std::string& status, std::string& label, theme::Tone& tone) {
+    if (status == "READY") {
+        label = "就绪";
+        tone = theme::Tone::Ok;
+    } else if (status == "FAILED") {
+        label = "失败";
+        tone = theme::Tone::Danger;
+    } else if (status == "STALE") {
+        label = "已过期";
+        tone = theme::Tone::Warn;
+    } else if (status == "PROMPTING") {
+        label = "生成提示词";
+        tone = theme::Tone::Busy;
+    } else if (status == "REF_READY") {
+        label = "参考图就绪";
+        tone = theme::Tone::Info;
+    } else if (status == "SHEET_READY") {
+        label = "设定图就绪";
+        tone = theme::Tone::Info;
+    } else if (status == "WARDROBE_READY") {
+        label = "服装就绪";
+        tone = theme::Tone::Info;
+    } else {
+        label = "待处理";
+        tone = theme::Tone::Idle;
+    }
+}
+
+// entities.kind / visual_assets.kind → 中文标签。表外原样回显，不编一个名字。
+std::string KindLabel(const std::string& kind) {
+    if (kind == "person" || kind == "character") {
+        return "角色";
+    }
+    if (kind == "location") {
+        return "地点";
+    }
+    if (kind == "item" || kind == "prop" || kind == "treasure") {
+        return "物品";
+    }
+    if (kind == "clothing") {
+        return "服装";
+    }
+    if (kind == "faction") {
+        return "势力";
+    }
+    if (kind == "event") {
+        return "事件";
+    }
+    return kind.empty() ? kDash : kind;
+}
+
+// ---- worker 侧：开库 + 查询，产出一份**纯数据**快照（无句柄）----
+// wantChapter = 用户选中的章下标（-1 = 取第一章）。镜头 / 阶段产物 / 连续性
+// 都只对这一章取 —— 与 Qt 版 StoryboardWorkspace「按章选镜」的口径一致。
+void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out) {
+    out = BookState{};
+    out.root = root;
+    out.bound = true;
+    const auto dbPath = root / "db" / "novel.db";
+    out.dbPath = util::PathToUtf8(dbPath);
+
+    db::sqlite::Database db;
+    if (auto opened = db.Open({.path = dbPath, .readOnly = true, .create = false}); !opened) {
+        out.error = "打不开小说库：" + opened.error().message;
+        return;
+    }
+    novelcore::NovelGraph graph(db);
+    novelcore::NovelVisual visual(db);
+
+    // —— 章（小说页 + 分镜页的当前章）——
+    auto chapters = graph.ListChapters(2000);
+    if (!chapters) {
+        out.error = "读取章节失败：" + chapters.error().message;
+        return;
+    }
+    for (const novelcore::ChapterRow& c : *chapters) {
+        BookChapter row;
+        row.id = c.id;
+        row.ord = c.ord;
+        row.title = c.title;
+        row.status = c.status;
+        row.summary = c.summary;
+        row.body = c.body;
+        row.words = c.words;
+        row.updated = c.updated;
+        out.chapters.push_back(std::move(row));
+    }
+
+    // —— 资产页：实体 + 主视觉资产 + 形象层进度 ——
+    // 同 Qt 版 AssetPageModel::RefreshAssets 的口径；查不到资产 = 该实体还没有。
+    if (auto entities = graph.ListEntities({}, {}, 2000)) {
+        for (const novelcore::EntityRow& e : *entities) {
+            BookAsset row;
+            row.entityId = e.id;
+            row.kind = e.kind;
+            row.name = e.name;
+            row.summary = e.summary;
+            row.entityStatus = e.status;
+            if (auto found = visual.FindAssetByEntity(e.id)) {
+                row.hasAsset = true;
+                row.assetName = found->name;
+                row.canonStatus = found->canon_status;
+                row.assetStatus = found->status;
+                row.sheetRelPath = found->sheet_rel_path;
+                if (auto arts = visual.ListArtifacts(found->id)) {
+                    row.layers = static_cast<int>(arts->size());
+                    for (const novelcore::VisualArtifactRow& art : *arts) {
+                        if (art.status == "DONE") {
+                            ++row.layersDone;
+                        }
+                        if (art.degraded) {
+                            row.degraded = true;
+                        }
+                    }
+                }
+            }
+            out.assets.push_back(std::move(row));
+        }
+    } else {
+        out.error = "读取实体失败：" + entities.error().message;
+        return;
+    }
+
+    // —— 分镜页：当前章的场 / 镜头 / 阶段产物 / 连续性 ——
+    if (out.chapters.empty()) {
+        return;  // 没有章 = 没有场与镜头；空态由页面显示
+    }
+    out.selectedChapter = std::clamp(wantChapter, 0, static_cast<int>(out.chapters.size()) - 1);
+    const RowId chapterId = out.chapters[static_cast<std::size_t>(out.selectedChapter)].id;
+
+    std::vector<novelcore::SceneRow> scenes;
+    if (auto listed = graph.ListScenes(chapterId)) {
+        scenes = std::move(*listed);
+    }
+    auto sceneOrd = [&scenes](RowId id) {
+        for (const novelcore::SceneRow& s : scenes) {
+            if (s.id == id) {
+                return s.ord;
+            }
+        }
+        return 0;
+    };
+
+    if (auto listed = visual.ListShotsByChapter(chapterId)) {
+        for (const novelcore::ShotRow& s : *listed) {
+            BookShot row;
+            row.id = s.id;
+            row.sceneId = s.scene_id;
+            row.sceneOrd = sceneOrd(s.scene_id);
+            row.ord = s.ord;
+            row.action = s.action;
+            row.expression = s.expression;
+            row.mood = s.mood;
+            row.dialogue = s.dialogue;
+            row.narration = s.narration;
+            row.durationNote = s.duration_note;
+            row.durationSec = DurationFromTimeline(s.timeline_json);
+            row.cameraId = s.camera_id;
+            row.lightingId = s.lighting_id;
+            row.timelineJson = s.timeline_json;
+            row.canonStatus = s.canon_status;
+            out.shots.push_back(std::move(row));
+        }
+    }
+
+    // V1–V7：逐阶段查 stage_artifacts，**有产物才算 done**，没有就是 todo。
+    for (int v = 1; v <= 7; ++v) {
+        const std::string code = "V" + std::to_string(v);
+        if (auto arts = visual.ListStageArtifacts(chapterId, code)) {
+            out.vStage[static_cast<std::size_t>(v - 1)] = !arts->empty();
+        }
+    }
+
+    // V8：真实三态结论。⚠️ RunContinuityChecks 会把报告落盘到
+    // `work/ch<NNN>/v08_continuity.json`（该函数的既定行为），本调用在 worker 上。
+    // 它的 unverified 是「数据不足，不算通过也不算失败」—— 页面照实显示，不粉饰成通过。
+    novelcore::ContinuityOutcome outcome =
+        novelcore::RunContinuityChecks(db, chapterId, util::PathToUtf8(root));
+    out.continuity.ran = true;
+    out.continuity.shotsSeen = outcome.shots_seen;
+    out.continuity.pairsChecked = outcome.pairs_checked;
+    out.continuity.failed = outcome.failed;
+    out.continuity.unverified = outcome.unverified;
+    out.continuity.issues = std::move(outcome.issues);
+    out.continuity.notes = std::move(outcome.notes);
+    out.vStage[7] = outcome.error.empty();  // V8 跑出报告才算数；error 非空 = 没跑成
+}
+
+// 把 worker 产出的快照并进状态。selectedChapter 由 worker 按 wantChapter 定好，
+// 这里只把选中的镜头夹回新快照的范围。
+void ApplyBook(BookState& s, BookState&& next) {
+    const int keepShot = s.selectedShot;
+    s = std::move(next);
+    s.selectedShot = keepShot >= 0 && keepShot < static_cast<int>(s.shots.size()) ? keepShot : 0;
+    s.loading = false;
+}
+
+void RequestBookReload() {
+    BookState& s = Book();
+    s.loading = true;
+    const std::uint64_t gen = ++g_bookGen;
+    const std::filesystem::path root = s.root;
+    const int wantChapter = s.selectedChapter;
+    async::RunOnWorker([root, wantChapter, gen] {
+        BookState next;
+        LoadBook(root, wantChapter, next);
+        async::PostToUi([gen, next = std::move(next)]() mutable {
+            BookState& cur = Book();
+            if (gen != g_bookGen) {
+                return;  // 已经又发起了一轮，丢掉这次过期结果
+            }
+            ApplyBook(cur, std::move(next));
+        });
+    });
+}
+
+void BindBook(std::filesystem::path root) {
+    BookState& s = Book();
+    if (s.root == root) {
+        return;  // 同一个工程不重复开库
+    }
+    s = BookState{};
+    if (root.empty()) {
+        return;  // 未打开工程 → 空态
+    }
+    s.root = std::move(root);
+    s.bound = true;
+    RequestBookReload();
+}
+
+// 三页共用的**空态**：没绑工程 / 在读 / 库打不开 / 库里没数据，分四种说法。
+// 不在这里编任何数字 —— 分清「还没加载」「加载失败」「确实没有」三件事。
+void BookEmpty(Rect body, ImDrawList* draw, const char* icon, const char* hint) {
+    BookState& s = Book();
+    if (!s.bound) {
+        Empty(draw, body, icon, "未绑定工程", "打开一本小说后这里才有真实数据。");
+        return;
+    }
+    if (!s.error.empty()) {
+        Empty(draw, body, icon, "读取失败", s.error);
+        return;
+    }
+    if (s.loading) {
+        Empty(draw, body, icon, "正在读取 novel.db", hint);
+        return;
+    }
+    Empty(draw, body, icon, "尚无数据", hint);
+}
+
+} // namespace
+
+// 三页绑定"当前工程根"的入口（必须在匿名命名空间之外，否则 Shell 链接不到）。
+// 三个入口共用同一份快照：Shell 在 SetProjectRoot 里连同 BindOverviewProject 一起调，
+// 调任意一个即可（同一个 root 只会开一次库）。
+void BindNovelProject(std::filesystem::path root) { BindBook(std::move(root)); }
+void BindAssetsProject(std::filesystem::path root) { BindBook(std::move(root)); }
+void BindStoryboardProject(std::filesystem::path root) { BindBook(std::move(root)); }
+
+// ================================================================ P5.4 分镜
+//
+// 全部字段来自 novel.db：章/场/镜（NovelGraph::ListChapters/ListScenes +
+// NovelVisual::ListShotsByChapter）、V1–V7 阶段产物（ListStageArtifacts）、
+// V8 连续性（RunContinuityChecks 的真实三态）。旧版的 "S012 · 转身"、6.0s、
+// 6 条 "C1 服装一致"、8 张 S010–S017 缩略图全是写死的，已全部删除。
+void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
+    BookState& s = Book();
+    const BookChapter* chapter = s.chapter();
+    const BookShot* shot = s.shot();
+
+    // 页头标题/副行：没有选中镜头时说清是哪种空态，不用占位镜头号。
+    // 副行恒为"章 + 已落库镜头数 + 库路径"（全是真实计数），标题随选中镜头变。
+    std::string title = "分镜";
+    std::string subtitle = "Scene → Sequence → Shot";
+    if (chapter != nullptr) {
+        title = "第 " + std::to_string(chapter->ord) + " 章" +
+                (chapter->title.empty() ? std::string() : (" · " + chapter->title));
+        subtitle = "已落库镜头 " + std::to_string(s.shots.size()) + " 个 · " + s.dbPath;
+    }
+    if (shot != nullptr) {
+        title = "镜 " + std::to_string(shot->ord) + " · " +
+                (shot->action.empty() ? std::string(kDash) : shot->action);
+    }
+    Rect right;
+    Rect content = ViewHeader(area, draw, "clapper", title.c_str(), subtitle.c_str(), &right);
+
+    // 状态标签：取镜头的 canon_status（shots 表的规范值），映射不到就原样显示。
+    std::string canonLabel = shot != nullptr && !shot->canonStatus.empty() ? shot->canonStatus : kDash;
+    const float tagW = TagWidth(canonLabel, false, true);
+    Tag(draw, RectAt(right.max.x - 320.0f, right.min.y, tagW, 20.0f), canonLabel, theme::Tone::Idle,
         false, true);
-    ButtonSpec regen;
-    regen.variant = ButtonVariant::Secondary;
-    const char* regenLabel = "V10 重生成";
-    const float regenW = ButtonWidth(ButtonSize::Medium, 0.0f, LabelWidth(FontBoldAt(13.0f), 13.0f, regenLabel));
-    Button(draw, RectAt(right.max.x - regenW, right.min.y, regenW, 30.0f), regenLabel, regen, "sb-regen");
+
     ButtonSpec run;
     run.variant = ButtonVariant::Primary;
-    const char* runLabel = "运行 V1-V8";
+    const char* runLabel = "重新读取";
     const float runW = ButtonWidth(ButtonSize::Medium, 0.0f, LabelWidth(FontBoldAt(13.0f), 13.0f, runLabel));
-    Button(draw, RectAt(right.max.x - runW - 12.0f, right.min.y, runW, 30.0f), runLabel, run, "sb-run");
+    // ⚠️ 业务层目前**没有**暴露"替前端跑 V1–V8"的服务接口（Qt 版靠 NovelDirector +
+    // LlmCallFn 注入，ImGui 侧没有注入点）。所以这里只给"重新读取"，不给一个点了
+    // 什么都不做的假"运行 V1–V8"。
+    run.disabled = !s.bound || s.loading;
+    if (Button(draw, RectAt(right.max.x - runW, right.min.y, runW, 30.0f), runLabel, run, "sb-run")) {
+        RequestBookReload();
+    }
 
-    // V1-V8 状态卡
+    // 空态闸门：没绑 / 读失败 / 正在读 / 库里没章 —— BookEmpty 内部按这四种分别措辞。
+    if (!s.bound || !s.error.empty() || s.chapters.empty()) {
+        BookEmpty(content, draw, "clapper", "这本小说还没有章。跑一次 T1–T17 后这里才有分镜。");
+        return;
+    }
+
+    // V1–V8 状态：逐项来自真实表（V1–V7 看 stage_artifacts 有无产物，V8 看连续性报告）。
     std::vector<StageNode> vs;
-    for (int i = 1; i <= 8; ++i) {
-        StageState state = StageState::Done;
-        if (i == 5) {
-            state = StageState::Running;
-        } else if (i > 5) {
-            state = StageState::Todo;
-        }
-        vs.push_back(StageNode{"V" + std::to_string(i), "", state});
+    for (int i = 0; i < 8; ++i) {
+        vs.push_back(StageNode{"V" + std::to_string(i + 1), "",
+                               s.vStage[i] ? StageState::Done : StageState::Todo});
     }
     StageFlow(draw, Rect{content.min.x, content.min.y, content.max.x, content.min.y + 30.0f}, vs);
 
@@ -162,55 +641,479 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     const Rect detail{content.min.x, detailTop, content.min.x + detailW, timelineTop - kGap};
     const Rect continuity{detail.max.x + kGap, detailTop, content.max.x, timelineTop - kGap};
 
+    // ---- 镜头详情 ----
     Rect detailBody = Card(draw, detail, "镜头详情", "target", false, false);
-    KeyValues(draw, detailBody,
-              {{"动作", "转身"}, {"空间", "旧桥下"}, {"表演", "克制"}, {"机位", "中景"},
-               {"光线", "夜雨"}, {"时长", "6.0s"}, {"情绪", "冷"}});
-    const float ty = detailBody.min.y + 170.0f;
-    const char* beat = "{\n  \"code\": \"S012\",\n  \"duration\": 6.0,\n  \"emotion\": \"cold\"\n}";
-    draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(detailBody.min.x, ty), ColorTextMuted(), "BEAT",
-                  "BEAT" + 4);
-    DrawRoundRect(draw, ImVec2(detailBody.min.x, ty + 16.0f),
-                  ImVec2(detailBody.max.x, ty + 104.0f), 6.0f, ColorFillMuted(), ColorLineNormal(),
-                  1.0f);
-    DrawTextClipped(draw, MonoAt(12.5f), 12.5f, ImVec2(detailBody.min.x + 10.0f, ty + 26.0f),
-                    detailBody.width() - 20.0f, ColorTextSecondary(), beat, true);
-
-    Rect continuityBody = Card(draw, continuity, "连续性 C1-C12", "check", false, false);
-    float cy = continuityBody.min.y;
-    for (int i = 0; i < 6; ++i) {
-        StatusDot(draw, ImVec2(continuityBody.min.x + 4.0f, cy + 6.0f), theme::Tone::Ok, false);
-        const std::string label = "C" + std::to_string(i + 1) + " 服装一致";
-        draw->AddText(FontAt(12.5f), 12.5f, ImVec2(continuityBody.min.x + 16.0f, cy),
-                      ColorTextSecondary(), label.data(), label.data() + label.size());
-        cy += 22.0f;
+    if (shot == nullptr) {
+        Empty(draw, detailBody, "clapper", "本章尚无镜头",
+              "V9（叙事分镜）落库后，shots 表才会有行。");
+    } else {
+        // 时长：优先 timeline_json.duration_s（秒），退回 duration_note 原文，都没有 → kDash。
+        std::string duration = kDash;
+        if (shot->durationSec > 0.0) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.1fs", shot->durationSec);
+            duration = buf;
+        } else if (!shot->durationNote.empty()) {
+            duration = shot->durationNote;
+        }
+        auto orDash = [](RowId id) { return id > 0 ? ("#" + std::to_string(id)) : std::string(kDash); };
+        KeyValues(draw, detailBody,
+                  {{"镜头", "#" + std::to_string(shot->id)},
+                   {"场 / 序", "第 " + std::to_string(shot->sceneOrd) + " 场 · 第 " +
+                                   std::to_string(shot->ord) + " 镜"},
+                   {"动作", shot->action.empty() ? kDash : shot->action},
+                   {"表演", shot->expression.empty() ? kDash : shot->expression},
+                   {"机位", orDash(shot->cameraId)},
+                   {"光线", orDash(shot->lightingId)},
+                   {"时长", duration},
+                   {"情绪", shot->mood.empty() ? kDash : shot->mood},
+                   {"旁白", shot->narration.empty() ? kDash : shot->narration}});
+        // Beat 时间轴：直接显示库里的 timeline_json 原文，不编一份示例 JSON。
+        const float ty = detailBody.min.y + 190.0f;
+        static const char* kBeatLabel = "BEAT 时间轴（shots.timeline_json）";
+        draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(detailBody.min.x, ty), ColorTextMuted(),
+                      kBeatLabel, kBeatLabel + std::strlen(kBeatLabel));
+        DrawRoundRect(draw, ImVec2(detailBody.min.x, ty + 16.0f),
+                      ImVec2(detailBody.max.x, ty + 104.0f), 6.0f, ColorFillMuted(), ColorLineNormal(),
+                      1.0f);
+        if (shot->timelineJson.empty() || shot->timelineJson == "{}") {
+            DrawTextClipped(draw, FontAt(12.5f), 12.5f,
+                            ImVec2(detailBody.min.x + 10.0f, ty + 40.0f), detailBody.width() - 20.0f,
+                            ColorTextMuted(), "这一镜没有 timeline_json。", true);
+        } else {
+            DrawTextClipped(draw, MonoAt(12.5f), 12.5f, ImVec2(detailBody.min.x + 10.0f, ty + 26.0f),
+                            detailBody.width() - 20.0f, ColorTextSecondary(), shot->timelineJson, true);
+        }
+        // 空间 / 转场 / 走位**无专列**（V9 只存盘到 storyboard.json）—— 如实说明，不编值。
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                        ImVec2(detailBody.min.x, ty + 112.0f), detailBody.width(),
+                        ColorTextMuted(),
+                        "空间 / 转场 / 走位没有库字段，只在 work/ch<NNN>/storyboard.json", true);
     }
 
-    // 故事板时间线：横向滚动 128px 卡
+    // ---- 连续性 C1–C12：真实三态 ----
+    Rect continuityBody = Card(draw, continuity, "连续性 C1-C12", "check", false, false);
+    if (!s.continuity.ran) {
+        Empty(draw, continuityBody, "check", "连续性未校验", "V8 需要该章的镜头数据。");
+    } else {
+        // 汇总行用真实计数：看了几镜、比对几对、失败几条、数据不足几条。
+        const std::string summary = "镜 " + std::to_string(s.continuity.shotsSeen) + " · 比对 " +
+                                    std::to_string(s.continuity.pairsChecked) + " 对 · 失败 " +
+                                    std::to_string(s.continuity.failed) + " · 数据不足 " +
+                                    std::to_string(s.continuity.unverified);
+        DrawTextClipped(draw, FontAt(12.5f), 12.5f, continuityBody.min, continuityBody.width(),
+                        ColorTextSecondary(), summary, true);
+        float cy = continuityBody.min.y + 24.0f;
+        if (s.continuity.issues.empty()) {
+            // 三态里"没报 issue"不等于"通过"——数据不足时 RunContinuityChecks 记 unverified。
+            const theme::Tone tone = s.continuity.unverified > 0 ? theme::Tone::Warn : theme::Tone::Ok;
+            const char* label = s.continuity.unverified > 0 ? "无不一致，但有数据不足项" : "无不一致";
+            StatusDot(draw, ImVec2(continuityBody.min.x + 4.0f, cy + 6.0f), tone, false);
+            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(continuityBody.min.x + 16.0f, cy),
+                          ColorTextSecondary(), label, label + std::strlen(label));
+            cy += 22.0f;
+        }
+        for (const novelcore::ContinuityIssue& issue : s.continuity.issues) {
+            if (cy + 22.0f > continuityBody.max.y) {
+                break;  // 超出卡片就不画了（不裁剪内容，只是不画）
+            }
+            const theme::Tone tone = issue.severity == "high" ? theme::Tone::Danger : theme::Tone::Warn;
+            StatusDot(draw, ImVec2(continuityBody.min.x + 4.0f, cy + 6.0f), tone, false);
+            const std::string label = issue.code + " " + issue.detail;
+            DrawTextClipped(draw, FontAt(12.5f), 12.5f,
+                            ImVec2(continuityBody.min.x + 16.0f, cy),
+                            continuityBody.width() - 16.0f, ColorTextSecondary(), label, true);
+            cy += 22.0f;
+        }
+        // unverified 的原因也照实列（它不是失败，但必须看得见）。
+        for (const std::string& note : s.continuity.notes) {
+            if (cy + 22.0f > continuityBody.max.y) {
+                break;
+            }
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(continuityBody.min.x, cy),
+                            continuityBody.width(), ColorTextMuted(), note, true);
+            cy += 20.0f;
+        }
+    }
+
+    // ---- 故事板时间线：真实镜头卡 ----
     const Rect timeline{content.min.x, timelineTop, content.max.x, content.max.y};
     DrawShadowed(draw, timeline.min, timeline.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
+    if (s.shots.empty()) {
+        DrawTextClipped(draw, FontAt(12.5f), 12.5f,
+                        ImVec2(timeline.min.x + 14.0f, timeline.min.y + 14.0f), timeline.width() - 28.0f,
+                        ColorTextMuted(), "本章尚无镜头，时间线为空。", true);
+        return;
+    }
+    // 时长条按**本章最长镜头**归一（旧版写死 60% = 假装 6s）。
+    double longest = 0.0;
+    for (const BookShot& row : s.shots) {
+        longest = std::max(longest, row.durationSec);
+    }
     float x = timeline.min.x + 10.0f;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < static_cast<int>(s.shots.size()); ++i) {
+        if (x + 96.0f > timeline.max.x) {
+            break;  // 横向超出视口就不画（外壳的 ScrollRegion 负责滚动）
+        }
+        const BookShot& row = s.shots[static_cast<std::size_t>(i)];
         const Rect card{x, timeline.min.y + 10.0f, x + 96.0f, timeline.max.y - 10.0f};
-        const bool on = (i == selectedShot_);
+        const bool on = (i == s.selectedShot);
         DrawRoundRect(draw, card.min, card.max, 8.0f, ColorFillMuted(),
                       on ? ColorAccent() : ColorLineNormal(), on ? 1.5f : 1.0f);
         if (on) {
             DrawRoundRect(draw, card.min - ImVec2(2, 2), card.max + ImVec2(2, 2), 10.0f, 0,
                           ColorOf(theme::CurrentDerived().accentDim), 2.0f);
         }
-        Art(draw, Rect{card.min.x + 6.0f, card.min.y + 6.0f, card.max.x - 6.0f, card.min.y + 66.0f},
-            i, true);
-        const std::string code = "S0" + std::to_string(10 + i);
+        // ⚠️ 缩略图：真实分镜图要走 gpu 纹理链路（出图页才接），这里**不画假缩略图** ——
+        // 显示"待出图"占位，与 webui 自己在没有图时的状态一致。
+        const Rect thumb{card.min.x + 6.0f, card.min.y + 6.0f, card.max.x - 6.0f, card.min.y + 66.0f};
+        DrawRoundRect(draw, thumb.min, thumb.max, 6.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
+        DrawIconCentered(draw, "image", thumb.center(), 20.0f, ColorTextMuted());
+        const std::string code = "镜 " + std::to_string(row.ord);
         draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(card.min.x + 8.0f, card.min.y + 70.0f),
                       ColorAccent(), code.data(), code.data() + code.size());
-        DrawRoundRect(draw, ImVec2(card.min.x + 6.0f, card.max.y - 10.0f),
-                      ImVec2(card.min.x + 6.0f + (card.width() - 12.0f) * 0.6f, card.max.y - 6.0f),
-                      2.0f, ColorAccent());
+        // 时长条：按真实 durationSec / 本章最长。没有 duration 就画一条灰槽，不画 60%。
+        const float barY = card.max.y - 10.0f;
+        const float barMaxW = card.width() - 12.0f;
+        const float ratio =
+            (longest > 0.0 && row.durationSec > 0.0)
+                ? std::clamp(static_cast<float>(row.durationSec / longest), 0.08f, 1.0f)
+                : 0.0f;
+        DrawRoundRect(draw, ImVec2(card.min.x + 6.0f, barY),
+                      ImVec2(card.min.x + 6.0f + barMaxW, barY + 4.0f), 2.0f, ColorFillSelected());
+        if (ratio > 0.0f) {
+            DrawRoundRect(draw, ImVec2(card.min.x + 6.0f, barY),
+                          ImVec2(card.min.x + 6.0f + barMaxW * ratio, barY + 4.0f), 2.0f, ColorAccent());
+        }
         if (Clicked(card, "sb-tl-" + std::to_string(i))) {
-            selectedShot_ = i;
+            s.selectedShot = i;
         }
         x += 104.0f;
+    }
+}
+
+// ================================================================ P5.2 小说
+//
+// ⚠️ 这一页的实现从 WorkspaceA.cpp **搬到这里**（连同下面的资产页）：真实数据源
+//    novel.db 的读取/快照/worker 全在 WorkspaceB.cpp 的 BookState 里，把实现留在
+//    A 会让"数据在哪"分裂成两处。声明仍在 WorkspacePages.h，Shell 不用改。
+//
+// 旧版的 "第 3 章 · 雨夜"、固定摘要、固定草稿三段、字数 "2180"、状态 "草稿"、
+// 8 个模式里 6 个的假流水线节点，全部改成业务层返回值或诚实空态。
+void NovelPage::Draw(Rect area, ImDrawList* draw) {
+    BookState& s = Book();
+    const float inspectorW = 280.0f;
+    const Rect center{area.min.x, area.min.y, area.max.x - inspectorW, area.max.y};
+    const Rect inspector{center.max.x, area.min.y, area.max.x, area.max.y};
+
+    // 8 个模式标签（min-h 44，横向滚动；选中 = accent + 2px accent 下边框）
+    const char* modes[] = {"章节", "设定", "初始化", "流水线", "评审", "模型", "状态", "自动"};
+    float tx = area.min.x;
+    const float tabY = area.min.y;
+    ImFont* tabFont = FontBoldAt(12.5f);
+    for (int i = 0; i < 8; ++i) {
+        const float w = LabelWidth(tabFont, 12.5f, modes[i]) + 32.0f;
+        const Rect tab{tx, tabY, tx + w, tabY + 44.0f};
+        if (i == mode_) {
+            DrawRoundRect(draw, tab.min, tab.max, 6.0f, ColorFillSelected());
+            draw->AddLine(ImVec2(tab.min.x, tab.max.y - 1.0f), ImVec2(tab.max.x, tab.max.y - 1.0f),
+                          ColorAccent(), 2.0f);
+        }
+        draw->AddText(tabFont, 12.5f, ImVec2(tab.min.x + 16.0f, tab.min.y + 14.0f),
+                      i == mode_ ? ColorAccent() : ColorTextSecondary(), modes[i],
+                      modes[i] + std::strlen(modes[i]));
+        if (Clicked(tab, "novel-mode-" + std::to_string(i))) {
+            mode_ = i;
+        }
+        tx += w + 4.0f;
+    }
+
+    const Rect body{center.min.x, tabY + 52.0f, center.max.x, center.max.y};
+
+    // 章选择条：切章会重跑 worker（镜头/阶段/连续性都按章取）。
+    if (s.bound && s.error.empty() && !s.chapters.empty()) {
+        float cx = body.min.x;
+        const float chipH = 24.0f;
+        for (int i = 0; i < static_cast<int>(s.chapters.size()) && cx + 70.0f < body.max.x; ++i) {
+            const std::string label = "第 " + std::to_string(s.chapters[static_cast<std::size_t>(i)].ord) + " 章";
+            const float w = LabelWidth(FontAt(12.0f), 12.0f, label.c_str()) + 22.0f;
+            const bool on = (i == s.selectedChapter);
+            const Rect chip{cx, body.min.y, cx + w, body.min.y + chipH};
+            DrawRoundRect(draw, chip.min, chip.max, 12.0f,
+                          on ? ColorOf(theme::CurrentDerived().accentDim) : ColorFillMuted(),
+                          on ? ColorAccent() : ColorLineSubtle(), 1.0f);
+            draw->AddText(FontAt(12.0f), 12.0f, ImVec2(cx + 11.0f, body.min.y + 5.0f),
+                          on ? ColorAccent() : ColorTextSecondary(), label.data(), label.data() + label.size());
+            if (Clicked(chip, "novel-ch-" + std::to_string(i))) {
+                s.selectedChapter = i;
+                s.selectedShot = 0;
+                RequestBookReload();
+            }
+            cx += w + 6.0f;
+        }
+    }
+
+    const Rect modeBody{body.min.x, body.min.y + 34.0f, body.max.x, body.max.y};
+
+    if (mode_ == 0) {
+        // ---- 章节 ----
+        const BookChapter* chapter = s.chapter();
+        if (!s.bound || !s.error.empty() || chapter == nullptr) {
+            BookEmpty(modeBody, draw, "book", "这本小说还没有章。跑一次 T1–T17 后这里才有正文。");
+        } else {
+            std::string statusLabel;
+            theme::Tone statusTone = theme::Tone::Idle;
+            ChapterTone(chapter->status, statusLabel, statusTone);
+            const std::string head = "第 " + std::to_string(chapter->ord) + " 章 · " +
+                                     (chapter->title.empty() ? std::string(kDash) : chapter->title);
+            draw->AddText(FontBoldAt(20.0f), 20.0f, ImVec2(modeBody.min.x, modeBody.min.y),
+                          ColorText(), head.data(), head.data() + head.size());
+            const float stW = TagWidth(statusLabel, false, chapter->status == "review");
+            Tag(draw, RectAt(modeBody.min.x, modeBody.min.y + 28.0f, stW, 20.0f), statusLabel,
+                statusTone, false, chapter->status == "review");
+            // 字数：chapters.words 是业务层记的值；为 0 时说"未统计"，不编一个数字。
+            const std::string words = chapter->words > 0 ? std::to_string(chapter->words) : "未统计";
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                            ImVec2(modeBody.min.x + stW + 10.0f, modeBody.min.y + 32.0f),
+                            modeBody.width(), ColorTextMuted(),
+                            words + " 字 · 更新 " + TimeText(chapter->updated), true);
+
+            // .chap-summary：fill-muted + 3px accent 左边框 + pad 10/14
+            float y = modeBody.min.y + 60.0f;
+            if (!chapter->summary.empty()) {
+                const Rect sum{modeBody.min.x, y, modeBody.min.x + 720.0f, y + 48.0f};
+                DrawRoundRect(draw, sum.min, sum.max, 0.0f, ColorFillMuted());
+                DrawRoundRect(draw, ImVec2(sum.min.x, sum.min.y), ImVec2(sum.min.x + 3.0f, sum.max.y),
+                              1.5f, ColorAccent());
+                DrawTextClipped(draw, FontAt(12.5f), 12.5f,
+                                ImVec2(sum.min.x + 14.0f, sum.min.y + 10.0f), sum.width() - 28.0f,
+                                ColorTextSecondary(), "本章目标 · " + chapter->summary, true);
+                y += 60.0f;
+            }
+            // .draft：14px / 行高 1.9 / max-w 720。正文是 chapters.body 原文。
+            if (chapter->body.empty()) {
+                Empty(draw, Rect{modeBody.min.x, y, modeBody.min.x + 720.0f, modeBody.max.y}, "text",
+                      "本章尚无正文", "T11（正文写作）落库后 chapters.body 才有内容。");
+            } else {
+                DrawTextClipped(draw, FontAt(14.0f), 14.0f, ImVec2(modeBody.min.x, y), 720.0f,
+                                ColorText(), chapter->body, true);
+            }
+        }
+    } else if (mode_ == 1) {
+        // ---- 设定：真实实体（entities 表）----
+        if (!s.bound || !s.error.empty() || s.assets.empty()) {
+            BookEmpty(modeBody, draw, "masks", "还没有实体。初始化链跑完后这里才有设定。");
+        } else {
+            static const char* kWorldTitle = "设定集";
+            draw->AddText(FontBoldAt(16.0f), 16.0f, ImVec2(modeBody.min.x, modeBody.min.y),
+                          ColorText(), kWorldTitle, kWorldTitle + std::strlen(kWorldTitle));
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(modeBody.min.x, modeBody.min.y + 22.0f),
+                            modeBody.width(), ColorTextMuted(),
+                            "共 " + std::to_string(s.assets.size()) + " 个实体 · 来自 entities 表", true);
+            const int columns = AutoGridCols(modeBody.width(), 260.0f, 14.0f);
+            const float cardW =
+                (modeBody.width() - 14.0f * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+            for (int i = 0; i < static_cast<int>(s.assets.size()); ++i) {
+                const BookAsset& a = s.assets[static_cast<std::size_t>(i)];
+                const int column = i % columns;
+                const int row = i / columns;
+                const Rect card{modeBody.min.x + (cardW + 14.0f) * static_cast<float>(column),
+                                modeBody.min.y + 40.0f + 84.0f * static_cast<float>(row), cardW, 76.0f};
+                DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
+                const std::string name = a.name.empty() ? std::string(kDash) : a.name;
+                DrawTextClipped(draw, FontBoldAt(13.0f), 13.0f,
+                                ImVec2(card.min.x + 12.0f, card.min.y + 10.0f), cardW - 24.0f,
+                                ColorText(), name, true);
+                DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                                ImVec2(card.min.x + 12.0f, card.min.y + 30.0f), cardW - 24.0f,
+                                ColorTextMuted(), KindLabel(a.kind), true);
+                DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                                ImVec2(card.min.x + 12.0f, card.min.y + 50.0f), cardW - 24.0f,
+                                ColorTextMuted(), a.summary, true);
+            }
+        }
+    } else if (mode_ == 3) {
+        // ---- 流水线：真实阶段表（pipeline::AllStages 的 text 链）----
+        std::vector<StageNode> nodes;
+        for (const auto& stage : pipeline::AllStages()) {
+            if (stage.chain == "text") {
+                nodes.push_back(StageNode{stage.code, stage.name, StageState::Todo});
+            }
+        }
+        if (nodes.empty()) {
+            BookEmpty(modeBody, draw, "chip", "没有阶段定义。");
+        } else {
+            StageFlow(draw, Rect{modeBody.min.x, modeBody.min.y, modeBody.min.x + 1400.0f,
+                                 modeBody.min.y + 30.0f},
+                      nodes);
+            // ⚠️ 阶段**运行态**归总控页的 Runner（它持有 pipeline::Runner 与账本）。
+            //    本页不复制一份进度 —— 所以全部 Todo，并在下面说明去哪看真状态。
+            StageList(draw, Rect{modeBody.min.x, modeBody.min.y + 48.0f, modeBody.max.x,
+                                 modeBody.max.y - 24.0f},
+                      nodes, "artifacts/");
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                            ImVec2(modeBody.min.x, modeBody.max.y - 18.0f), modeBody.width(),
+                            ColorTextMuted(),
+                            "这里只列阶段定义；真实运行进度与账本在「总控」页的 Runner 上。", true);
+        }
+    } else {
+        // ---- 其余 5 个模式：业务层还没有对应的**只读投影**接口 ----
+        // 如实说明缺什么，而不是拿别的表的数据凑一屏看起来像的东西。
+        const char* missing = "";
+        switch (mode_) {
+        case 2: missing = "初始化链（novel::NovelInit 的门禁与产物表）没有只读查询接口。"; break;
+        case 4: missing = "评审记录没有只读查询接口。"; break;
+        case 5: missing = "模型角色 / 提示词模板没有只读查询接口。"; break;
+        case 6: missing = "角色状态流水（character_status）没有按章的只读投影接口。"; break;
+        default: missing = "自动运行策略没有只读查询接口。"; break;
+        }
+        Empty(draw, modeBody, "sparkles", "尚未接入业务层", missing);
+    }
+
+    // ---- 右栏：当前章的真实属性 ----
+    DrawRoundRect(draw, inspector.min, inspector.max, 0.0f, ColorSurface());
+    draw->AddLine(ImVec2(inspector.min.x + 0.5f, inspector.min.y),
+                  ImVec2(inspector.min.x + 0.5f, inspector.max.y), ColorLineSubtle(), 1.0f);
+    const BookChapter* chapter = s.chapter();
+    if (chapter != nullptr) {
+        std::string statusLabel;
+        theme::Tone statusTone = theme::Tone::Idle;
+        ChapterTone(chapter->status, statusLabel, statusTone);
+        KeyValues(draw,
+                  Rect{inspector.min.x + 16.0f, tabY + 60.0f, inspector.max.x - 16.0f, tabY + 220.0f},
+                  {{"章节", "第 " + std::to_string(chapter->ord) + " 章"},
+                   {"标题", chapter->title.empty() ? kDash : chapter->title},
+                   {"字数", chapter->words > 0 ? std::to_string(chapter->words) : "未统计"},
+                   {"状态", statusLabel},
+                   {"更新", TimeText(chapter->updated)},
+                   {"本章镜头", std::to_string(s.shots.size())}});
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                        ImVec2(inspector.min.x + 16.0f, tabY + 230.0f), inspectorW - 32.0f,
+                        ColorTextMuted(), "数据源：" + s.dbPath, true);
+    } else {
+        DrawTextClipped(draw, FontAt(12.5f), 12.5f,
+                        ImVec2(inspector.min.x + 16.0f, tabY + 64.0f), inspectorW - 32.0f,
+                        ColorTextMuted(), "未绑定工程", true);
+    }
+}
+
+// ================================================================ P5.3 资产
+//
+// 同样从 WorkspaceA.cpp 搬来。旧版 12 张 "资产 N" 卡、沈砚/老沈/第 1 章、
+// 基线 v2 / 当前 v3 / 差异 0.2418、S010–S014 chip、4 张参考图全是写死的。
+// 现在逐项来自 entities + visual_assets + visual_artifacts。
+void AssetsPage::Draw(Rect area, ImDrawList* draw) {
+    BookState& s = Book();
+    const std::vector<SegmentOption> options{{"d", "详情"}, {"o", "总览"}};
+    const std::string_view picked =
+        Segmented(draw, RectAt(area.min.x, area.min.y, SegmentedWidth(options), 32.0f), options,
+                  overview_ ? "o" : "d", "assets-seg");
+    overview_ = (picked == "o");
+
+    const Rect body{area.min.x, area.min.y + 44.0f, area.max.x, area.max.y};
+    if (!s.bound || !s.error.empty() || s.assets.empty()) {
+        BookEmpty(body, draw, "masks", "还没有实体资产。跑一次初始化与资产流水线后这里才有内容。");
+        return;
+    }
+    selected_ = std::clamp(selected_, 0, static_cast<int>(s.assets.size()) - 1);
+    const BookAsset& asset = s.assets[static_cast<std::size_t>(selected_)];
+
+    if (overview_) {
+        const int columns = AutoGridCols(body.width(), 210.0f, 14.0f);
+        const float cardW =
+            (body.width() - 14.0f * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        for (int i = 0; i < static_cast<int>(s.assets.size()); ++i) {
+            const BookAsset& row = s.assets[static_cast<std::size_t>(i)];
+            const int column = i % columns;
+            const int r = i / columns;
+            const Rect card{body.min.x + (cardW + 14.0f) * static_cast<float>(column),
+                            body.min.y + (192.0f + 14.0f) * static_cast<float>(r), cardW, 192.0f};
+            const bool on = (i == selected_);
+            DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
+                         on ? ColorAccent() : ColorLineSubtle(), 1.0f);
+            // ⚠️ 缩略图：真实设定图要经 gpu 纹理链路解码（出图页才接）。没有就显示
+            //    "无产出图"，不拿 Art() 占位画冒充这个角色的设定图。
+            const Rect thumb{card.min.x + 8.0f, card.min.y + 8.0f, card.max.x - 8.0f, card.min.y + 158.0f};
+            DrawRoundRect(draw, thumb.min, thumb.max, 8.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
+            DrawIconCentered(draw, "masks", thumb.center(), 24.0f, ColorTextMuted());
+            const std::string name = row.name.empty() ? std::string(kDash) : row.name;
+            DrawTextClipped(draw, FontBoldAt(13.0f), 13.0f, ImVec2(card.min.x + 12.0f, card.min.y + 164.0f),
+                            cardW - 24.0f, ColorText(), name, true);
+            std::string statusLabel;
+            theme::Tone statusTone = theme::Tone::Idle;
+            AssetTone(row.hasAsset ? row.assetStatus : std::string(), statusLabel, statusTone);
+            const std::string sub = row.hasAsset ? statusLabel : "无视觉资产";
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(card.min.x + 12.0f, card.min.y + 180.0f),
+                            cardW - 24.0f, ColorTextMuted(), sub, true);
+            if (Clicked(card, "asset-card-" + std::to_string(i))) {
+                selected_ = i;
+            }
+        }
+        return;
+    }
+
+    // ---- 详情 ----
+    float y = body.min.y;
+    DrawIcon(draw, "masks", ImVec2(body.min.x, y), 16.0f, ColorAccent());
+    const std::string entityName = asset.name.empty() ? kDash : asset.name;
+    draw->AddText(FontBoldAt(15.0f), 15.0f, ImVec2(body.min.x + 24.0f, y - 1.0f), ColorText(),
+                  entityName.data(), entityName.data() + entityName.size());
+    std::string statusLabel;
+    theme::Tone statusTone = theme::Tone::Idle;
+    AssetTone(asset.hasAsset ? asset.assetStatus : std::string(), statusLabel, statusTone);
+    const float tagW = TagWidth(statusLabel, false, true);
+    Tag(draw, RectAt(body.min.x + 24.0f + LabelWidth(FontBoldAt(15.0f), 15.0f, entityName.c_str()) + 12.0f,
+                    y - 1.0f, tagW, 20.0f),
+        statusLabel, statusTone, false, true);
+    y += 28.0f;
+    draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
+    y += 14.0f;
+
+    // 真实字段：类别 / 实体状态 / 资产名 / canon / 生产态 / 设定图路径 / 形象层进度。
+    // 旧版的"别名 老沈""出处 第 1 章""降级策略 保留上一版"在 entities 表里**没有列**，
+    // 所以这些行不画 —— 不用相邻字段冒充。
+    const std::string layers = asset.hasAsset ? (std::to_string(asset.layersDone) + " / " +
+                                                 std::to_string(asset.layers) + " 层就绪")
+                                              : std::string(kDash);
+    KeyValues(draw, Rect{body.min.x, y, body.min.x + 640.0f, y + 150.0f},
+              {{"类别", KindLabel(asset.kind)},
+               {"实体 ID", "#" + std::to_string(asset.entityId)},
+               {"实体状态", asset.entityStatus.empty() ? kDash : asset.entityStatus},
+               {"视觉资产", asset.hasAsset ? (asset.assetName.empty() ? kDash : asset.assetName)
+                                           : "尚未建立"},
+               {"Canon", asset.canonStatus.empty() ? kDash : asset.canonStatus},
+               {"生产状态", asset.hasAsset ? statusLabel : kDash},
+               {"形象层", layers},
+               {"设定图", asset.sheetRelPath.empty() ? kDash : asset.sheetRelPath},
+               {"降级", asset.degraded ? "有降级产物" : "无"}});
+    y += 164.0f;
+    draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
+    y += 14.0f;
+
+    // 一致性对比 / 关联时间线 / 绑定镜头 chip：**没有可用来源**，逐条说清缺什么。
+    const Rect missing{body.min.x, y, body.max.x, body.min.y + 220.0f};
+    Empty(draw, missing, "compare", "尚无一致性对比数据",
+          "对比需要同一角色的两层成图（visual_artifacts 里 front + turnaround 都 DONE）"
+          "并解码出像素差；当前该资产形象层 " +
+              (asset.hasAsset ? (std::to_string(asset.layersDone) + "/" +
+                                 std::to_string(asset.layers) + " 就绪")
+                              : std::string("尚未建立")) +
+              "，且帧图解码尚未接入 ImGui 侧。");
+    y += 236.0f;
+    draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
+    y += 14.0f;
+
+    static const char* kGapsTitle = "尚未接入的区块";
+    // DrawTextClipped 收 string_view，自己算结束指针；末参是 wrap(bool)，不是 text_end。
+    DrawTextClipped(draw, FontBoldAt(12.5f), 12.5f, ImVec2(body.min.x, y), body.width(), ColorText(),
+                    kGapsTitle, true);
+    y += 20.0f;
+    for (const char* gap : {"关联时间线：需要按章的事件 + 分镜引用，资产页还没有这条查询。",
+                            "绑定镜头 chip：需要 shots.reference_json 解析成 visual_assets 路径。",
+                            "参考图：项目参考库 refs.json 的读取接口未接到 ImGui 侧。"}) {
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, y), body.width(),
+                        ColorTextMuted(), gap, true);
+        y += 18.0f;
     }
 }
 

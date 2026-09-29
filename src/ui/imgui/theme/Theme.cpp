@@ -49,7 +49,29 @@ std::array<std::uint32_t, kToneCount> ToneSource(const ColorToken& c) {
             c.statusDanger, c.statusBusy,  c.statusIdle};
 }
 
-void ComputeDerived(ThemeRecord& record) {
+// --grad-accent / --grad-warm 的**终点**逐主题不同，且不是同一个 token：
+//   grad-accent.to  深空:70 / 纸墨:152 / 水墨:193 / 极夜:246 = accent.info
+//                   薄暮:111 = accent.secondary
+//   grad-warm.to    薄暮:112 = accent.info，纸墨:153 / 水墨:194 = status.warn，
+//                   深空:71 / 极夜:247 = #E86A8B
+// 起点两套主题都恒等于 accent.primary / accent.secondary，所以不查表，直接从
+// ColorToken 取 —— 保持单一真值。
+// #E86A8B 在深空/极夜的 token 表里**没有**对应字段（它是薄暮的 --accent-2 被抄
+// 过去的），只能显式给，这是设计稿自身的跨主题抄值，不是本侧的推导结果。
+constexpr std::uint32_t kRoseE86A8B = 0xE86A8BFFu; // theme-ok
+struct GradEnds {
+    bool accentToIsSecondary; // grad-accent 终点取 accent.secondary 还是 accent.info
+    int warmTo;              // 0=kRoseE86A8B, 1=accent.info, 2=status.warn
+};
+constexpr std::array<GradEnds, 5> kGradEnds{{
+    {false, 0}, // 深空 tokens.css:70-71
+    {true, 1},  // 薄暮 tokens.css:111-112
+    {false, 2}, // 纸墨 tokens.css:152-153
+    {false, 2}, // 水墨 tokens.css:193-194
+    {false, 0}, // 极夜 tokens.css:246-247
+}};
+
+void ComputeDerived(ThemeRecord& record, ThemeId id) {
     const ColorToken& c = record.colors;
     Derived& d = record.derived;
     const std::array<std::uint32_t, kToneCount> tone = ToneSource(c);
@@ -66,7 +88,34 @@ void ComputeDerived(ThemeRecord& record) {
     d.btnPrimaryShadow = MixAlpha(c.accentPrimary, 28.0f);
     d.dangerBg = MixAlpha(c.statusDanger, 12.0f);
 
-    const GlassTriple& triple = kGlassTriples[IndexOf(g_current)];
+    // 13 档 alpha × 7 色调全矩阵：设计稿里全部 color-mix(·, N%, transparent)。
+    for (std::size_t s = 0; s < alpha::kStepCount; ++s) {
+        for (std::size_t t = 0; t < kToneCount; ++t) {
+            d.toneAlpha[s][t] = MixAlpha(tone[t], alpha::kPercents[s]);
+        }
+    }
+
+    // 实色预混（color-mix 两端都是不透明基色 → 结果不透明）。
+    d.crumbBg = MixSrgb(c.bgVoid, c.bgSurface, 60.0f);
+    d.stageDoneBg = MixSrgb(c.statusOk, c.fillMuted, 10.0f);
+    d.stageFailBg = MixSrgb(c.statusDanger, c.fillMuted, 10.0f);
+    d.gateFailBg = MixSrgb(c.statusDanger, c.fillMuted, 7.0f);
+
+    // 主题无关固定叠层：设计稿写死 rgba(255,255,255,·)/rgba(0,0,0,·)，不跟主题走。
+    d.btnPrimaryInset = MixAlpha(0xFFFFFFFFu, 12.0f);
+    d.progShimmer = MixAlpha(0xFFFFFFFFu, 35.0f);
+    d.mediaScrim45 = MixAlpha(0x000000FFu, 45.0f);
+    d.mediaScrim35 = MixAlpha(0x000000FFu, 35.0f);
+
+    // 渐变两端实色。起点恒为 accent.primary / accent.secondary，终点查 kGradEnds。
+    const GradEnds& ends = kGradEnds[IndexOf(id)];
+    d.gradAccent.from = c.accentPrimary;
+    d.gradAccent.to = ends.accentToIsSecondary ? c.accentSecondary : c.accentInfo;
+    d.gradWarm.from = c.accentSecondary;
+    d.gradWarm.to = ends.warmTo == 0 ? kRoseE86A8B
+                                     : (ends.warmTo == 1 ? c.accentInfo : c.statusWarn);
+
+    const GlassTriple& triple = kGlassTriples[IndexOf(id)];
     d.accentDim = triple.dim;
     d.accentGlow = triple.glow;
     d.glass = triple.glass;
@@ -206,6 +255,45 @@ std::uint32_t MixAlpha(std::uint32_t rgb, float percent) {
     return (rgb & 0xFFFFFF00u) | alpha;
 }
 
+std::uint32_t MixAlpha(std::uint32_t rgb, alpha::Step step) {
+    return MixAlpha(rgb, alpha::kPercents[static_cast<std::size_t>(step)]);
+}
+
+// color-mix(in srgb, A N%, B) —— CSS Color 5 的定义是**预乘 alpha**后在 gamma 编码
+// 的 sRGB 通道上插值，不是线性光。两端都不透明时它退化成通道直线 lerp；本项目所有
+// 调用点的两端都是不透明基色。走 spec 公式而不是直接 lerp，是为了将来传半透明色进来
+// 时不会静默算错。
+std::uint32_t MixSrgb(std::uint32_t a, std::uint32_t b, float percentOfA) {
+    const double t = static_cast<double>(std::clamp(percentOfA, 0.0f, 100.0f)) / 100.0;
+    const double alphaA = static_cast<double>(a & 0xFFu);
+    const double alphaB = static_cast<double>(b & 0xFFu);
+    const double alphaOut = t * alphaA + (1.0 - t) * alphaB;
+    if (alphaOut <= 0.0) {
+        return 0u;
+    }
+    const auto channel = [t, alphaA, alphaB, alphaOut, a, b](int shift) -> std::uint32_t {
+        const double valueA = static_cast<double>((a >> shift) & 0xFFu);
+        const double valueB = static_cast<double>((b >> shift) & 0xFFu);
+        const double premultiplied = t * alphaA * valueA + (1.0 - t) * alphaB * valueB;
+        const double straight = std::clamp(premultiplied / alphaOut, 0.0, 255.0);
+        return static_cast<std::uint32_t>(std::lround(straight)) & 0xFFu;
+    };
+    return (channel(24) << 24) | (channel(16) << 16) | (channel(8) << 8) | channel(0);
+}
+
+// 裸 rgba() 压平：source-over 直通混合（非预乘）。percent 用 CSS 标称值，不是 alpha 字节。
+std::uint32_t FlattenOver(std::uint32_t translucent, std::uint32_t opaqueBackdrop, float percent) {
+    const double t = static_cast<double>(std::clamp(percent, 0.0f, 100.0f)) / 100.0;
+    const auto channel = [t](std::uint32_t top, std::uint32_t bottom, int shift) -> std::uint32_t {
+        const double a = static_cast<double>((top >> shift) & 0xFFu);
+        const double b = static_cast<double>((bottom >> shift) & 0xFFu);
+        return static_cast<std::uint32_t>(std::lround(a * t + b * (1.0 - t))) & 0xFFu;
+    };
+    return (channel(translucent, opaqueBackdrop, 24) << 24) |
+           (channel(translucent, opaqueBackdrop, 16) << 16) |
+           (channel(translucent, opaqueBackdrop, 8) << 8) | 0xFFu;
+}
+
 ImU32 ToImU32(std::uint32_t rgba) {
     // 唯一一处「theme 存储序 → ImGui 打包序」的转换。走 ImGui 自己的 float4 往返，
     // 不手写位移：位移写错过一次，错的是整个界面而不是一个控件。
@@ -274,15 +362,12 @@ bool LoadThemesFrom(const std::filesystem::path& dir) {
         const std::string_view display = ThemeDisplayName(id);
         const std::filesystem::path file =
             dir / (std::string(display) + ".json"); // theme-ok
-        // 逐主题算一遍派生色：kGlassTriples 按 ThemeId 寻址。
-        const ThemeId previous = g_current;
-        g_current = id;
+        // 逐主题算一遍派生色：kGlassTriples / kGradEnds 都按 ThemeId 寻址。
         if (ParseThemeFile(file, id)) {
-            ComputeDerived(g_themes[IndexOf(id)]);
+            ComputeDerived(g_themes[IndexOf(id)], id);
         } else {
             all = false;
         }
-        g_current = previous;
     }
     g_loaded = all;
     return all;
@@ -487,6 +572,25 @@ bool SelfTestRoundTrip(std::string* report) {
         const std::uint32_t accentTagBg = record.derived.tagBg[static_cast<std::size_t>(Tone::Accent)];
         if ((accentTagBg & 0xFFu) != 31u) {
             out << " (tagBg alpha=" << (accentTagBg & 0xFFu) << " != 31)";
+            ok = false;
+        }
+        // 13 档矩阵的 alpha 字节必须等于 alpha::kBytes，且 RGB 通道取自主色本身
+        // （color-mix(·, N%, transparent) 不改 RGB）。错一格就是整档偏 1/255。
+        for (std::size_t s = 0; s < alpha::kStepCount; ++s) {
+            const std::size_t ti = static_cast<std::size_t>(Tone::Accent);
+            const std::uint32_t v = record.derived.toneAlpha[s][ti];
+            const std::uint32_t wantAlpha = alpha::kBytes[s];
+            const std::uint32_t wantRgb =
+                record.derived.tagBg[ti] & 0xFFFFFF00u; // 同为 tone 色，只比 alpha
+            if ((v & 0xFFu) != wantAlpha || (v & 0xFFFFFF00u) != wantRgb) {
+                out << " (toneAlpha[" << s << "])=" << ToHex(v) << " != " << ToHex(wantRgb | wantAlpha);
+                ok = false;
+                break;
+            }
+        }
+        // 实色预混必须不透明：color-mix 两端都是不透明基色。
+        if ((record.derived.crumbBg & 0xFFu) != 0xFFu || (record.derived.stageFailBg & 0xFFu) != 0xFFu) {
+            out << " (premix not opaque)";
             ok = false;
         }
         out << '\n';

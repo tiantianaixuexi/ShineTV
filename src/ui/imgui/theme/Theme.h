@@ -37,6 +37,28 @@ namespace shine::theme {
 // color-mix(in srgb, X N%, transparent) 的等价物：保留 X 的 RGB，alpha = N%。
 [[nodiscard]] std::uint32_t MixAlpha(std::uint32_t rgb, float percent);
 
+// 同上，档位取自 Tokens.h 的 alpha::Step（页面层不要自己写 0.18f）。
+[[nodiscard]] std::uint32_t MixAlpha(std::uint32_t rgb, alpha::Step step);
+
+// color-mix(in srgb, A N%, B)：**两色真混合**，结果是实色（不透明）。
+//
+// gamma 提醒：CSS Color 5 对 in srgb 的定义是在**预乘 alpha 后的 gamma 编码 sRGB
+// 通道**上插值，不是线性光插值。A、B 都不透明时退化成通道直线 lerp；本项目所有
+// 调用点（crumbs / 阶段节点底 / 闸门底）的两端都是不透明基色，所以用直线即可，
+// 但函数按 spec 走预乘公式，以免将来有人传半透明色进来时静默算错。
+// 用法：MixSrgb(c.statusOk, c.fillMuted, 10.0f)  ≡ ui.css:852 的
+//      color-mix(in srgb, var(--ok) 10%, var(--fill-muted))
+[[nodiscard]] std::uint32_t MixSrgb(std::uint32_t a, std::uint32_t b, float percentOfA);
+
+// 裸 rgba(R,G,B,N) 压到不透明底色上（CSS 的 source-over 直通混合，非预乘）。
+//
+// 存在的理由：themes/*.json 里的 line.* / fill.* **已经是这么压平的实色**，
+// 探针反证 21/21 吻合 —— 例如深空 line.strong = #414853 恰是
+// rgba(234,240,247,0.22) 压 bg.surface #111825。压平时 percent 必须用 CSS 的
+// **标称** 0.22，不是量化后的 56/255=0.2196（差 1/255 会让整档偏一格）。
+[[nodiscard]] std::uint32_t FlattenOver(std::uint32_t translucent, std::uint32_t opaqueBackdrop,
+                                       float percent);
+
 // 7 色调（ui.css:139-145 的 .tag.ok/.warn/.danger/.busy/.info/.accent/.idle）
 enum class Tone { Accent = 0, Info, Ok, Warn, Danger, Busy, Idle };
 inline constexpr std::size_t kToneCount = 7;
@@ -45,9 +67,9 @@ inline constexpr std::size_t kToneCount = 7;
 struct Derived {
     std::array<std::uint32_t, kToneCount> tagBg;      // tone 12%
     std::array<std::uint32_t, kToneCount> tagBorder;  // tone 35%
-    std::array<std::uint32_t, kToneCount> gateBg;     // tone 10%
-    std::array<std::uint32_t, kToneCount> ganttCell;  // tone 12%
-    std::array<std::uint32_t, kToneCount> checkRowBg; // tone 10%
+    std::array<std::uint32_t, kToneCount> gateBg;     // tone 10%（见下方过时说明）
+    std::array<std::uint32_t, kToneCount> ganttCell;  // tone 12%（设计稿无此用法，见下）
+    std::array<std::uint32_t, kToneCount> checkRowBg; // tone 10%（见下方过时说明）
     std::uint32_t stageRunBg;      // accent 14%
     std::uint32_t jumpBtnBg;       // accent 22%
     std::uint32_t inputFocusRing;  // accent 14%
@@ -56,7 +78,46 @@ struct Derived {
     std::uint32_t accentDim;       // 每主题显式值（tokens.css 的 --accent-dim）
     std::uint32_t accentGlow;      // 每主题显式值（tokens.css 的 --accent-glow）
     std::uint32_t glass;           // 每主题显式值（--glass；毛玻璃降级用的实色）
+
+    // ---- 以下为 color-mix 派生色补齐（只增；上面 14 个字段语义不动）----
+
+    // [step][tone] = color-mix(in srgb, tone N%, transparent)，N 取自 alpha::Step。
+    // 覆盖设计稿全部 13 档 × 7 色调；页面层要「某色调某档」一律走 At()，
+    // 别再写 WithAlpha(ColorX(), 0.18f)。
+    std::array<std::array<std::uint32_t, kToneCount>, alpha::kStepCount> toneAlpha{};
+
+    // 实色预混：两端都是不透明基色，结果不透明。跟 toneAlpha 是两种算法，别混用。
+    std::uint32_t crumbBg;      // shell.css:233  MixSrgb(bg-void 60%, bg-surface)
+    std::uint32_t stageDoneBg;  // ui.css:852     MixSrgb(ok 10%, fill-muted)
+    std::uint32_t stageFailBg;  // ui.css:869     MixSrgb(danger 10%, fill-muted)
+    std::uint32_t gateFailBg;   // views.css:660  MixSrgb(danger 7%, fill-muted)
+
+    // 主题无关的固定叠层：设计稿写死 rgba(255,255,255,·) / rgba(0,0,0,·)，不跟主题走。
+    std::uint32_t btnPrimaryInset; // ui.css:54  .btn-primary 内侧高光  白 12%
+    std::uint32_t progShimmer;     // ui.css:448 .prog.run 走马灯       白 35%
+    std::uint32_t mediaScrim45;    // ImageFlow.jsx:159 媒体失败遮罩   黑 45%
+    std::uint32_t mediaScrim35;    // VideoFlow.jsx:151 媒体失败遮罩   黑 35%
+
+    // --grad-accent / --grad-warm 两端实色（tokens.css 里是 linear-gradient(120deg,·,·)，
+    // ImGui 侧拆成两个端点自己画渐变）。from 恒等于 accent.primary / accent.secondary；
+    // to 逐主题不同，见 Theme.cpp 的 kGradEnds。
+    struct Gradient {
+        std::uint32_t from;
+        std::uint32_t to;
+    };
+    Gradient gradAccent;
+    Gradient gradWarm;
+
+    [[nodiscard]] std::uint32_t At(Tone tone, alpha::Step step) const {
+        return toneAlpha[static_cast<std::size_t>(step)][static_cast<std::size_t>(tone)];
+    }
 };
+
+// ⚠️ gateBg / checkRowBg 的已知偏差（**保持原值不动**，只是记下来）：
+//   设计稿 ui.css:852/869/660 的背景是 color-mix(in srgb, 色调 N%, var(--fill-muted))，
+//   两端都是不透明色 → 结果是实色。这两个字段当年按「纯 alpha」算（MixAlpha），
+//   与设计稿的实色差一个底。要 1:1 就用上面新加的 stageDoneBg / stageFailBg /
+//   gateFailBg。这三个旧字段已冻结，不改值也不删除。
 
 // ---- 载入 / 查询 ----
 [[nodiscard]] bool LoadThemesFrom(const std::filesystem::path& dir);

@@ -302,6 +302,36 @@ const ImWchar* BuildGlyphRanges(ImFontAtlas* atlas) {
             AddUtf8Cjk(content, builder);
         }
     }
+    // 兜底基线：界面固定用到的标点 / 符号 / 箭头。
+    //
+    // ⚠️ 源码扫描（AddUtf8Cjk）**只收** 0x3400-0x9FFF、0xF900-0xFAFF 三段汉字，
+    //    所以 `›`（U+203A 单角引号）、`→`、`×`、`±`、`…` 这类**永远进不来**。
+    //    症状不是报错，是界面上某个符号变豆腐块：面包屑的 `›` 分隔符实测就是
+    //    画成了缺字形（Fonts.h 的硬规则是「无豆腐块」，靠扫描兜不住，只能显式列）。
+    //    这里按 codepoint 逐个登记，新增符号时改这一处即可。
+    static constexpr ImWchar kUiSymbols[] = {
+        0x00B7,  // ·
+        0x00D7,  // ×
+        0x00F7,  // ÷
+        0x00B1,  // ±
+        0x2013,  // –
+        0x2014,  // —
+        0x2018, 0x2019,  // ' '
+        0x201C, 0x201D,  // " "
+        0x2022,  // •
+        0x2026,  // …
+        0x2039,  // ‹
+        0x203A,  // ›
+        0x2190, 0x2191, 0x2192, 0x2193,  // ← ↑ → ↓
+        0x2212,  // −
+        0x25CF,  // ●
+        0x25CB,  // ○
+        0x2605,  // ★
+        0x2606,  // ☆
+    };
+    for (const ImWchar c : kUiSymbols) {
+        builder.AddChar(c);
+    }
     ImVector<ImWchar> ranges;
     builder.BuildRanges(&ranges);
     // 补 NUL 结尾（BuildRanges 已保证，这里只是防御）

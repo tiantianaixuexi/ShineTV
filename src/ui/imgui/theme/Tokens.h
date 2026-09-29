@@ -131,6 +131,37 @@ inline constexpr int kNormal = 1;
 inline constexpr int kFocus = 2;
 } // namespace border
 
+// ---- 半透明档位（alpha premultiplication steps）----
+// tokens.css 本身**没有** color-mix；它把半透明写成裸 rgba(...)。真正用
+// color-mix(in srgb, X N%, transparent) 的是 ui.css / views.css / shell.css，
+// 那里出现的 N% 就是这 13 档。每一档都对应一行具名 CSS，不是随手取的数：
+//
+//   P07  views.css:660 .gates .gate.fail  背景  color-mix(danger 7%, fill-muted)
+//   P09  views.css:11   工作区顶部 info 光晕
+//   P10  ui.css:852/869 .stageflow .snode  背景（与 fill-muted 实色预混，非纯 alpha）
+//   P12  ui.css:139-144 .tag.*  背景
+//   P14  views.css:498 .gantt .gcell.stop 背景
+//   P18  views.css:496 .gantt .gcell.done 背景 / :705 .chip.on .cnt / :1055 .fnode.run 光环
+//   P22  shell.css:647 .jump-btn:hover 背景
+//   P25  views.css:658 .gates .gate.pass  边框
+//   P30  views.css:496 .gantt .gcell.done 边框（Storyboard.jsx:131 同值）
+//   P35  ui.css:139-144 .tag.*  边框 / views.css:660 .gates .gate.fail 边框
+//   P40  ui.css:851  .stageflow .snode.done 边框
+//   P45  ui.css:868  .stageflow .snode.fail 边框 / views.css:1058 .fnode.done 边框
+//   P50  views.css:1061 .fnode.fail 边框
+//
+// 28%（--shadow-accent）不在表里：它是 themes/*.json 的 shadow.accent 显式字段。
+// 13 档的 alpha 字节 = lround(N*2.55)，实测值见 kBytes（探针验过）。
+namespace alpha {
+enum class Step : std::uint8_t { P07 = 0, P09, P10, P12, P14, P18, P22, P25, P30, P35, P40, P45, P50 };
+inline constexpr std::size_t kStepCount = 13;
+inline constexpr std::array<float, kStepCount> kPercents = {7.0f,  9.0f,  10.0f, 12.0f, 14.0f, 18.0f, 22.0f,
+                                                            25.0f, 30.0f, 35.0f, 40.0f, 45.0f, 50.0f};
+// lround(N*2.55)：18 23 26 31 36 46 56 64 77 89 102 115 128
+inline constexpr std::array<std::uint8_t, kStepCount> kBytes = {18, 23, 26, 31, 36, 46, 56,
+                                                                64, 77, 89, 102, 115, 128};
+} // namespace alpha
+
 namespace motion {
 inline constexpr int kDurFastMs = 120;
 inline constexpr int kDurBaseMs = 200;

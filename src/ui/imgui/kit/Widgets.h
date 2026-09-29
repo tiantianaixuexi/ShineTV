@@ -197,4 +197,89 @@ void Empty(ImDrawList* draw, Rect bounds, std::string_view icon, std::string_vie
 void KeyValues(ImDrawList* draw, Rect bounds,
                const std::vector<std::pair<std::string, std::string>>& rows);
 
+// ---- 18. Spinner（ui.css:457）----
+// 14×14 圆环 2px 边（line-normal），顶边 accent，0.7s/圈；sm 11×11 边宽 1.5。
+// 组件画廊（Gallery.jsx:96-97）与 StageFlow/Overlays 的「运行中」都用这一档。
+// 画在中心点：外接圆 = bounds（直径即 size），描边向内吃 thickness。
+void Spinner(ImDrawList* draw, ImVec2 center, bool small);
+// 按 .spin / .spin.sm 的直径返回占位边长（布局用它预留空间）。
+[[nodiscard]] float SpinnerSize(bool small);
+
+// ---- 19. Tooltip（ui.css:472-507，[data-tip]）----
+// bg-overlay + 1px line-normal + 11.5/500 pad 4/9 r6 + shadow-1；
+// 默认贴锚点**右侧 10px 垂直居中**（left: calc(100% + 10px)），below=true 则贴下方 8px 居中。
+// 只画不命中（CSS 的 pointer-events: none），且自带 200ms 出现延迟（--dur-2）。
+// 走 ImGui 的前景 draw list：浮层必须压在同一帧里已经画好的内容之上。
+void Tooltip(Rect anchor, std::string_view text, bool below = false);
+
+// ---- 20. Divider（ui.css:134-138 .msep）----
+// 1px line-subtle 水平发丝线，上下各留 5px（.msep 的 margin）。菜单与分区之间用。
+void Divider(ImDrawList* draw, Rect bounds);
+
+// ---- 21. DataTable（ui.css:721-768 .table）----
+// th：11.5/600 muted + letter-spacing .03em + pad 8/12 + 下边 line-normal + 底 bg-panel；
+// td：pad 9/12 + 下边 line-subtle + secondary；行 hover = fill-hover；
+// 选中 = fill-selected + **左侧 2px accent 内阴影** + 字转 primary；
+// .num = 等宽 11.5 muted；.center = 居中；.compact = pad 7/8 + 12px（views.css:286）。
+struct TableColumn {
+    std::string_view title;
+    float width = 0.0f;   // <= 0 = 按剩余宽度均分
+    bool numeric = false; // .table .num：等宽 11.5 muted
+    bool centered = false;// .table.center
+    bool sortable = false; // th 可点排序（Overview.jsx:96 用「↓」后缀）
+};
+struct TableRow {
+    std::vector<std::string> cells;
+    bool selected = false;
+};
+struct TableSort {
+    int column = -1;      // -1 = 未排序
+    bool ascending = true;
+};
+// 排序指示按设计稿在标题右侧留 12px（' ↓' 的宽度量级），画一个小三角而不是字符：
+// 图集里没有 ↓（U+2193 在 GetGlyphRangesChineseSimplifiedCommon 之外，见 Fonts.cpp:272），
+// 用字符会渲染成豆腐块 —— 与 Fonts.h 里「不能有豆腐块」是同一条硬判据。
+// 返回整表高度（表头 + 所有行），调用方据此决定要不要滚。
+float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& columns,
+                const std::vector<TableRow>& rows, TableSort& sort, bool compact,
+                std::string_view id);
+[[nodiscard]] float TableHeaderHeight(bool compact);
+[[nodiscard]] float TableRowHeight(bool compact);
+
+// ---- 22. Tree（ui.css:770-811 .tree）----
+// 节点 h28 pad 0 8 r6 gap6 12.5；hover = fill-hover + primary；
+// 选中 = fill-selected + primary + 左侧 2px accent；tw 14×14 muted，展开旋转 90°；
+// 子层 margin-left 14 + 1px line-subtle 竖线 + padding-left 6。
+struct TreeNode {
+    std::string label;
+    std::string icon;     // 可空（叶子）
+    std::string trailing; // 右侧计数/状态文字（Shell.jsx:490 的 3/8）
+    bool hasChildren = false;
+    bool expanded = false;
+    std::vector<TreeNode> children;
+};
+// selectedIndex 是**可见节点**的扁平序号（先序），点击后写回。返回占用高度。
+// 展开态存在 nodes 上（调用方持有），组件本身无跨帧状态 —— 与 Views.h 的约定一致。
+float Tree(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int& selectedIndex,
+           std::string_view id);
+[[nodiscard]] float TreeNodeHeight();
+
+// ---- 23. Menu（shell.css:98-145 .menu-pop）----
+// 面板 min-w180 + bg-overlay + 1px line-normal + r-md10 + shadow-2 + pad5；
+// 项 pad 7/10 r6 gap9 12.5；hover = fill-hover + primary；选中 = accent + accent-dim 底；
+// .msep = 1px line-subtle 上下各 5px；.mlabel = 10.5/700 muted + 字距 .06em。
+enum class MenuRowKind { Item, Separator, Label };
+struct MenuRow {
+    MenuRowKind kind = MenuRowKind::Item;
+    std::string label;
+    std::string icon;      // 可空
+    bool selected = false; // .mi.on
+    bool disabled = false;
+};
+// 贴 anchor 右下展开（.menu-pop 的 top: calc(100% + 6px); right: 0）。
+// 返回本帧点中的**行**下标（-1 = 没点中 / 点了禁用项）。关闭与否由调用方按返回值决定。
+int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::string_view id);
+[[nodiscard]] float MenuWidth(const std::vector<MenuRow>& rows);
+[[nodiscard]] float MenuHeight(const std::vector<MenuRow>& rows);
+
 } // namespace shine::kit

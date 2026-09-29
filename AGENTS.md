@@ -35,6 +35,17 @@ last_verified: 2026-09-30
 - 复用现有基础设施：`shine::async`、`shine::log`、`AppSettings`、`net::HttpClient`、`util::Reflect`、SQLite/Comfy 适配层。新增第二份线程池、HTTP 客户端或 JSON 约定前先证明没有现成实现。
 - 外部 C/C++ API（libhv、SQLite、Win32、yyjson、Qt）在边界转换一次；业务层接口遵循项目现有 C++ 约定，不为风格统一改动无关调用点。
 
+### 源码编码
+
+- `src/ui/imgui/**` 全树是**无 BOM 的 UTF-8**。读写它只用 `read` / `edit` / `write` 工具。
+- **不要**用 PowerShell 的 `Set-Content` / `Out-File` / `[System.IO.File]::WriteAllText` 改源码：它们按系统 ANSI 码页（中文 Windows = GBK/936）重编码，会静默把 `⚠️`、`→` 这类 GBK 编不了的字符换成 `?`，编译照过、中文照在，但注释里的标记没了。必须用脚本改字节时，全程只走 `ReadAllBytes` / `WriteAllBytes` 的纯字节替换，不经过任何编码器。
+- 判别编码别看「高位字节里 0xC2-0xDF 多还是 0x81-0xFE 多」——GBK 汉字首字节本来就落在 0xB0-0xF7，这个方法会把 UTF-8 文件误判成 GBK。用严格解码试一次：
+
+  ```powershell
+  $s = New-Object System.Text.UTF8Encoding($false,$true)
+  try { $null = $s.GetString([System.IO.File]::ReadAllBytes($f)); "$f UTF-8" } catch { "$f 非 UTF-8" }
+  ```
+
 ## 文档任务
 
 - 文档按职责分类：总览、模块、契约、工程、运行参考、源码索引。

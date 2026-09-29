@@ -25,6 +25,22 @@ void DrawOverview(kit::Rect area, ImDrawList* draw);
 // 绑上以后页面的进度 / 预算 / 账本 / 停止判定才是 Runner 的真实返回值；没绑就是空态。
 void BindOverviewProject(std::filesystem::path root);
 
+// ---- 小说 / 资产 / 分镜：绑定"当前工程根"（照 BindOverviewProject 的模式）----
+//
+// 三个页面共用同一份 **novel.db 快照**：开库 + 查询全在 worker 线程
+// （`async::RunOnWorker`），结果经 `async::PostToUi` 回投 UI 线程；UI 线程只读
+// 那份快照，不做任何 IO。见 WorkspaceB.cpp 的 `Book()` / `BookState`。
+//
+// 绑上以后这三页的每一个数字 / 每一条列表项都来自业务层
+// （novelcore::NovelGraph / NovelVisual / RunContinuityChecks）；
+// 没绑、或 db 打不开、或表是空的 —— 页面显示**诚实的空态**，不补占位数字。
+//
+// ⚠️ 这三个函数必须定义在匿名命名空间**之外**（在 WorkspaceB.cpp），
+//    否则 Shell 链接不到。Shell 在 SetProjectRoot 里与 BindOverviewProject 一起调。
+void BindNovelProject(std::filesystem::path root);
+void BindAssetsProject(std::filesystem::path root);
+void BindStoryboardProject(std::filesystem::path root);
+
 // ---- P5.2 小说（novel）—— 最大的一页：8 模式标签 + 8 套视图 ----
 class NovelPage {
 public:

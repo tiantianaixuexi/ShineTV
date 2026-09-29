@@ -651,7 +651,11 @@ void DrawOverview(Rect area, ImDrawList* draw) {
             const auto& entry = s.entries[i];
             const std::filesystem::path path = util::PathFromUtf8(entry.output_path);
             const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + 32.0f};
-            if (Hovered(row, "ov-art-hover-" + std::to_string(i))) {
+            // ⚠️ 一次 HitTest 拿 hovered + clicked：先 Hovered(idA) 再 Clicked(idB)
+            // 会在同一矩形上叠两个 InvisibleButton，ImGui 只让先注册的那个拿到
+            // HoveredId，第二个永远 clicked=false —— 这一行点不开。
+            const Hit hit = HitTest(row, "ov-art-" + std::to_string(i));
+            if (hit.hovered) {
                 DrawRoundRect(draw, row.min, row.max, 6.0f, ColorFillHover());
             }
             const std::string name = util::PathToUtf8(path.filename());
@@ -664,7 +668,7 @@ void DrawOverview(Rect area, ImDrawList* draw) {
             DrawTextClipped(draw, FontAt(11.0f), 11.0f, ImVec2(row.min.x + 6.0f, ay + 18.0f),
                             row.width() - 26.0f, ColorTextMuted(), sub);
             DrawIcon(draw, "chevron", ImVec2(row.max.x - 16.0f, ay + 10.0f), 12.0f, ColorTextMuted());
-            if (Clicked(row, "ov-art-" + std::to_string(i))) {
+            if (hit.clicked) {
                 const std::string err = util::ShellOpen(path);
                 if (!err.empty()) {
                     log::Error("总控：打开产物失败 {}", err);
@@ -688,189 +692,11 @@ void DrawOverview(Rect area, ImDrawList* draw) {
                                 Money(s.budget.max_cost)}});
 }
 
-// ================================================================ P5.2 小说
-void NovelPage::Draw(Rect area, ImDrawList* draw) {
-    const float inspectorW = 280.0f;
-    const Rect center{area.min.x, area.min.y, area.max.x - inspectorW, area.max.y};
-    const Rect inspector{center.max.x, area.min.y, area.max.x, area.max.y};
-
-    // 8 个模式标签（min-h 44，横向滚动；选中 = accent + 2px accent 下边框）
-    const char* modes[] = {"章节", "设定", "初始化", "流水线", "评审", "模型", "状态", "自动"};
-    float tx = area.min.x;
-    const float tabY = area.min.y;
-    ImFont* tabFont = FontBoldAt(12.5f);
-    for (int i = 0; i < 8; ++i) {
-        const float w = LabelWidth(tabFont, 12.5f, modes[i]) + 32.0f;
-        const Rect tab{tx, tabY, tx + w, tabY + 44.0f};
-        if (i == mode_) {
-            DrawRoundRect(draw, tab.min, tab.max, 6.0f, ColorFillSelected());
-            draw->AddLine(ImVec2(tab.min.x, tab.max.y - 1.0f), ImVec2(tab.max.x, tab.max.y - 1.0f),
-                          ColorAccent(), 2.0f);
-        }
-        draw->AddText(tabFont, 12.5f, ImVec2(tab.min.x + 16.0f, tab.min.y + 14.0f),
-                      i == mode_ ? ColorAccent() : ColorTextSecondary(), modes[i],
-                      modes[i] + std::strlen(modes[i]));
-        if (Clicked(tab, "novel-mode-" + std::to_string(i))) {
-            mode_ = i;
-        }
-        tx += w + 4.0f;
-    }
-
-    const Rect body{center.min.x, tabY + 52.0f, center.max.x, center.max.y};
-    if (mode_ == 0) {
-        const char* title = "第 3 章 · 雨夜";
-        draw->AddText(FontBoldAt(20.0f), 20.0f, ImVec2(body.min.x, body.min.y), ColorText(), title,
-                      title + std::strlen(title));
-        // .chap-summary：fill-muted + 3px accent 左边框 + pad 10/14
-        const char* summary = "摘要：沈砚在旧桥下发现一枚刻着名字的铜钱，线索指向十年前的失踪案。";
-        const Rect sum{body.min.x, body.min.y + 30.0f, body.min.x + 720.0f, body.min.y + 78.0f};
-        DrawRoundRect(draw, sum.min, sum.max, 0.0f, ColorFillMuted());
-        DrawRoundRect(draw, ImVec2(sum.min.x, sum.min.y), ImVec2(sum.min.x + 3.0f, sum.max.y), 1.5f,
-                      ColorAccent());
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(sum.min.x + 14.0f, sum.min.y + 10.0f),
-                        sum.width() - 28.0f, ColorTextSecondary(), summary, true);
-        // .draft：14px / 行高 1.9 / max-w 720
-        const char* draft =
-            "雨下了三天。\n\n沈砚蹲在桥墩下，把那枚铜钱在掌心翻了个面。刻痕很浅，像是被人反复摩过——"
-            "「沈砚」两个字，如今成了另一个人名。\n\n他决定不问。";
-        DrawTextClipped(draw, FontAt(14.0f), 14.0f, ImVec2(body.min.x, body.min.y + 96.0f), 720.0f,
-                        ColorText(), draft, true);
-    } else if (mode_ == 3) {
-        std::vector<StageNode> nodes;
-        for (const auto& stage : pipeline::AllStages()) {
-            nodes.push_back(StageNode{stage.code, stage.name, StageState::Todo});
-        }
-        if (nodes.size() > 2) {
-            nodes[0].state = StageState::Done;
-            nodes[1].state = StageState::Done;
-            nodes[2].state = StageState::Running;
-        }
-        StageFlow(draw, Rect{body.min.x, body.min.y, body.min.x + 1400.0f, body.min.y + 30.0f}, nodes);
-        StageList(draw, Rect{body.min.x, body.min.y + 48.0f, body.max.x, body.min.y + 700.0f}, nodes,
-                  "artifacts/");
-    } else {
-        Empty(draw, body, "sparkles", "尚未生成", "在「流水线」页运行 T1-T17 后，这里会显示结果。");
-    }
-
-    DrawRoundRect(draw, inspector.min, inspector.max, 0.0f, ColorSurface());
-    draw->AddLine(ImVec2(inspector.min.x + 0.5f, inspector.min.y),
-                  ImVec2(inspector.min.x + 0.5f, inspector.max.y), ColorLineSubtle(), 1.0f);
-    KeyValues(draw,
-              Rect{inspector.min.x + 16.0f, tabY + 60.0f, inspector.max.x - 16.0f, tabY + 160.0f},
-              {{"章节", "第 3 章"}, {"字数", "2180"}, {"状态", "草稿"}, {"更新", "刚刚"}});
-    Art(draw, Rect{inspector.min.x + 16.0f, tabY + 180.0f, inspector.max.x - 16.0f, tabY + 290.0f},
-        4, true);
-}
-
-// ================================================================ P5.3 资产
-// 第一处真正用 src/gpu 的页面：缩略图走 gpu::Textures() + gpu::TextureCache()，
-// ImGui 侧只差最后一步 ImGui::Image(srv)。
-void AssetsPage::Draw(Rect area, ImDrawList* draw) {
-    const std::vector<SegmentOption> options{{"d", "详情"}, {"o", "总览"}};
-    const std::string_view picked =
-        Segmented(draw, RectAt(area.min.x, area.min.y, SegmentedWidth(options), 32.0f), options,
-                  overview_ ? "o" : "d", "assets-seg");
-    overview_ = (picked == "o");
-
-    const Rect body{area.min.x, area.min.y + 44.0f, area.max.x, area.max.y};
-    if (overview_) {
-        const int columns = AutoGridCols(body.width(), 210.0f, 14.0f);
-        const float cardW =
-            (body.width() - 14.0f * static_cast<float>(columns - 1)) / static_cast<float>(columns);
-        for (int i = 0; i < 12; ++i) {
-            const int column = i % columns;
-            const int row = i / columns;
-            const Rect card{body.min.x + (cardW + 14.0f) * static_cast<float>(column),
-                            body.min.y + (192.0f + 14.0f) * static_cast<float>(row), cardW, 192.0f};
-            const bool on = (i == selected_);
-            DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
-                         on ? ColorAccent() : ColorLineSubtle(), 1.0f);
-            Art(draw, Rect{card.min.x + 8.0f, card.min.y + 8.0f, card.max.x - 8.0f, card.min.y + 158.0f},
-                i, true);
-            const std::string name = "资产 " + std::to_string(i + 1);
-            draw->AddText(FontBoldAt(13.0f), 13.0f, ImVec2(card.min.x + 12.0f, card.min.y + 164.0f),
-                          ColorText(), name.data(), name.data() + name.size());
-            if (Clicked(card, "asset-card-" + std::to_string(i))) {
-                selected_ = i;
-            }
-        }
-        return;
-    }
-
-    // 详情：三个 .vsec 块，发丝分隔线，无卡片外框
-    float y = body.min.y;
-    DrawIcon(draw, "masks", ImVec2(body.min.x, y), 16.0f, ColorAccent());
-    const char* entityName = "沈砚";
-    draw->AddText(FontBoldAt(15.0f), 15.0f, ImVec2(body.min.x + 24.0f, y - 1.0f), ColorText(),
-                  entityName, entityName + std::strlen(entityName));
-    const float tagW = TagWidth("已确认", false, true);
-    Tag(draw, RectAt(body.min.x + 76.0f, y - 1.0f, tagW, 20.0f), "已确认", theme::Tone::Ok, false, true);
-    y += 28.0f;
-    draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
-    y += 14.0f;
-
-    Art(draw, Rect{body.min.x, y, body.min.x + 220.0f, y + 138.0f}, 1, true);
-    KeyValues(draw, Rect{body.min.x + 240.0f, y, body.min.x + 560.0f, y + 120.0f},
-              {{"类别", "角色"}, {"别名", "老沈"}, {"出处", "第 1 章"}, {"降级策略", "保留上一版"}});
-    y += 152.0f;
-    draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
-    y += 14.0f;
-
-    // 一致性对比：.compare 16:10 max-w 640，2px accent 滑块 + 22px 旋钮
-    const float compareW = std::min(640.0f, body.width() * 0.6f);
-    const Rect compare{body.min.x, y, body.min.x + compareW, y + compareW * 10.0f / 16.0f};
-    Art(draw, compare, 1, true);
-    Art(draw, compare, 8, false);
-    const float split = compare.min.x + compare.width() * 0.5f;
-    draw->AddLine(ImVec2(split, compare.min.y), ImVec2(split, compare.max.y), ColorAccent(), 2.0f);
-    draw->AddCircleFilled(ImVec2(split, compare.center().y), 11.0f, ColorAccent(), 20);
-    DrawIconCentered(draw, "compare", ImVec2(split, compare.center().y), 14.0f, ColorAccentFg());
-    KeyValues(draw, Rect{body.min.x + compareW + 24.0f, y, body.max.x, y + 120.0f},
-              {{"基线", "v2"}, {"当前", "v3"}, {"差异", "0.2418"}, {"说明", "构图偏移"}});
-    y += compare.height() + 18.0f;
-    draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
-    y += 14.0f;
-
-    // 关联时间线：92px 高轴（2px 线 + 6 个章节刻度）+ 3 个可点 pin
-    const Rect axis{body.min.x, y + 46.0f, body.max.x, y + 50.0f};
-    draw->AddLine(ImVec2(axis.min.x, axis.center().y), ImVec2(axis.max.x, axis.center().y),
-                  ColorLineStrong(), 2.0f);
-    for (int i = 0; i < 6; ++i) {
-        const float x = axis.min.x + axis.width() * static_cast<float>(i) / 5.0f;
-        draw->AddLine(ImVec2(x, axis.min.y - 4.0f), ImVec2(x, axis.max.y + 4.0f), ColorLineNormal(),
-                      1.0f);
-    }
-    for (int i = 0; i < 3; ++i) {
-        const float x = axis.min.x + axis.width() * (0.2f + 0.3f * static_cast<float>(i));
-        if (i == 1) {
-            // .tl .ev.hot .pin 的 `0 0 10px var(--accent-glow)`（views.css:819）：
-            // 用**accent-glow 自带的 alpha**（各主题 20%~30%）当外扩光晕，不再另乘系数。
-            draw->AddCircleFilled(ImVec2(x, axis.center().y), 9.0f, ColorAccentGlow(), 16);
-        }
-        draw->AddCircleFilled(ImVec2(x, axis.center().y), 5.0f, ColorAccent(), 14);
-        draw->AddCircle(ImVec2(x, axis.center().y), 6.0f, ColorVoid(), 14, 3.0f);
-        const std::string label = "第 " + std::to_string(i + 2) + " 章";
-        draw->AddText(FontAt(11.5f), 11.5f, ImVec2(x - 20.0f, axis.max.y + 10.0f), ColorTextMuted(),
-                      label.data(), label.data() + label.size());
-    }
-    y += 70.0f;
-
-    // 绑定镜头 chip 云 + 4 张 52×36 参考图
-    float cx = body.min.x;
-    for (int i = 0; i < 5; ++i) {
-        const std::string label = "S0" + std::to_string(10 + i);
-        const float w =
-            LabelWidth(FontBoldAt(12.0f), 12.0f, label.c_str()) + 26.0f;
-        const kit::Rect pill = RectAt(cx, y, w, 26.0f);
-        DrawRoundRect(draw, pill.min, pill.max, 13.0f,
-                      ColorOf(theme::CurrentDerived().accentDim));
-        draw->AddText(FontBoldAt(12.0f), 12.0f, ImVec2(cx + 13.0f, y + 6.0f), ColorAccent(),
-                      label.data(), label.data() + label.size());
-        cx += w + 6.0f;
-    }
-    for (int i = 0; i < 4; ++i) {
-        Art(draw, RectAt(cx + 58.0f * static_cast<float>(i), y, 52.0f, 36.0f), i + 2, true);
-    }
-}
+// ================================================================ P5.2 小说 / P5.3 资产
+//
+// 这两页的实现已**搬到 WorkspaceB.cpp**：它们要读 novel.db，而开库 / 查询 /
+// worker 回投那一整套（BookState）都在 B 的匿名命名空间里。两页的真数据实现见
+// WorkspaceB.cpp 的 NovelPage::Draw / AssetsPage::Draw —— 旧版这里的实现每个数字
+// 都是写死的（"第 3 章 · 雨夜"、字数 2180、差异 0.2418、12 张假资产卡）。
 
 } // namespace shine::pages
