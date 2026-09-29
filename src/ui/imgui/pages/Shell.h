@@ -111,6 +111,20 @@ public:
     //    **有内容**的模式从来没被截过图，里面的缺陷也就没人看得见（`mode_ == 1`
     //    那张反向矩形的卡片网格就是这么活下来的）。凡是有多态视图的地方，取证都要有入口。
     void SetNovelMode(int mode) { novel_.setMode(mode); }
+    // 取证用：分镜页选中的镜。默认 0 = 第一张，**不显式换一张就证明不了选中态会跟着动**
+    // —— 与「页面恰好停在你想要的状态」是同一类陷阱。
+    //
+    // ⚠️ 这里原来写的是 `storyboard_.setSelected(index)`，而 `StoryboardPage::selectedShot_`
+    //    **全仓零读点** —— 真正被读的是 `BookState::selectedShot`。于是这个「入口」写了
+    //    一个没人看的字段，取证拍出来的两张图与默认态逐像素相同，而 manifest 照样记 saved。
+    //    现在走点击同一条路径（`SelectBookShot` 顺带 `RebuildBookSide`，侧栏高亮与
+    //    检查器属性一起跟着换）。
+    void SelectStoryboardShot(int index) { SelectBookShot(index); }
+    // 取证用：出图 / 出片右侧面板的页签与画布折叠态。都是只能点 UI 切换的私有态，
+    // 取证进不去 ⇒ 第二个页签里的内容从来没被拍过。
+    void SetImageFlowPanel(int tab) { imageflow_.setPanelTab(tab); }
+    void SetImageFlowFolded(bool on) { imageflow_.setFolded(on); }
+    void SetVideoFlowPanel(int tab) { videoflow_.setPanelTab(tab); }
     // toast：设计稿的 notify(...)。以前 toastTimer_ 是死字段、DrawOverlays 是空函数。
     void Notify(std::string text, shine::theme::Tone tone = shine::theme::Tone::Idle);
     [[nodiscard]] kit::Rect workspaceRect() const { return workspace_; }

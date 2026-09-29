@@ -182,15 +182,21 @@ private:
 class StoryboardPage {
 public:
     void Draw(kit::Rect area, ImDrawList* draw);
+    // ⚠️ 这里原来有个 `selectedShot_` 成员 + `setSelected`，**零读点** —— 真正被读的是
+    //    `BookState::selectedShot`。两个「选中态」并存，取证的公开入口写进了没人读的那个，
+    //    拍出来的图与默认态逐字节相同却仍记 saved。已删；选中态只有 `SelectBookShot` 一条路。
 
 private:
-    int selectedShot_ = 0;
 };
 
 // ---- P5.5 出图（imageflow）— 满幅画布 + FlowCanvas ----
 class ImageFlowPage {
 public:
     void Draw(kit::Rect area, ImDrawList* draw);
+    // 取证用：右侧面板页签（0 参数 / 1 产物）与画布折叠态。这两个都只能靠点 UI 切换，
+    // 以前取证进不去 —— 于是第二个页签里的内容从来没被拍过。
+    void setPanelTab(int tab) { panelTab_ = tab; }
+    void setFolded(bool on) { folded_ = on; }
 
 private:
     // 首帧建图（节点定义照 webui mock）；之后坐标/缩放由 FlowCanvas 维护。
@@ -208,6 +214,8 @@ private:
 class VideoFlowPage {
 public:
     void Draw(kit::Rect area, ImDrawList* draw);
+    // 取证用：右侧面板页签（同上）。
+    void setPanelTab(int tab) { panelTab_ = tab; }
 
 private:
     void BuildGraph();

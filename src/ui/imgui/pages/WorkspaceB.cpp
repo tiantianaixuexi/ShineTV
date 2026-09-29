@@ -1,5 +1,6 @@
 #include "ui/imgui/pages/WorkspacePages.h"
 
+#include "comfy/ComfySession.h"
 #include "core/Async.h"
 #include "core/Log.h"
 #include "db/sqlite/SqliteDb.h"
@@ -1031,10 +1032,10 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
                           ImVec2(card.min.x + 6.0f + barMaxW * ratio, barY + 4.0f), 2.0f, ColorAccent());
         }
         if (Clicked(card, "sb-tl-" + std::to_string(i))) {
-            s.selectedShot = i;
-            // 点故事板时间轴的镜卡片同样要通知只读视图，否则侧栏高亮与检查器属性
-            // 停在上一镜（这条是用户真会走的路径，比取证走的 SelectBookShot 更常见）。
-            RebuildBookSide(s);
+            // 走 SelectBookShot 而不是就地写 `s.selectedShot` + RebuildBookSide：
+            // 那两行本来是 SelectBookShot 的复制品，少了夹取边界检查，再多一份就要
+            // 靠「记得同步」维持。选中态只有一条路径。
+            SelectBookShot(i);
         }
         x += 104.0f;
     }
@@ -1514,13 +1515,103 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
                       ColorOf(theme::CurrentDerived().dangerBg));
         draw->AddText(FontAt(12.0f), 12.0f, ImVec2(body.min.x + 10.0f, y + 18.0f),
                       ColorOf(theme::Current().statusDanger), warn, warn + std::strlen(warn));
+    } else if (panelTab_ == 1) {
+        // ---- 批量出图：候选镜来自**本章真实镜表**，提交动作不接线 ----
+        //
+        // ⚠️ 这个分支以前**根本不存在**：页签有 4 个（绑定/批量出图/图评审/结果），
+        //    分发却只有 `if 0 / else if 2 / else` ⇒ 「批量出图」落进 else，看到的是
+        //    **「结果」页的尺寸/步数/种子/耗时**。症状是「点了页签没反应 / 串页」，
+        //    而那一瞬间的截图里两个页签完全一样，肉眼分辨不出是串页还是没做。
+        //
+        // 候选镜用 `BookSide().shots`（当前选中章，与侧栏树/故事板同一份），状态取
+        // 镜自己的 canon_status。**不编批次号、不编张数** —— 批量提交要走 Comfy
+        // 写接口，业务层没有替前端提交 V4 的只读投影，所以这里只列得出候选，提交
+        // 一行明说没接，而不是放一个点了什么都不做的按钮。
+        const BookSideView& bs = BookSide();
+        if (!bs.bound || !bs.error.empty() || bs.shots.empty()) {
+            Empty(draw, body, "layers",
+                  bs.bound ? "本章还没有镜" : "还没打开工程",
+                  bs.bound ? "T1–T17 跑出分镜后这里才有可批量出图的候选。"
+                           : "批量出图的候选来自 shots 表，先打开一个跑过初始化链的工程。");
+        } else {
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.min.y),
+                            body.width(), ColorTextMuted(),
+                            ("本章 " + std::to_string(bs.shots.size()) + " 个镜 · 候选来源 shots 表").c_str(),
+                            true);
+            DrawRoundRect(draw, ImVec2(body.min.x, body.min.y + 22.0f),
+                          ImVec2(body.max.x, body.min.y + 58.0f), 6.0f,
+                          ColorOf(theme::CurrentDerived()
+                                      .tagBg[static_cast<std::size_t>(theme::Tone::Warn)]));
+            const char* noSubmit = "批量提交未接：业务层没有替前端提交 V4 出图的接口，这一页只列候选。";
+            draw->AddText(FontAt(12.0f), 12.0f, ImVec2(body.min.x + 10.0f, body.min.y + 34.0f),
+                          ColorOf(theme::Current().statusWarn), noSubmit,
+                          noSubmit + std::strlen(noSubmit));
+            float y = body.min.y + 70.0f;
+            for (const BookShotView& shot : bs.shots) {
+                if (y + 26.0f > body.max.y) {
+                    break;
+                }
+                const std::string code = ShotCode(shot.ord);
+                draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(body.min.x, y), ColorAccent(), code.data(),
+                              code.data() + code.size());
+                const std::string action = shot.action.empty() ? std::string(kDash) : shot.action;
+                DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x + 52.0f, y),
+                                body.width() - 180.0f, ColorText(), action, true);
+                const std::string canon = shot.canonStatus.empty() ? std::string(kDash) : shot.canonStatus;
+                const float tagW = TagWidth(canon, false, true);
+                Tag(draw, RectAt(body.max.x - tagW, y - 1.0f, tagW, 20.0f), canon, theme::Tone::Idle,
+                    false, true);
+                y += 26.0f;
+            }
+        }
     } else if (panelTab_ == 2) {
+        // ---- 图评审 ----
+        //
+        // ⚠️ 这里原来是一个 5 行的假评审表，三处同时是假的：
+        //   ① `Checkbox` 的返回值被丢弃 ⇒ 点不动（注册了 InvisibleButton 却没人读）；
+        //   ② `on` 传字面量 `i < 3` ⇒ 勾选态**每帧重建**，永远是「前 3 个勾上」；
+        //   ③ 五行的 label 都是同一个字符串「构图稳定」⇒ 标签叠印成一坨。
+        // 「勾上 3 个、5 个同名、点不动」的三件套在静息态截图上看着还挺像个评审页 ——
+        // 所以是取证对照才发现的，不是肉眼。
+        //
+        // 改成 honest：业务层没有出图评审结果的只读投影（`visual_assets.status` 只到
+        // 生产状态，没有 per-check 的评分），所以**不编 5 条评审项**。有真实视觉资产的
+        // 实体就列出来（名字 + 生产状态），一条都没有就说明为什么没有。
+        const BookSideView& rv = BookSide();
         Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 150.0f}, 6, true);
-        float y = body.min.y + 162.0f;
-        for (int i = 0; i < 5; ++i) {
-            Checkbox(draw, Rect{body.min.x, y, body.max.x, y + 20.0f}, i < 3, "构图稳定",
-                     "if-ck-" + std::to_string(i));
-            y += 24.0f;
+        // 插画 150 高之后留够落笔空间：Art 的实际下沿比 rect 略高一点，早先 +162 的
+        // 间距会让第一行名字压在插画下沿上（截图里能直接看出来）。
+        const float listTop = body.min.y + 180.0f;
+        bool any = false;
+        int row = 0;  // 只数**列出来的**行 —— 用全量下标算 y 会在跳过的实体处留空洞
+        for (const BookAssetView& asset : rv.assets) {
+            if (!asset.hasAsset) {
+                continue;
+            }
+            any = true;
+            const float rowY = listTop + static_cast<float>(row) * 24.0f;
+            if (rowY + 22.0f > body.max.y) {
+                break;
+            }
+            ++row;
+            const std::string name = asset.name.empty() ? std::string(kDash) : asset.name;
+            const std::string status =
+                asset.statusLabel.empty() ? std::string(kDash) : asset.statusLabel;
+            DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x, rowY),
+                            body.width() - 120.0f, ColorText(), name, true);
+            const float tagW = TagWidth(status, false, true);
+            Tag(draw, RectAt(body.max.x - tagW, rowY - 1.0f, tagW, 20.0f), status,
+                asset.tone, false, true);
+        }
+        if (!any) {
+            Empty(draw, Rect{body.min.x, listTop, body.max.x, body.max.y}, "target",
+                  "没有可评审的出图", rv.bound
+                                     ? "这一类实体还没有视觉资产。先在资产工作区出图，再回来评审。"
+                                     : "还没打开工程。评审清单来自 entities × visual_assets。");
+        } else {
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.max.y - 16.0f),
+                            body.width(), ColorTextMuted(),
+                            "逐项评分（构图/光线/服饰/色彩）没有只读投影，这里只列生产状态。", true);
         }
     } else {
         Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 190.0f}, 9, true);
@@ -1593,14 +1684,37 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
             y += 26.0f;
         }
     } else if (panelTab_ == 1) {
-        float y = body.min.y;
-        for (int i = 0; i < 4; ++i) {
-            const std::string code = "S0" + std::to_string(10 + i);
-            draw->AddText(MonoAt(12.0f), 12.0f, ImVec2(body.min.x, y), ColorTextSecondary(),
-                          code.data(), code.data() + code.size());
-            Progress(draw, Rect{body.min.x + 50.0f, y + 2.0f, body.max.x - 40.0f, y + 8.0f},
-                     20.0f + 20.0f * static_cast<float>(i), i == 0, false);
-            y += 26.0f;
+        // ---- 视频任务：走 Comfy 队列的**真实快照** ----
+        //
+        // ⚠️ 这里原来画 4 条 `Progress(20/40/60/80, running = i == 0)` —— 写死的算术级数，
+        //    与真实运行态毫无关系。界面上永远显示「第一条在跑、其余到 80%」，而底栏
+        //    任务队列早就改用 `QueueModel::Row::progress` 的真值了，同一个队列两个口径。
+        // 「看起来很像在跑」是这类假数据最难认的地方。
+        //
+        // 真值源与底栏任务队列**同一份**（`comfy::ComfySession` 的 `QueueModel`），
+        // 不在这里另接一条。队列空就是空，不补 4 条占位。
+        const std::vector<comfy::QueueModel::Row> rows =
+            comfy::ComfySession::Instance().Queue().Snapshot();
+        // ⚠️ 这里不能 `return`：胶片条画在页签分支**之外**，早退会把那一条也一起跳过。
+        if (rows.empty()) {
+            Empty(draw, body, "film", "队列里没有视频任务",
+                  "视频任务来自 ComfyUI 队列。取真实数据源：comfy::ComfySession::Queue()。");
+        } else {
+            float y = body.min.y;
+            for (const comfy::QueueModel::Row& row : rows) {
+                if (y + 26.0f > body.max.y) {
+                    break;
+                }
+                const bool running = row.state == comfy::TaskState::Running;
+                const bool failed = row.state == comfy::TaskState::Failed;
+                const std::string code = row.label.empty() ? row.promptId : row.label;
+                DrawTextClipped(draw, MonoAt(12.0f), 12.0f, ImVec2(body.min.x, y), 160.0f,
+                                failed ? ColorOf(theme::Current().statusDanger) : ColorTextSecondary(),
+                                code, true);
+                Progress(draw, RectAt(body.min.x + 170.0f, y + 2.0f, body.width() - 210.0f, 6.0f),
+                         row.progress * 100.0f, running, true);
+                y += 26.0f;
+            }
         }
     } else {
         KeyValues(draw, body,

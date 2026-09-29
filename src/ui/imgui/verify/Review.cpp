@@ -37,6 +37,14 @@ std::uint64_t HashPixels(const std::vector<std::uint8_t>& pixels) {
     }
     return h;
 }
+// 底栏页签名 → 文件名片段。与 `Shell.cpp` 的 `tabs[]` 同序（任务队列/日志/产物/校验报告）。
+// 写在取证里而不是去读外壳那份数组：那张表是私有局部量，跨不过 TU，抄一份反而
+// 多一个可能失同步的副本 —— 所以用**下标查表**而不是再维护一份平行定义。
+const char* DockTabSlug(int tab) {
+    static const char* kSlugs[] = {"queue", "logs", "artifacts", "reports"};
+    return (tab >= 0 && tab < static_cast<int>(std::size(kSlugs))) ? kSlugs[tab] : "tab";
+}
+
 // 悬停探针要打的目标 + **前置动作**。
 //
 // ⚠️ 前置动作必须显式写全。踩过的坑：资产网格那张卡探针一开始没切视图，
@@ -499,6 +507,78 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
         grabDriven("novel-mode-pipeline", novelWs, base);
         shell.SetNovelMode(0);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+
+        // ---- 第七段：把「取证进不去」的视图逐个点名补齐 ----
+        //
+        // 本轮的第一条教训：**覆盖要按「视图」点名，不是按「页面」点名**。
+        // 「7 个工作区全拍了」听起来够了，但一个工作区里往往还有 4 个 dock 页签、
+        // 3 个检查器段、2 个右侧面板页签 —— 它们只能靠点 UI 切换，没有 public 入口，
+        // 取证就永远进不去，里面有什么缺陷也就没人看得见。已经这样漏掉过一个
+        // 整张不画的卡片网格。所以这一段专门补：能进但没拍的（dock 0/1/2、检查器
+        // 「预览」段），以及刚加了入口的（出图/出片的第二个面板页签、画布折叠态）。
+        //
+        // 每张都必须显式把状态设成它承诺的样子，跑完再复位 —— 否则就是「图名和内容
+        // 对不上，而 manifest 照样记 saved」。
+        const int imageWs = static_cast<int>(pages::Workspace::ImageFlow);
+        const int videoWs = static_cast<int>(pages::Workspace::VideoFlow);
+        const int storyboardWs = static_cast<int>(pages::Workspace::Storyboard);
+
+        // 底栏四个页签：以前只拍了 3（校验报告），0/1/2 三个页签**从来没被拍过**。
+        // 这三个都是大面积视图（任务队列 / 日志 / 产物），最该有证据图。
+        for (int tab = 0; tab <= 2; ++tab) {
+            shell.SetDockTab(tab);
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            grabDriven(std::string("dock-") + DockTabSlug(tab), overview, base);
+        }
+        shell.SetDockTab(3);
+
+        // 检查器第 1 段「预览」：以前只拍过段 0（属性）与段 2（关联）。
+        shell.SetWorkspace(novelWs);
+        shell.SetInspectorSection(0, false);
+        shell.SetInspectorSection(1, true);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("inspector-preview", novelWs, base);
+        shell.SetInspectorSection(1, false);
+        shell.SetInspectorSection(0, true);
+
+        // 出图页右侧面板的第二个页签 + 画布折叠态。
+        shell.SetImageFlowPanel(1);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("imageflow-panel-batch", imageWs, base);
+        // 第三个页签「图评审」：以前画 5 行假复选框（返回值丢弃 ⇒ 点不动、勾选态写死
+        // i < 3、五行标签全是同一个字符串「构图稳定」）。静息态截图看着还挺像个评审页，
+        // 所以必须有证据图盯着这一页。
+        shell.SetImageFlowPanel(2);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("imageflow-panel-review", imageWs, base);
+        shell.SetImageFlowFolded(true);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("imageflow-canvas-folded", imageWs, base);
+        shell.SetImageFlowFolded(false);
+        shell.SetImageFlowPanel(0);
+
+        // 出片页右侧面板的第二个页签「视频任务」。以前是 4 条写死的 20/40/60/80 进度条、
+        // running 恒为第一条 —— 界面上永远显示「第一条在跑、其余到 80%」。
+        shell.SetVideoFlowPanel(1);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("videoflow-panel-tasks", videoWs, base);
+        shell.SetVideoFlowPanel(0);
+
+        // 分镜页选中的镜。默认 0 = 第一张，**不显式换一张就证明不了选中态会跟着动**
+        // —— 与「页面恰好停在你想要的状态」是同一类陷阱。
+        //
+        // ⚠️ 两张**必须成对**：只有「换到第 2 张」那一张时，它与任何别的图都不重样，
+        //    判据「受控图不许重样」也就抓不到「这个入口是死的」。配一张默认态，
+        //    入口一旦接错字段（真发生过：写进了零读点的 `selectedShot_`）两张就逐字节
+        //    相同，判据当场变红。**单独一张「证明性」的截图，证明不了任何东西。**
+        shell.SelectStoryboardShot(0);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("storyboard-shot-1", storyboardWs, base);
+        shell.SelectStoryboardShot(1);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("storyboard-shot-2", storyboardWs, base);
+        shell.SelectStoryboardShot(0);
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
         // ---- 第六段：悬停态 + toast ----
