@@ -206,8 +206,38 @@ std::uint32_t MixAlpha(std::uint32_t rgb, float percent) {
     return (rgb & 0xFFFFFF00u) | alpha;
 }
 
-std::string_view ThemeIdKey(ThemeId id) {
-    switch (id) {
+ImU32 ToImU32(std::uint32_t rgba) {
+    // 唯一一处「theme 存储序 → ImGui 打包序」的转换。走 ImGui 自己的 float4 往返，
+    // 不手写位移：位移写错过一次，错的是整个界面而不是一个控件。
+    return ImGui::ColorConvertFloat4ToU32(Rgba(rgba));
+}
+
+// 字段表抽成函数：AssignByName / PersistTheme / 样式编辑器三处共用一份，
+// 少一份就少一处漂移风险。顺序 == kColorTokenNames。
+const std::array<std::uint32_t ColorToken::*, kColorTokenCount>& TokenFields() {
+    static const std::array<std::uint32_t ColorToken::*, kColorTokenCount> fields = {
+        &ColorToken::bgVoid, &ColorToken::bgSurface, &ColorToken::bgPanel, &ColorToken::bgElevated,
+        &ColorToken::bgOverlay, &ColorToken::lineSubtle, &ColorToken::lineNormal,
+        &ColorToken::lineStrong, &ColorToken::textPrimary, &ColorToken::textSecondary,
+        &ColorToken::textMuted, &ColorToken::textInverse, &ColorToken::accentPrimary,
+        &ColorToken::accentPrimaryHover, &ColorToken::accentPrimaryFg, &ColorToken::accentSecondary,
+        &ColorToken::accentInfo, &ColorToken::statusOk, &ColorToken::statusWarn,
+        &ColorToken::statusDanger, &ColorToken::statusBusy, &ColorToken::statusIdle,
+        &ColorToken::statusPending, &ColorToken::fillHover, &ColorToken::fillSelected,
+        &ColorToken::fillMuted, &ColorToken::lineFocus, &ColorToken::shadowScrim,
+        &ColorToken::shadow1, &ColorToken::shadow2, &ColorToken::shadowAccent,
+    };
+    return fields;
+}
+
+std::uint32_t TokenValue(const ColorToken& c, std::size_t index) {
+    return index < kColorTokenCount ? c.*(TokenFields()[index]) : 0u;
+}
+
+std::uint32_t* TokenSlot(ColorToken& c, std::size_t index) {
+    return index < kColorTokenCount ? &(c.*(TokenFields()[index])) : nullptr;
+}
+std::string_view ThemeIdKey(ThemeId id) {    switch (id) {
     case ThemeId::DeepSpace: return "deepspace";
     case ThemeId::Dusk: return "dusk";
     case ThemeId::PaperInk: return "paperink";
@@ -331,7 +361,9 @@ void ApplyTheme(ThemeId id) {
     colors[ImGuiCol_TitleBgActive] = Rgba(c.bgPanel);
     colors[ImGuiCol_TitleBgCollapsed] = Rgba(c.bgSurface);
     colors[ImGuiCol_MenuBarBg] = Rgba(c.bgPanel);
-    colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0); // 壳层自绘滚动条
+    // theme-ok：全透明。滚动条由壳层自绘（ScrollRegion 走 BeginChild），
+    // 这里给的是「什么都不画」而不是一个颜色，token 表里没有对应项。
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0); // theme-ok
     colors[ImGuiCol_ScrollbarGrab] = Rgba(c.lineStrong);
     colors[ImGuiCol_ScrollbarGrabHovered] = Rgba(c.textMuted);
     colors[ImGuiCol_ScrollbarGrabActive] = Rgba(c.accentPrimary);
@@ -457,6 +489,46 @@ bool SelfTestRoundTrip(std::string* report) {
             out << " (tagBg alpha=" << (accentTagBg & 0xFFu) << " != 31)";
             ok = false;
         }
+        out << '\n';
+    }
+
+    // ---- 通道顺序硬判据 ----
+    // theme 内部是 0xRRGGBBAA，ImGui 打包是 A<<24|B<<16|G<<8|R，两套不一样。
+    // 写错过一次：ColorOf 当时把 theme 值原样当 ImU32 递出去，等于把整个界面的
+    // 颜色通道旋转了一次。深色主题旋转后仍然「看着像深色」，只有主按钮那种
+    // 高饱和不透明填充才炸得出来 —— 所以这里放一组探针值当场验字节。
+    {
+        constexpr std::uint32_t kProbe = 0x11223344u; // R=11 G=22 B=33 A=44
+        const ImU32 packed = ToImU32(kProbe);
+        const auto byte = [packed](int shift) { return (packed >> shift) & 0xFFu; };
+        const bool orderOk = byte(IM_COL32_R_SHIFT) == 0x11u &&
+                             byte(IM_COL32_G_SHIFT) == 0x22u &&
+                             byte(IM_COL32_B_SHIFT) == 0x33u &&
+                             byte(IM_COL32_A_SHIFT) == 0x44u;
+        out << "channel order: " << (orderOk ? "ok" : "MISMATCH");
+        if (!orderOk) {
+            out << " (got R=" << byte(IM_COL32_R_SHIFT) << " G=" << byte(IM_COL32_G_SHIFT)
+                << " B=" << byte(IM_COL32_B_SHIFT) << " A=" << byte(IM_COL32_A_SHIFT)
+                << ", want 17 34 51 68)";
+            ok = false;
+        }
+        out << '\n';
+    }
+
+    // WithAlpha / LerpColorTo 也靠 ImGui 自己的转换器，一并探。
+    {
+        const ImU32 base = ToImU32(0x112233FFu);
+        ImVec4 rgba = ImGui::ColorConvertU32ToFloat4(base);
+        rgba.w = 0.5f;
+        const ImU32 faded = ImGui::ColorConvertFloat4ToU32(rgba);
+        const bool alphaOk = ((faded >> IM_COL32_A_SHIFT) & 0xFFu) == 0x80u &&
+                             ((faded >> IM_COL32_R_SHIFT) & 0xFFu) == 0x11u;
+        out << "alpha override: " << (alphaOk ? "ok" : "MISMATCH");
+        if (!alphaOk) {
+            out << " (R=" << ((faded >> IM_COL32_R_SHIFT) & 0xFFu)
+                << " A=" << ((faded >> IM_COL32_A_SHIFT) & 0xFFu) << ", want R=17 A=128)";
+        }
+        ok = ok && alphaOk;
         out << '\n';
     }
     if (report != nullptr) {

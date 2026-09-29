@@ -5,7 +5,7 @@
 //   ConfigureAppDataSandbox()  ← 必须在读任何路径之前（它改 APPDATA）
 //     → CLI 分派（--mcp-stdio / --novel-*，行为与 Qt 版完全一致）
 //     → 载入 5 套主题 JSON + theme.json 持久化
-//     → Host（Win32 + D3D11 + gpu::AttachDevice）
+//     → Host（Win32 + WGL/GL3 + gpu::AttachDevice）
 //     → async::Init / gallery::Init
 //     → 帧循环
 //     → gallery::Shutdown / async::Shutdown / log::Shutdown

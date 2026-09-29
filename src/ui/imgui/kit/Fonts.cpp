@@ -25,6 +25,7 @@ const std::vector<float> kMonoSizes = {10.5f, 11.5f, 12.5f, 13.0f, 14.0f, 18.0f}
 struct FontPaths {
     std::string ui = "C:/Windows/Fonts/msyh.ttc";
     std::string uiFallback = "C:/Windows/Fonts/simhei.ttf";
+    std::string uiBold = "C:/Windows/Fonts/msyhbd.ttc";
     std::string serif = "C:/Windows/Fonts/simsun.ttc";
     std::string mono = "C:/Windows/Fonts/consola.ttf";
     std::string monoAlt = "C:/Windows/Fonts/CascadiaCode.ttf";
@@ -42,10 +43,12 @@ std::string FirstExisting(const std::vector<std::string>& candidates) {
 
 std::unordered_map<float, ImFont*> g_fonts;
 std::unordered_map<float, ImFont*> g_mono;
+std::unordered_map<float, ImFont*> g_bold;
 std::size_t g_atlasBytes = 0;
 int g_textureCount = 0;
 bool g_atlasLogged = false;
 std::string g_familyName;
+bool g_hasBold = false;
 
 // ---------------------------------------------------------------- TTC 解析
 struct Reader {
@@ -250,6 +253,31 @@ bool BuildFontAtlas(bool serif) {
     if (g_fonts.empty()) {
         atlas->AddFontDefault();
     }
+
+    // 粗体面：设计稿的 600/700/800 全靠它。只建同样档位，字形集与常规一致。
+    g_bold.clear();
+    g_hasBold = false;
+    const std::string boldPath = FirstExisting({paths.uiBold});
+    if (!boldPath.empty()) {
+        const int boldNo = FindTtcIndex(boldPath, "Microsoft YaHei UI Bold");
+        for (const float size : kUiSizes) {
+            ImFontConfig config;
+            config.FontNo = boldNo;
+            config.SizePixels = size * io.DisplayFramebufferScale.x;
+            config.GlyphRanges = cjkRanges;
+            config.PixelSnapH = true;
+            if (ImFont* font =
+                    atlas->AddFontFromFileTTF(boldPath.c_str(), config.SizePixels, &config);
+                font != nullptr) {
+                g_bold[size] = font;
+            }
+        }
+        g_hasBold = !g_bold.empty();
+    }
+    if (!g_hasBold) {
+        g_bold = g_fonts; // 退回常规字重：只偏细，不出豆腐块
+    }
+
     // 正文基准 13px 是 ui.css 里声明最多的控件字号。
     io.FontDefault = FontAt(theme::font::kBase);
 
@@ -328,6 +356,8 @@ ImFont* LookupNearest(const std::unordered_map<float, ImFont*>& table, float pix
 
 ImFont* FontAt(float pixelSize) { return LookupNearest(g_fonts, pixelSize); }
 ImFont* MonoAt(float pixelSize) { return LookupNearest(g_mono, pixelSize); }
+ImFont* FontBoldAt(float pixelSize) { return LookupNearest(g_bold, pixelSize); }
+bool HasBoldFace() { return g_hasBold; }
 
 ImFont* BaseFont() { return FontAt(13.0f); }
 

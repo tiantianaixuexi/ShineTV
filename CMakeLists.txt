@@ -445,9 +445,9 @@ target_link_libraries(shine_core PUBLIC
   webp
   shine_hiredis
   shine_sqlite
-  d3d11
-  dxgi
-  d3dcompiler
+  # 图形：src/gpu 的纹理上传用 GL 1.1 的 6 个函数，opengl32.dll 直接导出。
+  # （原为 d3d11/dxgi/d3dcompiler —— 渲染后端改走 GL3 后已无 DX11 调用点。）
+  opengl32
   dwmapi
   user32
   gdi32
@@ -724,21 +724,24 @@ if(SHINE_UI_IMGUI)
     ${THIRD}/imgui/imgui_widgets.cpp
     ${THIRD}/imgui/imgui_demo.cpp
     ${THIRD}/imgui/backends/imgui_impl_win32.cpp
-    ${THIRD}/imgui/backends/imgui_impl_dx11.cpp
+    ${THIRD}/imgui/backends/imgui_impl_opengl3.cpp
     ${THIRD}/imgui/misc/cpp/imgui_stdlib.cpp
   )
   target_include_directories(shine_imgui_third PUBLIC
     ${THIRD}/imgui ${THIRD}/imgui/backends)
   # IMGUI_DEFINE_MATH_OPERATORS：全套件用 IM_COL32/RGBA 宏，缺它会编译不过。
   # UNICODE/NOMINMAX/WIN32_LEAN_AND_MEAN 与 shine_core 保持一致，
-  # 否则同一份 D3D11/Win32 头在两侧宏不一致 → 结构体布局错、链接重复符号。
+  # 否则同一份 Win32 头在两侧宏不一致 → 结构体布局错、链接重复符号。
   target_compile_definitions(shine_imgui_third PUBLIC
     IMGUI_DEFINE_MATH_OPERATORS
     UNICODE
     _UNICODE
     NOMINMAX
     WIN32_LEAN_AND_MEAN)
-  target_link_libraries(shine_imgui_third PUBLIC d3d11 dxgi d3dcompiler dwmapi user32 gdi32)
+  # opengl32 而非 d3d11/dxgi：渲染后端是 GL3（自带 imgl3w 加载器，GL 着色器由它编译），
+  # src/gpu 的纹理上传只用 GL 1.1，那 6 个函数由 opengl32.dll 直接导出。
+  # dwmapi 仍要留：imgui_impl_win32 的 DWM 合成（EnableAlphaCompositing）链到它。
+  target_link_libraries(shine_imgui_third PUBLIC opengl32 user32 gdi32 dwmapi)
 
   # 前端源文件用 GLOB + CONFIGURE_DEPENDS：组件与页面是逐步长出来的，
   # 写死列表会让「还没建的页面」把整个配置卡成硬错误。

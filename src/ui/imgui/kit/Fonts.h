@@ -36,6 +36,12 @@ void LogFontAtlasIfNeeded();
 [[nodiscard]] ImFont* MonoAt(float pixelSize);
 [[nodiscard]] ImFont* BaseFont();
 
+// 粗体字重。设计稿大量用 600/700/800（控件标签 / 卡片标题 / 视图大标题），
+// 单一个字重会让「1:1」在字重上整体偏轻。msyhbd.ttc 是雅黑 Bold，TTC 同样要
+// 按族名定位子字体；取不到就退回常规字重（退回只偏细，不出豆腐块）。
+[[nodiscard]] ImFont* FontBoldAt(float pixelSize);
+[[nodiscard]] bool HasBoldFace();
+
 // TTC 子字体定位：在 .ttc 里找族名匹配的下标；单字体文件恒返回 0。
 [[nodiscard]] int FindTtcIndex(const std::string& path, const std::string& familyName);
 

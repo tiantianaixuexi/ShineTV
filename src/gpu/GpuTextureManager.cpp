@@ -11,6 +11,18 @@ namespace {
 // 单张纹理上限 1 GiB（防止误传尺寸把显存打爆）
 constexpr std::size_t kMaxTextureBytes = 1ull << 30;
 
+// GL 1.1 常量，理由同 GpuDevice.cpp：不能拉 <GL/gl.h>。
+constexpr unsigned int GL_TEXTURE_2D = 0x0DE1;
+constexpr unsigned int GL_TEXTURE_WRAP_S = 0x2802;
+constexpr unsigned int GL_TEXTURE_WRAP_T = 0x2803;
+constexpr unsigned int GL_TEXTURE_MIN_FILTER = 0x2801;
+constexpr unsigned int GL_TEXTURE_MAG_FILTER = 0x2800;
+constexpr unsigned int GL_RGBA = 0x1908;
+constexpr unsigned int GL_UNSIGNED_BYTE = 0x1401;
+constexpr unsigned int GL_CLAMP_TO_EDGE = 0x812F;
+constexpr int GL_LINEAR = 0x2601;
+constexpr unsigned int GL_UNPACK_ALIGNMENT = 0x0CF5;
+
 } // namespace
 
 GpuTextureManager& GpuTextureManager::Instance() {
@@ -33,35 +45,29 @@ std::expected<GpuTextureHandle, GpuError> GpuTextureManager::Upload(std::uint32_
         return std::unexpected(GpuError::InvalidSize);
     }
 
-    D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = w;
-    desc.Height = h;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const GlApi& gl = Gl();
 
-    D3D11_SUBRESOURCE_DATA init{};
-    init.pSysMem = rgba8.data();
-    init.SysMemPitch = w * 4u;
+    // 行距不是 4 的倍数时 GL 会按 UNPACK_ALIGNMENT 补齐，读出来整行错位。
+    // 缩略图解码出来的宽度不保证是 4 的倍数，这里显式按 1 字节对齐。
+    gl.pixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-    ID3D11Texture2D* texture = nullptr;
-    HRESULT hr = Device()->CreateTexture2D(&desc, &init, &texture);
-    if (FAILED(hr) || texture == nullptr) {
-        log::Warn("纹理创建失败 {}x{}（hr=0x{:08X}）", w, h, static_cast<unsigned>(hr));
-        return std::unexpected(hr == E_OUTOFMEMORY ? GpuError::OutOfMemory : GpuError::DeviceLost);
+    unsigned int name = 0;
+    gl.genTextures(1, &name);
+    if (name == 0) {
+        log::Warn("glGenTextures 失败 {}x{}（纹理名 0）", w, h);
+        return std::unexpected(GpuError::OutOfMemory);
     }
-    ID3D11ShaderResourceView* view = nullptr;
-    hr = Device()->CreateShaderResourceView(texture, nullptr, &view);
-    if (FAILED(hr) || view == nullptr) {
-        texture->Release();
-        log::Warn("SRV 创建失败（hr=0x{:08X}）", static_cast<unsigned>(hr));
-        return std::unexpected(GpuError::DeviceLost);
-    }
+    gl.bindTexture(GL_TEXTURE_2D, name);
+    gl.texImage2D(GL_TEXTURE_2D, 0, static_cast<int>(GL_RGBA), static_cast<int>(w), static_cast<int>(h), 0,
+                  GL_RGBA, GL_UNSIGNED_BYTE, rgba8.data());
+    // 缩略图尺寸不一，采样必须钳边 + 线性，否则相邻缩略图会互相渗色。
+    gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl.texParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl.bindTexture(GL_TEXTURE_2D, 0);
 
-    auto owned = std::make_unique<GpuTexture>(texture, view, w, h);
+    auto owned = std::make_unique<GpuTexture>(name, w, h);
     const std::uint64_t id = nextId_++;
     usedBytes_ += owned->bytes();
     textures_.emplace(id, std::move(owned));

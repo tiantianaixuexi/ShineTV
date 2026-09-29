@@ -20,8 +20,19 @@
 namespace shine::theme {
 
 // ---- 色值工具（0xRRGGBBAA ↔ ImVec4 / ImU32）----
+// 内部存储是 JSON 的自然序：0xRRGGBBAA，**alpha 在最低字节**。
 [[nodiscard]] ImVec4 Rgba(std::uint32_t rgba);
 [[nodiscard]] std::uint32_t PackRgba(const ImVec4& rgba);
+
+// theme 存储序 → ImGui 的 ImU32。**画任何东西都必须走这个**。
+//
+// 两套字节序不一样：theme 是 0xRRGGBBAA（R 在最高字节），ImGui 默认打包是
+// A<<24 | B<<16 | G<<8 | R（R 在最低字节）。直接把手上的 theme 值当 ImU32 递给
+// ImGui 等于把整个界面的颜色通道旋转一次。
+// 实测症状：深色低饱和的主题色旋转后仍像「偏暖的深色」，一眼看不出来；
+// 只有高饱和不透明填充（主按钮渐变）才当场炸成灰紫/亮蓝，28% 的 accent 光环
+// 变成橄榄褐。别靠「看起来还行」判断。
+[[nodiscard]] ImU32 ToImU32(std::uint32_t rgba);
 
 // color-mix(in srgb, X N%, transparent) 的等价物：保留 X 的 RGB，alpha = N%。
 [[nodiscard]] std::uint32_t MixAlpha(std::uint32_t rgb, float percent);
@@ -68,6 +79,11 @@ void ApplyCurrentTheme();          // 当前主题重铺（P0.4 初始化 / 字�
 
 // 主题无关几何（design-spec §1）：写进 ImGuiStyle 的圆角/间距/边框档。
 void ApplyGeometry(ImGuiStyle& style);
+
+// 按下标读写单个 token（样式编辑器用）。与 kColorTokenNames 同序，共用 Theme.cpp 里
+// 那张 kColorTokenCount 大小的字段表 —— 不另写一份映射，避免两处漂移。
+[[nodiscard]] std::uint32_t TokenValue(const ColorToken& c, std::size_t index);
+[[nodiscard]] std::uint32_t* TokenSlot(ColorToken& c, std::size_t index);
 
 // ---- 持久化（webui 没有，Qt 侧有 theme.json → 保留 Qt 的行为）----
 [[nodiscard]] bool LoadPersistedTheme(const std::filesystem::path& file);

@@ -7,15 +7,17 @@
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/theme/Theme.h"
 
-#include <backends/imgui_impl_dx11.h>
+#include <backends/imgui_impl_opengl3.h>
 #include <backends/imgui_impl_win32.h>
 #include <imgui.h>
 
-#include <dxgi.h>
-#include <tchar.h>
-
-#include <algorithm>
-#include <cmath>
+// 系统 GL 头在这里是安全的：imgui_impl_opengl3.h 只包 imgui.h，不拖 imgl3w 加载器
+// （加载器只在后端 .cpp 里）。imgl3w 全是 static 函数指针，链接期不会和我们抢符号。
+// 有了真头就不用手抄 GL 1.1 原型、也不用把位掩码常量硬写成十六进制 ——
+// 后者会被 tools/check-layers.ps1 的硬编码颜色规则当色值拦下。
+// 只有 imgui_impl_opengl3.cpp 自己那份编译单元不许碰 <GL/gl.h>。
+#include <GL/gl.h>
+#include <GL/glext.h> // GL_MULTISAMPLE 是 GL 1.3 的枚举，MinGW 的 gl.h 里没有
 
 // imgui_impl_win32.h 把这一行放在 #if 0 里（它不想拖 <windows.h> 进来），
 // 官方要求调用方自己抄一份到 .cpp。照做，别改成包含头里的声明。
@@ -32,6 +34,30 @@ constexpr wchar_t kWindowClass[] = L"ShineTVStudioImguiHost";
 void PumpUi() {
     shine::async::DrainUiQueue();
     shine::gallery::Tick();
+}
+
+// ImGui 后端用的是自己的 imgl3w 加载器，拿不到它的函数指针表；
+// src/gpu 需要的 6 个 GL 1.1 函数在这里按同样的「wglGetProcAddress 优先、
+// opengl32 导出兜底」解析一次交给它。两套入口互不干扰。
+using ProcGen = void (*)(int, unsigned int*);
+using ProcDelete = void (*)(int, const unsigned int*);
+using ProcBind = void (*)(unsigned int, unsigned int);
+using ProcTexImage = void (*)(unsigned int, int, int, int, int, int, unsigned int, unsigned int, const void*);
+using ProcTexParam = void (*)(unsigned int, unsigned int, int);
+using ProcPixelStore = void (*)(unsigned int, int);
+
+template <typename Fn>
+Fn ResolveGl(const char* name) {
+    // wglGetProcAddress 只保证 GL 扩展 / GL 2.0+ 的函数；GL 1.1 的可能返回 NULL，
+    // 所以必须再问一次 opengl32 的导出表。
+    if (auto proc = reinterpret_cast<Fn>(wglGetProcAddress(name)); proc != nullptr) {
+        return proc;
+    }
+    static HMODULE opengl32 = LoadLibraryW(L"opengl32.dll");
+    if (opengl32 == nullptr) {
+        return nullptr;
+    }
+    return reinterpret_cast<Fn>(GetProcAddress(opengl32, name));
 }
 
 } // namespace
@@ -60,13 +86,12 @@ LRESULT CALLBACK Host::WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
     switch (message) {
     case WM_SIZE:
         if (wparam != SIZE_MINIMIZED) {
-            host->resizeRequested_ = true;
-            host->resizeWidth_ = static_cast<UINT>(LOWORD(lparam));
-            host->resizeHeight_ = static_cast<UINT>(HIWORD(lparam));
+            // WGL 上下文不随窗口尺寸变化，viewport 每帧按客户区重设即可，
+            // 不用重建任何缓冲 —— 这是选 GL 相对 D3D11 少一整套 ResizeBuffers 的地方。
         }
         return 0;
     case WM_SYSCOMMAND:
-        // 拦最小化：最小化后 D3D11 交换链拿不到后备缓冲，ImGui 会在恢复时黑一帧。
+        // 拦最小化：最小化后客户区为 0，glViewport 会拿到 0×0 并触发 GL 错误刷屏。
         if ((wparam & 0xFFF0) == SC_MINIMIZE) {
             return 0;
         }
@@ -83,7 +108,6 @@ LRESULT CALLBACK Host::WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
 
 bool Host::Initialize(const Options& options, std::string& error) {
     // DPI 感知必须在建窗口之前设，否则窗口先按系统 DPI 建出来再放大会有一次闪动。
-    // 1:1 对齐指的是 100% 缩放下与 webui 一致，>100% 按 DisplayScaledFactor 换算。
     ImGui_ImplWin32_EnableDpiAwareness();
 
     WNDCLASSEXW wc{};
@@ -109,7 +133,7 @@ bool Host::Initialize(const Options& options, std::string& error) {
         return false;
     }
 
-    if (!CreateDeviceD3D(hwnd_, error)) {
+    if (!CreateGlContext(hwnd_, error)) {
         return false;
     }
 
@@ -125,18 +149,28 @@ bool Host::Initialize(const Options& options, std::string& error) {
     GetClientRect(hwnd_, &client);
     io.DisplaySize = ImVec2(static_cast<float>(client.right),
                             static_cast<float>(client.bottom));
-    // 高 DPI 下 ImGui 用逻辑像素画、由后端按比例放大，避免每个控件手写缩放。
-    const float scale = DisplayScaledFactor();
-    io.DisplayFramebufferScale = ImVec2(scale, scale);
+    // framebuffer scale 固定 1:1，**不**按显示器 DPI 放大。
+    //
+    // ImGui 的契约：渲染后端把 ImGui 坐标乘以 DisplayFramebufferScale 落到像素上。
+    // 若这里填 1.25，则 DisplaySize 也必须除以 1.25 变回逻辑单位，整个界面被放大 1.25 倍，
+    // 顶栏变成 57.5px，右侧和底部各丢掉 20% 内容 —— 那不是 1:1。
+    //
+    // design-spec §1 的几何表全部是「100% 缩放下的 px」，1:1 验收就是拿 1600x960 的抓图
+    // 去和 webui 100% 的截图比。所以按物理像素 1:1 画：46px 顶栏就是 46 个物理像素。
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
     // ---- P2.5：字体图集 ----
-    // ⚠️ 顺序硬约束：必须在 ImGui_ImplDX11_Init **之后**。1.92+ 的渲染后端
+    // ⚠️ 顺序硬约束：必须在 ImGui_ImplOpenGL3_Init **之后**。1.92+ 的渲染后端
     // 通过 ImGuiBackendFlags_RendererHasTextures 声明自己会按需烘焙并上传纹理，
     // 在那之前调 atlas->Build() 会每帧刷 "Called ImFontAtlas::Build() before
     // ImGuiBackendFlags_RendererHasTextures got set!"。
     // 不建图集就是满屏豆腐块且不报错，所以失败必须走日志。
     ImGui_ImplWin32_Init(hwnd_);
-    ImGui_ImplDX11_Init(device_, context_);
+    // GLSL 150 = GL 3.2 core，Win10 的默认 GDI 通用实现稳定支持到这一档。
+    if (!ImGui_ImplOpenGL3_Init("#version 150")) {
+        error = "ImGui_ImplOpenGL3_Init failed";
+        return false;
+    }
     if (!kit::BuildFontAtlas(/*serif=*/theme::ThemeUsesSerif(theme::CurrentThemeId()))) {
         shine::log::Error("font atlas build failed — text may render as tofu");
     }
@@ -149,104 +183,111 @@ bool Host::Initialize(const Options& options, std::string& error) {
     UpdateWindow(hwnd_);
 
     // ---- P1.2：补上这一行。shine::gpu 自此有宿主 ----
-    shine::gpu::AttachDevice(device_, context_);
+    {
+        shine::gpu::GlApi api;
+        api.genTextures = ResolveGl<ProcGen>("glGenTextures");
+        api.deleteTextures = ResolveGl<ProcDelete>("glDeleteTextures");
+        api.bindTexture = ResolveGl<ProcBind>("glBindTexture");
+        api.texImage2D = ResolveGl<ProcTexImage>("glTexImage2D");
+        api.texParameteri = ResolveGl<ProcTexParam>("glTexParameteri");
+        api.pixelStorei = ResolveGl<ProcPixelStore>("glPixelStorei");
+        shine::gpu::AttachDevice(api);
+        if (!shine::gpu::Ready()) {
+            shine::log::Error("gpu::AttachDevice 缺函数 —— 图库/媒体预览会不出图");
+        }
+    }
 
-    shine::log::Info("imgui host up: {}x{} client, dpi scale {:.2f}, gpu={}", client.right,
-                     client.bottom, static_cast<double>(scale),
+    const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    shine::log::Info("imgui host up: {}x{} client, framebuffer 1:1 (system dpi {:.2f}), gpu={}",
+                     client.right, client.bottom, static_cast<double>(DisplayScaledFactor()),
                      shine::gpu::Ready() ? "attached" : "MISSING");
+    shine::log::Info("GL vendor={} renderer={} version={}", vendor ? vendor : "?",
+                     renderer ? renderer : "?", version ? version : "?");
     return true;
 }
 
-bool Host::CreateDeviceD3D(HWND window, std::string& error) {
-    DXGI_SWAP_CHAIN_DESC desc{};
-    desc.BufferCount = 2;
-    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    desc.OutputWindow = window;
-    desc.SampleDesc.Count = 1;
-    desc.Windowed = TRUE;
-    // DXGI_SWAP_EFFECT_DISCARD：与 ImGui 的 dx11 后端配套（全屏才用 FLIP_SEQUENTIAL）。
-    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
-    D3D_FEATURE_LEVEL got{};
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels,
-                                               static_cast<UINT>(std::size(levels)),
-                                               D3D11_SDK_VERSION, &desc, &swapChain_, &device_,
-                                               &got, &context_);
-    if (hr == DXGI_ERROR_UNSUPPORTED) {
-        // 远程桌面 / 无 GPU 的机器上硬件驱动不可用，退回 WARP 软件渲染。
-        hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels,
-                                           static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION,
-                                           &desc, &swapChain_, &device_, &got, &context_);
-    }
-    if (FAILED(hr)) {
-        char buffer[64]{};
-        snprintf(buffer, sizeof(buffer), "D3D11CreateDeviceAndSwapChain failed 0x%08lX",
-                 static_cast<unsigned long>(hr));
-        error = buffer;
+bool Host::CreateGlContext(HWND window, std::string& error) {
+    hdc_ = GetDC(window);
+    if (hdc_ == nullptr) {
+        error = "GetDC failed";
         return false;
     }
 
-    auto* chain = swapChain_;
-    chain->GetBuffer(0, IID_PPV_ARGS(&renderTarget_));
-    CreateRenderTarget();
+    PIXELFORMATDESCRIPTOR pfd{};
+    pfd.nSize = sizeof(pfd);
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    pfd.cDepthBits = 24;
+    pfd.cStencilBits = 8;
+    pfd.iLayerType = PFD_MAIN_PLANE;
+
+    const int format = ChoosePixelFormat(hdc_, &pfd);
+    if (format == 0) {
+        error = "ChoosePixelFormat failed（系统可能没有可用的 OpenGL 像素格式）";
+        return false;
+    }
+    if (SetPixelFormat(hdc_, format, &pfd) == FALSE) {
+        error = "SetPixelFormat failed";
+        return false;
+    }
+
+    glContext_ = wglCreateContext(hdc_);
+    if (glContext_ == nullptr) {
+        error = "wglCreateContext failed";
+        return false;
+    }
+    if (wglMakeCurrent(hdc_, glContext_) == FALSE) {
+        error = "wglMakeCurrent failed";
+        return false;
+    }
+
+    // 关掉 MSAA：默认帧缓冲多重采样会让 glReadPixels 拿到的图边缘发虚，
+    // 逐像素比对时是纯噪声。ImGui 是 2D 三角形，本来也用不上。
+    glDisable(GL_MULTISAMPLE);
+    SetupViewport();
     return true;
 }
 
-void Host::CreateRenderTarget() {
-    if (renderTarget_ != nullptr) {
+void Host::SetupViewport() {
+    if (hdc_ == nullptr) {
         return;
     }
-    auto* chain = swapChain_;
-
-    ID3D11Texture2D* backBuffer = nullptr;
-    chain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
-    if (backBuffer != nullptr) {
-        device_->CreateRenderTargetView(backBuffer, nullptr, &renderTarget_);
-        backBuffer->Release();
-    }
-
-    // 深度模板缓冲：ImGui 的 dx11 后端会启用深度测试自己画，不提供时
-    // CreateDepthStencilView 拿不到可绑定的 D3D11_DEPTH_STENCIL。
-    D3D11_TEXTURE2D_DESC depthDesc{};
-    depthDesc.Width = 0;
-    depthDesc.Height = 0;
-    depthDesc.MipLevels = 1;
-    depthDesc.ArraySize = 1;
-    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    depthDesc.SampleDesc.Count = 1;
-    depthDesc.Usage = D3D11_USAGE_DEFAULT;
-    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-    if (SUCCEEDED(device_->CreateTexture2D(&depthDesc, nullptr, &depthBuffer_)) &&
-        depthBuffer_ != nullptr) {
-        device_->CreateDepthStencilView(depthBuffer_, nullptr, &depthStencil_);
-    }
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    glViewport(0, 0, client.right, client.bottom);
 }
 
-void Host::CleanupRenderTarget() {
-    if (depthStencil_ != nullptr) {
-        depthStencil_->Release();
-        depthStencil_ = nullptr;
+void Host::CleanupGlContext() {
+    if (glContext_ != nullptr) {
+        wglMakeCurrent(nullptr, nullptr);
+        wglDeleteContext(glContext_);
+        glContext_ = nullptr;
     }
-    if (depthBuffer_ != nullptr) {
-        depthBuffer_->Release();
-        depthBuffer_ = nullptr;
+    if (hdc_ != nullptr && hwnd_ != nullptr) {
+        ReleaseDC(hwnd_, hdc_);
     }
-    if (renderTarget_ != nullptr) {
-        renderTarget_->Release();
-        renderTarget_ = nullptr;
-    }
+    hdc_ = nullptr;
 }
 
 void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
-    if (!imguiReady_) {
+    if (!imguiReady_ || glContext_ == nullptr) {
         return;
     }
     for (int i = 0; i < frames; ++i) {
         PumpUi();
 
-        ImGui_ImplDX11_NewFrame();
+        // 客户区可能变（拖边框、还原最小化）。WGL 上下文不用重建，viewport 跟一下即可。
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(client.right),
+                                           static_cast<float>(client.bottom));
+        glViewport(0, 0, client.right, client.bottom);
+
+        ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
         if (onFrame) {
@@ -254,12 +295,9 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
         }
         ImGui::Render();
 
-        const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        context_->OMSetRenderTargets(1, &renderTarget_, depthStencil_);
-        context_->ClearRenderTargetView(renderTarget_, clear);
-        context_->ClearDepthStencilView(depthStencil_, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-                                        1.0f, 0);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     }
     // 后端此刻已把字体纹理烘焙上传，打一次显存日志（64 MB 硬判据）。
     kit::LogFontAtlasIfNeeded();
@@ -277,17 +315,8 @@ void Host::RunLoop(const DrawFrameFn& onFrame) {
                 break;
             }
         }
-        if (done) {
+        if (done || quit_) {
             break;
-        }
-
-        if (resizeRequested_) {
-            CleanupRenderTarget();
-            if (swapChain_ != nullptr) {
-                swapChain_->ResizeBuffers(0, resizeWidth_, resizeHeight_, DXGI_FORMAT_UNKNOWN, 0);
-            }
-            CreateRenderTarget();
-            resizeRequested_ = false;
         }
 
         if (hwnd_ == nullptr || !IsWindow(hwnd_)) {
@@ -295,86 +324,57 @@ void Host::RunLoop(const DrawFrameFn& onFrame) {
         }
 
         PumpFrames(1, onFrame);
-        swapChain_->Present(1, 0); // 垂直同步
+        SwapBuffers(hdc_); // 垂直同步
     }
 }
 
 std::vector<std::uint8_t> Host::CaptureBackBuffer() {
     std::vector<std::uint8_t> pixels;
-    if (device_ == nullptr || context_ == nullptr || renderTarget_ == nullptr) {
+    if (glContext_ == nullptr || hdc_ == nullptr) {
+        return pixels;
+    }
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    const int width = client.right;
+    const int height = client.bottom;
+    if (width <= 0 || height <= 0) {
         return pixels;
     }
 
-    ID3D11Texture2D* backBuffer = nullptr;
-    if (FAILED(swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer)))) {
-        return pixels;
-    }
-
-    D3D11_TEXTURE2D_DESC desc{};
-    backBuffer->GetDesc(&desc);
-
-    // 抓图走自己的 staging 纹理：D3D11 默认后端缓冲不可 MAP，且可能是 MSAA。
-    D3D11_TEXTURE2D_DESC stagingDesc = desc;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.MiscFlags = 0;
-    stagingDesc.MipLevels = 1;
-    stagingDesc.ArraySize = 1;
-    stagingDesc.SampleDesc.Count = 1;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-    ID3D11Texture2D* staging = nullptr;
-    if (FAILED(device_->CreateTexture2D(&stagingDesc, nullptr, &staging)) || staging == nullptr) {
-        backBuffer->Release();
-        return pixels;
-    }
-    context_->CopyResource(staging, backBuffer);
-    backBuffer->Release();
-
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (FAILED(context_->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
-        staging->Release();
-        return pixels;
-    }
-
-    // 逐行拷贝：后备缓冲行距（D3D11_TEXTURE2D_DESC.Width * 4）常大于图库要的紧密行距。
-    const int width = static_cast<int>(desc.Width);
-    const int height = static_cast<int>(desc.Height);
+    // glReadPixels 的原点在左下角，PNG 从左上角起 —— 逐行倒着写。
+    // 顺带把剪裁测试也限制住，避免遗留的 scissor 矩形把读取范围裁掉。
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, width, height);
     pixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4u);
-    const auto* source = static_cast<const std::uint8_t*>(mapped.pData);
-    for (int y = 0; y < height; ++y) {
-        std::copy_n(source + static_cast<std::size_t>(y) * mapped.RowPitch,
-                    static_cast<std::size_t>(width) * 4u,
-                    pixels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 4u);
-    }
-    context_->Unmap(staging, 0);
-    staging->Release();
-    return pixels;
-}
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    glDisable(GL_SCISSOR_TEST);
 
-void Host::CleanupDeviceD3D() {
-    CleanupRenderTarget();
-    if (swapChain_ != nullptr) {
-        swapChain_->Release();
-        swapChain_ = nullptr;
+    if (const GLenum err = glGetError(); err != GL_NO_ERROR) {
+        shine::log::Error("capture: glReadPixels GL error 0x{:X}", static_cast<unsigned>(err));
     }
-    // device_/context_ 由交换链持有，交换链放掉即可；这里只清我们的裸指针。
-    device_ = nullptr;
-    context_ = nullptr;
+
+    const std::size_t stride = static_cast<std::size_t>(width) * 4u;
+    std::vector<std::uint8_t> flipped(pixels.size());
+    for (int y = 0; y < height; ++y) {
+        const std::size_t src = static_cast<std::size_t>(height - 1 - y) * stride;
+        std::copy_n(pixels.data() + src, stride, flipped.data() + static_cast<std::size_t>(y) * stride);
+    }
+    return flipped;
 }
 
 void Host::Shutdown() {
     if (imguiReady_) {
-        ImGui_ImplDX11_Shutdown();
+        ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         imguiReady_ = false;
     }
-    // ⚠️ 顺序：先把 gpu 的纹理放掉，再放设备（GpuDevice.h 的契约）。
+    // ⚠️ 顺序：先把 gpu 的纹理 glDeleteTextures 放掉，再销毁 GL 上下文
+    // （GpuDevice.h 的契约）。反过来就是往已死上下文里发命令。
     if (shine::gpu::Ready()) {
         shine::gpu::DetachDevice();
     }
-    CleanupDeviceD3D();
+    CleanupGlContext();
     if (hwnd_ != nullptr) {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;

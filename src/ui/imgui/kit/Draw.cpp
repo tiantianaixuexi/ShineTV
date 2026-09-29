@@ -11,6 +11,9 @@ namespace {
 bool g_reduceMotion = false;
 float g_now = 0.0f;
 
+// 混合两个**已打包的 ImU32**。字节序必须用 ImGui 自己的位移宏：
+// 默认（未定义 IMGUI_USE_BGRA_PACKED_COLOR）下 R 在**最低**字节、alpha 在最高字节。
+// 手写 24/16/8/0 会把 alpha 当成红通道 —— 实测表现为 accent 主按钮被插值成一团灰紫。
 ImU32 Mix(ImU32 a, ImU32 b, float t) {
     t = std::clamp(t, 0.0f, 1.0f);
     const auto channel = [a, b, t](int shift) {
@@ -18,7 +21,9 @@ ImU32 Mix(ImU32 a, ImU32 b, float t) {
         const auto cb = (b >> shift) & 0xFFu;
         return static_cast<ImU32>(std::lround(ca + (cb - ca) * t));
     };
-    return (channel(24) << 24) | (channel(16) << 16) | (channel(8) << 8) | channel(0);
+    return (channel(IM_COL32_R_SHIFT) | (channel(IM_COL32_G_SHIFT) << IM_COL32_G_SHIFT) |
+            (channel(IM_COL32_B_SHIFT) << IM_COL32_B_SHIFT) |
+            (channel(IM_COL32_A_SHIFT) << IM_COL32_A_SHIFT));
 }
 
 ImU32 LerpColor(ImU32 a, ImU32 b, float t) { return Mix(a, b, t); }
@@ -62,6 +67,11 @@ void FillRoundedBands(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
     const float step = extent / static_cast<float>(bands);
 
     // PrimReserve 的参数顺序是 (索引数, 顶点数)；索引由 PrimVtx 自动写当前绝对下标。
+    //
+    // ⚠️ UV 必须是白像素 UV。ImDrawList 的默认纹理是**字体图集**，写 (0,0)-(1,1) 等于
+    // 把整张字形图集缩微采样进每个三角形 —— 画出来是一排字形条纹，而不是渐变。
+    // ImGui 为此专门留了公开 API：ImGui::GetFontTexUvWhitePixel()。
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
     draw->PrimReserve(6 * bands, 6 * bands);
     for (int i = 0; i < bands; ++i) {
         const float t0 = static_cast<float>(i) / static_cast<float>(bands);
@@ -99,12 +109,12 @@ void FillRoundedBands(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
             ca = c0;
             cb = c1;
         }
-        draw->PrimVtx(a, ImVec2(0, 0), ca);
-        draw->PrimVtx(b, ImVec2(1, 0), ca);
-        draw->PrimVtx(c, ImVec2(1, 1), cb);
-        draw->PrimVtx(a, ImVec2(0, 0), ca);
-        draw->PrimVtx(c, ImVec2(1, 1), cb);
-        draw->PrimVtx(d, ImVec2(0, 1), cb);
+        draw->PrimVtx(a, uv, ca);
+        draw->PrimVtx(b, uv, ca);
+        draw->PrimVtx(c, uv, cb);
+        draw->PrimVtx(a, uv, ca);
+        draw->PrimVtx(c, uv, cb);
+        draw->PrimVtx(d, uv, cb);
     }
 }
 
@@ -188,6 +198,8 @@ void DrawDiagGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
     }
     const int bands = std::clamp(static_cast<int>(std::ceil(height)), 1, 96);
     const float step = height / static_cast<float>(bands);
+    // 白像素 UV —— 见 FillRoundedBands 里的同一条说明，这里踩过一次同样的坑。
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
     draw->PrimReserve(6 * bands, 6 * bands);
     for (int i = 0; i < bands; ++i) {
         const float y0 = min.y + step * static_cast<float>(i);
@@ -197,12 +209,12 @@ void DrawDiagGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
         const ImU32 right = LerpColor(from, to, std::min(1.0f, t + 0.5f));
         const float inset = std::max(RoundedInset(rounding, height, y0 - min.y),
                                      RoundedInset(rounding, height, y1 - min.y));
-        draw->PrimVtx(ImVec2(min.x + inset, y0), ImVec2(0, 0), left);
-        draw->PrimVtx(ImVec2(max.x - inset, y0), ImVec2(1, 0), left);
-        draw->PrimVtx(ImVec2(max.x - inset, y1), ImVec2(1, 1), right);
-        draw->PrimVtx(ImVec2(min.x + inset, y0), ImVec2(0, 0), left);
-        draw->PrimVtx(ImVec2(max.x - inset, y1), ImVec2(1, 1), right);
-        draw->PrimVtx(ImVec2(min.x + inset, y1), ImVec2(0, 1), right);
+        draw->PrimVtx(ImVec2(min.x + inset, y0), uv, left);
+        draw->PrimVtx(ImVec2(max.x - inset, y0), uv, left);
+        draw->PrimVtx(ImVec2(max.x - inset, y1), uv, right);
+        draw->PrimVtx(ImVec2(min.x + inset, y0), uv, left);
+        draw->PrimVtx(ImVec2(max.x - inset, y1), uv, right);
+        draw->PrimVtx(ImVec2(min.x + inset, y1), uv, right);
     }
 }
 
@@ -311,30 +323,28 @@ void DrawDotGrid(ImDrawList* draw, ImVec2 min, ImVec2 max, float cell, ImU32 dot
     }
 }
 
-ImU32 GlassColor() { return theme::PackRgba(theme::Rgba(theme::CurrentDerived().glass)); }
+ImU32 GlassColor() { return theme::ToImU32((theme::CurrentDerived().glass)); }
 
 ImU32 ToneColor(theme::Tone tone) {
     const auto& c = theme::Current();
     switch (tone) {
-    case theme::Tone::Accent: return theme::PackRgba(theme::Rgba(c.accentPrimary));
-    case theme::Tone::Info: return theme::PackRgba(theme::Rgba(c.accentInfo));
-    case theme::Tone::Ok: return theme::PackRgba(theme::Rgba(c.statusOk));
-    case theme::Tone::Warn: return theme::PackRgba(theme::Rgba(c.statusWarn));
-    case theme::Tone::Danger: return theme::PackRgba(theme::Rgba(c.statusDanger));
-    case theme::Tone::Busy: return theme::PackRgba(theme::Rgba(c.statusBusy));
-    case theme::Tone::Idle: return theme::PackRgba(theme::Rgba(c.statusIdle));
+    case theme::Tone::Accent: return theme::ToImU32((c.accentPrimary));
+    case theme::Tone::Info: return theme::ToImU32((c.accentInfo));
+    case theme::Tone::Ok: return theme::ToImU32((c.statusOk));
+    case theme::Tone::Warn: return theme::ToImU32((c.statusWarn));
+    case theme::Tone::Danger: return theme::ToImU32((c.statusDanger));
+    case theme::Tone::Busy: return theme::ToImU32((c.statusBusy));
+    case theme::Tone::Idle: return theme::ToImU32((c.statusIdle));
     }
-    return theme::PackRgba(theme::Rgba(c.statusIdle));
+    return theme::ToImU32((c.statusIdle));
 }
 
 ImU32 ToneBackground(theme::Tone tone) {
-    return theme::PackRgba(
-        theme::Rgba(theme::CurrentDerived().tagBg[static_cast<std::size_t>(tone)]));
+    return theme::ToImU32(theme::CurrentDerived().tagBg[static_cast<std::size_t>(tone)]);
 }
 
 ImU32 ToneBorder(theme::Tone tone) {
-    return theme::PackRgba(
-        theme::Rgba(theme::CurrentDerived().tagBorder[static_cast<std::size_t>(tone)]));
+    return theme::ToImU32(theme::CurrentDerived().tagBorder[static_cast<std::size_t>(tone)]);
 }
 
 } // namespace shine::kit

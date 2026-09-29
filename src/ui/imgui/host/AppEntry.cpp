@@ -9,6 +9,7 @@
 #include "ui/imgui/host/Host.h"
 #include "ui/imgui/pages/Shell.h"
 #include "ui/imgui/theme/Theme.h"
+#include "ui/imgui/verify/Review.h"
 
 #include <windows.h>
 #include <shellapi.h> // CommandLineToArgvW（须在 windows.h 之后）
@@ -155,6 +156,20 @@ int RunApp(int argc, char** argv) {
     shine::gallery::Init();
 
     pages::Shell shell;
+
+    // SHINE_IMGUI_REVIEW=<dir>：跑一次总回归抓图就退出（phases.md P6.3）。
+    // 放在 RunLoop 之前 —— 取证自己泵帧，不需要进消息循环。
+    if (const std::filesystem::path review_dir = EnvPath("SHINE_IMGUI_REVIEW");
+        !review_dir.empty()) {
+        const auto result = shine::imguiverify::RunReview(host, shell, review_dir);
+        std::printf("[imgui-review] shots=%d failed=%d dir=%s\n", result.captured, result.failed,
+                    review_dir.string().c_str());
+        host.Shutdown();
+        shine::async::Shutdown();
+        shine::log::Shutdown();
+        std::_Exit(result.failed == 0 ? 0 : 2);
+    }
+
     host.RunLoop([&shell](float dt) { shell.DrawFrame(dt); });
 
     shine::gallery::Shutdown();

@@ -106,8 +106,11 @@ Ctl {
                     x: 13                                              // padding: 0 13
                     y: (seg.height - height) / 2
                     text: seg.modelData.label
+                    // ⚠️ token 名用点（text.primary / text.muted）。ThemeBridge 一个连字符键
+                    //    都没注册，写成 "text-primary" 会取到 undefined，hover 与常态两支同色、
+                    //    页签的 hover 反馈整个失效（qml 日志报 "Unable to assign [undefined]"）。
                     color: seg.on_ ? ThemeBridge.colors["text.primary"]
-                         : (segMouse.containsMouse ? ThemeBridge.colors["text-primary"]
+                         : (segMouse.containsMouse ? ThemeBridge.colors["text.primary"]
                                                    : ThemeBridge.colors["text.muted"])
                     font.family: ThemeBridge.fontFamily
                     font.pixelSize: 12       // .seg > button f12.5px → 就近取整 12
