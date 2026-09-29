@@ -2,12 +2,11 @@
 #
 # Qt -> Dear ImGui refactor (see refactor/phases.md P0.3). Three rules:
 #
-# Rule 1 [qt-free]: no Qt header may appear outside the legacy Qt front end.
-#         Refactor target: src/ is entirely Qt-free. During coexistence the
-#         legacy front-end dirs (src/ui/app, kit, layout, pages, qml, verify)
-#         are still Qt; P7 deletes them and this exemption disappears with
-#         them. Everything else -- shine_core AND the new src/ui/imgui tree --
-#         is already covered, so the gate never blocks its own new code.
+# Rule 1 [qt-free]: no Qt header may appear anywhere under src/.
+#         P7 deleted the whole legacy Qt front end (src/ui/{app,kit,layout,
+#         pages,qml,verify}), so the exemption those dirs used to carry is
+#         gone with them. src/ is now entirely Qt-free, shine_core and the
+#         ImGui front end alike.
 #
 # Rule 2: (removed) the old "no imgui/ImVec/ImDraw anywhere in src/" ban.
 #         ImGui is now the front end; imgui.h / ImVec4 / ImDrawList are
@@ -16,9 +15,7 @@
 #         host-agnostic and free of any UI dependency).
 #
 # Rule 3 [hardcoded-color]: colors come from the theme token table, never
-#         from literals. Two shapes, one per front end:
-#           legacy Qt tree  -- setStyleSheet("...#RRGGBB") / QColor("#...")
-#           ImGui tree      -- ImVec4(0.1f, ...) / ImColor(0x...) / 0xRRGGBB
+#         from literals -- ImVec4(0.1f, ...) / ImColor(0x...) / 0xRRGGBB.
 #         A line may opt out with a trailing `theme-ok` marker, which is
 #         how theme/Tokens.* legitimately hold the source-of-truth values.
 #
@@ -29,12 +26,6 @@
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-
-# Directories that are allowed to be Qt (legacy front end, deleted in P7).
-$legacyQtDirs = @(
-  'src/ui/app', 'src/ui/kit', 'src/ui/layout',
-  'src/ui/pages', 'src/ui/qml', 'src/ui/verify'
-)
 
 # Directories that must stay free of ANY UI header (business layer).
 $coreDirs = @(
@@ -58,10 +49,6 @@ $codeFiles = Get-ChildItem -LiteralPath (Join-Path $root 'src') -Recurse -File |
 
 foreach ($f in $codeFiles) {
   $rel = $f.FullName.Substring($root.Length + 1) -replace '\\', '/'
-  $inLegacyQt = $false
-  foreach ($d in $legacyQtDirs) {
-    if ($rel.StartsWith($d)) { $inLegacyQt = $true; break }
-  }
   $inCore = $false
   foreach ($d in $coreDirs) {
     if ($rel.StartsWith($d)) { $inCore = $true; break }
@@ -72,7 +59,7 @@ foreach ($f in $codeFiles) {
   for ($i = 0; $i -lt $lines.Count; $i++) {
     $line = $lines[$i]
     $optOut = $line -match 'theme-ok'
-    if (-not $inLegacyQt -and -not $isQtUtil -and $qtIncludeRe.IsMatch($line)) {
+    if (-not $isQtUtil -and $qtIncludeRe.IsMatch($line)) {
       Write-Output ('VIOLATION [qt-include] {0}:{1}: {2}' -f $rel, ($i + 1), $line.Trim())
       $violations++
     }

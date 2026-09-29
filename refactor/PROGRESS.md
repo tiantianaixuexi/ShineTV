@@ -32,13 +32,13 @@ last_verified: 2026-09-30
 | **P0** | 底座与门禁 | `[x]` | 4/4 | 能开一个 ImGui 空窗口 |
 | **P1** | 运行时骨架 | `[x]` | 6/6 | `gpu::AttachDevice` 生效 |
 | **P2** | 主题与字体 | `[x]` | 7/7 | **中文无豆腐块** ✅ |
-| **P3** | 组件套件 | `[~]` | 6/7 | 组件画廊 5 主题对齐 |
-| **P4** | 应用外壳 | `[~]` | 10/11 | 外壳逐项对齐 |
-| **P5** | 六个工作区 | `[~]` | 4/6 | 6 页 × 5 主题对齐 |
+| **P3** | 组件套件 | `[x]` | 7/7 | 组件画廊 5 主题对齐 |
+| **P4** | 应用外壳 | `[x]` | 11/11 | 外壳逐项对齐 |
+| **P5** | 六个工作区 | `[x]` | 6/6 | 6 页 × 5 主题对齐 |
 | **P6** | 验收取证 | `[x]` | 3/3 | 总回归入口可跑 ✅ |
-| **P7** | 收尾 | `[ ]` | 0/7 | **不装 Qt 也能构建** |
+| **P7** | 收尾 | `[x]` | 7/7 | **不装 Qt 也能构建** ✅ |
 
-**整体：40 / 51 步**
+**整体：51 / 51 步**
 
 ---
 
@@ -110,9 +110,13 @@ last_verified: 2026-09-30
 - [x] **P3.1** 绘制基建：圆角矩形 / 渐变 / 文本截断 / 阴影近似 / `AutoGridCols`
 - [x] **P3.2** 基础控件：Button(4×3) / IconBtn / Input / TextArea / Select / Switch / Checkbox / Field
 - [x] **P3.3** 数据展示：Tag(7 色调×2) / StatusDot / Kbd / KV / Progress
-- [x] **P3.4** 容器：Card / Segmented / Tabs
+- [x] **P3.4** 容器与浮层：Card / Segmented / Tabs / **Spinner / Tooltip / Divider / DataTable / Tree / Menu** /
+  `Overlays.{h,cpp}`（Scrim / Modal / Drawer / Toast）
   - `Card` 的 `hoverable` / `glow` 早先是死代码，已改成真 `HitTest` + hover 边色 + 上浮 2px
-  - Tooltip / Dialog / Drawer / Toast / DataTable / Tree / Skeleton / Menu → `[~]`
+  - `IconButton` 的 `tip` 原走 `ImGui::SetTooltip`（错背景 / 错延迟 / 无法按设计稿右侧锚定），改走新 Tooltip
+  - `Empty` 的正文框原写死 320px 宽且忽略传入 bounds，240px 侧栏里横穿面板 —— 改为夹在 bounds 内
+  - **刻意不做** Skeleton / Avatar / Badge：全 `webui/src` 里没有这三个原语，
+    凭空造尺寸等于凭空造设计
 - [x] **P3.5** 画布与图像 ⚠️：`FlowCanvas` / `Art` / `ArtInk`
   - `FlowCanvas`（`Views.{h,cpp}`）：150×76 节点、5 态、9px 端口、24 段折线逼近三次贝塞尔、
     滚轮光标锚点缩放（0.35–2.0）、拖节点 / 拖背景平移、适应视图、右上玻璃工具条
@@ -163,11 +167,13 @@ last_verified: 2026-09-30
   `Budget` + `Ledger::Entries` + `StopPolicy::Evaluate` + `Checkpoint::Load` + `AppSettings`
   - 删掉全部伪造 KPI / 哈希 / 停止条件
   - ⚠️ `BindOverviewProject` 曾落在**匿名 namespace** 里 → 外部链接不到
-- [~] **P5.2** 小说（novel）— 8 模式 · 进行中
-- [~] **P5.3** 资产（assets）— 进行中
-- [~] **P5.4** 分镜（storyboard）— 进行中
+- [x] **P5.2** 小说（novel）— 8 模式 · `NovelGraph::ListChapters / ListEntities` 真实返回值
+- [x] **P5.3** 资产（assets）— `NovelVisual::FindAssetByEntity / ListArtifacts`
+- [x] **P5.4** 分镜（storyboard）— `NovelVisual::ListShotsByChapter / ListStageArtifacts` + `RunContinuityChecks`
+  - `unverified` 显式报成「无不一致，但有数据不足项」，不报成「通过」
 - [x] **P5.5** 出图（imageflow）— 含 `FlowCanvas`
 - [x] **P5.6** 出片（videoflow）— 含 `FlowCanvas`
+  - 三页共用一份工程快照（`BindNovelProject` 一处即可），IO 在 worker，generation 丢弃过期结果
 
 ---
 
@@ -179,21 +185,30 @@ last_verified: 2026-09-30
 - [x] **P6.3** `SHINE_IMGUI_REVIEW`：6 工作区 × 5 主题 + 全工作区基线
   - 覆盖面 **17 → 37 张**
   - manifest 含 `overall=PASS|FAIL` 行，退出码 FAIL 从 2 改 1
-  - 最新一轮：**37/37 saved · `overall=PASS` · 退出码 0 · 37 张 md5 全唯一**
+  - 最新一轮：**37/37 saved · `overall=PASS` · `identical-theme-pairs: 0` · 退出码 0**
+  - ⚠️ 补了**判据二**：同一工作区在 5 套主题下的像素必须两两不同。
+    只判「PNG 写出来了」的旧门禁是**假绿** —— 实测把 exe 放到没有 `themes/` 的目录里跑，
+    37 张只有 13 张唯一、五套主题逐字节相同，manifest 依旧报 PASS。
+    现在这种情况直接 `overall=FAIL` + 退出码 1（实测触发 `identical-theme-pairs: 36`）
 
 ---
 
 ## P7 收尾
 
-- [ ] **P7.1** 删 `src/ui/kit/`(55) + `src/ui/qml/`(52) + `src/ui/pages/`(89) + `src/ui/layout/`(2)
-- [ ] **P7.2** 删 `shine_kit` / `shine_qml` 目标与 `SHINE_UI_QT`
-- [ ] **P7.3** 移除 `find_package(Qt6)` / `AUTOMOC` / `AUTORCC`
-- [ ] **P7.4** 门禁定型
-- [ ] **P7.5** `package-qt.ps1` → `package-imgui.ps1`（顺带修掉不存在的 `-DSHINE_QT_UI=ON`）
-- [ ] **P7.6** 更新 `AGENTS.md` 分层规则
-  - ⚠️ `AGENTS.md` 现在写「着色源码是 GBK 编码中文注释」，**对 `src/ui/imgui/**` 是错的**（那棵树是无 BOM 的 UTF-8）
-- [~] **P7.7** 实测产物体积并填表
-  - 当前 **250,451,831 B** vs 目标 < 30 MB。**未裁剪**，差距主要在静态库未 strip
+- [x] **P7.1** 删 `src/ui/{app,kit,layout,pages,qml,verify}` —— **198 个文件**
+  - 唯一还在被 ImGui 侧用到的 `AppEnvironment.{h,cpp}` 搬到 `src/ui/imgui/host/`
+- [x] **P7.2** 删 `shine_kit` / `shine_qml` 目标与 `SHINE_UI_QT`
+- [x] **P7.3** 移除 `find_package(Qt6)` / `AUTOMOC` / `AUTORCC`
+  - `check-layers.ps1` 的「Qt 前端豁免目录」列表也一并删掉 —— 门禁现在对全 `src/` 零豁免
+- [x] **P7.4** 门禁定型：`check-layers` / `check-theme` / `check-colors` 的主题路径改指 `src/ui/imgui/theme/Themes`
+- [x] **P7.5** `package-qt.ps1` → `scripts/package-imgui.ps1`
+  - 旧脚本传 `-DSHINE_QT_UI=ON` —— 这个开关**在 CMakeLists 里从来不存在**，
+    所以它一直在静默配出一个 ImGui 版，再叫 `windeployqt` 去部署 Qt 运行库
+- [x] **P7.6** 更新 `AGENTS.md`：删掉「双前端共存」描述，补上 `src/ui/imgui/**` 的 UTF-8 编码事实
+- [x] **P7.7** 实测产物体积并填表
+  - `RelWithDebInfo` 未裁剪：**252,530,560 B（240.8 MB）**
+  - `strip --strip-all` 后：**12,435,968 B（11.9 MB）** —— 达标
+  - 差距全部在调试信息：`.debug_info` 单节就 0x091f7a46 ≈ **146 MB**
 
 ---
 
@@ -201,12 +216,14 @@ last_verified: 2026-09-30
 
 | 指标 | 基线 | 目标 | 实测 |
 |---|---|---|---|
-| exe 体积 | 392,330,166 B | < 30 MB | **250,451,831 B**（P7.7 未完成） |
-| `shine_core` 中 Qt 头引用 | 165 个 UI 文件 | **0** | **0**（`check-layers` 门禁保证） |
-| QML 文件 | 52 | **0** | 52（P7.1 未做） |
-| 构建是否需要 Qt | 是 | **否** | **否**（`SHINE_UI_IMGUI=ON` 默认） |
+| exe 体积（未裁剪） | 392,330,166 B | — | 252,530,560 B |
+| **exe 体积（strip 后）** | — | **< 30 MB** | **12,435,968 B = 11.9 MB** ✅ |
+| `src/` 中 Qt 头引用 | 165 个 UI 文件 | **0** | **0**（门禁零豁免仍 PASS） |
+| QML 文件 | 52 | **0** | **0** |
+| `src/ui/` 下的前端树 | 6 棵 | **1 棵** | **1 棵（`imgui/`）** |
+| 构建是否需要 Qt | 是 | **否** | **否**（全新 `build-p7` 目录零 Qt 配过 + 构建 + 取证通过） |
 | `check-layers` | PASS | PASS | **PASS (0 violations)** |
-| 字体图集 | — | < 64 MB | **0.2 MB / 3948 codepoints** |
+| 字体图集 | — | < 64 MB | **0.2 MB / 3958 codepoints** |
 | 取证图组数 | 17 | 35+ | **37（PASS）** |
 
 ---
@@ -255,17 +272,30 @@ last_verified: 2026-09-30
 | 2026-09-30 | P4.11 | 项目中心进不去 | `DrawProjectHub` 定义了但零调用点 | ✅ |
 | 2026-09-30 | P6.3 | 底栏「任务队列」出图复核 | 写死 42% 进度条 + 标签叠印 | ✅ |
 | 2026-09-30 | 编码 | `src/ui/imgui/**` 实为 **UTF-8**，非 GBK | 往返转换吞掉 8 个 `⚠️`；已无损还原 | ✅ |
-| 2026-09-30 | P7.7 | 当前 exe 体积 | 250,451,831 B | ⚠️ 未达目标 |
+| 2026-09-30 | P3 | `AddText` 字面量长度 6 处写死字节数 | 每处少画 1 个字；一处 `+82` 比实际多 5 字节（越界读） | ✅ |
+| 2026-09-30 | P2.5 | 字形集补 20 个符号兜底基线 | 3948 → 3958 codepoints | ✅ |
+| 2026-09-30 | **P7.1** | 删 `src/ui/{app,kit,layout,pages,qml,verify}` | 198 文件进回收站；`AppEnvironment` 外迁到 `imgui/host/` | ✅ |
+| 2026-09-30 | **P7.2/3** | CMake 去 Qt | 全新 `build-p7` 目录零 Qt 配过 + 全量构建通过 | ✅ |
+| 2026-09-30 | **P7.4** | 三个检查脚本主题路径改指 `imgui/theme/Themes` | check-layers / check-theme / check-colors 全 PASS | ✅ |
+| 2026-09-30 | **P7.5** | `package-qt.ps1` → `package-imgui.ps1` | 旧脚本的 `-DSHINE_QT_UI=ON` 是**从未存在**的开关 | ✅ |
+| 2026-09-30 | **P7.7** | 产物体积 | strip 后 **12,435,968 B = 11.9 MB**（目标 < 30 MB） | ✅ |
+| 2026-09-30 | P6.3 | 全新零 Qt 构建跑取证 | 37/37 saved · `overall=PASS` · 退出码 0 | ✅ |
+| 2026-09-30 | P6.3 | **取证门禁假绿** | exe 放在没有 `themes/` 的目录 → 37 张只有 13 张唯一，旧门禁仍报 PASS；补判据二后 `identical-theme-pairs: 36` → FAIL | ✅ |
 
 ---
 
 ## 下一步
 
-**P7.1 删 Qt 树** —— 唯一能同时解掉体积指标与「构建是否需要 Qt」两个判据的一步。
+重构主干（51/51）已完成并通过验证。剩下的是**产品缺口**，不是重构缺口：
 
-```
-src/ui/qml  52 文件   src/ui/kit  55   src/ui/pages  89   src/ui/layout  2
-```
+| 缺口 | 归因 | 说明 |
+|---|---|---|
+| 阶段执行体是桩 | `shine_core` | 没有「替前端跑一个 T 阶段」的服务接口。Runner 的**记账**（预算 / `work/*.json` / 账本）是真的，阶段**本体**不是。补它要动 `shine_core`，超出「重构期不改业务层」的边界。 |
+| S1–S12 停止规则表 | `pipeline/StopPolicy` | 只判 5 组，且没有可枚举的规则表（同 `src/ui/pages/pipeline/StopReportView.h` 的旧结论）。 |
+| 校验报告页 | `novel.db` | T12/T15 的逐项产出在库里，ImGui 侧未接查询，底栏第 4 页目前是诚实空态。 |
+| 章节×阶段双轴甘特 | `pipeline::Ledger` | 无章节维度，设计稿的双轴甘特无法完整实现。 |
+| 侧栏树 / 检查器 | 页面层 | 结构由各工作区持有，需要页面暴露查询接口；目前是诚实空态而非假数据。 |
 
-删完再跑 `cmake -S . -B build-imgui -DSHINE_UI_IMGUI=ON -DSHINE_UI_QT=OFF`，
-不装 Qt 也能配过 = P7 的验收判据。
+另有一条**已接受降级**：`Derived::gateBg` / `checkRowBg` 当年按纯 alpha 算，
+与设计稿的实色差一个底。字段按「只加不减」冻结，要 1:1 请用新增的
+`stageDoneBg` / `stageFailBg` / `gateFailBg`。

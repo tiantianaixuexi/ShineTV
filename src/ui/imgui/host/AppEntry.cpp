@@ -5,7 +5,7 @@
 #include "media/Gallery.h"
 #include "mcp/MCPServer.h"
 #include "novel/NovelCli.h"
-#include "ui/app/AppEnvironment.h"
+#include "ui/imgui/host/AppEnvironment.h"
 #include "ui/imgui/host/Host.h"
 #include "ui/imgui/pages/Shell.h"
 #include "ui/imgui/theme/Theme.h"

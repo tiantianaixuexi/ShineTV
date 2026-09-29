@@ -4,7 +4,7 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "core/Settings.h"
-#include "ui/app/AppEnvironment.h"
+#include "ui/imgui/host/AppEnvironment.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Scroll.h"
 #include "ui/imgui/pages/Gallery.h"

@@ -11,39 +11,14 @@ endif()
 
 set(THIRD ${CMAKE_SOURCE_DIR}/third)
 
-# --- 前端开关（Qt → Dear ImGui 重构期共存，见 refactor/phases.md P0.2）---
+# --- 前端（Dear ImGui，refactor/phases.md P0.2 引入、P7 定型）---
 #
-# 迁移期两个前端同时留在树上，靠这两个开关切换：任何阶段都能退回 Qt 版
-# 与 webui 设计稿做 1:1 对照。P7 删掉 SHINE_UI_QT 与整棵 Qt 树。
-#   SHINE_UI_IMGUI=ON  →  src/ui/imgui/**  + third/imgui（不装 Qt 也能配过）
-#   SHINE_UI_QT=ON     →  src/ui/{kit,qml,pages,verify,app}（迁移期旧路）
-option(SHINE_UI_IMGUI "ImGui 前端（重构后默认）" ON)
-option(SHINE_UI_QT "Qt 前端（迁移期共存对照）" OFF)
-
-if(SHINE_UI_IMGUI AND SHINE_UI_QT)
-  message(FATAL_ERROR "SHINE_UI_IMGUI 与 SHINE_UI_QT 只能开一个：两者都产出 ShineTVStudio")
-endif()
-if(NOT SHINE_UI_IMGUI AND NOT SHINE_UI_QT)
-  message(FATAL_ERROR "两个前端都关了，没有可构建的前端")
-endif()
-
-# --- Qt 6（MSYS2 MinGW64 自带；与 GCC 16 同源，ABI 一致）---
-# 仅 SHINE_UI_QT=ON 时才需要：ImGui 前端零 Qt 依赖，P7 的验收判据就是
-# 「不装 Qt 也能 cmake -S . -B build-imgui 配过」。
-#
-# QML 分层（2026-09-29 架构层）：Quick/Qml 只给新页面用，既有 Widgets 全部保留。
-#   Widgets → QuickWidgets → Qml 逐层叠加，不反向依赖：
-#     shine_kit     仍是纯 Widgets 控件层（不引入任何 QML 头）
-#     shine_qml     新增：QQuickWidget 宿主 + 主题 token 的 QML 桥（只依赖 shine_kit）
-#     ShineTVStudio 前端同时链两层，页面按需二选一或嵌套
-#   QuickWidgets 必须显式列出：只写 Quick 拿不到 QQuickWidget 那个类。
-if(SHINE_UI_QT)
-  list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
-  #   QuickEffects 必须显式列出：QtQuick.Effects（MultiEffect = box-shadow / 阴影）
-  #   是独立 QML 模块，不写它 QML 侧 import QtQuick.Effects 会整页加载失败。
-  find_package(Qt6 REQUIRED COMPONENTS Widgets Quick QuickWidgets Qml QuickEffects)
-  set(CMAKE_AUTOMOC ON)
-  set(CMAKE_AUTORCC ON)
+# P7 删掉了 SHINE_UI_QT 与整棵 Qt 树（src/ui/{kit,qml,pages,layout,verify,app}），
+# 现在**只有一个前端**：src/ui/imgui/**。不再有 find_package(Qt6) / AUTOMOC / AUTORCC，
+# 配过与构建全程零 Qt 依赖 —— 这就是 P7 的验收判据。
+option(SHINE_UI_IMGUI "ImGui 前端" ON)
+if(NOT SHINE_UI_IMGUI)
+  message(FATAL_ERROR "SHINE_UI_IMGUI=OFF 无处可去：Qt 前端已在 P7 删除，没有第二个前端可切")
 endif()
 
 # --- libhv: HTTP + WebSocket client (static only, no server/examples) ---
@@ -463,240 +438,6 @@ target_link_libraries(shine_core PUBLIC
 )
 
 # ============================================================================
-# shine_kit —— UI 套件（Theme/Qss 与控件；只被前端使用，允许依赖 Qt）
-#
-# P01-S3：只收编 theme（Token/QssBuilder 骨架见 S5，控件实现 P02）。
-# 方向：shine_core ← shine_kit ← ShineTVStudio；kit 不许 include 业务类型头。
-#
-# ⚠️ 以下全部（shine_kit / shine_qml / Qt 版 ShineTVStudio）只在 SHINE_UI_QT=ON
-#    时构建，是迁移期的对照旧路。P7 整段删除（refactor/phases.md P7.1/P7.2）。
-# ============================================================================
-if(SHINE_UI_QT)
-add_library(shine_kit STATIC
-  src/ui/kit/theme/Theme.cpp
-  src/ui/kit/theme/ThemeService.cpp
-  src/ui/kit/theme/QssBuilder.cpp
-  src/ui/kit/motion/Easing.cpp
-  src/ui/kit/motion/Tween.cpp
-  src/ui/kit/motion/Transition.cpp
-  src/ui/kit/motion/MotionScope.cpp
-  src/ui/kit/controls/WidgetCommon.cpp
-  src/ui/kit/controls/Controls.cpp
-  src/ui/kit/controls/Inputs.cpp
-  src/ui/kit/controls/Surfaces.cpp
-  src/ui/kit/controls/Feedback.cpp
-  src/ui/kit/controls/Navigation.cpp
-  src/ui/kit/canvas/FlowCanvas.cpp
-  src/ui/kit/data/Table.cpp
-  src/ui/kit/data/Flow.cpp
-  src/ui/kit/data/Panels.cpp
-  src/ui/kit/images/Grid.cpp
-  src/ui/kit/images/Viewer.cpp
-  src/ui/kit/images/Sheet.cpp
-)
-
-target_link_libraries(shine_kit PUBLIC shine_core Qt6::Widgets)
-
-# ============================================================================
-# shine_qml —— QML 接缝层（2026-09-29 架构层）
-#
-# 职责边界（刻意做得很窄，避免长成第二套 UI 框架）：
-#   * QuickHost：QQuickWidget 宿主 + 场景图抓图（harness 出图要走它）
-#   * ThemeBridge：把既有 ColorToken 投影给 QML，**零新增 token 真值**
-#   * 混色算法不在这里 —— 唯一实现在 kit/theme/ToneMix.h，与 QSS 共用
-#
-# 依赖方向：shine_kit ← shine_qml。shine_kit 保持纯 Widgets、不引任何 QML 头，
-# 这样既有 43K 行 Widgets 代码一行不用改，QML 只在新页面里增量引入。
-# ============================================================================
-add_library(shine_qml STATIC
-  src/ui/kit/qml/ThemeBridge.cpp
-  src/ui/kit/qml/QuickHost.cpp
-)
-target_link_libraries(shine_qml PUBLIC shine_kit Qt6::QuickWidgets Qt6::Qml Qt6::QuickEffects)
-# 头文件（ThemeBridge.h 的 QML_ELEMENT 宏）需要 moc 看到
-target_include_directories(shine_qml PUBLIC ${CMAKE_SOURCE_DIR}/src)
-
-# QML 页面资源：编译进 exe，避免运行时依赖磁盘上的 .qml（打包/评审都省事）
-#
-# ⚠️ 用 GLOB + CONFIGURE_DEPENDS，不逐个列 FILES：页面是并行子 Agent 各自新建的，
-# 写死列表会让「某页还没提交」直接把**整个配置**卡成硬错误 —— 一个页面文件缺失
-# 就编不出主程序。CONFIGURE_DEPENDS 让 CMake 在每次构建时重新扫，新增文件自动入包。
-file(GLOB SHINE_QML_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/ui/qml/*.qml")
-if(NOT SHINE_QML_FILES)
-  message(FATAL_ERROR "src/ui/qml 下没有任何 .qml —— QML 接缝层被误删？")
-endif()
-qt_add_resources(shine_qml "shin_qml"
-  PREFIX "/qt/qml"
-  BASE   "${CMAKE_SOURCE_DIR}/src/ui/qml"
-  FILES  ${SHINE_QML_FILES}
-)
-
-# ============================================================================
-# ShineTVStudio —— Qt Widgets 前端（P01-S6 空壳主窗口；P03 起为项目中心外壳）
-# ============================================================================
-add_executable(ShineTVStudio
-  src/ui/app/main.cpp
-  src/ui/kit/qml/QmlPageReview.cpp
-  src/ui/app/AppEntry.h
-  src/ui/app/AppEntry.cpp
-  src/ui/app/AppEnvironment.h
-  src/ui/app/AppEnvironment.cpp
-  src/ui/app/StartupChecks.h
-  src/ui/app/StartupChecks.cpp
-  src/ui/app/AcceptanceChecks.h
-  src/ui/app/AcceptanceChecks.cpp
-  src/ui/verify/checks/P02Checks.h
-  src/ui/verify/checks/P02Checks.cpp
-  src/ui/verify/checks/P03Checks.h
-  src/ui/verify/checks/P03Checks.cpp
-  src/ui/verify/checks/P04WorldChecks.h
-  src/ui/verify/checks/P09Checks.h
-  src/ui/verify/checks/P09Checks.cpp
-  src/ui/verify/review/P09Review.h
-  src/ui/verify/review/P09Review.cpp
-  src/ui/verify/checks/P10Checks.h
-  src/ui/verify/checks/P10Checks.cpp
-  src/ui/verify/review/P10Review.h
-  src/ui/verify/review/P10Review.cpp
-  src/ui/verify/checks/P04WorldChecks.cpp
-  src/ui/verify/checks/P04InitChainChecks.h
-  src/ui/verify/checks/P04InitChainChecks.cpp
-  src/ui/verify/checks/P04ChapterChecks.h
-  src/ui/verify/checks/P08Checks.h
-  src/ui/verify/checks/P08Checks.cpp
-  src/ui/verify/review/P08Review.h
-  src/ui/verify/review/P08Review.cpp
-  src/ui/verify/checks/P07Checks.h
-  src/ui/verify/checks/P07Checks.cpp
-  src/ui/verify/review/P07Review.h
-  src/ui/verify/review/P07Review.cpp
-  src/ui/verify/checks/P04ChapterChecks.cpp
-  src/ui/verify/checks/P04ReviewChecks.h
-  src/ui/verify/checks/P04ReviewChecks.cpp
-  src/ui/verify/checks/P05Checks.h
-  src/ui/verify/checks/P05Checks.cpp
-  src/ui/pages/shell/MainWindow.h
-  src/ui/pages/shell/MainWindow.cpp
-  src/ui/pages/shell/TopBar.h
-  src/ui/pages/shell/TopBar.cpp
-  src/ui/pages/shell/ActivityRail.h
-  src/ui/pages/shell/ActivityRail.cpp
-  src/ui/pages/shell/RightPanel.h
-  src/ui/pages/shell/RightPanel.cpp
-  src/ui/pages/shell/SidePanel.h
-  src/ui/pages/shell/SidePanel.cpp
-  src/ui/pages/shell/BottomDock.h
-  src/ui/pages/shell/BottomDock.cpp
-  src/ui/pages/shell/StatusBar.h
-  src/ui/pages/shell/StatusBar.cpp
-  src/ui/pages/shell/Breadcrumb.h
-  src/ui/pages/shell/Breadcrumb.cpp
-  src/ui/pages/shell/CommandPalette.h
-  src/ui/pages/shell/CommandPalette.cpp
-  src/ui/pages/settings/FirstRunWizard.h
-  src/ui/pages/settings/FirstRunWizard.cpp
-  src/ui/pages/project/ProjectHubView.h
-  src/ui/pages/project/ProjectHubView.cpp
-  src/ui/pages/project/ProjectWizardDialog.h
-  src/ui/pages/project/ProjectWizardDialog.cpp
-  src/ui/verify/review/P03Review.h
-  src/ui/verify/review/P04Review.h
-  src/ui/verify/review/P04Review.cpp
-  src/ui/pages/imageflow/ComfyPanel.h
-  src/ui/pages/imageflow/ComfyPanel.cpp
-  src/ui/pages/imageflow/BindingView.h
-  src/ui/pages/imageflow/BindingView.cpp
-  src/ui/pages/pipeline/GanttView.h
-  src/ui/pages/pipeline/GanttView.cpp
-  src/ui/pages/pipeline/LedgerView.h
-  src/ui/pages/pipeline/LedgerView.cpp
-  src/ui/pages/pipeline/StopReportView.h
-  src/ui/pages/pipeline/StopReportView.cpp
-  src/ui/pages/pipeline/PipelineWorkspace.h
-  src/ui/pages/pipeline/PipelineWorkspace.cpp
-  src/ui/pages/videoflow/VideoFlowVisualData.h
-  src/ui/pages/videoflow/VideoFlowPageModel.h
-  src/ui/pages/videoflow/VideoFlowPageModel.cpp
-  src/ui/pages/videoflow/QmlVideoFlowPage.h
-  src/ui/pages/videoflow/QmlVideoFlowPage.cpp
-  src/ui/pages/imageflow/BatchRenderView.h
-  src/ui/pages/imageflow/BatchRenderView.cpp
-  src/ui/pages/imageflow/ImageReviewView.h
-  src/ui/pages/imageflow/ImageReviewView.cpp
-  src/ui/pages/imageflow/RenderResultView.h
-  src/ui/pages/imageflow/RenderResultView.cpp
-  src/ui/pages/imageflow/ImageFlowWorkspace.h
-  src/ui/pages/imageflow/ImageFlowWorkspace.cpp
-  src/ui/verify/review/P05Review.h
-  src/ui/verify/review/P05Review.cpp
-  src/ui/verify/review/P06Review.h
-  src/ui/verify/review/P06Review.cpp
-  src/ui/verify/review/P03Review.cpp
-  src/ui/pages/assets/AssetPolicy.h
-  src/ui/pages/assets/AssetPageModel.h
-  src/ui/pages/assets/AssetPageModel.cpp
-  src/ui/pages/assets/QmlAssetsPage.h
-  src/ui/pages/assets/QmlAssetsPage.cpp
-  src/ui/pages/storyboard/StoryboardWorkspace.h
-  src/ui/pages/storyboard/StoryboardWorkspace.cpp
-  src/ui/pages/storyboard/StoryboardTimeline.h
-  src/ui/pages/storyboard/StoryboardTimeline.cpp
-  src/ui/pages/storyboard/ShotTableView.h
-  src/ui/pages/storyboard/ShotTableView.cpp
-  src/ui/pages/storyboard/ShotDetailView.h
-  src/ui/pages/storyboard/ShotDetailView.cpp
-  src/ui/pages/storyboard/ContinuityView.h
-  src/ui/pages/storyboard/ContinuityView.cpp
-  src/ui/pages/storyboard/GenShotBridgeView.h
-  src/ui/pages/storyboard/GenShotBridgeView.cpp
-  src/ui/pages/novel/NovelWorkspace.h
-  src/ui/pages/novel/NovelWorkspace.cpp
-  src/ui/pages/novel/WorldBoardView.h
-  src/ui/pages/novel/WorldBoardView.cpp
-  src/ui/pages/novel/WorldBoardS3.cpp
-  src/ui/pages/novel/InitChainView.h
-  src/ui/pages/novel/InitChainView.cpp
-  src/ui/pages/novel/ChapterFlowView.h
-  src/ui/pages/novel/ChapterFlowView.cpp
-  src/ui/pages/novel/DraftView.h
-  src/ui/pages/novel/DraftView.cpp
-  src/ui/pages/novel/ReviewView.h
-  src/ui/pages/novel/ReviewView.cpp
-  src/ui/pages/novel/ModelPromptView.h
-  src/ui/pages/novel/ModelPromptView.cpp
-  src/ui/pages/novel/StateDiffView.h
-  src/ui/pages/novel/StateDiffView.cpp
-  src/ui/pages/novel/AutoRunPanel.h
-  src/ui/pages/novel/AutoRunPanel.cpp
-  src/ui/verify/gallery/WidgetGalleryView.h
-  src/ui/verify/gallery/WidgetGalleryView.cpp
-  src/ui/verify/checks/P06Checks.h
-  src/ui/verify/checks/P06Checks.cpp
-  src/ui/verify/gallery/QssStateProbe.h
-  src/ui/verify/gallery/QssStateProbe.cpp
-  src/ui/verify/gallery/Bench.h
-  src/ui/verify/gallery/Bench.cpp
-  src/ui/pages/settings/StyleEditorDialog.h
-  src/ui/pages/settings/StyleEditorDialog.cpp
-)
-
-target_compile_options(ShineTVStudio PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-freflection>)
-
-target_link_libraries(ShineTVStudio PRIVATE
-  shine_core
-  shine_kit
-  shine_qml
-  Qt6::Widgets
-)
-
-# 主题 JSON 随程序分发（P02-S1）：拷到 <exe目录>/themes
-add_custom_command(TARGET ShineTVStudio POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/src/ui/kit/theme/Themes"
-          "$<TARGET_FILE_DIR:ShineTVStudio>/themes")
-endif() # SHINE_UI_QT
-
-# ============================================================================
 # ImGui 前端 —— third/imgui + src/ui/imgui/**
 #
 # 目标分层（refactor/architecture.md §3）：
@@ -757,15 +498,18 @@ if(SHINE_UI_IMGUI)
   target_include_directories(shine_imgui PUBLIC ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(shine_imgui PUBLIC shine_core shine_imgui_third)
 
-  # AppEnvironment.{h,cpp} 是**零 Qt** 的环境变量读宽路径工具，Qt 前端也在用。
-  # 两个前端共用同一个实现（改一份，两边同步）。P7 删 Qt 树时它随之外迁。
+  # AppEnvironment.{h,cpp} 原在 src/ui/app/（与 Qt 前端同目录）。P7 删掉那棵树时
+  # 把它搬到了 src/ui/imgui/host/ —— 它是零 Qt 的宽字符环境变量读取器，ImGui 侧
+  # 要用；现在它已被上面的 GLOB 收进 shine_imgui，**不要**再在下面重复列出。
   add_executable(ShineTVStudio
-    src/ui/imgui/app/main.cpp
-    src/ui/app/AppEnvironment.cpp)
+    src/ui/imgui/app/main.cpp)
   target_include_directories(ShineTVStudio PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(ShineTVStudio PRIVATE shine_imgui)
 
-  # 主题 JSON 随程序分发：拷到 <exe目录>/themes（5 套主题，见 P2.1）
+  # 主题 JSON 随程序分发：拷到 <exe目录>/themes（5 套主题，见 P2.1）。
+  # 启动时由 AppEntry 的 LoadStartupTheme 从那里读（SHINE_THEME_DIR 可覆盖）。
+  # ⚠️ 源目录原来是 src/ui/kit/theme/Themes —— P7 删掉 Qt 树后那条路径已不存在，
+  #    不改这里就是「构建照样过，但主题全落回内置默认值」。
   add_custom_command(TARGET ShineTVStudio POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/src/ui/imgui/theme/Themes"

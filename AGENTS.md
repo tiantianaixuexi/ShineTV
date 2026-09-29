@@ -27,9 +27,9 @@ last_verified: 2026-09-30
 ## 修改边界
 
 - `shine_core`（`src/core`、`src/util`、`src/net`、`src/db`、`src/llm`、`src/comfy`、`src/media`、`src/flow`、`src/visual`、`src/novel`、`src/paint`、`src/mcp`、`src/project`、`src/pipeline`、`src/gpu`）不得包含 Qt 头，也不得包含 ImGui 头；`tools/check-layers.ps1` 是门禁。
-- 所有 UI 收敛在唯一根目录 `src/ui/`。重构期两个前端共存，由 CMake 开关 `SHINE_UI_IMGUI` / `SHINE_UI_QT` 切换：
-  - ImGui（目标）：`imgui/host/` 宿主、`imgui/theme/` 主题与字体、`imgui/kit/` 组件套件、`imgui/pages/` 业务页、`imgui/verify/` 取证。`src/ui/imgui` 不依赖业务模块类型。
-  - Qt（迁移期）：`kit/`、`qml/`、`pages/`、`verify/`、`layout/`，随 P7 逐项删除。
+- 所有 UI 收敛在唯一根目录 `src/ui/`。**P7 已删掉整棵 Qt 树**（`src/ui/{app,kit,layout,pages,qml,verify}` 共 198 个文件），现在 `src/ui/` 下只有 `imgui/` 一棵树；CMake 也不再有任何 `find_package(Qt6)` / `AUTOMOC` / `AUTORCC`，配过与构建全程零 Qt 依赖。
+  - `imgui/host/` 宿主与入口 · `imgui/theme/` 主题与字体 · `imgui/kit/` 组件套件 · `imgui/pages/` 业务页 · `imgui/verify/` 取证 · `imgui/app/main.cpp` 属于 exe 不进静态库。
+  - 不要再引用 `SHINE_UI_QT`、`shine_kit`、`shine_qml` 或 `scripts/package-qt.ps1` —— 这些都没了（打包用 `scripts/package-imgui.ps1`）。
 - 重构期**任何情况下都不改 `shine_core`**：业务层零 Qt 已成立，需要接的只有 `gpu::AttachDevice()` 这一处宿主注入。
 - 网络、文件扫描、图片解码、LLM 请求、ComfyUI 提交/下载和生成编译放 worker；通过 `async::PostToUi` 投递结果。UI 线程不做同步 IO/同步 HTTP。
 - 复用现有基础设施：`shine::async`、`shine::log`、`AppSettings`、`net::HttpClient`、`util::Reflect`、SQLite/Comfy 适配层。新增第二份线程池、HTTP 客户端或 JSON 约定前先证明没有现成实现。
