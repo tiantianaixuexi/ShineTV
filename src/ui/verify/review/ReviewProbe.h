@@ -17,14 +17,19 @@
 #include "util/File.h"
 
 #include <QApplication>
+#include <QByteArray>
+#include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QImage>
 #include <QQuickWidget>
 #include <QWidget>
 
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace shine::app::review {
@@ -87,6 +92,109 @@ inline void Grab(QWidget* widget, const std::filesystem::path& dir, const std::s
     const auto bytes = shine::util::ReadFileBytes(path);
     manifest.push_back(name + " " + std::to_string(bytes.value_or(std::string{}).size()) +
                        (ok ? " saved" : " FAILED"));
+}
+
+// ─────────────────── 收尾判据（本轮新增：六份 Review 之前各写各的） ───────────────────
+//
+// **为什么收敛到这里**：P04 / P05 两份写对了（有 `overall=` 且退出码跟着判据走），
+// P03 / P06 / P07 / P08 / P09 / P10 六份是「写完 manifest 就 `std::_Exit(0)`」——
+// 缺图、超时、空图全都报成功。那种跑法既骗退出码也骗按 `overall:` 解析的 harness
+// （读出来是 MISSING，像「没跑」而不是「跑挂了」）。
+//
+// 判据只有三条，缺一即 FAIL：
+//   1. expected 里每个文件都存在；
+//   2. 且字节数 ≥ min_bytes（一张几百字节的 PNG 基本等于没拍到东西）；
+//   3. 可选：两两**逐字节相同**即 FAIL —— 两个图名共用一份像素 = 有一张没拍到
+//      它该拍的状态（实测过三例：死属性导致切页失效 / 动作语义层级错 / 等待结果被丢）。
+//      默认只报告不失败，因为同主题下的合法重复是可能的，由调用方按页面语义决定。
+struct FinishOptions {
+    std::filesystem::path dir;
+    std::string header;                   // 报告首行，如 "P05-S9 visual review"
+    std::vector<std::string> expected;    // 相对 dir 的文件名（含扩展名）
+    const std::vector<std::string>* manifest = nullptr;
+    const std::vector<std::string>* not_covered = nullptr;
+    std::size_t min_bytes = 100;
+    bool fail_on_duplicate = false;
+    std::string report_name = "shots-manifest.txt";
+    // 额外判据（如 P04 的 agent 自检结果）。空 vector = 不看。
+    std::vector<std::pair<std::string, bool>> extra;
+};
+
+struct FinishResult {
+    bool ok = true;
+    std::string report;
+    std::vector<std::string> missing;
+    std::vector<std::string> duplicates;
+};
+
+inline FinishResult EvaluateShots(const FinishOptions& opt) {
+    FinishResult result;
+    std::vector<std::pair<std::string, std::string>> digests; // (md5, name)
+    for (const std::string& name : opt.expected) {
+        const auto bytes = shine::util::ReadFileBytes(opt.dir / name);
+        if (!bytes || bytes->size() < opt.min_bytes) {
+            result.ok = false;
+            result.missing.push_back(name);
+            continue;
+        }
+        QByteArray raw(reinterpret_cast<const char*>(bytes->data()),
+                       static_cast<qsizetype>(bytes->size()));
+        digests.emplace_back(
+            QString::fromLatin1(QCryptographicHash::hash(raw, QCryptographicHash::Md5).toHex())
+                .toStdString(),
+            name);
+    }
+    for (std::size_t i = 0; i < digests.size(); ++i) {
+        for (std::size_t j = i + 1; j < digests.size(); ++j) {
+            if (digests[i].first != digests[j].second && digests[i].first == digests[j].first) {
+                result.duplicates.push_back(digests[i].second + " == " + digests[j].second);
+            }
+        }
+    }
+    if (opt.fail_on_duplicate && !result.duplicates.empty()) {
+        result.ok = false;
+    }
+    for (const auto& [name, pass] : opt.extra) {
+        if (!pass) {
+            result.ok = false;
+        }
+    }
+
+    std::string report = opt.header + "\n";
+    if (opt.manifest != nullptr) {
+        for (const std::string& line : *opt.manifest) {
+            report += line + "\n";
+        }
+    }
+    for (const std::string& name : result.missing) {
+        report += name + " MISSING\n";
+    }
+    if (!result.duplicates.empty()) {
+        report += "--- duplicate shots (逐字节相同 = 有一张没拍到它该拍的) ---\n";
+        for (const std::string& pair : result.duplicates) {
+            report += pair + "\n";
+        }
+    }
+    if (opt.not_covered != nullptr && !opt.not_covered->empty()) {
+        report += "--- not covered (不计入 overall) ---\n";
+        for (const std::string& line : *opt.not_covered) {
+            report += line + "\n";
+        }
+    }
+    for (const auto& [name, pass] : opt.extra) {
+        report += name + " " + (pass ? "PASS" : "FAIL") + "\n";
+    }
+    report += "overall=" + std::string(result.ok ? "PASS" : "FAIL") + "\n";
+    result.report = std::move(report);
+    return result;
+}
+
+// 写报告 → 刷缓冲 → 按判据退出。**退出码必须跟着 ok 走** —— 恒 0 的验收等于没验收。
+inline FinishResult WriteAndExit(const FinishOptions& opt) {
+    const FinishResult result = EvaluateShots(opt);
+    (void)shine::util::WriteFileBytes(opt.dir / opt.report_name, result.report);
+    std::fflush(nullptr);
+    std::_Exit(result.ok ? 0 : 1);
 }
 
 } // namespace shine::app::review

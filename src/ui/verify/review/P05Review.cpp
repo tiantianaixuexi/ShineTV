@@ -290,30 +290,27 @@ shine::util::EnsureDir(root / "db");
 }
 
 void Finish(ReviewState* st) {
-    bool ok = true;
+    // 判据走共享的 review::WriteAndExit（见 ReviewProbe.h 的 FinishOptions）：
+    // expected 逐个查存在 + 字节数下限 + 逐字节重复检测 + notCovered 单列，
+    // 退出码跟着 ok 走。
+    std::vector<std::string> files;
+    files.reserve(st->expected.size());
     for (const std::string& name : st->expected) {
-        const fs::path file = st->dir / (name + ".png");
-        const auto bytes = shine::util::ReadFileBytes(file);
-        if (!bytes || bytes->size() < 100) {
-            ok = false;
-        }
+        files.push_back(name + ".png");
     }
-    std::string report = "P05-S9 visual review\n";
-    for (const std::string& line : st->manifest) {
-        report += line + "\n";
-    }
-    // 未覆盖项单列一节，且明确标注它**不参与** overall 判定。
-    if (!st->notCovered.empty()) {
-        report += "--- not covered (不计入 overall) ---\n";
-        for (const std::string& line : st->notCovered) {
-            report += line + "\n";
-        }
-    }
-    report += ok ? "overall=PASS\n" : "overall=FAIL\n";
-    (void)shine::util::WriteFileBytes(st->dir / "shots-manifest.txt", report);
-    std::printf("[p05-review]\n%s", report.c_str());
-    std::fflush(nullptr);
-    std::_Exit(ok ? 0 : 1);
+    const review::FinishOptions opt{
+        .dir = st->dir,
+        .header = "P05-S9 visual review",
+        .expected = files,
+        .manifest = &st->manifest,
+        .not_covered = &st->notCovered,
+        .min_bytes = 100,
+        // 本页每张图承诺的状态都不同，重复即缺陷。
+        .fail_on_duplicate = true,
+    };
+    const review::FinishResult result = review::EvaluateShots(opt);
+    std::printf("[p05-review]\n%s", result.report.c_str());
+    review::WriteAndExit(opt);
 }
 
 void RunReview(ReviewState* st) {
