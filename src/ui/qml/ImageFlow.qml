@@ -1,4 +1,4 @@
-﻿// src/ui/qml/ImageFlow.qml —— 出图工作区（QML 迁移）
+// src/ui/qml/ImageFlow.qml —— 出图工作区（QML 迁移）
 //
 // 对照 webui/src/views/ImageFlow.jsx（245 行），部件几何与配色逐条取自
 // views.css:174-264（浮动工具栏 / 浮动面板 / 密集行）、views.css:1017-1113
@@ -35,7 +35,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Effects  // MultiEffect（浮动面板的 --shadow-2 / 节点的 --shadow-1）
 import Shine 1.0
-// ⚠️ 连线用的 QtQuick.Shapes 只在 ImageFlowLink.qml 里 import —— 本文件不直接
+// ⚠️ 连线用的 QtQuick.Shapes 只在 CanvasLink.qml 里 import —— 本文件不直接
 // 出现 Shape/ShapePath 类型，import 放在这里会报 unused-imports。
 
 Ctl {
@@ -259,7 +259,7 @@ Ctl {
     // 缩放仍完全等价于设计稿的 `transform: translate(x,y) scale(z)` + `transform-origin: 0 0`。
     Repeater {
         model: root.links
-        delegate: ImageFlowLink {
+        delegate: CanvasLink {
             required property var modelData
             readonly property var na: root.nodeById(modelData[0])
             readonly property var nb: root.nodeById(modelData[1])
@@ -285,7 +285,7 @@ Ctl {
 
         Repeater {
             model: root.nodes
-            delegate: ImageFlowNode {
+            delegate: CanvasNode {
                 required property var modelData
                 x: root.viewX + root.zoom * modelData.x
                 y: root.viewY + root.zoom * modelData.y

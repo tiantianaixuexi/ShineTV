@@ -14,10 +14,14 @@ source_of_truth:
   - src/ui/pages/assets/AssetPageModel.h
   - src/ui/pages/assets/AssetVisualData.h
   - src/ui/pages/assets/QmlAssetsPage.h
+  - src/ui/pages/videoflow/VideoFlowPageModel.h
+  - src/ui/pages/videoflow/VideoFlowVisualData.h
+  - src/ui/pages/videoflow/QmlVideoFlowPage.h
+  - src/ui/qml/VideoFlow.qml
   - src/ui/pages/shell/MainWindow.h
   - src/ui/pages/shell/ActivityRail.h
   - src/ui/pages/shell/CommandPalette.h
-last_verified: 2026-09-29
+last_verified: 2026-09-30
 ---
 
 # UI 套件与工作区
@@ -92,10 +96,10 @@ widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
 
 | 模式 | 位置 | 备注 |
 |---|---|---|
-| 手搓 `QTableWidget`（`kit::data::DataTable` 已有） | `pages/pipeline/{GanttView,LedgerView}.cpp`、`pages/imageflow/{BindingView,BatchRenderView}.cpp`、`pages/videoflow/{ChainView,VideoTaskView}.cpp` | 6 处；改用 `DataTable` 会连带影响评审侧定位 |
-| 绕过 `kit` 直接用 `QTabWidget` | `pages/{Pipeline,VideoFlow,ImageFlow}Workspace.cpp` | 评审侧因此要用 `findChild<QTabWidget*>()` 反查 |
+| 手搓 `QTableWidget`（`kit::data::DataTable` 已有） | `pages/pipeline/{GanttView,LedgerView}.cpp`、`pages/imageflow/{BindingView,BatchRenderView}.cpp` | 4 处；改用 `DataTable` 会连带影响评审侧定位。出片页那两处（`ChainView` / `VideoTaskView`）已随 QML 迁移删除 |
+| 绕过 `kit` 直接用 `QTabWidget` | `pages/{Pipeline,ImageFlow}Workspace.cpp` | 评审侧因此要用 `findChild<QTabWidget*>()` 反查。出片页已改用 QML 侧 `Seg.qml`，切页状态上桥（`Page.tab`），那处反查随之删除 |
 | 状态点自绘（3 套写法 + 2 份色值映射） | `pages/shell/StatusBar.cpp`、`pages/novel/NovelWorkspace.cpp`、`pages/project/ProjectHubView.cpp` | 尚无 `kit::StatusDot` |
-| 空态手搓 `QLabel("暂无…")` 而非 `kit::EmptyState` | `pages/videoflow/ChainView.cpp`、`pages/pipeline/LedgerView.cpp`、`pages/imageflow/BindingView.cpp` 等 | `pages/storyboard/ContinuityView.cpp` 是正确用法样板 |
+| 空态手搓 `QLabel("暂无…")` 而非 `kit::EmptyState` | `pages/pipeline/LedgerView.cpp`、`pages/imageflow/BindingView.cpp` 等 | `pages/storyboard/ContinuityView.cpp` 是正确用法样板。出片页那处随 QML 迁移删除 |
 | 确认框三种写法并存 | `pages/novel/InitChainView.cpp`（原生 `QMessageBox`）、`pages/project/ProjectWizardDialog.cpp`（自绘） | `kit::Surfaces` 无 Confirm 变体。资产页那一处随 `RefLibraryView` 退役删除，QML 侧改用 Toast |
 | 中文相对时间格式化 | `pages/project/ProjectHubView.cpp` | 业务无关，可进 `ui/layout/QtLayout.h` |
 | 哈希短显示 `left(12)` | `pages/novel/DraftView.cpp` | 可加 `util::ShortHash()` |
@@ -138,15 +142,17 @@ transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTe
 | `pages/assets/AssetPolicy.h` | 依赖策略的值类型（两个开关）。原先住在 QWidget 的 `AssetPolicyPanel.h`，随迁移退役删除后独立成无 Qt 依赖的头。 |
 | `qml/AssetsRefLibrary.qml` | 项目参考库面板（导入 / 标记 / 绑定 / 删除），数据取 `Page.refImages`。 |
 | `qml/AssetsPolicyPanel.qml` | 依赖策略面板，数据取 `Page.policy`，写回 `Page.setAllowDegrade` / `setSuspendMinutes`。 |
-
-| `qml/AssetsPolicyPanel.qml` | 依赖策略面板，数据取 `Page.policy`，写回 `Page.setAllowDegrade` / `setSuspendMinutes`。 |
 | `qml/AssetsGallery.qml` | 全局图库面板（来源 Seg / 虚拟化网格 / 查看器 / 选中行），数据取 `Page.galleryItems` / `galleryState` / `galleryViewer`。桥上只做**投影**，真值全在 `shine::gallery`。 |
 
-✅ **Widgets 版已全部删除**（2026-09-29）：`AssetWorkspace` / `AssetDetailView` /
+✅ **资产页的 Widgets 版已全部删除**（2026-09-29）：`AssetWorkspace` / `AssetDetailView` /
 `ConsistencyView` / `RefLibraryView` / `AssetPolicyPanel` / `GalleryWorkspace`
 共约 150 KB 连同 `CMakeLists.txt` 条目一并移除，全仓无残留编译期引用。删除前先把
 这四块真实能力接到了 QML：导出整版设定集 PNG、参考库导入/标记/绑定/删除、
 依赖策略面板、全局图库。残留的仅是注释里的历史沿革说明，不是路径引用。
+
+⚠️ 六个工作区里**已迁完 QML 的是两个**（视觉资产 / 出片），另外四个
+（小说 / 分镜 / 出图 / 总控）与 `MainWindow` 外壳仍走 QWidget。清单与顺序见
+[`90-reference/ui-design-parity-gaps.md`](../90-reference/ui-design-parity-gaps.md) 第六之二节。
 
 `P05Checks.cpp` 的 8 个场景全部在 `QmlAssetsPage` 上**真跑**，无 NOT-COVERED。
 跑场景：`scripts/run_p05.ps1`（接 `-Scenes S7,S8` 或位置参数，两种写法都收；
@@ -172,9 +178,58 @@ transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTe
 而全页没有一处读它（渲染看的是 `overview`）—— 切页调用静默失效，取证里
 「切到总览再拍」拍出来的仍是详情，同一份像素被两个图名覆盖，等于少了一张证据。
 
+## QML 出片页（2026-09-30 接进产品）
+
+`MainWindow::MakeDocPage` 的出片工作区是 `src/ui/pages/videoflow/QmlVideoFlowPage.h`
+（QWidget 外壳 + **一个** `kit/qml/QuickHost`：画布 / 浮动工具栏 / 浮动面板 / 胶片条
+画在同一个 QML 根 item 里）。对外接口与已退役的 `VideoFlowWorkspace` 同名同义
+（`SetContext` / `LoadMock` / `Validate` / `TogglePanel` + 五个 `*Probe`），
+外壳接线只改了类型名。
+
+| 文件 | 职责 |
+|---|---|
+| `pages/videoflow/VideoFlowPageModel.h` | C++→QML 数据桥。全部 `Q_PROPERTY` + `NOTIFY changed`；复合值用 `QVariantList` of `QVariantMap`。**取景（zoom / viewX / viewY）不上桥** —— 纯视图状态留在 QML，上桥就成了没有 C++ 消费者的第二份真值。 |
+| `pages/videoflow/VideoFlowVisualData.h` | 画布图 / 首尾帧链 / 视频任务 / 成片 / 胶片条五块的**只读取数**与数据契约：链式判定取 `flow::VideoChain`、队列取 `flow::BatchRenderQueue`、**状态词表与 tone 的唯一真值**、导出的清单格式。原先这些映射分别写死在五个已删除的 QWidget 类的 `Rebuild()` 里，抄一遍必然漂。**不造假数据**（无首帧就是没有，不拿别的镜头的图凑数）。 |
+| `qml/VideoFlow.qml` | 页面本体。对照 `webui/src/views/VideoFlow.jsx`，几何逐条取自 `views.css:183-283`（浮动工具栏 / 面板 / 胶片条 / 画布工具）与 `views.css:294-320`（`.dlist` / `.drow`）。 |
+| `qml/DenseRow.qml` | `.dlist > .drow` 密集行（链段行 / 任务行 / 成片行共用）。子项一律**显式 x / width**：有一行带「随剩余宽度伸展」的进度条，而 `Row` 不做 flex 分配。 |
+| `qml/FilmCell.qml` | 胶片条一格（缩略位 56 + meta 30 + 状态点）。**没有缩略图字段**：设计稿的 `<Art seed>` 是程序化占位图，迁移前的 `FilmStrip::Cell.thumb` 也从未被填过，两版都显示显式空态。 |
+| `qml/CanvasNode.qml` / `qml/CanvasLink.qml` | 流程画布的节点卡与连线，**出图 / 出片两页共用**（由 `ImageFlowNode` / `ImageFlowLink` 去前缀而来，理由见 qml-kit「去掉页面名前缀」）。 |
+
+✅ **出片页的 Widgets 版已全部删除**（2026-09-30）：`VideoFlowWorkspace` /
+`ChainView` / `VideoTaskView` / `FinalCutView` / `FilmStrip` 共约 37 KB 连同
+`CMakeLists.txt` 条目一并移除，全仓无残留编译期引用。删除前接过去的能力：画布图
+（节点 / 连线 / 选中 / 缩放 / 平移 / 适应视图）、首尾帧链、视频任务队列、成片
+连播与导出、底部胶片条、面板折叠、提交前参数校验。
+
+P08 的 8 个场景全部在 `QmlVideoFlowPage` 上**真跑**（S2 / S6 / S7 的验收对象随迁移
+改到了新页的入口，**判据没削弱** —— S7 还多了一条把导出的清单读回来核对内容）。
+取证是 `scripts/run_reviews.ps1 P08`：6 张，前两张是画布区（空态 / 有图），
+后四张是面板区（三个页签 + 一条断链链），视口 1920×1080。
+
+⚠️ 这一页有三个**不写在代码里就会再犯**的坑：
+
+1. **子控件抓不到了。** 迁移前 P08 分别抓 `Canvas()` / `Chain()` / `Tasks()` /
+   `Final()` 四个 QWidget；QML 整页只有一个 `QQuickWidget`。现在改成「抓整页 +
+   按 QML 报出来的几何裁剪」（`regionPanel` / `regionCanvas` / …，几何由 QML 自己
+   报，宿主不重算一套），像素仍来自同一次真实抓帧。
+2. **切页断言必须能判。** 原来那两处 `findChild<QTabWidget*>()` 恒不成立
+   （P09 的三处同类断言是同一批历史残留，已删）。现在页签状态在桥上，验收读
+   `ActiveTab()` 回读，写了没人读就判 FAIL。
+3. **`model_` 故意不给页面做 parent。** QuickHost 常驻不析构，它的 `QQmlContext`
+   里存着 `Page` 这个 `QObject*`；模型若随页面析构，那个 context property 就是悬垂
+   指针。代价是每关一次页签漏一个几百字节的小对象，换掉一整类悬垂引用。
+   评审里同理：页面用 `new` 且不 `delete`。
+
+`P10Review` 的主题矩阵也在新页上跑（5 主题 × 出片 = 5 张），所以换肤后的
+QML 出片页有逐主题取证。
+
 ## FlowCanvas
 
-`kit::FlowCanvas` 是 Qt `QGraphicsView`，只接收 `FlowCanvasNode`/`FlowCanvasLink` DTO。它支持选择、删除、复制、全选、缩放、适配视图、连线和内嵌原生编辑器；出图与出片工作区共用这一实现。
+`kit::FlowCanvas` 是 Qt `QGraphicsView`，只接收 `FlowCanvasNode`/`FlowCanvasLink` DTO。它支持选择、删除、复制、全选、缩放、适配视图、连线和内嵌原生编辑器。
+
+⚠️ **出图工作区仍在用它；出片页已于 2026-09-30 迁到 QML**，画布换成了
+`qml/CanvasNode.qml` + `qml/CanvasLink.qml`（同一份 `.fnode` 设计稿组件）。
+所以这个类现在只剩出图一个消费者 —— 出图页迁完之后它就能整块删掉。
 
 ## 应用外壳
 

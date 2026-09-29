@@ -13,7 +13,7 @@
 #include "ui/pages/novel/NovelWorkspace.h"
 #include "ui/pages/assets/QmlAssetsPage.h"
 #include "ui/pages/imageflow/ImageFlowWorkspace.h"
-#include "ui/pages/videoflow/VideoFlowWorkspace.h"
+#include "ui/pages/videoflow/QmlVideoFlowPage.h"
 #include "ui/pages/pipeline/PipelineWorkspace.h"
 #include "ui/pages/storyboard/StoryboardWorkspace.h"
 #include "ui/pages/shell/TopBar.h"
@@ -244,7 +244,7 @@ void OpenImageForRef(ImageFlowWorkspace& workspace, const project::ProjectRef& r
     return shine::app::WorkspaceNames().indexOf(QStringLiteral("出片"));
 }
 
-void OpenVideoForRef(VideoFlowWorkspace& workspace, const project::ProjectRef& ref) {
+void OpenVideoForRef(QmlVideoFlowPage& workspace, const project::ProjectRef& ref) {
     workspace.SetContext(ref.dbPath, ref.rootDir);
 }
 
@@ -450,15 +450,15 @@ ImageFlowWorkspace* MainWindow::ImageFlowPage() const {
 
 void MainWindow::LoadVideoPages(const project::ProjectRef& ref) {
     for (int i = 0; i < doc_stack_->count(); ++i) {
-        if (auto* video = dynamic_cast<VideoFlowWorkspace*>(doc_stack_->widget(i)); video != nullptr) {
+        if (auto* video = dynamic_cast<QmlVideoFlowPage*>(doc_stack_->widget(i)); video != nullptr) {
             OpenVideoForRef(*video, ref);
         }
     }
 }
 
-VideoFlowWorkspace* MainWindow::VideoFlowPage() const {
+QmlVideoFlowPage* MainWindow::VideoFlowPage() const {
     for (int i = 0; i < doc_stack_->count(); ++i) {
-        if (auto* video = dynamic_cast<VideoFlowWorkspace*>(doc_stack_->widget(i)); video != nullptr) {
+        if (auto* video = dynamic_cast<QmlVideoFlowPage*>(doc_stack_->widget(i)); video != nullptr) {
             return video;
         }
     }
@@ -650,7 +650,7 @@ QWidget* MainWindow::MakeDocPage(const QString& title) {
         return image;
     }
     if (title == shine::app::WorkspaceNames().value(VideoWorkspaceIndex())) {
-        auto* video = new VideoFlowWorkspace(doc_stack_);
+        auto* video = new QmlVideoFlowPage(doc_stack_);
         if (auto ref = svc_.Current()) OpenVideoForRef(*video, *ref);
         return video;
     }

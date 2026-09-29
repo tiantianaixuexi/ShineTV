@@ -10,8 +10,12 @@ source_of_truth:
   - src/ui/qml/Flex.qml
   - src/ui/kit/qml/ThemeBridge.h
   - src/ui/kit/qml/QuickHost.cpp
-  - src/ui/qml/CMakeLists.txt
-last_verified: 2026-09-29
+  - src/ui/qml/CanvasNode.qml
+  - src/ui/qml/CanvasLink.qml
+  - src/ui/qml/DenseRow.qml
+  - src/ui/qml/FilmCell.qml
+  - CMakeLists.txt   # QML 资源是根 CMakeLists 里 qt_add_resources 的 GLOB，没有单独的 CMakeLists
+last_verified: 2026-09-30
 ---
 
 # QML 共享套件契约
@@ -20,12 +24,14 @@ last_verified: 2026-09-29
 
 | 类别 | 命名 | 依赖 |
 |---|---|---|
-| **共享件**（本文件管辖） | 无页面前缀：`Ctl` / `Card` / `Button` / `Tag` / `Seg` / `Dot` / `Chip` / `IconBtn` / `Art` / `Kv` / `Progress` / `Spinner` / `StageFlow` / `AutoGrid` / `Flex` | 只能依赖 `Ctl` 与 `ThemeBridge` |
-| **页私有件** | 页面前缀：`Gallery*` / `Assets*` / `Storyboard*` / `ImageFlow*` | 可以依赖共享件 |
+| **共享件**（本文件管辖） | 无页面前缀：`Ctl` / `Card` / `Button` / `Tag` / `Seg` / `Dot` / `Chip` / `IconBtn` / `Art` / `Kv` / `Progress` / `Spinner` / `StageFlow` / `AutoGrid` / `Flex` / `Icon` / `Empty` / `Input` / `Select` / `Toggle` / `Table` / `Field` / `TextArea` / `Kbd` / `Tabs` / `ArtInk` / `PanelCard` | 只能依赖 `Ctl` 与 `ThemeBridge` |
+| **页私有件** | **同样不带页面前缀**：`DenseRow` / `FilmCell`（出片页） | 可以依赖共享件 |
 
 `Card.bodyPad` 默认 16（`.card-b` 的 padding）。**`.card-h` 的 12 16 与 `.card-b` 的 16 不一样**，调用方要自己搭「标题栏 + 发丝线 + 内容区」这种结构时传 `bodyPad: 0` 自己排，否则会在 Card 的 16 之上再叠一层 16，只能靠负 `y` 抵消。
 
-**判定标准只有一个：这份组件的第二个页面也用得上吗？** 用得上就是共享件，归 `src/ui/qml/<无前缀名>.qml`；用不上就是页私有件，带页面前缀。不要因为「现在只有一个页面在用」就把它塞进页私有件——那正是本文件要根除的重复来源。
+**判定标准只有一个：这份组件的第二个页面也用得上吗？** 用得上就是共享件；用不上就是页私有件。**两类都不带页面前缀** —— 页面前缀不表达任何依赖关系，只是命名污染（`Gallery*` 那一批已经因此被去掉了前缀，见下面「去掉页面名前缀」）。不要因为「现在只有一个页面在用」就把它塞进页私有件——那正是本文件要根除的重复来源。
+
+⚠️ 两类都**不能**撞 Qt 内建类型名（`Grid` / `Button` / `TabBar`…）——症状是类型被静默盖掉、qmllint 不提示。`AutoGrid` 就是这么来的。
 
 ## 为什么有这份契约
 
@@ -150,6 +156,18 @@ Button {
 - **QML 里不要写 `#RRGGBB` / `rgba(0,0,0,…)`**：`check-colors` 门禁会拦。要遮罩用 `Qt.alpha(ThemeBridge.colors["bg.void"], 0.86)`。
 - **枚举 → 字符串的对照表不要在 UI 层再抄一份**。`AssetLayer` 的真值来自 `novelcore::AssetLayerName()`（`front` / `turnaround` / **`base_body`** / `wardrobe`）；UI 层曾自己维护一张表并把基础身体写成 `body`，查表落空 → `startLayer` 静默返回 `false`，**按钮点了什么都不发生**。要转就调 `AssetLayerName`，不要硬写。同理 QML 侧按中文名反查 key 时，靠数据里的 `name` ↔ `key` 配对，别写中英对照表。
 - `Q_INVOKABLE` 方法返回 `false` 在 QML 侧**没有任何提示**。桥上的动作方法失败时要自己 `Toast` 说明，否则用户只看到「点了没反应」。
+- **子项宽度不要从父容器宽度反推**：`toolbar.width` 依赖 `toolRow.width`，而 `toolRow.width`
+  又依赖子项宽度 —— 那是绑定环，症状是**工具栏横贯整页**（2026-09-30 出片页取证里出现过）。
+  要「吃掉剩余宽度」就给固定上限 + `elide`，或让两端都锚在同一个父项上。
+- **`QQuickMouseEvent` 没有 `delta`**（那是 `QMouseEvent` 的字段，qmllint 会报
+  `missing-property`）：拖动平移的位移量要自己按「本次位置 − 上次位置」算。
+- **桥上过来的中文字面量必须 `QString::fromUtf8`**：`fromLatin1` 会把「运行中」渲染成
+  一排豆腐块。**这类缺陷不报错、不崩、md5 查重也发现不了**（它确实是一张"不同"的图），
+  只能靠逐张看图 —— 2026-09-30 出片页取证就是这么抓到的。
+- `Tag` 的 10px / `Font.DemiBold` 下 **`✔`(U+2714) 不落墨**，而同一组件的 `⚠`(U+26A0)
+  正常；同样字号 `Font.Normal` 的 `CanvasNode` 里 `✔` 又是正常的（2026-09-30 实测，
+  机制未定位）。**现象记在这里，不要当成桥上的字符串坏了** —— 先用
+  `QStringLiteral("✔ x").toUtf8()` 验一遍码点再动别处。
 
 ## 资源打包
 
@@ -173,10 +191,25 @@ Button {
 | `AssetsChip.qml` / `StoryboardChip.qml` | `Chip.qml` |
 | `GalleryStageFlow.qml` / `StoryboardStage.qml` | `StageFlow.qml` + `StageNode.qml` |
 | `GalleryFlow.qml` | `Flex.qml`（并补上 `align` / `justify`，末行可居中） |
+| `ImageFlowNode.qml` | `CanvasNode.qml` |
+| `ImageFlowLink.qml` | `CanvasLink.qml` |
 
-`src/ui/qml` 的 `.qml` 文件数：去重前 **59**（`369065c^`）→ 去重后 **43**（`0471d2d`）→ 加进 `AutoGrid` / `Flex`、删掉 `GalleryFlow` 后 **44**。用 `git ls-tree -r --name-only <rev> -- src/ui/qml` 复核。
+后两个是 2026-09-30 出片页（`VideoFlow.qml`）迁过来时去的前缀：设计稿的
+`.fnode` 出图与出片**本来就是同一个组件**（`mock.js` 的 `IMAGE_NODES` /
+`VIDEO_NODES` 同一套字段），第二页要用就说明它不是页私有件。判据见本文开头
+「第二个页面也用得上吗」——`ImageFlow*` 前缀不表达任何依赖关系，只是命名污染。
+改名只动 `ImageFlow.qml` 里的两处 delegate 名与几处注释；`qt_add_resources` 用
+`GLOB` + `CONFIGURE_DEPENDS`，不必动 CMake。
 
-## 去掉 `Gallery` 前缀（2026-09-29）
+`src/ui/qml` 的 `.qml` 文件数：去重前 **59**（`369065c^`）→ 去重后 **43**（`0471d2d`）
+→ 加进 `AutoGrid` / `Flex`、删掉 `GalleryFlow` 后 **44** → 2026-09-30 出片页
+新增 `VideoFlow` / `DenseRow` / `FilmCell`（重命名不计数）后 **47**。
+用 `git ls-tree -r --name-only <rev> -- src/ui/qml | Measure-Object` 复核。
+
+## 去掉页面名前缀（2026-09-29 起）
+
+⚠️ 契约本身在本文开头那一节：**页私有件也不带页面前缀**。前缀只在「这个组件确实只服务
+一个页面、且名字已经带语义」时才无害，一旦第二页要用就是纯污染。
 
 `Gallery.qml` 是**组件陈列页**（对标 `webui/src/views/Gallery.jsx`），它下面 10 个 `Gallery*`
 子件全部只被它一处引用 —— 前缀不表达任何依赖关系，只是命名污染。契约同「第二个页面也用得上

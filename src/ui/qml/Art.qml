@@ -44,7 +44,7 @@
 //   2. ShapePath **没有** opacity 属性，SVG 的 fill-opacity 只能折算进 fillColor 的 alpha
 //      （纯色填充下两者渲染结果完全一致）。
 //   3. ShapePath 派生自 QQuickPath（QObject，不是 QQuickItem），**不能**当 Repeater 的 delegate；
-//      Shape 本身当 delegate 也会在运行期炸（ImageFlowLink.qml:15-17 记着这条）。三座山只能字面展开。
+//      Shape 本身当 delegate 也会在运行期炸（CanvasLink.qml:15-17 记着这条）。三座山只能字面展开。
 //
 // 为什么调色板统一成 12 组（三份旧实现不一致：GalleryArt 6 组 / AssetsArt 12 组 / ImageFlowArt 不分种子）：
 //   1. 设计稿 ART_PAL 就是 12 组（UI.jsx:184-197），取模索引也是 % 12。表大小跟着设计稿走，

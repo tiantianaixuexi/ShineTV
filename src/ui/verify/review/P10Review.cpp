@@ -3,7 +3,7 @@
 
 #include "ui/pages/imageflow/ImageFlowWorkspace.h"
 #include "ui/pages/pipeline/PipelineWorkspace.h"
-#include "ui/pages/videoflow/VideoFlowWorkspace.h"
+#include "ui/pages/videoflow/QmlVideoFlowPage.h"
 #include "core/Async.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/theme/ThemeService.h"
@@ -115,7 +115,7 @@ void Run(State* state) {
         auto* image = new ImageFlowWorkspace();
         image->resize(1280, 820); image->show(); image->LoadMock(); review::Pump();
         shot(image, "imageflow-" + suffix);
-        auto* video = new VideoFlowWorkspace();
+        auto* video = new QmlVideoFlowPage();   // 2026-09-30 起出片页是 QML 宿主（Widgets 版已退役）
         video->resize(1280, 820); video->show(); video->LoadMock(); review::Pump();
         shot(video, "videoflow-" + suffix);
         state->theme_triples.push_back(std::move(triple));

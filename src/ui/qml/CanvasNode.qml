@@ -1,5 +1,11 @@
-﻿// src/ui/qml/ImageFlowNode.qml —— 对照 webui views.css:1035-1099 的 .fnode
-// （几何取自 FlowCanvas.jsx 的 NODE_W=150 / portPos 的 +38）
+﻿// src/ui/qml/CanvasNode.qml —— 流程画布的节点卡（**共享件**）
+//
+// 对照 webui views.css:1035-1099 的 .fnode（几何取自 FlowCanvas.jsx 的
+// NODE_W=150 / portPos 的 +38）。2026-09-30 起由出图（ImageFlow.qml）与
+// 出片（VideoFlow.qml）两个页面共用 —— 设计稿本来就是同一个 .fnode
+// （mock.js 的 IMAGE_NODES / VIDEO_NODES 同一套字段），原先带 ImageFlow
+// 前缀只是命名污染：前缀不表达依赖关系。
+// 契约见 docs/10-modules/qml-kit.md「去掉页面名前缀」一节。
 //
 // ⚠️ 设计稿内部有一处自相矛盾，这里**照抄不改**：
 //   views.css 的 .fnode 高度是内容自适应（≈64px），而 FlowCanvas.jsx:9-13 的

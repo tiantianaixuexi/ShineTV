@@ -33,7 +33,7 @@ class NovelWorkspace;
 class ProjectHubView;
 class QmlAssetsPage;
 class ImageFlowWorkspace;
-class VideoFlowWorkspace;
+class QmlVideoFlowPage;
 class PipelineWorkspace;
 class StoryboardWorkspace;
 class RightPanel;
@@ -49,7 +49,7 @@ class MainWindow : public QMainWindow {
     [[nodiscard]] ProjectHubView* Hub() const { return hub_; }
     [[nodiscard]] CommandPalette* Palette() const { return palette_; }
     [[nodiscard]] ImageFlowWorkspace* ImageFlowPage() const;
-    [[nodiscard]] VideoFlowWorkspace* VideoFlowPage() const;
+    [[nodiscard]] QmlVideoFlowPage* VideoFlowPage() const;
     [[nodiscard]] StatusBar* StateBar() const { return status_bar_; }
     [[nodiscard]] project::ProjectService& Service() { return svc_; }
     [[nodiscard]] QString CurrentProjectName() const;

@@ -76,7 +76,20 @@ inline void Pump() {
     return widget->grab().toImage();
 }
 
-// 抓一张并记一行 manifest（"<name> <bytes> saved|FAILED"）。
+// 落盘 + 记一行 manifest（"<name> <bytes> saved|FAILED"）。
+// Grab() 与 GrabImage() 共用这一段：两条路径的字节数口径必须一致，
+// 否则同一页的两类图会算出两套「小于下限」的判据。
+inline void SaveShot(const QImage& shot, const std::filesystem::path& dir, const std::string& name,
+                     std::vector<std::string>& manifest) {
+    const std::filesystem::path path = dir / (name + ".png");
+    const bool ok =
+        !shot.isNull() && shot.save(QString::fromStdString(shine::util::PathToUtf8(path)), "PNG");
+    const auto bytes = shine::util::ReadFileBytes(path);
+    manifest.push_back(name + " " + std::to_string(bytes.value_or(std::string{}).size()) +
+                       (ok ? " saved" : " FAILED"));
+}
+
+// 抓一张并记一行 manifest。
 // manifest 收集到 std::vector<std::string>&；各评审文件自己拼报告。
 inline void Grab(QWidget* widget, const std::filesystem::path& dir, const std::string& name,
                  std::vector<std::string>& manifest) {
@@ -85,13 +98,20 @@ inline void Grab(QWidget* widget, const std::filesystem::path& dir, const std::s
         manifest.push_back(name + " 0 FAILED null-widget");
         return;
     }
-    const QImage shot = GrabWidgetImage(widget);
-    const std::filesystem::path path = dir / (name + ".png");
-    const bool ok =
-        !shot.isNull() && shot.save(QString::fromStdString(shine::util::PathToUtf8(path)), "PNG");
-    const auto bytes = shine::util::ReadFileBytes(path);
-    manifest.push_back(name + " " + std::to_string(bytes.value_or(std::string{}).size()) +
-                       (ok ? " saved" : " FAILED"));
+    SaveShot(GrabWidgetImage(widget), dir, name, manifest);
+}
+
+// 记一张**已经裁好**的图。
+//
+// 为什么需要：QML 页面整页只有一个 QQuickWidget，拿不到「子控件」可抓
+// （P08 迁移前是分别抓 Canvas / Chain / Tasks / Final 四个 QWidget）。
+// 现在的做法是「整页抓一次 + 按 QML 报出来的几何裁一块」——像素仍来自同一次
+// 真实抓帧（QuickHost::GrabBlocking），裁剪不换视口、不把宿主拉高。
+// 判据与 Grab 完全一致：仍走 EvaluateShots 的存在 / 字节数 / 逐字节重复三条。
+inline void GrabImage(const QImage& shot, const std::filesystem::path& dir, const std::string& name,
+                      std::vector<std::string>& manifest) {
+    Pump();
+    SaveShot(shot, dir, name, manifest);
 }
 
 // ─────────────────── 收尾判据（本轮新增：六份 Review 之前各写各的） ───────────────────

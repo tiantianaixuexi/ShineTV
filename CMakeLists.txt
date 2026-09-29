@@ -591,16 +591,11 @@ add_executable(ShineTVStudio
   src/ui/pages/pipeline/StopReportView.cpp
   src/ui/pages/pipeline/PipelineWorkspace.h
   src/ui/pages/pipeline/PipelineWorkspace.cpp
-  src/ui/pages/videoflow/ChainView.h
-  src/ui/pages/videoflow/ChainView.cpp
-  src/ui/pages/videoflow/VideoTaskView.h
-  src/ui/pages/videoflow/VideoTaskView.cpp
-  src/ui/pages/videoflow/FilmStrip.h
-  src/ui/pages/videoflow/FilmStrip.cpp
-  src/ui/pages/videoflow/FinalCutView.h
-  src/ui/pages/videoflow/FinalCutView.cpp
-  src/ui/pages/videoflow/VideoFlowWorkspace.h
-  src/ui/pages/videoflow/VideoFlowWorkspace.cpp
+  src/ui/pages/videoflow/VideoFlowVisualData.h
+  src/ui/pages/videoflow/VideoFlowPageModel.h
+  src/ui/pages/videoflow/VideoFlowPageModel.cpp
+  src/ui/pages/videoflow/QmlVideoFlowPage.h
+  src/ui/pages/videoflow/QmlVideoFlowPage.cpp
   src/ui/pages/imageflow/BatchRenderView.h
   src/ui/pages/imageflow/BatchRenderView.cpp
   src/ui/pages/imageflow/ImageReviewView.h

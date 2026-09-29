@@ -27,7 +27,11 @@ source_of_truth:
   - src/ui/pages/novel/DraftView.cpp
   - src/ui/verify/review/P05Review.cpp
   - src/ui/verify/checks/P04ChapterChecks.cpp
-last_verified: 2026-09-29
+  - src/ui/pages/videoflow/VideoFlowPageModel.h
+  - src/ui/pages/videoflow/VideoFlowVisualData.h
+  - src/ui/pages/videoflow/QmlVideoFlowPage.h
+  - src/ui/qml/VideoFlow.qml
+last_verified: 2026-09-30
 ---
 
 # 设计稿对不齐的地方：UI 缺口清单
@@ -254,24 +258,29 @@ chip 压得只剩边框（首次实现时截图里就是「全[8]」标签被裁
 - **`QLabel` 要先 `adjustSize()`**。默认宽度 100px，不调的话 `move(x - w/2)`
   按错误宽度居中，文字整体偏移。
 
-### 4. `QTabWidget` 与设计稿的 `Segmented` 不一致
+### 4. `QTabWidget` 与设计稿的 `Segmented` 不一致（出片页已改，出图页仍在）
 
-设计稿出图/出片用的是自定义 `Segmented`（胶囊分段控件），当前实现是原生 `QTabWidget`
-（下划线页签）。
+设计稿出图/出片用的是自定义 `Segmented`（胶囊分段控件），Widgets 实现是原生
+`QTabWidget`（下划线页签）。
 
-**为什么不换**：评审探针强耦合——`src/ui/verify/review/P07Review.cpp`、`P08Review.cpp`
-用 `findChild<QTabWidget*>()` 反查并直接切换页签。换控件要连带改 P07/P08 的验收代码，
-视觉收益不抵连带成本。**这是有意识的取舍，不是遗漏。**
+- **出片页已改**（2026-09-30）：迁 QML 时换成共享 `Seg.qml`，页签状态上桥
+  （`Page.tab`），`P08Review` 的两处 `findChild<QTabWidget*>()` 反查随之删除 ——
+  那个反查本来就恒不成立（见第六之二节「断言造型的死代码」）。
+- **出图页仍是 `QTabWidget`**：`ImageFlowWorkspace` 用它承载内容栈，而
+  `P07Review` 侧仍按这个结构取证。这是**有意识的取舍，不是遗漏**；
+  等出图页迁 QML 时一并解决。
 
-### 5. 浮动面板用布局 overlay，不是真正的浮层
+### 5. 浮动面板用布局 overlay，不是真正的浮层（出片页已不适用）
 
-设计稿的浮动工具栏/面板用 CSS `absolute inset`。当前实现（`ImageFlowWorkspace` /
-`VideoFlowWorkspace`）让 canvas / toolbar / panel / filmstrip **共享一个 grid cell +
-alignment flags**，用对齐标志模拟绝对定位。
+设计稿的浮动工具栏/面板用 CSS `absolute inset`。
 
-**后果**：窄窗口下面板会被压缩而不是盖住画布。这是 Qt 布局模型下的等效做法，
-不接受"真正浮层"语义。若将来要求窄窗下面板必须浮在画布之上，需要改写为
-child-over-parent 手动 `move()/resize()`，那是另一轮工作量。
+- **出片页已不适用**（2026-09-30）：迁 QML 后浮动关系是**显式锚点**（`anchors.left/top`
+  / `right` / `bottom` + margin），本来就是真正的浮层语义，画布拿不回被面板盖住的那块。
+- **出图页仍是布局 overlay**：`ImageFlowWorkspace` 让 canvas / toolbar / panel /
+  filmstrip **共享一个 grid cell + alignment flags**，用对齐标志模拟绝对定位。
+  **后果**：窄窗口下面板会被压缩而不是盖住画布。若将来要求窄窗下面板必须浮在画布之上，
+  需要改写为 child-over-parent 手动 `move()/resize()`，那是另一轮工作量
+  （出图页迁 QML 会自然消掉）。
 
 ---
 
@@ -524,7 +533,7 @@ TypeError: Property 'token' of object Shine/ThemeBridge is not a function
 
 qmllint 查不出来（`Shape` 能解析、`ShapePath` 也能解析，只有运行期组合才炸）。修法是
 把 N 段显式展开成 N 个字面量 `ShapePath`。已命中两处：`ArtInk.qml`（14 层模糊）、
-`ImageFlowLink.qml`（12 段弦）。`Gallery` 那边还纠正了一个更隐蔽的错误：用 `M dx dy`
+`CanvasLink.qml`（12 段弦，原名 `ImageFlowLink.qml`，2026-09-30 出片页复用后去前缀）。`Gallery` 那边还纠正了一个更隐蔽的错误：用 `M dx dy`
 前缀给路径做平移是**无效的** —— 单独的 `moveto` 只移动当前点，图形其实原地没动，
 7 层等于原地叠了 7 遍。
 
@@ -825,24 +834,52 @@ Qt 仍然没有「抓别的窗口」的能力）。已在 `QT_QUICK_BACKEND=soft
 
 | webui 源 | 产品现状 | 体量 |
 |---|---|---|
-| `views/Assets.jsx` | ✅ `QmlAssetsPage` | — |
+| `views/Assets.jsx` | ✅ `QmlAssetsPage`（2026-09-29） | — |
+| `views/VideoFlow.jsx` | ✅ `QmlVideoFlowPage`（2026-09-30） | — |
 | `views/Novel.jsx` | ❌ `NovelWorkspace` | **535 KB**（最大） |
 | `views/Storyboard.jsx` | ❌ `StoryboardWorkspace` | 104 KB |
 | `views/ProjectHub.jsx` | ❌ `src/ui/pages/project` | 88 KB |
 | `views/ImageFlow.jsx` | ❌ `ImageFlowWorkspace` | 73 KB |
 | `views/Overview.jsx` | ❌ `PipelineWorkspace` | 68 KB |
-| `views/VideoFlow.jsx` | ❌ `VideoFlowWorkspace` | 47 KB |
 | `shell/Shell.jsx`（44 KB） | ❌ `MainWindow` + 六个外壳控件 | — |
 | `views/Gallery.jsx` | ⚠️ webui 里 `hidden: true`；QML 版 `Gallery.qml` 只在取证轨，产品无入口 | — |
 
-⚠️ **一个容易看错的点**：`Storyboard.qml`(48 KB) 与 `ImageFlow.qml`(53 KB) 看着像已做完，
+⚠️ **一个容易看错的点**：`Storyboard.qml`(52 KB) 与 `ImageFlow.qml`(58 KB) 看着像已做完，
 但 `QmlPageReview.cpp` 的 `kPages` 给它们的 `needs_page_model` 是 **false**，两个文件里
 `Page.` 引用数都是 **0** —— 纯 mock 渲染，只在离屏取证轨上，**产品走的仍是 QWidget**。
-规划迁移时别把它们算成已完成。
+规划迁移时别把它们算成已完成。出片页则是**真迁移**：`Page.` 引用数不为 0，
+`P10Review` 的主题矩阵也已经在新页上出图。
 
-**建议顺序**（体量小 → 依赖多）：`VideoFlow`(47K) → `ImageFlow`(73K) → `Overview`(68K)
+**建议顺序**（体量小 → 依赖多）：~~`VideoFlow`(47K)~~ → `ImageFlow`(73K) → `Overview`(68K)
 → `ProjectHub`(88K) → `Storyboard`(104K) → `Novel`(535K) → `Shell`(44K)。
 每页一轮，遵守「没接完就不要删；宁可留 QWidget 版并显式记 NOT-COVERED，也不要留死按钮」。
+
+### 出片页迁移记下的三条（2026-09-30）
+
+1. **子控件抓图在 QML 页上不成立。** `P08Review` 原先分别抓 `Canvas()` / `Chain()` /
+   `Tasks()` / `Final()` 四个 QWidget；QML 整页只有一个 `QQuickWidget`，拿不到子控件。
+   改成「抓整页 + 按 QML 报出来的几何裁剪」（`regionPanel` / `regionCanvas` / …）。
+   几何由 QML 自己报、宿主不重算一套 —— 两边各算一份必然漂，而漂了只会表现为
+   「取证图少了一截」，不会报错。
+2. **`findChild<QTabWidget*>()` 这类反查是恒假的**（与第二节第 4 条、P09 的三处同类断言
+   同一批历史残留）。页签状态上桥之后，验收读 `ActiveTab()` **回读**：
+   写了没人读的死属性会直接判 FAIL，而不是拍一张错页签还记 `saved`。
+3. **桥上的中文必须 `fromUtf8`。** 状态词表（排队 / 运行中 / 已连接…）是 UTF-8 字面量，
+   `QString::fromLatin1` 会把「运行中」渲染成豆腐块。**这类缺陷不报错、不崩，
+   只在取证图上看得出来** —— 目视还容易放过（本轮是靠逐张看图才发现的，
+   md5 查重发现不了：它确实是一张"不同"的图）。
+
+### 出片页迁完后的有意取舍（不是遗漏）
+
+- **胶片格没有缩略图**：设计稿用 `<Art seed>` 画程序化占位图，那是假缩略；
+  迁移前的 `FilmStrip::Cell.thumb` 也从未被填过。两版都是显式空态，
+  成片列表最忌讳看错镜头。要接真缩略得走「worker 解码 → 宿主注入 `file://` URL」。
+- **「停止」按钮没有**：设计稿 `TaskList` 有，Widgets 版那一格是「演示运行」，
+  两版都没有停止实现。QML 侧只给两个**真有实现**的按钮，不做没接线的死按钮。
+- **链段行的 detail 没有出口**：迁移前挂在 `QLabel` 的 tooltip 上，而设计稿的
+  `[data-tip]::after` 与 QML 都没有对应实现（与 `IconBtn.tip` 同一个已记录缺口），
+  本仓也不 import `QtQuick.Controls`（它的 `Button` 会盖掉同目录的共享
+  `Button.qml`）。断链的处置建议已并入行内 `policy` 文本。
 
 ### harness 第一次说真话之后暴露的三个既有缺陷
 
@@ -861,11 +898,14 @@ Qt 仍然没有「抓别的窗口」的能力）。已在 `QT_QUICK_BACKEND=soft
 
 ### 两处「断言造型的死代码」
 
-grep 看着像断言、实际永远不成立的：
+grep 看着像断言、实际永远不成立的（**出片页那条已于 2026-09-30 修掉**）：
 
 - `P09Review.cpp` 三处 `findChild<QTabWidget*>()` —— `PipelineWorkspace` 里**根本没有
   QTabWidget**（gantt / ledger / stop 三个视图并排放在同一个 grid 里），那三行永远
-  不执行，后两张图拍的是同一个 tab 却记 `saved`。
+  不执行，后两张图拍的是同一个 tab 却记 `saved`。**已删**（2026-09-29），三块视图
+  改成不切页直接各拍一张。
+- `P08Review.cpp` 两处同样的反查 —— 出片页迁 QML 后页签状态上桥，改成读
+  `ActiveTab()` 回读（`VideoFlow.qml` 的 Seg 用的就是 `Page.tab`）。
 - `AssetPageModel::GalleryProbe()` 曾报 `sources=3; virtual=1` 两个**常量**，
   与实际图库状态无关，断言读它等于对着桩跑。
 

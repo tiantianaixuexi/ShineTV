@@ -1,4 +1,8 @@
-// src/ui/qml/ImageFlowLink.qml —— 对照 webui FlowCanvas.jsx:16-19 + 142-169 的连线
+// src/ui/qml/CanvasLink.qml —— 流程画布的连线（**共享件**）
+//
+// 对照 webui FlowCanvas.jsx:16-19 + 142-169 的连线。
+// 2026-09-30 起由出图（ImageFlow.qml）与出片（VideoFlow.qml）两个页面共用；
+// 设计稿两页画的是同一种连线，去掉 ImageFlow 前缀（同 CanvasNode.qml）。
 //
 // 设计稿一条连线画两遍：
 //   ① 5px --line-normal 光晕 @ opacity .4（打底）
@@ -28,7 +32,7 @@
 //
 // ⚠️ 坐标系：**ax/ay/bx/by 传进来的是视图坐标**（宿主已把取景变换算好），
 //   不是世界坐标。本组件自己**不再**吃任何父级 transform，也不在组件内部写
-//   anchors.fill —— 尺寸与位置一律由宿主显式给。节点那边（ImageFlowNode 的
+//   anchors.fill —— 尺寸与位置一律由宿主显式给。节点那边（CanvasNode 的
 //   x/y + scale）用的是同一组 viewX / viewY / zoom，两边因此必然重合。
 //   踩过的坑：曾经把连线放在带 transform 的容器里、用世界坐标，而节点走另一条
 //   路径，结果整束连线画到画外左上方、汇聚成一个画外公共点，节点端口却都对。
