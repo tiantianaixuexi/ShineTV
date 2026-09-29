@@ -20,11 +20,18 @@ Hit HitTestImpl(Rect bounds, std::string_view id) {
         NoteInvertedRect(bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y, "HitTest");
     }
     ImGui::SetCursorScreenPos(bounds.min);
-    ImGui::InvisibleButton(std::string(id).c_str(), ImVec2(bounds.width(), bounds.height()));
+    const std::string idStr(id);
+    ImGui::InvisibleButton(idStr.c_str(), ImVec2(bounds.width(), bounds.height()));
     hit.hovered = ImGui::IsItemHovered();
     hit.held = ImGui::IsItemActive();
     hit.clicked = ImGui::IsItemClicked();
     hit.doubleClicked = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+    // 命中自检：取证要能分清「鼠标没落进热区」与「命中了却什么都不画」。
+    // 记在 InvisibleButton **之后**、返回之前 —— 早先返回前漏了这一句，
+    // 记的是上一帧的 hovered，探针的判据就成了延迟一帧的假信号。
+    if (hit.hovered) {
+        NoteHoveredItem(idStr.c_str());
+    }
     return hit;
 }
 std::string Unique(std::string_view id, int index) {
@@ -456,9 +463,15 @@ std::string_view Segmented(ImDrawList* draw, Rect bounds,
             // 选中 = bg-elevated + shadow + 4px accent 圆点
             DrawRoundRect(draw, item.min, item.max, 4.0f, ColorElevated(), 0, 0.0f,
                           /*topHighlight=*/true);
-        } else if (hit.hovered) {
-            DrawRoundRect(draw, item.min, item.max, 4.0f, ColorFillHover());
         }
+        // ⚠️ 非选中项的 hover **只改文字色**，不换底 —— 这是设计稿 ui.css 的原话：
+        //      .seg > button      { color: text-muted }   // 无 background
+        //      .seg > button:hover{ color: text-primary } // 也没有 background
+        //      .seg > button.on   { background: bg-elevated; color: text-primary }
+        //    早先这里给 hover 加了一层 fill-hover 底，是设计稿里**没有**的效果。
+        //    副作用更要紧：选中项的 hover 因此毫无变化（color 本来就是 text-primary），
+        //    悬停探针判 `broken` 才发现「按设计稿，选中项本来就该没有 hover 反馈」——
+        //    于是那条探针的目标得换成**非选中**项，否则它测的是一个设计稿不承诺的东西。
         const ImU32 fg = on ? ColorText() : (hit.hovered ? ColorText() : ColorTextSecondary());
         const float textX = item.center().x - 0.5f * text - (on ? 5.0f : 0.0f);
         draw->AddText(font, 12.5f, ImVec2(textX, item.center().y - 12.5f * 0.5f), fg,

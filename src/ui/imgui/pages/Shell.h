@@ -125,6 +125,12 @@ public:
     void SetImageFlowPanel(int tab) { imageflow_.setPanelTab(tab); }
     void SetImageFlowFolded(bool on) { imageflow_.setFolded(on); }
     void SetVideoFlowPanel(int tab) { videoflow_.setPanelTab(tab); }
+    // 取证用：产物页当前有多少行。产物列表是 worker 扫目录后回投的，**必须等它
+    // 收敛**再拍 —— 不等拍到的是「output/ 目录是空的」，而那个空态是**正确**的
+    // 输出，manifest 照样记 saved。
+    [[nodiscard]] int ArtifactRowCount() const {
+        return static_cast<int>(artifacts_.size());
+    }
     // toast：设计稿的 notify(...)。以前 toastTimer_ 是死字段、DrawOverlays 是空函数。
     void Notify(std::string text, shine::theme::Tone tone = shine::theme::Tone::Idle);
     [[nodiscard]] kit::Rect workspaceRect() const { return workspace_; }

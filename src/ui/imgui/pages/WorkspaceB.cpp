@@ -1068,10 +1068,25 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
             draw->AddLine(ImVec2(tab.min.x, tab.max.y - 1.0f), ImVec2(tab.max.x, tab.max.y - 1.0f),
                           ColorAccent(), 2.0f);
         }
+        // 一次 HitTest 取齐 hovered + clicked。
+        //
+        // ⚠️ 悬停**背景对选中项也生效**，这不是我一开始写的那样。设计稿
+        //    `views.css` 的两条规则是：
+        //      .novel-modes .ntab:hover { color: text-primary; background: fill-muted; }
+        //      .novel-modes .ntab.on   { color: accent; border-bottom-color: accent; }
+        //    两条特异度相同、后者胜出，但 `.on` **没有声明 background**，
+        //    所以 hover 的 fill-muted 底**照样作用在选中项上**。早先写成
+        //    `hit.hovered && i != mode_`，选中页签悬停时一点反应都没有 ——
+        //    CSS 不会因为「已经选中」就免掉 hover 底。悬停探针直接判 `broken` 抓到了它。
+        const Hit hit = HitTest(tab, "novel-mode-" + std::to_string(i));
+        if (hit.hovered) {
+            DrawRoundRect(draw, tab.min, tab.max, 6.0f, ColorFillHover());
+        }
         draw->AddText(tabFont, 12.5f, ImVec2(tab.min.x + 16.0f, tab.min.y + 14.0f),
-                      i == mode_ ? ColorAccent() : ColorTextSecondary(), modes[i],
-                      modes[i] + std::strlen(modes[i]));
-        if (Clicked(tab, "novel-mode-" + std::to_string(i))) {
+                      i == mode_ ? ColorAccent()
+                                 : (hit.hovered ? ColorText() : ColorTextSecondary()),
+                      modes[i], modes[i] + std::strlen(modes[i]));
+        if (hit.clicked) {
             mode_ = i;
         }
         tx += w + 4.0f;

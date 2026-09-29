@@ -205,6 +205,27 @@ int InvertedRectCount() { return InvertedState().count; }
 void ResetInvertedRectCount() { InvertedState() = InvertedRectState{}; }
 const char* LastInvertedRect() { return InvertedState().last; }
 
+namespace {
+// 命中自检的**唯一一份**状态，理由与 InvertedState 相同：共用才有意义。
+struct HoverProbeState {
+    int count = 0;
+    char last[128] = {};
+};
+HoverProbeState& HoverState() {
+    static HoverProbeState state;
+    return state;
+}
+} // namespace
+
+void NoteHoveredItem(const char* id) {
+    HoverProbeState& state = HoverState();
+    ++state.count;
+    std::snprintf(state.last, sizeof(state.last), "%s", id != nullptr ? id : "(null)");
+}
+int HoveredItemCount() { return HoverState().count; }
+void ResetHoveredItemCount() { HoverState() = HoverProbeState{}; }
+const char* LastHoveredItem() { return HoverState().last; }
+
 void DrawRoundRect(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 fill,
                    ImU32 border, float borderWidth, bool topHighlight) {
     if (max.x <= min.x || max.y <= min.y) {

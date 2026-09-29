@@ -61,6 +61,24 @@ public:
     // 推进 N 帧而不进入消息循环（取证用：等异步解码回调投递到 UI 队列）
     void PumpFrames(int frames, const DrawFrameFn& onFrame);
 
+    // 取证用：把鼠标位置**在 `NewFrame` 之前**钉住，跨 frames 帧有效。
+    //
+    // ⚠️ 为什么不能靠在 onFrame 里写 `ImGui::GetIO().MousePos`：那样只是改了
+    //    `IsMouseHoveringRect` 用的那个值，而 `g.HoveredId` 早在此前的 `NewFrame`
+    //    里按**真实光标**算好了 —— 于是恰好有 1 个 item（真实光标所在那个）在每一帧
+    //    都报 hovered。实测后果：静息帧的「命中数」恒为 1，悬停探针的诊断信号全是噪声。
+    //    注入必须发生在 `ImGui_ImplWin32_NewFrame` 之前，让 `NewFrame` 自己算出
+    //    `g.HoveredId`。传 (-FLT_MAX, -FLT_MAX) 之外的位置即模拟真实悬停。
+    //
+    // 用两个 float 而不是 ImVec2：Host.h 刻意不引 imgui 头（宿主不该依赖绘制层），
+    // 那个头会把 ImVec2 拖进这个 TU 的每个翻译单元。
+    void SetFrameMouseOverride(float x, float y) {
+        mouseOverrideX_ = x;
+        mouseOverrideY_ = y;
+        mouseOverrideSet_ = true;
+    }
+    void ClearFrameMouseOverride() { mouseOverrideSet_ = false; }
+
     [[nodiscard]] HWND window() const noexcept { return hwnd_; }
     [[nodiscard]] HGLRC glContext() const noexcept { return glContext_; }
 
@@ -76,7 +94,9 @@ private:
 
     HWND hwnd_ = nullptr;
     HDC hdc_ = nullptr;          // 窗口的设备上下文，WGL 绑定在它上面
-    HGLRC glContext_ = nullptr;  // GL 上下文
+    float mouseOverrideX_ = 0.0f;
+    float mouseOverrideY_ = 0.0f;
+    bool mouseOverrideSet_ = false;    HGLRC glContext_ = nullptr;  // GL 上下文
     bool imguiReady_ = false;
     bool quit_ = false;
 };

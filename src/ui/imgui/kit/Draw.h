@@ -109,4 +109,20 @@ void ResetInvertedRectCount();
 // 最近一次反动的坐标，manifest 里原样打出来 —— 坐标通常就足以定位到是哪个面板。
 [[nodiscard]] const char* LastInvertedRect();
 
+// ---- 命中自检（2026-09-30 加）----
+//
+// 用途只有一个：让「悬停探针」能区分**「坐标点空了」**和**「这个控件的 hover 链路
+// 是断的」**。只看像素差的话这两种情况长得一模一样（都是「悬停前后逐字节相同」），
+// 于是我一度把一个「探针没摆好状态」当成产品缺陷去改产品。
+//
+// 每个 `HitTestImpl` 报告 hovered 时记一次。取证在注入鼠标的那一帧先 Reset 再数：
+//   count == 0  → 鼠标没落进任何热区 = **探针坐标写偏了**（工具的问题）
+//   count  > 0  且像素没变 → 命中了却什么都不画 = **产品的 hover 链路断了**
+// 顺带：静息帧（鼠标用 ImGui 的 -FLT_MAX 哨兵）必须 count == 0，否则哨兵失效，
+// 后面所有比较都不可信 —— 这条也会被抓出来。
+void NoteHoveredItem(const char* id);
+[[nodiscard]] int HoveredItemCount();
+void ResetHoveredItemCount();
+[[nodiscard]] const char* LastHoveredItem();
+
 } // namespace shine::kit

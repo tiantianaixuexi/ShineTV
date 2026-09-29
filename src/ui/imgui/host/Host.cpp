@@ -307,8 +307,18 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
                                            static_cast<float>(client.bottom));
         glViewport(0, 0, client.right, client.bottom);
 
+        // 鼠标覆盖必须在**所有**后端 NewFrame 之前落地：`ImGui_ImplWin32_NewFrame`
+        // 会用真实光标覆写 io.MousePos，而 `ImGui::NewFrame` 会用它算出 g.HoveredId。
+        // 晚一步，悬停探针的「命中数」就恒为 1（真实光标所在那个 item）—— 全是噪声。
+        if (mouseOverrideSet_) {
+            ImGui::GetIO().MousePos = ImVec2(mouseOverrideX_, mouseOverrideY_);
+        }
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
+        if (mouseOverrideSet_) {
+            // 后端可能又把位置写回真实光标了，再钉一次，保证 NewFrame 看到的是覆盖值。
+            ImGui::GetIO().MousePos = ImVec2(mouseOverrideX_, mouseOverrideY_);
+        }
         ImGui::NewFrame();
         if (onFrame) {
             onFrame(1.0f / 60.0f);

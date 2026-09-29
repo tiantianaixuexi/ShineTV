@@ -60,6 +60,12 @@ struct HoverTarget {
     bool assetsOverview = false;
     // 资产 kind 筛选要不要先清空（筛掉了目标所在的那一类就只剩空态）。
     bool clearKindFilter = false;
+    // 底栏页签（0 队列 / 1 日志 / 2 产物 / 3 校验报告）。-1 = 不动。
+    int dockTab = -1;
+    // 出图页右侧面板页签；-1 = 不动。
+    int imageFlowPanel = -1;
+    // 小说页模式标签；-1 = 不动。
+    int novelMode = -1;
 };
 
 // 悬停探针：把鼠标放到 (x, y) 拍一张，**再把鼠标放到窗外拍一张只取哈希**，
@@ -83,18 +89,27 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
                 const HoverTarget& target, shine::theme::ThemeId theme,
                 std::vector<std::uint64_t>& drivenHashes,
                 std::vector<std::string>& drivenNames, int* hoverOk, int* hoverUnstable,
-                int* captured, int* failed) {
+                int* hoverBroken, int* captured, int* failed) {
     const std::string& name = target.name;
     const float clientX = target.x;
     const float clientY = target.y;
     shell.SetTheme(theme);
     shell.SetWorkspace(target.workspace);
-    // 前置动作：主题 / 工作区 / 视图 / 筛选，一个都不靠上一条探针的残留状态。
+    // 前置动作：主题 / 工作区 / 视图 / 筛选 / 页签，一个都不靠上一条探针的残留状态。
     if (target.clearKindFilter) {
         shell.SetKindFilter(std::string());
     }
     if (target.assetsOverview) {
         shell.SetAssetsOverview(true);
+    }
+    if (target.dockTab >= 0) {
+        shell.SetDockTab(target.dockTab);
+    }
+    if (target.imageFlowPanel >= 0) {
+        shell.SetImageFlowPanel(target.imageFlowPanel);
+    }
+    if (target.novelMode >= 0) {
+        shell.SetNovelMode(target.novelMode);
     }
 
     // kNoMouse 是 ImGui 自己用的「无鼠标」哨兵。
@@ -115,23 +130,40 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
     //    前面 52 张静息态截图**不钉**，它们该看到的就是带动画的真实界面。
     const float kPinnedTime = kit::Now();
     kit::PinAnimation(kPinnedTime);
+    // 注入点换成宿主的 `SetFrameMouseOverride`（在 NewFrame **之前**）。原先写在
+    // onFrame 里只改到 `IsMouseHoveringRect` 用的那份，`g.HoveredId` 早按真实光标
+    // 算好了 ⇒ 每帧恒有 1 个 item 报 hovered，诊断信号整个是噪声。
     const auto frameWithMousePinned = [&shell, &host](float x, float y) {
-        host.PumpFrames(kSettleFrames, [&shell, x, y](float dt) {
-            ImGui::GetIO().MousePos = ImVec2(x, y);
-            shell.DrawFrame(dt);
-        });
+        host.SetFrameMouseOverride(x, y);
+        host.PumpFrames(kSettleFrames, [&shell](float dt) { shell.DrawFrame(dt); });
+        host.ClearFrameMouseOverride();
     };
     struct Unpin {
         ~Unpin() { kit::UnpinAnimation(); }
     } unpin;
 
-    frameWithMousePinned(kNoMouse, kNoMouse);
+    // 静息帧：每帧单独归零再数，取**最大**那一帧。早先只在悬停帧前归零，
+    // 于是 `restHovered` 里混着上一条探针的累计值 —— 第一条探针读到 0、后面
+    // 全读到 2，看着像「哨兵失效」，其实是计数器没归零。
+    int restHovered = 0;
+    for (int i = 0; i < kSettleFrames; ++i) {
+        kit::ResetHoveredItemCount();
+        frameWithMousePinned(kNoMouse, kNoMouse);
+        restHovered = std::max(restHovered, kit::HoveredItemCount());
+    }
     const std::vector<std::uint8_t> restA = host.CaptureBackBuffer();
     frameWithMousePinned(kNoMouse, kNoMouse);
     const std::vector<std::uint8_t> restB = host.CaptureBackBuffer();
     const std::uint64_t restHash = HashPixels(restA);
 
-    frameWithMousePinned(clientX, clientY);
+    // 悬停帧：同样每帧单独归零，取最大那一帧。
+    int hoveredPerFrame = 0;
+    for (int i = 0; i < kSettleFrames; ++i) {
+        kit::ResetHoveredItemCount();
+        frameWithMousePinned(clientX, clientY);
+        hoveredPerFrame = std::max(hoveredPerFrame, kit::HoveredItemCount());
+    }
+    const char* hoveredId = kit::LastHoveredItem();
     const std::vector<std::uint8_t> pixels = host.CaptureBackBuffer();
     const std::uint64_t hash = HashPixels(pixels);
     RECT client{};
@@ -148,20 +180,40 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
     ++*captured;
     const bool stable = restHash == HashPixels(restB);
     const bool changed = restHash != hash;
-    shine::log::Info("review: probe {} at ({:.0f},{:.0f}) rest-stable={} changed-vs-rest={}", name,
-                     clientX, clientY, stable ? 1 : 0, changed ? 1 : 0);
-    if (!stable) {
+    shine::log::Info("review: probe {} at ({:.0f},{:.0f}) rest-stable={} rest-hovered={} hit={} last={}",
+                     name, clientX, clientY, stable ? 1 : 0, restHovered, hoveredPerFrame,
+                     hoveredId);
+    if (restHovered > 0) {
+        // 静息帧竟然命中了控件 ⇒ -FLT_MAX 哨兵没生效，后面所有比较都不可信。
+        shine::log::Error("review: {} 静息帧（鼠标用 -FLT_MAX 哨兵）仍命中了 {} 个控件，"
+                          "哨兵失效，本探针与后面全部悬停结论都不可信",
+                          name, restHovered);
+        ++*hoverUnstable;
+    } else if (!stable) {
         // 页面在动，这一拍测不出 hover 的因果。**记成不稳定并让整轮红掉** ——
         // 放过去就等于「这个控件的 hover 链路没验过」却报 PASS，比误报红更坏：
         // 门禁一旦学会放过自己的不确定，后面所有 PASS 都不可信。
         // 修法通常是换坐标、或者给这一帧把动画时间钉住，不是改判据。
         shine::log::Error("review: {} 静息两帧就不一致（页面在动），本探针结论不可用", name);
         ++*hoverUnstable;
+    } else if (hoveredPerFrame == 0) {
+        // ⚠️ 像素没变有**两种**完全不同的原因，只看像素差分不开：
+        //   · 坐标写偏了，鼠标没落进任何热区 —— 这是**探针**的问题，要改坐标；
+        //   · 命中了，但这个控件的 hover 分支什么都不画 —— 这是**产品**的缺陷。
+        // 少一次命中计数时，我一度把后者当成了前者去改产品。命中自检就是为了
+        // 在两者之间给出确定的答案：现在直接报「探针坐标点空了」。
+        shine::log::Error("review: {} 页面静止但鼠标**一个控件都没命中** —— 探针坐标 (%.0f,%.0f) "
+                          "落在热区之外（布局变了），不是产品的 hover 缺陷。改坐标，别改产品",
+                          name, clientX, clientY);
+        ++*hoverUnstable;
     } else if (!changed) {
+        // 命中了（hoveredPerFrame > 0，hover 分支确实被执行了）却一个像素都没变 ——
+        // 这才是真的「hover 链路断在绘制侧」。
         shine::log::Error(
-            "review: {} 页面静止、鼠标也到位了，悬停前后像素却**完全相同** —— "
-            "坐标点在了这个控件的热区之外（布局变了），或这个控件的 hover 链路是断的",
-            name);
+            "review: {} 命中了 {} 个控件（最后一个 {}）、页面也静止，悬停前后像素却**完全相同** "
+            "—— 命中测试通了但 hover 分支什么都不画",
+            name, hoveredPerFrame, hoveredId);
+        ++*hoverBroken;
     } else {
         ++*hoverOk;
     }
@@ -256,6 +308,29 @@ bool SeedReportFixture(const std::filesystem::path& root) {
             return false;
         }
     }
+    // 产物页（底栏第 3 个页签）扫的是 `<root>/output`。
+    //
+    // ⚠️ 以前这个目录是空的，于是那一页只拍到「output/ 目录是空的」——**页面拍到了，
+    //    列表分支从来没被执行过**。和「图评审」那轮同一类洞：fixture 缺数据 = 覆盖洞。
+    //    造几个**不同扩展名、不同大小**的文件，好让「kind 标签 / 字节数 / 点击打开」
+    //    这几处都真的有值可显示。
+    struct ArtifactSeed {
+        const char* rel;
+        const char* body;
+    };
+    const ArtifactSeed artifacts[] = {
+        {"output/ch001_S001.png", "not-a-real-png-fixture"},
+        {"output/ch001_S002.png", "not-a-real-png-fixture-2"},
+        {"output/ch002_S011.png", "not-a-real-png-fixture-3"},
+        {"output/linwan_base_v2.png", "not-a-real-png-fixture-4"},
+        {"output/ep001_take01.mp4", "not-a-real-mp4-fixture"},
+        {"output/sheet.json", R"({"layout":"1x4","panels":4})"},
+    };
+    for (const ArtifactSeed& art : artifacts) {
+        if (!util::WriteFileEnsuredDir(root / std::filesystem::path(art.rel), art.body)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -315,6 +390,9 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     bool bookSnapshotConverged = false;
     // 资产快照也要显式等：kind 树的数据来自同一次 worker 读库，没落地就拍到空态。
     bool assetSnapshotConverged = false;
+    // 产物页的列表也走 worker 扫目录。同样要等收敛：空态是**正确**的输出，
+    // 不等就拍到空态，manifest 照样记 saved。
+    bool artifactsConverged = false;
     // 悬停探针：几个目标里几个真的产生了像素变化。
     int hoverProbesPassed = -1;
     // 本轮探针总数（targets 数组长度）。写死 4 的话加探针时会忘了改判据，判据跟着目标数走。
@@ -435,6 +513,12 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         // 所以每张的前置动作都显式写全，等待结论也进 manifest。
         const int assetsWs = static_cast<int>(pages::Workspace::Assets);
         const int novelWs = static_cast<int>(pages::Workspace::Novel);
+        // 出图 / 出片页的常量在**这里**声明：悬停探针（第六段）也要用，而它排在第七段
+        // 之前。声明在各自用到的那一段里，后一段就看不见 —— 第一版就是这么写的，
+        // 编译直接报「未声明」。共用常量统一提到最早的用点。
+        const int imageWs = static_cast<int>(pages::Workspace::ImageFlow);
+        const int videoWs = static_cast<int>(pages::Workspace::VideoFlow);
+        const int storyboardWs = static_cast<int>(pages::Workspace::Storyboard);
         shell.SetWorkspace(assetsWs);
         bookWaited = 0;
         while ((pages::BookSide().loading || pages::BookSide().assets.empty()) &&
@@ -519,14 +603,34 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         // 「预览」段），以及刚加了入口的（出图/出片的第二个面板页签、画布折叠态）。
         //
         // 每张都必须显式把状态设成它承诺的样子，跑完再复位 —— 否则就是「图名和内容
-        // 对不上，而 manifest 照样记 saved」。
-        const int imageWs = static_cast<int>(pages::Workspace::ImageFlow);
-        const int videoWs = static_cast<int>(pages::Workspace::VideoFlow);
-        const int storyboardWs = static_cast<int>(pages::Workspace::Storyboard);
+        // 对不上，而 manifest 照样记 saved」。工作区常量在上面统一声明过了。
 
         // 底栏四个页签：以前只拍了 3（校验报告），0/1/2 三个页签**从来没被拍过**。
         // 这三个都是大面积视图（任务队列 / 日志 / 产物），最该有证据图。
-        for (int tab = 0; tab <= 2; ++tab) {
+        //
+        // ⚠️ 产物页（2）走 worker 扫 `<root>/output`，**必须等它回投**再拍。
+        //    不等的话拍到的是「目录是空的」—— 而那个空态本身是**正确**的输出，
+        //    manifest 同样记 saved，图名与内容对不上却抓不到。这就是「等待结果要写进
+        //    manifest」那条纪律的又一个实例：结论进 manifest，也进 overall 判据。
+        shell.SetDockTab(2);
+        int artifactWaited = 0;
+        while (shell.ArtifactRowCount() == 0 && artifactWaited < kReportWaitFrameCap) {
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            ++artifactWaited;
+        }
+        const int artifactRows = shell.ArtifactRowCount();
+        // ⚠️ 这里是**赋值**给外层的那个变量。早先写成 `const bool artifactsConverged = …`
+        // 在块内又声明了一个同名局部量，把外层的遮住 —— manifest 那行写的是
+        // `converged`（局部值），而 `overall` 行读的是外层的 false，于是同一件事
+        // 在两处得到相反结论。判据变量一律**赋值**，不在块内重新声明。
+        artifactsConverged = artifactRows > 0;
+        WriteManifest(manifest, std::string("artifact-snapshot=") +
+                                    (artifactsConverged ? "converged" : "TIMEOUT") +
+                                    " rows=" + std::to_string(artifactRows) + " after " +
+                                    std::to_string(artifactWaited) + " frames");
+        grabDriven("dock-artifacts", overview, base);
+        for (int tab : {0, 1}) {
             shell.SetDockTab(tab);
             host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
             grabDriven(std::string("dock-") + DockTabSlug(tab), overview, base);
@@ -610,17 +714,33 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
             // 是「小说工作区整体没有 hover」还是「这几个控件本身没 hover 样式」。
             {"hover-rail-toggle-overview", overview, 28.0f, 275.0f},
             {"hover-dock-row-novel", novelWs, 420.0f, 790.0f},
+            // 第七段新覆盖的视图。坐标逐个对着 out/review-* 里那些新图量的；
+            // 命中数与命中的 widget id 都会进日志，坐标偏了会直接报「一个控件都没命中」
+            // 而不是含糊的「悬停前后相同」。
+            // 底栏产物页第一行（fixture 造了 6 个产物，行有 hover 底色）
+            {"hover-artifact-row", overview, 200.0f, 789.0f, false, false, 2},
+            // 出图页右侧面板的页签。⚠️ 打的是**非选中**项「图评审」：设计稿
+            // `.seg > button:hover` 只改文字色，`.on` 本来就是 text-primary，
+            // 所以**选中项按设计就没有 hover 反馈**。拿选中项当探针等于测一个设计稿
+            // 不承诺的东西，判据会一直红。面板本身停在 1（批量出图）以保证这一页有内容。
+            {"hover-imageflow-tab", imageWs, 1105.0f, 165.0f, false, false, 0, 1},
+            // 小说页 8 个模式标签里的「设定」（以前只有 Clicked，标签不可反馈）
+            {"hover-novel-mode-tab", novelWs, 380.0f, 100.0f, false, false, 0, 0, 1},
         };
         int hoverOk = 0;
         int hoverUnstable = 0;
+        int hoverBroken = 0;
         for (const HoverTarget& target : targets) {
             (void)ProbeHover(host, shell, outputDir, target, base, drivenHashes, drivenNames,
-                             &hoverOk, &hoverUnstable, &result.captured, &result.failed);
+                             &hoverOk, &hoverUnstable, &hoverBroken, &result.captured,
+                             &result.failed);
         }
         hoverProbesPassed = hoverOk;
         const int hoverTotal = static_cast<int>(std::size(targets));
         WriteManifest(manifest, std::string("hover-probes=") + std::to_string(hoverOk) + "/" +
                                     std::to_string(hoverTotal) + " changed-vs-rest" +
+                                    (hoverBroken > 0 ? "  broken=" + std::to_string(hoverBroken)
+                                                     : std::string()) +
                                     (hoverUnstable > 0
                                          ? "  unstable=" + std::to_string(hoverUnstable)
                                          : std::string()));
@@ -696,7 +816,8 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     //    不能因为「其它图都写出来了」就整轮报绿。
     const bool pass = result.failed == 0 && identicalPairs == 0 && drivenDuplicates == 0 &&
                       reportScanConverged && bookSnapshotConverged && assetSnapshotConverged &&
-                      inverted == 0 && hoverProbesPassed == kHoverProbeTotal;
+                      artifactsConverged && inverted == 0 &&
+                      hoverProbesPassed == kHoverProbeTotal;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
                                 "  identical-theme-pairs: " + std::to_string(identicalPairs) +
@@ -707,7 +828,9 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                                 "  book-snapshot: " +
                                 (bookSnapshotConverged ? "converged" : "TIMEOUT") +
                                 "  asset-snapshot: " +
-                                (assetSnapshotConverged ? "converged" : "TIMEOUT"));
+                                (assetSnapshotConverged ? "converged" : "TIMEOUT") +
+                                "  artifact-snapshot: " +
+                                (artifactsConverged ? "converged" : "TIMEOUT"));
     if (inverted > 0) {
         WriteManifest(manifest, std::string("last-inverted-rect=") + kit::LastInvertedRect());
     }
