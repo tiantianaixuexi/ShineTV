@@ -8,6 +8,7 @@
 #include "ui/imgui/kit/Views.h"
 #include "ui/imgui/kit/Widgets.h"
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,10 @@ kit::Rect ViewHeader(kit::Rect area, ImDrawList* draw, const char* icon, const c
 
 // ---- P5.1 总控（pipeline）—— 纯数据，先做它验证数据通路 ----
 void DrawOverview(kit::Rect area, ImDrawList* draw);
+
+// 总控页绑定"当前工程根"的唯一入口（对应 Qt 版 PipelineWorkspace::SetContext）。
+// 绑上以后页面的进度 / 预算 / 账本 / 停止判定才是 Runner 的真实返回值；没绑就是空态。
+void BindOverviewProject(std::filesystem::path root);
 
 // ---- P5.2 小说（novel）—— 最大的一页：8 模式标签 + 8 套视图 ----
 class NovelPage {
@@ -50,14 +55,21 @@ private:
     int selectedShot_ = 0;
 };
 
-// ---- P5.5 出图（imageflow）—— 满幅画布 + FlowCanvas ----
+// ---- P5.5 出图（imageflow）— 满幅画布 + FlowCanvas ----
 class ImageFlowPage {
 public:
     void Draw(kit::Rect area, ImDrawList* draw);
 
 private:
+    // 首帧建图（节点定义照 webui mock）；之后坐标/缩放由 FlowCanvas 维护。
+    void BuildGraph();
+
     int panelTab_ = 0;
     bool folded_ = false;
+    std::vector<kit::FlowNode> flowNodes_;
+    std::vector<kit::FlowLink> flowLinks_;
+    kit::FlowView flowView_;
+    int flowSelected_ = -1;
 };
 
 // ---- P5.6 出片（videoflow）----
@@ -66,7 +78,13 @@ public:
     void Draw(kit::Rect area, ImDrawList* draw);
 
 private:
+    void BuildGraph();
+
     int panelTab_ = 0;
+    std::vector<kit::FlowNode> flowNodes_;
+    std::vector<kit::FlowLink> flowLinks_;
+    kit::FlowView flowView_;
+    int flowSelected_ = -1;
 };
 
 // ---- P4.11 项目中心（全屏，不套外壳）----

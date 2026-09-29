@@ -50,6 +50,7 @@ float FontSizeOf(ButtonSize size) {
 
 // 对外的命中测试（外壳/页面层用）。必须在匿名命名空间之外，
 // 内部版叫 HitTest，名字不能重。
+Hit HitTest(Rect bounds, std::string_view id) { return HitTestImpl(bounds, id); }
 bool Clicked(Rect bounds, std::string_view id) { return HitTestImpl(bounds, id).clicked; }
 bool Hovered(Rect bounds, std::string_view id) { return HitTestImpl(bounds, id).hovered; }
 
@@ -157,22 +158,44 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
     ImU32 text = ColorTextSecondary();
     switch (spec.variant) {
     case ButtonVariant::Primary:
+        // .btn-primary（ui.css:51-59）：常态是**纯 accent 底** + inset 顶高光，
+        // accent-h 渐变和 --shadow-accent 辉光都只在 :hover。早先常态就画
+        // accent→accent-h 斜渐变 + 常驻 28% 外光环，比设计稿重一档。
         if (hit.hovered && enabled) {
-            DrawDiagGradient(draw, body.min, body.max, rounding, accentHover, accent);
+            DrawRoundRect(draw, body.min, body.max, rounding, accentHover, 0, 0.0f,
+                          /*topHighlight=*/true);
+            // hover 才有的 accent 28% 外扩辉光
+            const Rect halo{body.min - ImVec2(0, 2), body.max + ImVec2(0, 2)};
+            DrawRoundRect(draw, halo.min, halo.max, rounding + 2.0f, 0,
+                          ColorOf(theme::CurrentDerived().btnPrimaryShadow), 2.0f);
         } else {
-            DrawDiagGradient(draw, body.min, body.max, rounding, accent, accentHover);
+            DrawRoundRect(draw, body.min, body.max, rounding, accent, 0, 0.0f,
+                          /*topHighlight=*/true);
         }
         text = ColorAccentFg();
         break;
     case ButtonVariant::Secondary:
-        fill = hit.hovered && enabled ? ColorFillHover() : ColorFillMuted();
-        border = ColorLineNormal();
+        // .btn-secondary（ui.css:60-68）：常态 bg-elevated + line-normal 边；
+        // hover 换 fill-hover 底并把边提到 line-strong。
+        if (hit.hovered && enabled) {
+            fill = ColorFillHover();
+            border = ColorLineStrong();
+        } else {
+            fill = ColorElevated();
+            border = ColorLineNormal();
+        }
         text = ColorText();
         break;
     case ButtonVariant::Danger:
-        fill = hit.hovered && enabled ? WithAlpha(ColorOf(theme::Current().statusDanger), 0.22f)
-                                       : WithAlpha(ColorOf(theme::Current().statusDanger), 0.14f);
-        border = WithAlpha(ColorOf(theme::Current().statusDanger), 0.42f);
+        // .btn-danger（ui.css:77-85）：常态透明底 + line-normal 边，红只用在文字；
+        // hover 才升到 14% 红底 + 42% 红边。
+        if (hit.hovered && enabled) {
+            fill = WithAlpha(ColorOf(theme::Current().statusDanger), 0.14f);
+            border = WithAlpha(ColorOf(theme::Current().statusDanger), 0.42f);
+        } else {
+            fill = 0;
+            border = ColorLineNormal();
+        }
         text = ColorOf(theme::Current().statusDanger);
         break;
     case ButtonVariant::Ghost:
@@ -183,11 +206,6 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
     if (spec.variant != ButtonVariant::Primary) {
         DrawRoundRect(draw, body.min, body.max, rounding, fill, border,
                       border == 0 ? 0.0f : 1.0f);
-    } else {
-        // 主按钮的 btnPrimaryShadow：accent 28% 的一圈外扩光
-        const Rect halo{body.min - ImVec2(0, 2), body.max + ImVec2(0, 2)};
-        DrawRoundRect(draw, halo.min, halo.max, rounding + 2.0f, 0,
-                      ColorOf(theme::CurrentDerived().btnPrimaryShadow), 2.0f);
     }
 
     if (!enabled) {
@@ -334,30 +352,49 @@ void Kbd(ImDrawList* draw, Rect bounds, std::string_view label) {
 Rect Card(ImDrawList* draw, Rect bounds, std::string_view title, std::string_view icon,
           bool hoverable, bool glow) {
     const float radius = 10.0f;
-    const ImU32 border = glow ? ColorAccent() : (hoverable ? ColorLineSubtle() : ColorLineSubtle());
-    DrawShadowed(draw, bounds.min, bounds.max, radius, ColorPanel(), border, 1.0f);
+    // .card.hoverable:hover / .card.glow:hover（ui.css:196-204）需要真的命中测试。
+    // 原实现是三目两支都取 ColorLineSubtle 的死代码：卡片标了 hoverable/glow，
+    // 组件画廊也按这个标签铺演示，但 hover 时**什么都看不出来**。
+    // ⚠️ ID 用标题不可靠：同页多张无标题卡片会拿到同一个 ID，hover 状态串卡。
+    //   用卡片左上角的屏幕坐标做 key：同一帧内唯一，且不随标题变化。
+    const Hit hit =
+        (hoverable || glow)
+            ? HitTestImpl(bounds, "card@" + std::to_string(static_cast<int>(bounds.min.x)) + "," +
+                                       std::to_string(static_cast<int>(bounds.min.y)))
+            : Hit{};
+    // hover 上浮 2px（transform: translateY(-2px)）—— 用整体偏移近似
+    const float lift = (hit.hovered && hoverable) ? -2.0f : 0.0f;
+    const ImVec2 min(bounds.min.x, bounds.min.y + lift);
+    const ImVec2 max(bounds.max.x, bounds.max.y + lift);
+
+    ImU32 border = ColorLineSubtle();
+    if (hit.hovered) {
+        // glow 用 accent-glow 边，普通 hoverable 用 line-strong（ui.css:197/202）
+        border = glow ? ColorAccentGlow() : ColorLineStrong();
+    }
+    DrawShadowed(draw, min, max, radius, ColorPanel(), border, 1.0f);
 
     const bool hasHeader = !title.empty() || !icon.empty();
-    float y = bounds.min.y + 16.0f;
+    float y = min.y + 16.0f;
     if (hasHeader) {
         // 头：padding 12/16
-        const float headerY = bounds.min.y + 12.0f;
+        const float headerY = min.y + 12.0f;
         const float iconSize = 15.0f;
-        float x = bounds.min.x + 16.0f;
+        float x = min.x + 16.0f;
         if (!icon.empty()) {
             DrawIcon(draw, icon, ImVec2(x, headerY + 1.0f), iconSize, ColorAccent());
             x += iconSize + 8.0f;
         }
         ImFont* font = FontBoldAt(13.5f);
-        DrawTextClipped(draw, font, 13.5f, ImVec2(x, headerY), bounds.width() - 32.0f,
+        DrawTextClipped(draw, font, 13.5f, ImVec2(x, headerY), max.x - min.x - 32.0f,
                         ColorText(), title);
-        y = bounds.min.y + 12.0f + 20.0f;
+        y = min.y + 12.0f + 20.0f;
         // 头下边框
-        draw->AddLine(ImVec2(bounds.min.x, y + 11.0f), ImVec2(bounds.max.x, y + 11.0f),
+        draw->AddLine(ImVec2(min.x, y + 11.0f), ImVec2(max.x, y + 11.0f),
                       ColorLineSubtle(), 1.0f);
         y += 12.0f;
     }
-    return Rect{ImVec2(bounds.min.x + 16.0f, y), ImVec2(bounds.max.x - 16.0f, bounds.max.y - 16.0f)};
+    return Rect{ImVec2(min.x + 16.0f, y), ImVec2(max.x - 16.0f, max.y - 16.0f)};
 }
 
 Rect CardHeaderRow(Rect card, std::string_view title, std::string_view icon) {
@@ -407,16 +444,19 @@ std::string_view Segmented(ImDrawList* draw, Rect bounds,
             // 选中 = bg-elevated + shadow + 4px accent 圆点
             DrawRoundRect(draw, item.min, item.max, 4.0f, ColorElevated(), 0, 0.0f,
                           /*topHighlight=*/true);
-            draw->AddCircleFilled(ImVec2(item.center().x, item.min.y + 3.5f), 2.0f, ColorAccent(),
-                                 10);
         } else if (hit.hovered) {
             DrawRoundRect(draw, item.min, item.max, 4.0f, ColorFillHover());
         }
         const ImU32 fg = on ? ColorText() : (hit.hovered ? ColorText() : ColorTextSecondary());
-        draw->AddText(font, 12.5f,
-                      ImVec2(item.center().x - 0.5f * text,
-                             item.center().y - 12.5f * 0.5f),
-                      fg, option.label.data(), option.label.data() + option.label.size());
+        const float textX = item.center().x - 0.5f * text - (on ? 5.0f : 0.0f);
+        draw->AddText(font, 12.5f, ImVec2(textX, item.center().y - 12.5f * 0.5f), fg,
+                      option.label.data(), option.label.data() + option.label.size());
+        // .seg > button.on::after（ui.css:233-242）：4px accent 圆点在**文字右侧**，
+        // margin-left 6px、vertical-align 2px。画在文字上方会直接压住字（原先的错法）。
+        if (on) {
+            draw->AddCircleFilled(ImVec2(textX + text + 8.0f, item.center().y + 2.0f), 2.0f,
+                                 ColorAccent(), 10);
+        }
         x = item.max.x + 2.0f;
     }
     return picked;
@@ -611,7 +651,11 @@ void Progress(ImDrawList* draw, Rect bounds, float value, bool run, bool thin) {
         return;
     }
     const Rect fill{track.min, ImVec2(track.min.x + track.width() * filled, track.max.y)};
-    DrawHGradient(draw, fill.min, fill.max, height * 0.5f, ColorAccent(), ColorAccentHover());
+    // .prog > i 的 `background: var(--grad-accent)`（ui.css:441）：grad-accent 是
+    // accent → **info**（tokens.css:70，每套主题都不同），不是 accent → accent-h。
+    // 画成同族渐变时整条进度都是绿的，丢掉设计稿那一眼可辨的冷暖过渡。
+    DrawHGradient(draw, fill.min, fill.max, height * 0.5f, ColorAccent(),
+                  ColorOf(theme::Current().accentInfo));
     if (run) {
         // run：叠 100° 白 35% 微光扫过
         const float t = Pulse(1.6f);

@@ -185,31 +185,42 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
         paletteOpen_ = !paletteOpen_;
     }
     rx -= 12.0f;
-    // 运行(primary + play) / 停止(secondary + stop)
-    const std::string_view runLabel = "运行";
-    const float runW = ButtonWidth(ButtonSize::Medium, 15.0f,
-                                   FontBoldAt(13.0f)->CalcTextSizeA(13.0f, 1e9f, 0.0f, runLabel.data(),
-                                                                       runLabel.data() + runLabel.size())
-                                       .x);
-    rx -= runW;
-    ButtonSpec runSpec;
-    runSpec.variant = ButtonVariant::Primary;
-    runSpec.icon = "play";
-    Button(draw, RectAt(rx, 0.5f * (area.min.y + area.max.y) - 15.0f, runW, 30.0f), runLabel, runSpec,
-           "tb-run");
-    rx -= 8.0f;
-    const std::string_view stopLabel = "停止";
-    const float stopW = ButtonWidth(ButtonSize::Medium, 15.0f,
-                                    FontBoldAt(13.0f)->CalcTextSizeA(13.0f, 1e9f, 0.0f, stopLabel.data(),
-                                                                        stopLabel.data() + stopLabel.size())
-                                        .x);
-    rx -= stopW;
-    ButtonSpec stopSpec;
-    stopSpec.variant = ButtonVariant::Secondary;
-    stopSpec.icon = "stop";
-    stopSpec.disabled = true;
-    Button(draw, RectAt(rx, 0.5f * (area.min.y + area.max.y) - 15.0f, stopW, 30.0f), stopLabel,
-           stopSpec, "tb-stop");
+    // 运行 / 停止是**二选一**（webui Shell.jsx:44-48：`run.active ? 停止 : 运行`）。
+    // 早先两个按钮常驻且「停止」恒 disabled，界面上等于挂了一个永远按不动的控件。
+    ImFont* topFont = FontBoldAt(13.0f);
+    const auto labelWidth = [&](std::string_view label) {
+        return topFont->CalcTextSizeA(13.0f, 1e9f, 0.0f, label.data(),
+                                      label.data() + label.size())
+            .x;
+    };
+    if (runActive_) {
+        const std::string_view stopLabel = "停止";
+        const float stopW = ButtonWidth(ButtonSize::Medium, 15.0f, labelWidth(stopLabel));
+        rx -= stopW;
+        ButtonSpec stopSpec;
+        stopSpec.variant = ButtonVariant::Secondary;
+        stopSpec.icon = "stop";
+        if (Button(draw, RectAt(rx, 0.5f * (area.min.y + area.max.y) - 15.0f, stopW, 30.0f),
+                   stopLabel, stopSpec, "tb-stop")) {
+            runActive_ = false;
+            PushLog("warn", "流水线已请求停止");
+        }
+    } else {
+        const std::string_view runLabel = "运行";
+        const float runW = ButtonWidth(ButtonSize::Medium, 15.0f, labelWidth(runLabel));
+        rx -= runW;
+        ButtonSpec runSpec;
+        runSpec.variant = ButtonVariant::Primary;
+        runSpec.icon = "play";
+        if (Button(draw, RectAt(rx, 0.5f * (area.min.y + area.max.y) - 15.0f, runW, 30.0f),
+                   runLabel, runSpec, "tb-run")) {
+            runActive_ = true;
+            runFinished_ = false;
+            runStageIndex_ = 0;
+            runPercent_ = 0;
+            PushLog("info", "流水线开始运行");
+        }
+    }
 }
 
 // ---------------------------------------------------------------- P4.3 导航栏
@@ -487,11 +498,20 @@ void Shell::DrawStatusBar(Rect area, ImDrawList* draw) {
     draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX + 8.0f, cy - 5.75f), ColorTextSecondary(),
                   themeName.data(), themeName.data() + themeName.size());
     // 96px 细进度 + T{n}/17 · {pct}%
-    const std::string progress = "T3/17 · 42%";
+    // ⚠️ 这里是**真实运行态**，不是写死的 "T3/17 · 42%"。未运行时显示"未运行"，
+    //    已完成显示"已完成"（webui Shell.jsx:330 三态），只有运行中才报阶段号。
+    std::string progress = "未运行";
+    if (runActive_) {
+        progress = "T" + std::to_string(runStageIndex_ + 1) + "/17 · " +
+                   std::to_string(runPercent_) + "%";
+    } else if (runFinished_) {
+        progress = "已完成";
+    }
     const float progressW =
         FontAt(11.5f)->CalcTextSizeA(11.5f, 1e9f, 0.0f, progress.data(), progress.data() + progress.size()).x;
     rightX -= 96.0f + 8.0f + progressW + 8.0f;
-    Progress(draw, Rect{rightX, cy - 2.0f, rightX + 96.0f, cy + 2.0f}, 42.0f, false, true);
+    Progress(draw, Rect{rightX, cy - 2.0f, rightX + 96.0f, cy + 2.0f},
+             static_cast<float>(runPercent_), runActive_, true);
     rightX -= progressW + 8.0f;
     draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX, cy - 5.75f), ColorTextSecondary(),
                   progress.data(), progress.data() + progress.size());
@@ -666,12 +686,20 @@ void Shell::SetWorkspace(int index) {
 
 void Shell::SetTheme(shine::theme::ThemeId id) {
     theme::ApplyTheme(id);
-    // 水墨是唯一换衬线族的主题 → 字体图集要重建，其余主题只换 ImGuiStyle
-    if (theme::ThemeUsesSerif(id)) {
-        // 重建失败就是满屏豆腐块且不报错，必须有日志。
-        if (!BuildFontAtlas(/*serif=*/true)) {
-            shine::log::Error("serif font atlas rebuild failed — falling back to sans, 文字可能缺字");
+    // 水墨是唯一换衬线族的主题 → 字体图集要重建，其余主题只换 ImGuiStyle。
+    //
+    // ⚠️ 双向都要判，且要记住当前图集是哪一个族：
+    //   * 只在「切到水墨」时重建 → 切离水墨后图集还停在宋体，其他主题的字全是宋体观感
+    //   * 不记状态连续重建 → 每调一次 SetTheme(ink) 就重烘一遍图集（16 档 ×
+    //     两族字形集），取证跑 5 套主题时会连续烘 5 次，卡顿且无意义
+    const bool wantSerif = theme::ThemeUsesSerif(id);
+    if (wantSerif != atlasIsSerif_) {
+        if (!BuildFontAtlas(/*serif=*/wantSerif)) {
+            shine::log::Error("font atlas rebuild failed for {} family — 文字可能缺字",
+                              wantSerif ? "serif" : "sans");
         }
+        atlasIsSerif_ = wantSerif;
+        // 重建后 io.FontDefault 变了，必须把 Style 的字体色/尺寸基线重刷一遍
         theme::ApplyCurrentTheme();
     }
     (void)theme::PersistTheme(theme::DefaultThemeFile());
@@ -681,6 +709,52 @@ void Shell::ToggleSidePanel() { layout_.sidePanelVisible = !layout_.sidePanelVis
 void Shell::ToggleDock() { layout_.dockVisible = !layout_.dockVisible; }
 void Shell::ToggleInspector() { layout_.inspectorVisible = !layout_.inspectorVisible; }
 void Shell::ToggleCommandPalette() { paletteOpen_ = !paletteOpen_; }
+
+void Shell::PushLog(std::string_view level, std::string_view message) {
+    SYSTEMTIME now{};
+    ::GetLocalTime(&now);
+    char stamp[16];
+    std::snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d", now.wHour, now.wMinute, now.wSecond);
+    logLines_.emplace_back(std::string(stamp) + " [" + std::string(level) + "] " +
+                           std::string(message));
+    // 只留最近 400 行：底栏日志是滚动视图，不裁会一直涨
+    if (logLines_.size() > 400) {
+        logLines_.erase(logLines_.begin(), logLines_.begin() + 200);
+    }
+}
+
+// ---------------------------------------------------------------- 工程打开/新建
+void Shell::SetProjectRoot(std::filesystem::path root, std::string name) {
+    layout_.projectRoot = std::move(root);
+    layout_.projectName = std::move(name);
+    // 总控页的 Runner 要靠工程根才知道 work/ 与 ledger 的位置。
+    // 不绑 = 页面显示真实空态，而不是编一份假账本出来。
+    pages::BindOverviewProject(layout_.projectRoot);
+    (void)SaveLayout();
+}
+
+bool Shell::OpenProjectByName(const std::string& name) {
+    // 在最近列表里按名字找根目录，再交给 ProjectService 真正打开
+    std::filesystem::path root;
+    for (const project::RecentEntry& entry : projects_.Recent()) {
+        if (entry.name == name) {
+            root = entry.rootDir;
+            break;
+        }
+    }
+    if (root.empty()) {
+        PushLog("warn", "未找到工程：" + name);
+        return false;
+    }
+    auto opened = projects_.Open(root);
+    if (!opened) {
+        PushLog("error", "打开工程失败：" + name + " · " + std::string(opened.error().message));
+        return false;
+    }
+    SetProjectRoot(root, name);
+    PushLog("info", "已打开工程：" + name);
+    return true;
+}
 
 // ---------------------------------------------------------------- P1.5 布局持久化
 bool Shell::SaveLayout() {
@@ -835,11 +909,18 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
         return;
     }
     const kit::Rect origin = region.content();
-    const kit::Rect view{origin.min, ImVec2(origin.max.x, origin.min.y + 2400.0f)};
 
     // 页面必须画进 **child 自己的** draw list：BeginChild 的裁剪矩形只作用于它自己的
     // draw list。传父窗口的 draw 进去，内容会一路溢出盖住底栅和状态栏（实测过）。
     ImDrawList* draw = ImGui::GetWindowDrawList();
+
+    // ⚠️ 满幅画布页（出图/出片）不能撑高：它们的画布是「铺满可视区」语义，
+    //    撑到 2400 会让 FlowCanvas 的 fit 按 2400 高居中，y 偏移直接顶出视口，
+    //    结果一个节点都看不见（实测 canvas=644x2400 → y=1112）。这两页自带
+    //    内部滚动，不需要外壳再撑一次。
+    const bool fullBleed = layout_.workspace == 4 || layout_.workspace == 5;
+    const kit::Rect view{origin.min,
+                         ImVec2(origin.max.x, origin.min.y + (fullBleed ? origin.height() : 2400.0f))};
 
     switch (layout_.workspace) {
     case 0: DrawOverview(view, draw); break;
