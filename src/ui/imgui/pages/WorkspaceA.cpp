@@ -9,6 +9,7 @@
 #include "pipeline/Runner.h"
 #include "pipeline/StageMachine.h"
 #include "pipeline/StopPolicy.h"
+#include "ui/imgui/kit/Scroll.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
 
@@ -643,140 +644,158 @@ void DrawOverview(Rect area, ImDrawList* draw) {
 
     // ---- 右列：停止条件 / 最近产物 / 运行信息 ----
     //
-    // ⚠️ 这里本来还想加一张「章节 × V 阶段」矩阵（数据层早就接上了 ——
-    //    `BookSideView::chapterVStages` 是逐章调 `ListStageArtifacts` 算出来的真计数，
-    //    渲染代码本轮写完又删掉了，原因是**布局容量不够**，不是数据不够：
-    //    右栏可用高度约 232px，矩阵（卡头 44 + 3 行 × 36 = 152）加上停止条件
-    //    （判定 + S1–S4 + 脚注 + 卡头 ≈ 164）已经 316 > 232，而 `max(stopMin, …)`
-    //    那种「各自保底」的写法会让两者相加必然溢出 —— 实测截图上「停止条件」
-    //    只剩一个标题、正文全被切掉，那比没有这张矩阵更糟。
+    // ⚠️ 这里原来用「每张卡各自 `max(下限, 剩余)`」分高度，右栏是**重叠**的：
+    //    右栏可用高约 247px，而三张卡的下限之和是
+    //      停止 220 + 最近产物 78 + 运行信息 120 + 2×16 = **450**
+    //    算出来的实际 rect：
+    //      停止条件  [500, 720]      ← 唯一正常
+    //      最近产物  [736, 814]      ← **完全在可视区外**（747），被 clip 掉
+    //      运行信息  [627, 747]      ← 与停止条件**重叠 93px**
+    //    两张卡的背景色相同，叠在一起看不出来 —— 像素扫描 `overview-bound.png`
+    //    的右列 y=506..745 是**一整块连续背景、中间只有一条分隔线**，证实了这一点。
+    //    也就是说「最近产物」从来没被看到过，「运行信息」和「停止条件」的文字
+    //    一直画在同一块背景上。
     //
-    //    换句话说：右栏在这个窗口高度下**只放得下一张卡**，这是布局密度问题，
-    //    要整体重排（压 KPI 行高 / 让工作区可滚动 / 把矩阵挪进 KPI 那行的空位）才谈得上。
-    //    先把数据层与 fixture 备好（`BookSideView::chapterVStages` + 45 行
-    //    `stage_artifacts`），等布局有位置时直接画，不用重新查一遍数据。
-    const float infoH = 120.0f;
-    const float stopMin = 220.0f;  // 判定 20 + 原因两行 30 + S1-S4 80 + 脚注两行 28 + 卡头卡脚
-    const float artMin = 78.0f;
-    int artRows = static_cast<int>(std::min<std::size_t>(s.entries.size(), 4));
-    const float artRoom = rightCol.height() - infoH - stopMin - 2.0f * kGap;
-    while (artRows > 0 && artMin + 34.0f * static_cast<float>(artRows) > artRoom) {
-        --artRows;
-    }
-    const float artH = s.entries.empty() ? artMin : artMin + 34.0f * static_cast<float>(artRows);
-    const float stopH = std::max(stopMin, rightCol.height() - infoH - artH - 2.0f * kGap);
+    // 改成：每张卡按**内容真实高度**算，y 依次累加，溢出交给 ScrollRegion 滚动。
+    // 自绘 draw call 既不裁剪也不接管命中，Scroll.h 的 BeginChild 一次给全
+    // （裁剪矩形 + 滚动偏移 + 输入归属）—— 这正是它存在的理由。
+    //
+    // 「章节 × V 阶段」矩阵（数据层 `BookSideView::chapterVStages` 已接好）之所以
+    // 放不下，也是同一个原因：右栏在这个窗口高度下塞不下第四张卡。它留在数据层，
+    // 等布局重排（压 KPI 行高 / 加高窗口）后直接画，见 refactor/PROGRESS.md。
+    ScrollRegion rightScroll("ov-right", rightCol);
+    if (rightScroll) {
+        const Rect rc = rightScroll.content();
+        const float cardW = rc.width();
+        float ry = rc.min.y;
+        const pipeline::StopDecision decision = EvaluateStopPolicy(s.budget);
+        const bool hasReason = decision.stop && !decision.reason.empty();
 
-    // 停止条件：真实判定 + S1–S4 的真实阈值。
-    // ⚠️ 设计稿的「S1–S12」清单来自 mock.js；src/pipeline/StopPolicy 只判
-    // 「S1–S4 预算」/S5/S6/S7/S8 五组，且**没有可枚举的规则表接口**
-    // （与 Qt 版 src/ui/pages/pipeline/StopReportView.h 同一个结论）。
-    // 所以这里不硬凑 12 行：画真实判定 + 真实阈值 + 一行前置状态。
-    const Rect stop{rightCol.min.x, rightCol.min.y, rightCol.max.x, rightCol.min.y + stopH};
-    Rect stopBody = Card(draw, stop, "停止条件 · S1–S8", "alert", false, false);
-    const pipeline::StopDecision decision = EvaluateStopPolicy(s.budget);
-    float sy = stopBody.min.y;
-    StatusDot(draw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
-              decision.stop ? theme::Tone::Warn : theme::Tone::Ok, false);
-    const std::string verdict = decision.stop ? decision.rule : std::string("未触发任何停止条件");
-    draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 16.0f, sy),
-                  decision.stop ? ColorOf(theme::Current().statusWarn) : ColorOf(theme::Current().statusOk),
-                  verdict.data(), verdict.data() + verdict.size());
-    sy += 20.0f;
-    if (decision.stop && !decision.reason.empty()) {
-        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(stopBody.min.x, sy), stopBody.width(),
-                        ColorTextMuted(), decision.reason, true);
-        sy += 30.0f;
-    }
-    // S1–S4 就是 Budget 的四个上限，顺序与 StopReportView 一致
-    const std::vector<std::pair<std::string, std::string>> thresholds = {
-        {"S1", "LLM 调用 " + std::to_string(s.budget.llm_calls) + " / " +
-                   std::to_string(s.budget.max_llm_calls)},
-        {"S2", "高档 " + std::to_string(s.budget.high_quality_calls) + " / " +
-                   std::to_string(s.budget.max_high_quality_calls)},
-        {"S3", "镜头 " + std::to_string(s.budget.shots) + " / " + std::to_string(s.budget.max_shots)},
-        {"S4", "成本 " + Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
-    };
-    for (const auto& [code, name] : thresholds) {
+        // 停止条件：真实判定 + S1–S4 的真实阈值。
+        // ⚠️ 设计稿的「S1–S12」清单来自 mock.js；src/pipeline/StopPolicy 只判
+        // 「S1–S4 预算」/S5/S6/S7/S8 五组，且**没有可枚举的规则表接口**
+        // （与 Qt 版 src/ui/pages/pipeline/PipelineWorkspace 同一个结论）。
+        // 所以这里不硬凑 12 行：画真实判定 + 真实阈值 + 一行前置状态。
+        const float stopH = 44.0f + 20.0f + (hasReason ? 30.0f : 0.0f) + 4.0f * 20.0f + 28.0f;
+        const Rect stop{rc.min.x, ry, rc.max.x, ry + stopH};
+        Rect stopBody = Card(draw, stop, "停止条件 · S1–S8", "alert", false, false);
+        ry = stop.max.y + kGap;
+        float sy = stopBody.min.y;
         StatusDot(draw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
-                  overBudget ? theme::Tone::Warn : theme::Tone::Idle, false);
-        draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(stopBody.min.x + 16.0f, sy + 1.0f), ColorTextMuted(),
-                      code.data(), code.data() + code.size());
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 48.0f, sy),
-                        stopBody.width() - 48.0f, ColorTextSecondary(), name);
+                  decision.stop ? theme::Tone::Warn : theme::Tone::Ok, false);
+        const std::string verdict =
+            decision.stop ? decision.rule : std::string("未触发任何停止条件");
+        draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 16.0f, sy),
+                      decision.stop ? ColorOf(theme::Current().statusWarn)
+                                    : ColorOf(theme::Current().statusOk),
+                      verdict.data(), verdict.data() + verdict.size());
         sy += 20.0f;
-    }
-    DrawTextClipped(
-        draw, FontAt(11.0f), 11.0f, ImVec2(stopBody.min.x, sy + 4.0f), stopBody.width(),
-        ColorTextMuted(),
-        std::string("S5 LLM ") + (LlmConfigured() ? "已配置" : "未配置") + " · S6 ComfyUI " +
-            (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") + " · S7 复核 " +
-            (CrossReviewConfigured() ? "已配置" : "未配置") + " · S8 Scene 未查询 novel.db",
-        true);
-
-    // 最近产物（webui Overview.jsx:132-157 整块，之前 ImGui 侧缺失）
-    const Rect art{rightCol.min.x, stop.max.y + kGap, rightCol.max.x, stop.max.y + kGap + artH};
-    Rect artBody = Card(draw, art, "最近产物", "folder", false, false);
-    ButtonSpec viewSpec;
-    viewSpec.variant = ButtonVariant::Ghost;
-    viewSpec.size = ButtonSize::Small;
-    viewSpec.disabled = s.entries.empty();
-    if (Button(draw, RectAt(art.max.x - 60.0f, art.min.y + 10.0f, 44.0f, 24.0f), "查看", viewSpec,
-               "ov-view")) {
-        const std::string err = util::ShellOpen(util::PathFromUtf8(s.entries.back().output_path));
-        if (!err.empty()) {
-            log::Error("总控：打开产物失败 {}", err);
+        if (hasReason) {
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(stopBody.min.x, sy),
+                            stopBody.width(), ColorTextMuted(), decision.reason, true);
+            sy += 30.0f;
         }
-    }
-    if (s.entries.empty()) {
-        DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(artBody.min.x, artBody.min.y),
-                        artBody.width(), ColorTextMuted(),
-                        s.bound ? "还没有落盘产物。" : "未绑定工程根。", true);
-    } else {
-        float ay = artBody.min.y;
-        for (std::size_t i = s.entries.size() - static_cast<std::size_t>(artRows);
-             i < s.entries.size(); ++i) {
-            const auto& entry = s.entries[i];
-            const std::filesystem::path path = util::PathFromUtf8(entry.output_path);
-            const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + 32.0f};
-            // ⚠️ 一次 HitTest 拿 hovered + clicked：先 Hovered(idA) 再 Clicked(idB)
-            // 会在同一矩形上叠两个 InvisibleButton，ImGui 只让先注册的那个拿到
-            // HoveredId，第二个永远 clicked=false —— 这一行点不开。
-            const Hit hit = HitTest(row, "ov-art-" + std::to_string(i));
-            if (hit.hovered) {
-                DrawRoundRect(draw, row.min, row.max, 6.0f, ColorFillHover());
+        // S1–S4 就是 Budget 的四个上限，顺序与 StopReportView 一致
+        const std::vector<std::pair<std::string, std::string>> thresholds = {
+            {"S1", "LLM 调用 " + std::to_string(s.budget.llm_calls) + " / " +
+                       std::to_string(s.budget.max_llm_calls)},
+            {"S2", "高档 " + std::to_string(s.budget.high_quality_calls) + " / " +
+                       std::to_string(s.budget.max_high_quality_calls)},
+            {"S3", "镜头 " + std::to_string(s.budget.shots) + " / " +
+                       std::to_string(s.budget.max_shots)},
+            {"S4", "成本 " + Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
+        };
+        for (const auto& [code, name] : thresholds) {
+            StatusDot(draw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
+                      overBudget ? theme::Tone::Warn : theme::Tone::Idle, false);
+            draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(stopBody.min.x + 16.0f, sy + 1.0f),
+                          ColorTextMuted(), code.data(), code.data() + code.size());
+            DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 48.0f, sy),
+                            stopBody.width() - 48.0f, ColorTextSecondary(), name);
+            sy += 20.0f;
+        }
+        DrawTextClipped(
+            draw, FontAt(11.0f), 11.0f, ImVec2(stopBody.min.x, sy + 4.0f), stopBody.width(),
+            ColorTextMuted(),
+            std::string("S5 LLM ") + (LlmConfigured() ? "已配置" : "未配置") + " · S6 ComfyUI " +
+                (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") + " · S7 复核 " +
+                (CrossReviewConfigured() ? "已配置" : "未配置") + " · S8 Scene 未查询 novel.db",
+            true);
+
+        // 最近产物（webui Overview.jsx:132-157 整块）
+        //
+        // ⚠️ 画**全部**条目，不再按「可用高度」砍行 —— 砍行的逻辑本身依赖一个
+        //    算错了的空间（见上面的重叠分析），而且砍掉之后用户完全看不出
+        //    「还有更多」。现在内容超出由 ScrollRegion 滚。
+        const int artRows = static_cast<int>(s.entries.size());
+        const float artH =
+            44.0f + 16.0f + (artRows > 0 ? 32.0f * static_cast<float>(artRows) + 4.0f : 24.0f);
+        const Rect art{rc.min.x, ry, rc.max.x, ry + artH};
+        Rect artBody = Card(draw, art, "最近产物", "folder", false, false);
+        ry = art.max.y + kGap;
+        ButtonSpec viewSpec;
+        viewSpec.variant = ButtonVariant::Ghost;
+        viewSpec.size = ButtonSize::Small;
+        viewSpec.disabled = s.entries.empty();
+        if (Button(draw, RectAt(art.max.x - 60.0f, art.min.y + 10.0f, 44.0f, 24.0f), "查看", viewSpec,
+                   "ov-view")) {
+            const std::string err = util::ShellOpen(util::PathFromUtf8(s.entries.back().output_path));
+            if (!err.empty()) {
+                log::Error("总控：打开产物失败 {}", err);
             }
-            const std::string name = util::PathToUtf8(path.filename());
-            DrawTextClipped(draw, FontBoldAt(12.0f), 12.0f, ImVec2(row.min.x + 6.0f, ay + 3.0f),
-                            row.width() - 26.0f, ColorText(), name);
-            std::string sub = pipeline::StageCode(entry.stage);
-            if (!entry.degradation.empty()) {
-                sub += " · 降级 " + entry.degradation;
-            }
-            DrawTextClipped(draw, FontAt(11.0f), 11.0f, ImVec2(row.min.x + 6.0f, ay + 18.0f),
-                            row.width() - 26.0f, ColorTextMuted(), sub);
-            DrawIcon(draw, "chevron", ImVec2(row.max.x - 16.0f, ay + 10.0f), 12.0f, ColorTextMuted());
-            if (hit.clicked) {
-                const std::string err = util::ShellOpen(path);
-                if (!err.empty()) {
-                    log::Error("总控：打开产物失败 {}", err);
+        }
+        if (artRows == 0) {
+            DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(artBody.min.x, artBody.min.y),
+                            artBody.width(), ColorTextMuted(),
+                            s.bound ? "还没有落盘产物。" : "未绑定工程根。", true);
+        } else {
+            float ay = artBody.min.y;
+            for (std::size_t i = 0; i < s.entries.size(); ++i) {
+                const auto& entry = s.entries[i];
+                const std::filesystem::path path = util::PathFromUtf8(entry.output_path);
+                const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + 32.0f};
+                // ⚠️ 一次 HitTest 拿 hovered + clicked：先 Hovered(idA) 再 Clicked(idB)
+                // 会在同一矩形上叠两个 InvisibleButton，ImGui 只让先注册的那个拿到
+                // HoveredId，第二个永远 clicked=false —— 这一行点不开。
+                const Hit hit = HitTest(row, "ov-art-" + std::to_string(i));
+                if (hit.hovered) {
+                    DrawRoundRect(draw, row.min, row.max, 6.0f, ColorFillHover());
                 }
+                const std::string name = util::PathToUtf8(path.filename());
+                DrawTextClipped(draw, FontBoldAt(12.0f), 12.0f, ImVec2(row.min.x + 6.0f, ay + 3.0f),
+                                row.width() - 26.0f, ColorText(), name);
+                std::string sub = pipeline::StageCode(entry.stage);
+                if (!entry.degradation.empty()) {
+                    sub += " · 降级 " + entry.degradation;
+                }
+                DrawTextClipped(draw, FontAt(11.0f), 11.0f, ImVec2(row.min.x + 6.0f, ay + 18.0f),
+                                row.width() - 26.0f, ColorTextMuted(), sub);
+                DrawIcon(draw, "chevron", ImVec2(row.max.x - 16.0f, ay + 10.0f), 12.0f,
+                         ColorTextMuted());
+                if (hit.clicked) {
+                    const std::string err = util::ShellOpen(path);
+                    if (!err.empty()) {
+                        log::Error("总控：打开产物失败 {}", err);
+                    }
+                }
+                ay += 36.0f;
             }
-            ay += 34.0f;
         }
-    }
 
-    // 运行信息：Overview.jsx:160-167 的四行（当前项目 / 数据目录 / 检查点 / 预算余量）
-    const Rect info{rightCol.min.x, rightCol.max.y - infoH, rightCol.max.x, rightCol.max.y};
-    Rect infoBody = Card(draw, info, "运行信息", "info", false, false);
-    char chapterText[16];
-    std::snprintf(chapterText, sizeof(chapterText), "ch%03d", s.chapter < 0 ? 0 : s.chapter);
-    KeyValues(draw, infoBody,
-              {{"当前项目", s.root.empty() ? std::string("未打开项目")
-                                          : util::PathToUtf8(s.root.filename())},
-               {"数据目录", s.root.empty() ? std::string("—") : util::PathToUtf8(s.root)},
-               {"检查点", s.chapter < 0 ? std::string("无") : std::string(chapterText)},
-               {"预算余量", Money(s.budget.max_cost - s.budget.cost) + " / " +
-                                Money(s.budget.max_cost)}});
+        // 运行信息：Overview.jsx:160-167 的四行（当前项目 / 数据目录 / 检查点 / 预算余量）
+        const float infoH = 44.0f + 4.0f * 20.0f + 16.0f;
+        const Rect info{rc.min.x, ry, rc.max.x, ry + infoH};
+        Rect infoBody = Card(draw, info, "运行信息", "info", false, false);
+        char chapterText[16];
+        std::snprintf(chapterText, sizeof(chapterText), "ch%03d", s.chapter < 0 ? 0 : s.chapter);
+        KeyValues(draw, infoBody,
+                  {{"当前项目", s.root.empty() ? std::string("未打开项目")
+                                              : util::PathToUtf8(s.root.filename())},
+                   {"数据目录", s.root.empty() ? std::string("—") : util::PathToUtf8(s.root)},
+                   {"检查点", s.chapter < 0 ? std::string("无") : std::string(chapterText)},
+                   {"预算余量", Money(s.budget.max_cost - s.budget.cost) + " / " +
+                                    Money(s.budget.max_cost)}});
+    }
 }
 
 // ================================================================ P5.2 小说 / P5.3 资产
