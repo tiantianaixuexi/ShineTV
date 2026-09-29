@@ -361,7 +361,7 @@ Ctl {
                     width: parent.width
                     height: parent.height
 
-                    StoryboardSpin {
+                    Spinner {
                         id: stageSpin
                         x: 0
                         y: (root.statusLH - height) / 2

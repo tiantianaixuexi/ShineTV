@@ -268,10 +268,10 @@ Ctl {
                 Button { text: "中号"; primary: true }
                 Button { text: "大号"; primary: true }
                 Item {
-                    // 设计稿的 loading 转圈是 13×13（UI.jsx:11），GallerySpinner
+                    // 设计稿的 loading 转圈是 13×13（UI.jsx:11），共享 Spinner
                     // 的自然尺寸是 14，这里按 14 排位。
                     width: 14 + 6 + bl.width; height: 30
-                    GallerySpinner { y: Math.round((30 - 14) / 2) }
+                    Spinner { y: Math.round((30 - 14) / 2) }
                     Button { id: bl; x: 20; text: "加载中"; primary: true }
                 }
                 Button { text: "禁用"; primary: true; enabled: false }
@@ -412,8 +412,8 @@ Ctl {
             GalleryFlow {
                 x: 0; y: 133
                 width: parent.width
-                GallerySpinner { }
-                GallerySpinner { small: true }
+                Spinner { }
+                Spinner { sm: true }
                 Text {
                     text: "Spinner / 加载态"
                     color: ThemeBridge.colors["text.muted"]

@@ -1,4 +1,4 @@
-// src/ui/qml/ImageFlow.qml —— 出图工作区（QML 迁移）
+﻿// src/ui/qml/ImageFlow.qml —— 出图工作区（QML 迁移）
 //
 // 对照 webui/src/views/ImageFlow.jsx（245 行），部件几何与配色逐条取自
 // views.css:174-264（浮动工具栏 / 浮动面板 / 密集行）、views.css:1017-1113
@@ -304,7 +304,7 @@ Ctl {
                 width: 11
                 height: 15
                 visible: root.graphRunning
-                ImageFlowSpin {
+                Spinner {
                     anchors.horizontalCenter: parent.horizontalCenter
                     anchors.top: parent.top
                     anchors.topMargin: 4

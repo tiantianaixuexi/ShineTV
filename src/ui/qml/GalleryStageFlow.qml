@@ -128,10 +128,10 @@ Ctl {
                                     width: sp.width
                                     height: root.nodeH
                                     visible: cell.st === "run"
-                                    GallerySpinner {
+                                    Spinner {
                                         id: sp
                                         y: Math.round((root.nodeH - height) / 2)
-                                        small: true
+                                        sm: true
                                     }
                                 }
                                 Item {

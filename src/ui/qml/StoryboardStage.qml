@@ -113,7 +113,7 @@ Ctl {
         }
 
         // 状态点：run → .spin.sm，其余 → StatusDot（.dot 7px）
-        StoryboardSpin {
+        Spinner {
             // .spin.sm 11px 居中在 7px 的状态点位上（向两侧各溢出 2px，仍在 11px 内边距内）
             x: 11 - (height - root.dotW) / 2
             y: (node.height - height) / 2

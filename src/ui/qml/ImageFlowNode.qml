@@ -1,4 +1,4 @@
-// src/ui/qml/ImageFlowNode.qml —— 对照 webui views.css:1035-1099 的 .fnode
+﻿// src/ui/qml/ImageFlowNode.qml —— 对照 webui views.css:1035-1099 的 .fnode
 // （几何取自 FlowCanvas.jsx 的 NODE_W=150 / portPos 的 +38）
 //
 // ⚠️ 设计稿内部有一处自相矛盾，这里**照抄不改**：
@@ -110,7 +110,7 @@ Item {
             }
 
             // 尾标：run → spin sm（11px）；done → 12px ✔（--ok）
-            ImageFlowSpin {
+            Spinner {
                 visible: root.nodeState === "run"
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter

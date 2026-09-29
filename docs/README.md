@@ -34,6 +34,7 @@ last_verified: 2026-09-25
 - [`10-modules/media-paint.md`](10-modules/media-paint.md)：媒体库、图片解码/缓存、视频缩略图和 inpaint。
 - [`10-modules/llm-mcp.md`](10-modules/llm-mcp.md)：LLM Provider、AgentKit 和 MCP 传输/工具。
 - [`10-modules/ui-kit.md`](10-modules/ui-kit.md)：主题 Token、控件、FlowCanvas 和 Qt 工作区。
+- [`10-modules/qml-kit.md`](10-modules/qml-kit.md)：QML 共享套件的组件契约与接缝坑。
 
 ### 20 契约
 
@@ -70,6 +71,7 @@ last_verified: 2026-09-25
 | 改分镜/出图/出片 | `novel.md` → `visual-storyboard.md` → `flow-comfy.md` → `visual-generation.md` |
 | 改 ComfyUI/MCP/LLM 协议 | `flow-comfy.md` → `llm-mcp.md` → `protocols.md` |
 | 改 Qt 页面/主题/控件 | `ui-kit.md` → `ui-design-parity-gaps.md` → `coding-rules.md` → `architecture.md` |
+| 改 QML 页面/共享组件 | `qml-kit.md` → `ui-design-parity-gaps.md` → `ui-kit.md` |
 | 改构建或检查脚本 | `build.md` → `checks.md` → `environment.md` |
 | 定位陌生代码 | `source-map.md` → 对应模块文档 → 头文件/实现 |
 
