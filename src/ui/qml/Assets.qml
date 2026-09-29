@@ -25,6 +25,11 @@ pragma ComponentBehavior: Bound
 // Chip / Ctl。本页不再有这 6 件的私有副本 —— 尺寸与配色以共享件为准（它们逐条对过
 // CSS），本页只提供数据与摆放。
 //
+// 页面私有的四件（AssetsSecHead / AssetsAssetCard / AssetsCompare / AssetsTimeline）
+// 之外又加了两件：AssetsRefLibrary（④ 参考库）与 AssetsPolicyPanel（⑤ 依赖策略），
+// 对应 Widgets 侧 RefLibraryView / AssetPolicyPanel —— 同样只做渲染与动作派发，
+// 取数与真值全在 C++ 桥上。
+//
 // 数据：真值全部来自 C++ 注入的 `Page`（ui/pages/assets/AssetPageModel.h），
 // 取数逻辑在 ui/pages/assets/AssetVisualData.h。由 QmlAssetsPage 在
 // OpenBook / 选中变化时驱动重算。本文件不持有业务真值，只保留
@@ -78,6 +83,39 @@ Ctl {
         case "significant": return "danger"
         default:            return "idle"
         }
+    }
+    // —— ① 导出整版：结果行 ——
+    // 合成在 worker 上跑，结果由 C++ 填回 Page.exportState（空态也带全键）。
+    // ⚠️ 这一行**恒占一行**：只在有 message 时出现的话，第一次导出会把右侧
+    // 整块派生链顶下去一格。空态那半句由「就绪层」计数兜住，是真值不是占位。
+    readonly property var exportState: Page.exportState
+    readonly property real exportRowH: 8 + 16      // .col gap-2 + .tiny 行盒
+    readonly property string exportMsg: {
+        if (root.exportState.busy) { return root.exportState.message }
+        if (root.exportState.message === "") {
+            return "尚未导出整版 · 就绪层 " + root.readyLayerCount() + " 张"
+        }
+        if (root.exportState.ok) {
+            return root.exportState.message + " · " + root.exportState.count + " 层 · "
+                 + root.formatBytes(root.exportState.lastBytes)
+        }
+        // 取消也是 message 非空、ok=false —— 但它不是错误，不给红字
+        return root.exportState.message
+    }
+    readonly property color exportColor: root.exportState.ok
+        ? ThemeBridge.colors["status.ok"] : ThemeBridge.colors["text.muted"]
+    function readyLayerCount() {
+        var n = 0
+        for (var i = 0; i < Page.layers.length; ++i) {
+            if (Page.layers[i].ready) { n += 1 }
+        }
+        return n
+    }
+    function formatBytes(n) {
+        if (n <= 0) { return "0 B" }
+        if (n < 1024) { return n + " B" }
+        if (n < 1024 * 1024) { return (n / 1024).toFixed(1) + " KB" }
+        return (n / 1024 / 1024).toFixed(1) + " MB"
     }
     // 时间线副标题：有绑定镜头才提参考图，别常年挂着设计稿那句「全部条目可点击」
     readonly property string timelineMeta: root.timeline.shots.length > 0
@@ -187,8 +225,10 @@ Ctl {
     readonly property real kvH: 98           // 4 行 × 20 + 3 × 6
     readonly property real btnSmH: 24        // .btn.sm height: 24px
     readonly property real deriveH: 92       // .derive padding 6 + node 80 + 6
-    // 右列 = KV + gap12 + 按钮行 + gap12 + 派生块（标题 19+6 / 链 92 / 脚注 4+19）
-    readonly property real sheetRightH: kvH + 12 + btnSmH + 12 + (25 + deriveH + 23)
+    // 右列 = KV + gap12 + 按钮行 + gap12 + 导出结果行 + gap12 + 派生块
+    // （标题 19+6 / 链 92 / 脚注 4+19）
+    readonly property real sheetRightH: kvH + 12 + btnSmH + 12 + root.exportRowH + 12
+                                       + (25 + deriveH + 23)
     readonly property real sheetBodyH: Math.max(sheetArtH + 8 + 19, sheetRightH)
     readonly property real sheetHeadH: 34    // 尾部有 Segmented（34），min-height 26 被顶开
     readonly property real sheetSecH: 2 + vsecPadT + sheetHeadH + vsecGap + sheetBodyH + vsecPadB + 1
@@ -201,7 +241,15 @@ Ctl {
     // 关联时间线：最后一段无下边框
     readonly property real tlSecH: vsecPadT + 26 + vsecGap + tlView.implicitHeight + vsecPadB
     readonly property real yTimeline: yCompare + cmpSecH
-    readonly property real detH: yTimeline + tlSecH + detPadB
+
+    // ④ 项目参考库 / ⑤ 依赖策略：Widgets 版 RefLibraryView / AssetPolicyPanel
+    // 的 QML 对应件。高度由组件自己的 implicitHeight 推（见 cmpSecH / tlSecH），
+    // 页面**不写内容高度常数** —— 写死高度是 PanelCard 头注第 2 条记的旧账。
+    readonly property real refsSecH: vsecPadT + 26 + vsecGap + refView.implicitHeight + vsecPadB + 1
+    readonly property real yRefs: yTimeline + tlSecH
+    readonly property real policySecH: vsecPadT + 26 + vsecGap + policyView.implicitHeight + vsecPadB
+    readonly property real yPolicy: yRefs + refsSecH
+    readonly property real detH: yPolicy + policySecH + detPadB
     readonly property real contentH: Math.max(flick.height, overview ? ovH : detH)
 
     // —— 内容滚动：.vw 是 min-height 100% 的长列，超出视口的部分要能滚 ——
@@ -396,11 +444,13 @@ Ctl {
                         text: "导出整版"
                         glyph: "↓"
                         sm: true
-                        // ⚠️ 导出整版（多图合成 + 写盘 + 文件对话框）目前只有
-                        // Widgets 的 AssetDetailView 有实现，未迁 QML。
-                        // 在接线之前不装成能点的样子 —— 按下给明确提示，
-                        // 别让用户以为导出成功了却什么也没发生。
-                        onClicked: Page.exportingUnsupported("导出整版")
+                        // 合成 + 写盘全在 worker（AssetPageModel::exportSheet），
+                        // 不传 target 时由 C++ 弹 QFileDialog 选路径 —— 对话框是
+                        // 模态的必须留在 UI 线程，所以**不在 QML 侧自己选路径**。
+                        // busy 期间禁用 + 转圈：按下没反应的那几秒必须看得见。
+                        loading: Page.exportState.busy
+                        enabled: !Page.exportState.busy
+                        onClicked: Page.exportSheet()
                     }
                     Button {
                         variant: "ghost"
@@ -469,16 +519,21 @@ Ctl {
                             text: "导入图片"
                             glyph: "↑"
                             sm: true
-                            // 参考库导入（文件对话框 + 拖拽 + 写回库）目前只有
-                            // Widgets 的 RefLibraryView 有实现，未迁 QML。
-                            onClicked: Page.exportingUnsupported("导入图片")
+                            // 与下面 ④ 参考库分区是**同一份库**（assets/refs/）：
+                            // 选路径的模态对话框留在 UI 线程，解码 + 写回 refs.json
+                            // 由 C++ 放 worker。
+                            onClicked: Page.chooseReferenceFiles()
                         }
                         Button {
                             text: "绑定当前实体"
                             glyph: "↔"
                             sm: true
-                            // 参考图与实体的绑定写回库，同样未迁 QML。
-                            onClicked: Page.exportingUnsupported("绑定当前实体")
+                            // ⚠️ C++ 的 bindReferenceToEntity 用的是它自己那份
+                            // 参考库选中项，没选中时**静默返回** —— 那正是「点了
+                            // 没反应」。所以先判一次，没选中就把该做什么说出来。
+                            onClicked: refView.selectedRefId === ""
+                                       ? Page.exportingUnsupported("绑定当前实体（先在下方参考库里选一张）")
+                                       : Page.bindReferenceToEntity()
                         }
                         Button {
                             text: "查看大图"
@@ -501,9 +556,21 @@ Ctl {
                         }
                     }
 
+                    Text {                        // ① 导出结果行（恒占一行，见 exportRowH）
+                        x: 0
+                        y: sheetBtns.y + sheetBtns.height + 8
+                        width: sheetRight.width
+                        height: 16
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        text: root.exportMsg
+                        color: root.exportColor
+                        font.family: ThemeBridge.fontFamily
+                        font.pixelSize: 12
+                    }
                     Text {                        // .tiny.strong（color text-secondary）
                         x: 0
-                        y: sheetBtns.y + sheetBtns.height + 12
+                        y: sheetBtns.y + sheetBtns.height + 12 + root.exportRowH
                         // 链名由真实产物层拼出（Page.deriveChain 每项带 name），
                         // 别再写死「正脸 → 四视图 → 基础身体 → 服装」。
                         text: "V0 派生链 · " + root.deriveNames
@@ -514,7 +581,7 @@ Ctl {
                     }
                     AssetsDerive {
                         x: 0
-                        y: sheetBtns.y + sheetBtns.height + 12 + 19 + 6
+                        y: sheetBtns.y + sheetBtns.height + 12 + root.exportRowH + 19 + 6
                         width: sheetRight.width
                         height: root.deriveH
                         items: root.deriveChain
@@ -526,7 +593,7 @@ Ctl {
                     }
                     Text {                        // .tiny.dim（margin-top 4）
                         x: 0
-                        y: sheetBtns.y + sheetBtns.height + 12 + 25 + root.deriveH + 4
+                        y: sheetBtns.y + sheetBtns.height + 12 + root.exportRowH + 25 + root.deriveH + 4
                         text: "派生起点：文生图 · 缺层时：生成这一层"
                         color: ThemeBridge.colors["text.muted"]
                         font.family: ThemeBridge.fontFamily
@@ -616,6 +683,68 @@ Ctl {
                     refImages: root.timeline.refImages
                     chapterCount: root.timeline.chapterCount
                     hasData: root.timeline.hasData
+                }
+            }
+
+            // —— ④ 项目参考库（真数据：Page.refImages，AssetsRefLibrary）——
+            Item {
+                id: refsSec
+                x: root.detPadX
+                y: root.yRefs
+                width: flick.width - root.detPadX * 2
+                height: root.refsSecH
+
+                AssetsSecHead {
+                    x: root.vsecPadX
+                    y: root.vsecPadT
+                    width: parent.width - root.vsecPadX * 2
+                    height: 26
+                    glyph: "▦"
+                    title: "项目参考图 · assets/refs/"
+                    // 数量由面板自己显示（那一行就在标题条下面），这里只留
+                    // 导入口径：解码在 worker，EXIF 方向同时校正。
+                    meta: "导入在 worker 解码并写回 refs.json；EXIF 方向同时校正"
+                }
+                AssetsRefLibrary {
+                    id: refView
+                    x: root.vsecPadX
+                    y: root.vsecPadT + 26 + root.vsecGap
+                    width: parent.width - root.vsecPadX * 2
+                    height: implicitHeight
+                }
+                Rectangle {                      // .vsec border-bottom
+                    x: 0
+                    y: parent.height - 1
+                    width: parent.width
+                    height: 1
+                    color: ThemeBridge.colors["line.subtle"]
+                }
+            }
+
+            // —— ⑤ 依赖等待与降级策略（真数据：Page.policy，AssetsPolicyPanel）——
+            // 这两个开关进的是真实管线（AssetPolicy），不是页面上的装饰。
+            Item {
+                id: policySec
+                x: root.detPadX
+                y: root.yPolicy
+                width: flick.width - root.detPadX * 2
+                height: root.policySecH
+
+                AssetsSecHead {
+                    x: root.vsecPadX
+                    y: root.vsecPadT
+                    width: parent.width - root.vsecPadX * 2
+                    height: 26
+                    glyph: "◐"
+                    title: "依赖等待与降级策略"
+                    meta: Page.policy.strict ? "严格模式：缺依赖只挂起" : "已开启超时降级"
+                }
+                AssetsPolicyPanel {
+                    id: policyView
+                    x: root.vsecPadX
+                    y: root.vsecPadT + 26 + root.vsecGap
+                    width: parent.width - root.vsecPadX * 2
+                    height: implicitHeight
                 }
             }
         }

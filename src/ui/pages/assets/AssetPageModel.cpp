@@ -17,6 +17,7 @@
 #include <QImage>
 #include <QImageReader>
 #include <QPointer>
+#include <QTimer>
 
 #include <algorithm>
 #include <array>
@@ -145,6 +146,26 @@ constexpr std::array<KindInfo, 4> kKinds = {{
     return map;
 }
 
+// 策略空态：同样带全键。**这条不是形式主义** —— AssetsPolicyPanel.qml 在
+// Component.onCompleted 里就绑 `Page.policy.allowDegrade`（bool）与
+// `.summary`（QString），而 policyView_ 在 OpenBook 之前是默认构造的空
+// QVariantMap，两个键都是 undefined，开页即刷一屏
+// "Cannot assign [undefined] to bool"。纪律与其余几个 map 完全一致。
+[[nodiscard]] QVariantMap EmptyPolicyMap() {
+    QVariantMap map;
+    map.insert(QStringLiteral("allowDegrade"), true);
+    map.insert(QStringLiteral("strict"), false);
+    map.insert(QStringLiteral("timeoutMinutes"), 30);
+    map.insert(QStringLiteral("timeoutMs"), 30LL * 60 * 1000);
+    map.insert(QStringLiteral("summary"), QStringLiteral("C 挂起 → 超时 B 降级；超时 30 分钟"));
+    map.insert(QStringLiteral("phase"), QStringLiteral("none"));
+    map.insert(QStringLiteral("layer"), QStringLiteral("none"));
+    map.insert(QStringLiteral("detail"), QString());
+    map.insert(QStringLiteral("active"), false);
+    map.insert(QStringLiteral("degraded"), false);
+    return map;
+}
+
 // 两张帧图的平均绝对差。**只在 worker 上调用** —— 解码 + 逐像素比较都是
 // 重活，放 UI 线程就是当初 H-2 那类卡顿。下采样到 64×64 与 ConsistencyView 同口径。
 [[nodiscard]] double MeanAbsoluteDifferenceOf(const QString& leftPath, const QString& rightPath) {
@@ -258,6 +279,8 @@ AssetPageModel::AssetPageModel(QObject* parent) : QObject(parent) {
     consistencyView_ = EmptyConsistencyMap();
     timelineView_ = EmptyTimelineMap();
     exportView_ = EmptyExportMap();
+    // policyView_ 同理：策略面板在 QML 侧是「开页即绑」，空态缺键就是一片红。
+    policyView_ = EmptyPolicyMap();
     // deriveChain_ 不在此处写死：它由 RebuildVisualFacts 从 visual_artifacts
     // 与产物文件存在性算出（正脸/四视图/基础身体/服装的真实就绪状态）。
 }
@@ -1233,10 +1256,15 @@ bool AssetPageModel::StartRun(std::optional<novelcore::AssetLayer> layer) {
     const qint64 run_id = state.run_id;
     async::RunOnWorker([guard, db_path, asset_id, run_id, layer, policy = policy_] {
         WorkerResult result = RunAssetInWorker(db_path, asset_id, layer, policy);
+        // ⚠️ 必须走 BeginRunChecking 而不是直接 FinishAssetRun：
+        // worker 只回**最终**结果，「落盘校验」这一步发生在 UI 线程（下一条）。
+        // 直接跳到 FinishAssetRun 会让 GENERATING → CHECKING 这一跳**永远不出现**，
+        // history 退化成 GENERATING>READY，页面上「正在校验」那一态也没了
+        // （AssetWorkspace 的两跳写法见其 StartAssetRun 的 PostToUi）。
         async::PostToUi([guard, asset_id, run_id, result = std::move(result)]() mutable {
             if (!guard.isNull()) {
-                guard->FinishAssetRun(asset_id, run_id, QString::fromStdString(result.phase),
-                                      QString::fromStdString(result.detail), result.degraded);
+                guard->BeginRunChecking(asset_id, run_id, QString::fromStdString(result.detail),
+                                        QString::fromStdString(result.phase), result.degraded);
             }
         });
     });
@@ -1246,16 +1274,26 @@ bool AssetPageModel::StartRun(std::optional<novelcore::AssetLayer> layer) {
 void AssetPageModel::BeginRunChecking(qint64 assetId, qint64 runId, QString detail, QString finalPhase,
                                        bool degraded) {
     const auto found = runtime_.find(assetId);
-    if (found == runtime_.end()) {
+    if (found == runtime_.end() || found->run_id != runId) {
         return;
     }
+    const QString worker_detail = detail;
     found->phase = QStringLiteral("CHECKING");
-    found->detail = std::move(detail);
-    found->history.append(QStringLiteral("CHECKING"));
-    found->degraded = found->degraded || degraded;
-    (void)runId;
-    (void)finalPhase;
+    found->detail = worker_detail.isEmpty()
+                        ? QStringLiteral("正在校验落盘文件与父子派生关系。")
+                        : worker_detail;
+    found->active = true;
+    if (!found->history.contains(found->phase)) {
+        found->history.push_back(found->phase);
+    }
     RebuildDerived();
+
+    // 「校验中」是给用户看的中间态，停 120ms 再收敛到终态 ——
+    // 与 AssetWorkspace 的两跳写法一致（少了这一跳，CHECKING 永远不可见）。
+    QTimer::singleShot(120, this, [this, assetId, runId, finalPhase = std::move(finalPhase),
+                                   worker_detail = std::move(worker_detail), degraded] {
+        FinishAssetRun(assetId, runId, finalPhase, worker_detail, degraded);
+    });
 }
 
 void AssetPageModel::FinishAssetRun(qint64 assetId, qint64 runId, QString phase, QString detail,

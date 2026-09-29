@@ -113,6 +113,12 @@ class AssetPageModel : public QObject {
     [[nodiscard]] Q_PROPERTY(QVariantList refImages READ refImages NOTIFY changed)
     QVariantList refImages() const;
 
+    // 当前选中的参考图 id（空串 = 没选）。**选中态必须是属性、不能是方法**：
+    // QML 侧的高亮与标记回填都是绑定，方法调用在依赖图里是空的、只求值一次，
+    // 首屏之后再也跟不上选中变化（面板只能自己在本地镜像一份）。
+    [[nodiscard]] Q_PROPERTY(QString selectedRefId READ selectedRefId NOTIFY changed)
+    QString selectedRefId() const { return refSelectedId_; }
+
     // 依赖策略：allowDegrade / suspendTimeoutMs 两个真实开关。
     // {allowDegrade,timeoutMinutes,strict,summary,phase,layer,active,degraded}
     [[nodiscard]] Q_PROPERTY(QVariantMap policy READ policy NOTIFY changed)
