@@ -52,10 +52,25 @@ class QmlAssetsPage : public QWidget {
     // 抓图 / 断言前必须调它，否则会拍到「未比对」的中间态。
     // timeout_ms 用尽仍未就绪就直接返回 false（不无限等）。
     bool WaitVisualsReady(int timeout_ms = 2000);
-    void SetAssetPolicy(const AssetPolicy& policy);
+    void SetAssetPolicy(const AssetPolicy& policy) { model_->SetAssetPolicy(policy); }
+    [[nodiscard]] const AssetPolicy& Policy() const { return model_->Policy(); }
     std::size_t ImportReferences(const std::vector<std::filesystem::path>& paths);
     void RefreshReferences();
     void ShowDetailPage(int index);
+
+    // 参考库导入是异步的（worker 解码 + 写回 refs.json）。等它收敛用，
+    // 免得调用方在 UI 线程硬 sleep。超时返回 false。
+    bool WaitReferences(int timeout_ms = 10000);
+    void SelectReference(const QString& id);
+    void SetReferenceMarkers(const QString& markers);
+    void BindReferenceToEntity();
+    void RemoveReference();
+
+    // ① 导出整版设定集 PNG。target 为空走 QFileDialog 选路径（模态，只能在
+    // UI 线程弹）；离屏/验收传显式路径。解码+合成+写盘在 worker。
+    void ExportSheet(const QString& target = {});
+    bool WaitExport(int timeout_ms = 10000);
+    [[nodiscard]] QString ExportProbe() const;
 
     [[nodiscard]] QString AssetProbe() const { return model_->AssetProbe(); }
     [[nodiscard]] QString StateProbe() const { return model_->StateProbe(); }

@@ -19,6 +19,7 @@
 #include "novel/NovelTypes.h"
 #include "novel/NovelVisual.h"
 #include "util/Encoding.h"
+#include "visual/ReferenceLibrary.h"
 
 #include <QString>
 #include <QStringList>
@@ -343,6 +344,85 @@ inline void AssetApplyDifference(AssetConsistencyFact& fact, double difference) 
         rows.emplace_back(QStringLiteral("色彩基调"), line.colors != baseline.colors);
     }
     return rows;
+}
+
+// ===================================================================
+// ④ 项目参考库：assets/refs/ 的只读投影 + 探针口径
+// ===================================================================
+// 原来这套只在 RefLibraryView.cpp 里（QWidget 版）。QML 迁移后视图要重建，
+// 但**行 → 字段的映射与探针口径不该重写**：一处漂移就会让 QML 与旧验收
+// 读出不同的 entity/markers。取值仍全部来自 visual::ReferenceLibrary
+// （refs.json + 文件 stat），不新增真值。
+struct AssetRefFact {
+    QString id;
+    QString originalName;
+    QString relPath;
+    QString absPath;
+    QString orientation;
+    int rawWidth = 0;
+    int rawHeight = 0;
+    int displayWidth = 0;
+    int displayHeight = 0;
+    qint64 entityId = 0;
+    qint64 assetId = 0;
+    QStringList markers;
+};
+
+[[nodiscard]] inline std::vector<AssetRefFact>
+AssetCollectRefs(const std::vector<visual::ReferenceImage>& images,
+                 const std::filesystem::path& projectDir) {
+    std::vector<AssetRefFact> out;
+    out.reserve(images.size());
+    for (const visual::ReferenceImage& image : images) {
+        AssetRefFact fact;
+        fact.id = QString::fromStdString(image.id);
+        fact.originalName = QString::fromStdString(image.original_name);
+        fact.relPath = QString::fromStdString(image.rel_path);
+        const std::optional<std::filesystem::path> abs = AssetResolvePath(projectDir, image.rel_path);
+        if (abs) {
+            fact.absPath = QString::fromStdString(util::PathToUtf8(*abs));
+        }
+        fact.orientation = QString::fromStdString(image.orientation);
+        fact.rawWidth = image.raw_width;
+        fact.rawHeight = image.raw_height;
+        fact.displayWidth = image.display_width;
+        fact.displayHeight = image.display_height;
+        fact.entityId = image.entity_id;
+        fact.assetId = image.asset_id;
+        for (const std::string& marker : image.markers) {
+            fact.markers.push_back(QString::fromStdString(marker));
+        }
+        out.push_back(std::move(fact));
+    }
+    return out;
+}
+
+// 标记的展示口径（「、」分隔），与 RefLibraryView::RefProbe 同形。
+[[nodiscard]] inline QString AssetRefMarkers(const QStringList& markers) {
+    return markers.isEmpty() ? QStringLiteral("none") : markers.join(QStringLiteral("、"));
+}
+
+// 参考库探针。字段与 RefLibraryView::RefProbe 逐字对齐 ——
+// 验收脚本按 `refs=N; busy=N; drops=N; first=…` 解析，两边必须同形。
+[[nodiscard]] inline QString AssetRefProbe(const std::vector<AssetRefFact>& refs, bool busy,
+                                           bool drops, const QString& firstId) {
+    QString first = QStringLiteral("none");
+    for (const AssetRefFact& fact : refs) {
+        if (fact.id != firstId) {
+            continue;
+        }
+        first = QStringLiteral("%1|orientation=%2|display=%3x%4|markers=%5|entity=%6")
+                    .arg(fact.originalName, fact.orientation)
+                    .arg(fact.displayWidth)
+                    .arg(fact.displayHeight)
+                    .arg(AssetRefMarkers(fact.markers))
+                    .arg(fact.entityId);
+        break;
+    }
+    return QStringLiteral("refs=%1; busy=%2; drops=%3; first=%4")
+        .arg(static_cast<int>(refs.size()))
+        .arg(busy ? QStringLiteral("1") : QStringLiteral("0"))
+        .arg(drops ? QStringLiteral("1") : QStringLiteral("0"), first);
 }
 
 // ===================================================================

@@ -620,6 +620,7 @@ add_executable(ShineTVStudio
   src/ui/pages/assets/AssetDetailView.cpp
   src/ui/pages/assets/AssetPolicyPanel.h
   src/ui/pages/assets/AssetPolicyPanel.cpp
+  src/ui/pages/assets/AssetPolicy.h
   src/ui/pages/assets/AssetPageModel.h
   src/ui/pages/assets/AssetPageModel.cpp
   src/ui/pages/assets/QmlAssetsPage.h

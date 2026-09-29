@@ -3,7 +3,6 @@
 #include "ui/kit/controls/Feedback.h"
 #include "ui/kit/controls/Surfaces.h"
 #include "ui/kit/qml/QuickHost.h"
-#include "ui/verify/gallery/GalleryWorkspace.h"
 #include "util/Encoding.h"
 
 #include <QElapsedTimer>
@@ -13,6 +12,7 @@
 #include <QQuickItem>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVariantMap>
 
 namespace shine::app {
 
@@ -58,7 +58,6 @@ shine::qml::QuickHost* AcquireHost(const QString& qml_file, shine::app::AssetPag
     host->Pump(0);
     return host;
 }
-
 } // namespace
 
 QmlAssetsPage::QmlAssetsPage(QWidget* parent) : QWidget(parent) {
@@ -155,15 +154,18 @@ bool QmlAssetsPage::WaitVisualsReady(int timeout_ms) {
     }
     return ready;
 }
-void QmlAssetsPage::SetAssetPolicy(const AssetPolicy& policy) { model_->SetAssetPolicy(policy); }
 
 std::size_t QmlAssetsPage::ImportReferences(const std::vector<std::filesystem::path>& paths) {
-    // 参考库的像素导入仍走 RefLibraryView（Worker 解码）—— 本轮不迁 QML，
-    // 因为 QML 侧没有对应的多选导入 + 实体绑定交互，强行重写会丢功能。
-    (void)paths;
-    return 0;
+    // 真实实现已迁到 AssetPageModel（worker 解码 + 写回 refs.json）。
+    // 返回的是**提交数**；实际落库数看 RefProbe() 的 refs= 字段。
+    QStringList list;
+    list.reserve(static_cast<qsizetype>(paths.size()));
+    for (const auto& path : paths) {
+        list.push_back(QString::fromStdString(util::PathToUtf8(path)));
+    }
+    return static_cast<std::size_t>(model_->importReferences(list));
 }
-void QmlAssetsPage::RefreshReferences() {}
+void QmlAssetsPage::RefreshReferences() { model_->refreshReferences(); }
 void QmlAssetsPage::ShowDetailPage(int index) {
     // QML 根对象暴露 viewIndex（0=总览 1=详情），直接写属性而不是 invokeMethod：
     // 页面根是 Ctl(Rectangle)，invokeMethod 走 QMetaObject 反射找不到 JS 函数。
@@ -172,15 +174,58 @@ void QmlAssetsPage::ShowDetailPage(int index) {
     }
 }
 
-QString QmlAssetsPage::DetailProbe() const {
-    if (auto* root = inspector_->rootObject()) {
-        return root->property("detailProbe").toString();
+bool QmlAssetsPage::WaitReferences(int timeout_ms) {
+    if (model_->waitReferences(timeout_ms)) {
+        content_->Pump(0);
+        inspector_->Pump(0);
+        return true;
     }
-    return QStringLiteral("detail=unavailable");
+    return false;
 }
-QString QmlAssetsPage::PolicyProbe() const { return QStringLiteral("policy=qml"); }
-QString QmlAssetsPage::ConsistencyProbe() const { return QStringLiteral("consistency=unavailable"); }
-QString QmlAssetsPage::RefProbe() const { return QStringLiteral("refs=unavailable"); }
+void QmlAssetsPage::SelectReference(const QString& id) { model_->selectReference(id); }
+void QmlAssetsPage::SetReferenceMarkers(const QString& markers) {
+    model_->setReferenceMarkers(markers);
+}
+void QmlAssetsPage::BindReferenceToEntity() { model_->bindReferenceToEntity(); }
+void QmlAssetsPage::RemoveReference() { model_->removeReference(); }
+
+void QmlAssetsPage::ExportSheet(const QString& target) { model_->exportSheet(target); }
+bool QmlAssetsPage::WaitExport(int timeout_ms) {
+    if (model_->exportFinished()) {
+        return true;
+    }
+    QEventLoop loop;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QTimer poll;
+    bool done = false;
+    QObject::connect(&poll, &QTimer::timeout, &loop, [this, &loop, &done] {
+        if (model_->exportFinished()) {
+            done = true;
+            loop.quit();
+        }
+    });
+    poll.setInterval(10);
+    poll.start();
+    QTimer::singleShot(timeout_ms, &loop, &QEventLoop::quit);
+    loop.exec();
+    poll.stop();
+    return done;
+}
+QString QmlAssetsPage::ExportProbe() const {
+    const QVariantMap state = model_->exportState();
+    return QStringLiteral("export=ok; path=%1; bytes=%2; layers=%3; busy=%4")
+        .arg(state.value(QStringLiteral("lastPath")).toString())
+        .arg(state.value(QStringLiteral("lastBytes")).toLongLong())
+        .arg(state.value(QStringLiteral("count")).toInt())
+        .arg(state.value(QStringLiteral("busy")).toBool() ? QStringLiteral("1")
+                                                          : QStringLiteral("0"));
+}
+
+QString QmlAssetsPage::DetailProbe() const { return model_->DetailProbe(); }
+QString QmlAssetsPage::PolicyProbe() const { return model_->PolicyProbe(); }
+QString QmlAssetsPage::ConsistencyProbe() const { return model_->ConsistencyProbe(); }
+QString QmlAssetsPage::RefProbe() const { return model_->RefProbe(); }
 QString QmlAssetsPage::GlobalGalleryProbe() const {
     return QStringLiteral("gallery=unavailable");
 }

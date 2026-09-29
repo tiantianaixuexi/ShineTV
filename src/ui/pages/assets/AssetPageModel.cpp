@@ -5,8 +5,14 @@
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
 #include "ui/kit/controls/Surfaces.h"
+#include "ui/kit/images/Sheet.h"
 #include "util/Encoding.h"
+#include "visual/ReferenceLibrary.h"
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFileDialog>
 #include <QHash>
 #include <QImage>
 #include <QImageReader>
@@ -126,6 +132,19 @@ constexpr std::array<KindInfo, 4> kKinds = {{
     return map;
 }
 
+// 参考库空态：同样带全键（纪律同 EmptyRuntimeMap）。页面有十几处
+// `Page.refImages[i].displayWidth` 之类的绑定，少一个键就是一片红。
+[[nodiscard]] QVariantMap EmptyExportMap() {
+    QVariantMap map;
+    map.insert(QStringLiteral("busy"), false);
+    map.insert(QStringLiteral("lastPath"), QString());
+    map.insert(QStringLiteral("lastBytes"), 0);
+    map.insert(QStringLiteral("count"), 0);
+    map.insert(QStringLiteral("ok"), false);
+    map.insert(QStringLiteral("message"), QString());
+    return map;
+}
+
 // 两张帧图的平均绝对差。**只在 worker 上调用** —— 解码 + 逐像素比较都是
 // 重活，放 UI 线程就是当初 H-2 那类卡顿。下采样到 64×64 与 ConsistencyView 同口径。
 [[nodiscard]] double MeanAbsoluteDifferenceOf(const QString& leftPath, const QString& rightPath) {
@@ -238,6 +257,7 @@ AssetPageModel::AssetPageModel(QObject* parent) : QObject(parent) {
     // 形象层 / 一致性 / 时间线同样先给空态，避免首次求值读到 undefined。
     consistencyView_ = EmptyConsistencyMap();
     timelineView_ = EmptyTimelineMap();
+    exportView_ = EmptyExportMap();
     // deriveChain_ 不在此处写死：它由 RebuildVisualFacts 从 visual_artifacts
     // 与产物文件存在性算出（正脸/四视图/基础身体/服装的真实就绪状态）。
 }
@@ -284,6 +304,8 @@ bool AssetPageModel::OpenBook(const std::filesystem::path& dbPath,
     }
 
     const bool ok = RefreshEntities() && RefreshAssets();
+    RebuildRefs();   // ④ 参考库：换书库必须重开（projectDir_ 变了）
+    ProjectPolicy();
     if (!ok && error != nullptr) {
         *error = openError_;
     }
@@ -303,6 +325,10 @@ void AssetPageModel::CloseBook() noexcept {
     assets_.clear();
     ++runSerial_;
     runtime_.clear();
+    refs_.reset();
+    refSelectedId_.clear();
+    refFacts_.clear();
+    ProjectRefs(refFacts_);
     RebuildDerived();
 }
 
@@ -422,6 +448,7 @@ void AssetPageModel::RebuildDerived() {
     RefreshKindCounts();
 
     runtimeView_ = RuntimeToMap(selectedAssetId_);
+    ProjectPolicy();
     RebuildVisualFacts();
     emit changed();
 }
@@ -741,6 +768,347 @@ void AssetPageModel::ProjectTimeline(const AssetTimelineFact& fact) {
     timelineView_ = view;
 }
 
+QVariantList AssetPageModel::refImages() const { return refView_; }
+QVariantMap AssetPageModel::policy() const { return policyView_; }
+QVariantMap AssetPageModel::exportState() const { return exportView_; }
+
+void AssetPageModel::ProjectRefs(const std::vector<AssetRefFact>& refs) {
+    QVariantList view;
+    for (const AssetRefFact& fact : refs) {
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), fact.id);
+        row.insert(QStringLiteral("originalName"), fact.originalName);
+        row.insert(QStringLiteral("absPath"), fact.absPath);
+        row.insert(QStringLiteral("orientation"), fact.orientation);
+        row.insert(QStringLiteral("rawWidth"), fact.rawWidth);
+        row.insert(QStringLiteral("rawHeight"), fact.rawHeight);
+        row.insert(QStringLiteral("displayWidth"), fact.displayWidth);
+        row.insert(QStringLiteral("displayHeight"), fact.displayHeight);
+        row.insert(QStringLiteral("entityId"), fact.entityId);
+        row.insert(QStringLiteral("markers"), fact.markers);
+        row.insert(QStringLiteral("markerText"), AssetRefMarkers(fact.markers));
+        view.append(row);
+    }
+    refView_ = view;
+}
+
+void AssetPageModel::ProjectPolicy() {
+    const auto runtimeIt = runtime_.constFind(selectedAssetId_);
+    const bool has_runtime = runtimeIt != runtime_.cend() && !runtimeIt->phase.isEmpty();
+    const int minutes = static_cast<int>(policy_.suspendTimeoutMs / (60 * 1000));
+    QVariantMap map;
+    map.insert(QStringLiteral("allowDegrade"), policy_.allowDegrade);
+    map.insert(QStringLiteral("strict"), !policy_.allowDegrade);
+    map.insert(QStringLiteral("timeoutMinutes"), minutes);
+    map.insert(QStringLiteral("timeoutMs"), static_cast<qlonglong>(policy_.suspendTimeoutMs));
+    map.insert(QStringLiteral("summary"),
+               policy_.allowDegrade
+                   ? QStringLiteral("C 挂起 → 超时 B 降级；超时 %1 分钟").arg(minutes)
+                   : QStringLiteral("严格模式：缺依赖始终按 C 挂起，拒绝任何降级"));
+    map.insert(QStringLiteral("phase"),
+               has_runtime ? runtimeIt->phase : QStringLiteral("none"));
+    map.insert(QStringLiteral("layer"),
+               has_runtime && !runtimeIt->layer.isEmpty() ? runtimeIt->layer : QStringLiteral("none"));
+    map.insert(QStringLiteral("detail"), has_runtime ? runtimeIt->detail : QString());
+    map.insert(QStringLiteral("active"), has_runtime && runtimeIt->active);
+    map.insert(QStringLiteral("degraded"), has_runtime && runtimeIt->degraded);
+    policyView_ = map;
+}
+
+void AssetPageModel::RebuildRefs() {
+    refFacts_.clear();
+    if (projectDir_.empty()) {
+        ProjectRefs(refFacts_);
+        return;
+    }
+    if (refs_ == nullptr) {
+        refs_ = std::make_unique<visual::ReferenceLibrary>(projectDir_);
+    }
+    if (auto loaded = refs_->Load(); !loaded) {
+        // 读不出 refs.json 视为「还没有参考图」，不是错误：首次导入前该文件不存在。
+        ProjectRefs(refFacts_);
+        return;
+    }
+    refFacts_ = AssetCollectRefs(refs_->Images(), projectDir_);
+    if (!refSelectedId_.isEmpty() &&
+        std::none_of(refFacts_.begin(), refFacts_.end(), [this](const AssetRefFact& f) {
+            return f.id == refSelectedId_;
+        })) {
+        refSelectedId_.clear();
+    }
+    if (refSelectedId_.isEmpty() && !refFacts_.empty()) {
+        refSelectedId_ = refFacts_.front().id;
+    }
+    ProjectRefs(refFacts_);
+}
+
+// —— ① 导出整版设定集 PNG ——
+// 真实现迁自 AssetDetailView::ExportSheet：收集就绪层 → SheetGrid 2×360×280
+// 合成 → 存盘。**解码 / 合成 / 写盘全部在 worker**（AGENTS.md：图片解码放
+// worker，UI 线程不做同步 IO），结果经 async::PostToUi 回填 exportView_。
+void AssetPageModel::exportSheet(const QString& target) {
+    if (exportBusy_) {
+        widgets::Toast::Show(QStringLiteral("正在导出，请稍候。"), widgets::Toast::Tone::Info);
+        return;
+    }
+    // 先在 UI 线程把要导出的层收齐（只读元数据，不碰图像像素）。
+    std::vector<std::pair<QString, std::string>> todo;
+    todo.reserve(static_cast<std::size_t>(layersView_.size()));
+    for (const QVariant& item : layersView_) {
+        const QVariantMap layer = item.toMap();
+        if (!layer.value(QStringLiteral("ready")).toBool()) {
+            continue;
+        }
+        const QString abs = layer.value(QStringLiteral("absPath")).toString();
+        if (abs.isEmpty()) {
+            continue;
+        }
+        todo.emplace_back(layer.value(QStringLiteral("title")).toString(), abs.toStdString());
+    }
+    if (todo.empty()) {
+        widgets::Toast::Show(QStringLiteral("没有可导出的形象层；请先生成至少一层。"),
+                             widgets::Toast::Tone::Warning);
+        return;
+    }
+
+    exportBusy_ = true;
+    exportView_.insert(QStringLiteral("busy"), true);
+    exportView_.insert(QStringLiteral("count"), static_cast<int>(todo.size()));
+    exportView_.insert(QStringLiteral("ok"), false);
+    exportView_.insert(QStringLiteral("message"), QStringLiteral("正在合成整版设定集…"));
+    emit changed();
+
+    // ⚠️ QFileDialog 是模态的，**必须在 UI 线程选路径**，不能塞进 worker。
+    // 离屏/验收场景传显式 target，跳过对话框（否则会挂住整个验收）。
+    QString path = target;
+    if (path.isEmpty()) {
+        path = QFileDialog::getSaveFileName(nullptr, QStringLiteral("导出整版设定集"),
+                                            SelectedAssetName() + QStringLiteral("-角色设定集.png"),
+                                            QStringLiteral("PNG 图像 (*.png)"));
+        if (path.isEmpty()) {
+            exportBusy_ = false;
+            exportView_.insert(QStringLiteral("busy"), false);
+            exportView_.insert(QStringLiteral("message"), QStringLiteral("已取消导出。"));
+            emit changed();
+            return;
+        }
+    }
+
+    // 解码 + 整版合成 + 写盘**一趟做完，全在 worker**（AGENTS.md：图片解码放
+    // worker，UI 线程不做同步 IO）。口径照搬 AssetDetailView：2 列 360×280。
+    const QPointer<AssetPageModel> guard(this);
+    async::RunOnWorker([guard, todo, path] {
+        images::SheetGrid sheet(2, QSize(360, 280));
+        for (const auto& [title, source] : todo) {
+            QImageReader reader(QString::fromStdString(source));
+            reader.setAutoTransform(true);
+            const QSize original = reader.size();
+            if (original.isValid() && !original.isEmpty()) {
+                reader.setScaledSize(original.scaled(QSize(360, 280), Qt::KeepAspectRatio));
+            }
+            const QImage image = reader.read();
+            if (!image.isNull()) {
+                sheet.Add(image, title);
+            }
+        }
+        const QImage composed = sheet.Count() > 0 ? sheet.Compose() : QImage();
+        const bool ok = !composed.isNull() && composed.save(path, "PNG");
+        std::error_code ec;
+        const auto bytes = ok ? std::filesystem::file_size(util::PathFromUtf8(path.toStdString()), ec)
+                              : 0;
+        async::PostToUi([guard, ok, path, bytes, ec] {
+            if (guard.isNull()) {
+                return;
+            }
+            guard->exportBusy_ = false;
+            guard->exportView_.insert(QStringLiteral("busy"), false);
+            guard->exportView_.insert(QStringLiteral("ok"), ok);
+            guard->exportView_.insert(QStringLiteral("lastPath"), ok ? path : QString());
+            guard->exportView_.insert(QStringLiteral("lastBytes"),
+                                      (ok && !ec) ? static_cast<qlonglong>(bytes) : 0);
+            guard->exportView_.insert(
+                QStringLiteral("message"),
+                ok ? QStringLiteral("设定集已导出：%1").arg(path)
+                   : QStringLiteral("导出失败，请检查目标路径是否可写。"));
+            guard->emit changed();
+            if (ok) {
+                widgets::Toast::Show(QStringLiteral("设定集已导出：%1").arg(path),
+                                     widgets::Toast::Tone::Success);
+            } else {
+                widgets::Toast::Show(QStringLiteral("导出失败，请检查目标路径是否可写。"),
+                                     widgets::Toast::Tone::Error);
+            }
+        });
+    });
+}
+
+// —— ② 参考库：导入 / 标记 / 绑定 / 删除 ——
+// 真实现迁自 RefLibraryView。导入是异步的（worker 解码 + 写回 refs.json），
+// 这里返回**提交数**，实际落库数看 refImages() / RefProbe()。
+int AssetPageModel::importReferences(const QStringList& paths) {
+    if (refBusy_ || projectDir_.empty() || paths.isEmpty()) {
+        return 0;
+    }
+    std::vector<std::filesystem::path> parsed;
+    parsed.reserve(static_cast<std::size_t>(paths.size()));
+    for (const QString& path : paths) {
+        if (path.isEmpty()) {
+            continue;
+        }
+        parsed.push_back(util::PathFromUtf8(path.toStdString()));
+    }
+    if (parsed.empty()) {
+        return 0;
+    }
+
+    refBusy_ = true;
+    const std::filesystem::path root = projectDir_;
+    const qint64 entity_id = selectedEntityId_;
+    const qint64 asset_id = selectedAssetId_;
+    auto flag = std::make_shared<std::atomic<bool>>(true);
+    refBusyFlag_ = flag; // 验收可以不等事件循环，直接轮询这个原子量
+    const QPointer<AssetPageModel> guard(this);
+    async::RunOnWorker([guard, flag, root, entity_id, asset_id, parsed] {
+        visual::ReferenceLibrary library(root);
+        std::string error;
+        if (auto loaded = library.Load(); !loaded) {
+            error = loaded.error().message;
+        }
+        int imported = 0;
+        if (error.empty()) {
+            for (const auto& path : parsed) {
+                if (library.Import(path, entity_id, asset_id)) {
+                    ++imported;
+                }
+            }
+        }
+        async::PostToUi([guard, flag, imported, error] {
+            flag->store(false);
+            if (guard.isNull()) {
+                return;
+            }
+            guard->refBusy_ = false;
+            guard->RebuildRefs();
+            guard->emit changed();
+            if (!error.empty()) {
+                widgets::Toast::Show(QString::fromStdString(error), widgets::Toast::Tone::Error);
+            } else if (imported > 0) {
+                widgets::Toast::Show(QStringLiteral("已导入 %1 张项目参考图。").arg(imported),
+                                     widgets::Toast::Tone::Success);
+            }
+        });
+    });
+    return static_cast<int>(parsed.size());
+}
+
+void AssetPageModel::chooseReferenceFiles() {
+    if (projectDir_.empty()) {
+        return;
+    }
+    const QStringList files = QFileDialog::getOpenFileNames(
+        nullptr, QStringLiteral("导入项目参考图"), QString(),
+        QStringLiteral("图片 (*.png *.jpg *.jpeg *.webp *.avif);;所有文件 (*)"));
+    if (files.isEmpty()) {
+        return;
+    }
+    (void)importReferences(files);
+}
+
+void AssetPageModel::selectReference(const QString& id) {
+    refSelectedId_ = id;
+    emit changed();
+}
+
+void AssetPageModel::setReferenceMarkers(const QString& markers) {
+    if (refs_ == nullptr || refSelectedId_.isEmpty()) {
+        return;
+    }
+    QString normalized = markers;
+    normalized.replace(QStringLiteral("，"), QStringLiteral(","));
+    normalized.replace(QStringLiteral("、"), QStringLiteral(","));
+    const QStringList parts = normalized.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    std::vector<std::string> values;
+    values.reserve(static_cast<std::size_t>(parts.size()));
+    for (const QString& part : parts) {
+        values.push_back(part.trimmed().toStdString());
+    }
+    if (auto saved = refs_->SetMarkers(refSelectedId_.toStdString(), std::move(values)); !saved) {
+        widgets::Toast::Show(QString::fromStdString(saved.error().message),
+                             widgets::Toast::Tone::Error);
+    }
+    RebuildRefs();
+    emit changed();
+}
+
+void AssetPageModel::bindReferenceToEntity() {
+    if (refs_ == nullptr || refSelectedId_.isEmpty() || selectedEntityId_ <= 0) {
+        return;
+    }
+    if (auto bound = refs_->Bind(refSelectedId_.toStdString(), selectedEntityId_, selectedAssetId_);
+        !bound) {
+        widgets::Toast::Show(QString::fromStdString(bound.error().message),
+                             widgets::Toast::Tone::Error);
+    }
+    RebuildRefs();
+    emit changed();
+}
+
+void AssetPageModel::removeReference() {
+    if (refs_ == nullptr || refSelectedId_.isEmpty()) {
+        return;
+    }
+    if (auto removed = refs_->Remove(refSelectedId_.toStdString()); !removed) {
+        widgets::Toast::Show(QString::fromStdString(removed.error().message),
+                             widgets::Toast::Tone::Error);
+    }
+    refSelectedId_.clear();
+    RebuildRefs();
+    emit changed();
+}
+
+void AssetPageModel::refreshReferences() {
+    RebuildRefs();
+    emit changed();
+}
+
+bool AssetPageModel::waitReferences(int timeoutMs) {
+    if (!refBusy_) {
+        return true;
+    }
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < timeoutMs) {
+        if (!refBusy_) {
+            return true;
+        }
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 20);
+    }
+    return !refBusy_;
+}
+
+// —— ③ 依赖策略面板 ——
+// 两个真实开关：allowDegrade（严格模式的反面）与 suspendTimeoutMs。
+// 原来这里没有 UI 入口，PolicyProbe 是硬编码 —— 两个开关在 QML 侧够不着。
+void AssetPageModel::setAllowDegrade(bool allow) {
+    if (policy_.allowDegrade == allow) {
+        return;
+    }
+    policy_.allowDegrade = allow;
+    ProjectPolicy();
+    emit changed();
+}
+
+void AssetPageModel::setSuspendMinutes(int minutes) {
+    const int clamped = std::clamp(minutes, 0, 120);
+    const auto ms = static_cast<std::int64_t>(clamped) * 60 * 1000;
+    if (policy_.suspendTimeoutMs == ms) {
+        return;
+    }
+    policy_.suspendTimeoutMs = ms;
+    ProjectPolicy();
+    emit changed();
+}
+
 QVariantList AssetPageModel::entityGroups() const { return entityGroups_; }
 QVariantList AssetPageModel::assets() const { return assetsView_; }
 QVariantList AssetPageModel::kinds() const { return kinds_; }
@@ -928,11 +1296,34 @@ QString AssetPageModel::AssetProbe() const {
             selected = QStringLiteral("#%1").arg(selectedEntityId_);
         }
     }
-    return QStringLiteral("entities=%1; assets=%2; kind=%3; selected=%4; asset=%5")
-        .arg(entities_.size())
-        .arg(assets_.size())
-        .arg(kindFilter_.isEmpty() ? QStringLiteral("全部") : kindFilter_, selected)
-        .arg(selectedAssetId_);
+    // empty= 是**真实状态**（当前实体下没有任何资产卡），不是视图层的假象。
+    // Widgets 侧一直有这个字段，QML 侧原来漏了 —— 结果「空态」这个验收点
+    // 只能对着 Assets.qml 的 Empty 覆盖层存在，桥上查不到。
+    QString result = QStringLiteral("book=%1; entities=%2; assets=%3; empty=%4; kind=%5; selected=%6; asset=%7; next=从实体生成视觉资产")
+                         .arg(db_ == nullptr ? QStringLiteral("closed") : QStringLiteral("open"))
+                         .arg(entities_.size())
+                         .arg(assets_.size())
+                         .arg(assets_.empty() ? QStringLiteral("1") : QStringLiteral("0"))
+                         .arg(kindFilter_.isEmpty() ? QStringLiteral("全部") : kindFilter_, selected)
+                         .arg(selectedAssetId_);
+    if (!assets_.empty()) {
+        const AssetEntry& first = assets_.front();
+        const auto runtimeIt = runtime_.constFind(first.asset.id);
+        const bool degraded =
+            first.degraded || (runtimeIt != runtime_.cend() && runtimeIt->degraded);
+        const QString runtime = runtimeIt == runtime_.cend() || runtimeIt->phase.isEmpty()
+                                    ? QStringLiteral("none")
+                                    : runtimeIt->phase;
+        result += QStringLiteral("; card=%1|status=%2|entity=%3|degraded=%4|runtime=%5")
+                      .arg(QString::fromStdString(first.asset.name),
+                           QString::fromStdString(first.asset.status),
+                           QString::fromStdString(first.entity.name))
+                      .arg(degraded ? QStringLiteral("1") : QStringLiteral("0"), runtime);
+    }
+    if (!openError_.isEmpty()) {
+        result += QStringLiteral("; error=%1").arg(QString{openError_}.replace('\n', ' '));
+    }
+    return result;
 }
 
 QString AssetPageModel::StateProbe() const {
@@ -950,6 +1341,109 @@ QString AssetPageModel::StateProbe() const {
         .arg(state.active ? QStringLiteral("1") : QStringLiteral("0"),
              state.degraded ? QStringLiteral("1") : QStringLiteral("0"),
              state.detail.isEmpty() ? QStringLiteral("none") : state.detail);
+}
+
+// 详情探针。字段与 AssetDetailView::DetailProbe 同形，全部由 layersView_
+// （= AssetVisualData.h 的 AssetCollectLayers 真值）算出。
+//
+// ⚠️ **没有 decoded 字段**：QML 侧用 QQuickImageLoader 异步加载，页面拿不到
+// 「解码了几张」的计数 —— 硬凑一个等于造假。「产物已落盘」（ready）才是
+// 页面真正依赖、也真正能观测的量，验收改断言 ready。
+QString AssetPageModel::DetailProbe() const {
+    if (db_ == nullptr) {
+        return QStringLiteral("detail=unavailable");
+    }
+    int ready = 0;
+    QStringList states;
+    QStringList chain;
+    for (const QVariant& item : layersView_) {
+        const QVariantMap layer = item.toMap();
+        const QString key = layer.value(QStringLiteral("key")).toString();
+        const QString status = layer.value(QStringLiteral("status")).toString();
+        if (layer.value(QStringLiteral("ready")).toBool()) {
+            ++ready;
+        }
+        chain.push_back(key);
+        states.push_back(QStringLiteral("%1=%2").arg(key, status.isEmpty() ? QStringLiteral("PENDING")
+                                                                            : status));
+    }
+    const int layers = static_cast<int>(layersView_.size());
+    const auto runtimeIt = runtime_.constFind(selectedAssetId_);
+    const QString phase =
+        runtimeIt == runtime_.cend() || runtimeIt->phase.isEmpty() ? QStringLiteral("none")
+                                                                   : runtimeIt->phase;
+    const QString history =
+        runtimeIt == runtime_.cend() || runtimeIt->history.isEmpty()
+            ? QStringLiteral("none")
+            : runtimeIt->history.join(QLatin1Char('>'));
+    return QStringLiteral("asset=#%1:%2; layers=%3; ready=%4; missing=%5; actions=%6; links=%7; chain=%8; states=%9; runtime=%10; history=%11; active=%12; degraded=%13")
+        .arg(selectedAssetId_)
+        .arg(SelectedAssetName())
+        .arg(layers)
+        .arg(ready)
+        .arg(layers - ready)
+        .arg(layers - ready) // 缺层各给一个「生成/重试」行动
+        .arg(layers > 0 ? layers - 1 : 0) // 父子派生链边数
+        .arg(chain.join(QLatin1Char('>')), states.join(QLatin1Char('>')))
+        .arg(phase, history)
+        .arg(runtimeIt != runtime_.cend() && runtimeIt->active ? QStringLiteral("1")
+                                                              : QStringLiteral("0"),
+             runtimeIt != runtime_.cend() && runtimeIt->degraded ? QStringLiteral("1")
+                                                                : QStringLiteral("0"));
+}
+
+// 策略探针。字段与 AssetPolicyPanel::PolicyProbe 同形（含 strict 与 timeoutMs），
+// 值全部来自真实的 policy_ 与运行态 —— 原来这里是硬编码 "policy=qml"，
+// 任何策略断言都只能对着桩跑出假绿。
+QString AssetPageModel::PolicyProbe() const {
+    const auto runtimeIt = runtime_.constFind(selectedAssetId_);
+    const QString phase =
+        runtimeIt == runtime_.cend() || runtimeIt->phase.isEmpty() ? QStringLiteral("none")
+                                                                   : runtimeIt->phase;
+    const QString layer =
+        runtimeIt == runtime_.cend() || runtimeIt->layer.isEmpty() ? QStringLiteral("none")
+                                                                   : runtimeIt->layer;
+    return QStringLiteral("policy=C>B; allowDegrade=%1; strict=%2; timeoutMs=%3; runtime=%4; layer=%5; active=%6; degraded=%7")
+        .arg(policy_.allowDegrade ? QStringLiteral("1") : QStringLiteral("0"),
+             policy_.allowDegrade ? QStringLiteral("0") : QStringLiteral("1"))
+        .arg(policy_.suspendTimeoutMs)
+        .arg(phase, layer)
+        .arg(runtimeIt != runtime_.cend() && runtimeIt->active ? QStringLiteral("1")
+                                                              : QStringLiteral("0"),
+             runtimeIt != runtime_.cend() && runtimeIt->degraded ? QStringLiteral("1")
+                                                                : QStringLiteral("0"));
+}
+
+// 一致性探针。字段与 ConsistencyView::ConsistencyProbe 逐字对齐，
+// 数据来自 AssetVisualData.h 的 AssetCollectConsistency（唯一真值）。
+QString AssetPageModel::ConsistencyProbe() const {
+    if (db_ == nullptr) {
+        return QStringLiteral("consistency=unavailable");
+    }
+    const AssetConsistencyFact& fact = consistency_;
+    const QString severity = fact.difference < 0
+                                 ? QStringLiteral("none")
+                                 : QString::number(fact.difference * 100.0, 'f', 1);
+    return QStringLiteral("asset=%1; states=%2; emotions=%3; shots=%4; images=%5; compared=%6; diff=%7; severity=%8")
+        .arg(selectedAssetId_)
+        .arg(static_cast<int>(fact.states.size()))
+        .arg(static_cast<int>(fact.emotions.size()))
+        .arg(fact.shotCount)
+        .arg(static_cast<int>(fact.frames.size()))
+        .arg(fact.frames.size() >= 2 ? QStringLiteral("1") : QStringLiteral("0"))
+        .arg(severity, fact.severity);
+}
+
+QString AssetPageModel::SelectedAssetName() const {
+    const AssetEntry* entry = SelectedAsset();
+    return entry == nullptr ? QStringLiteral("none") : QString::fromStdString(entry->asset.name);
+}
+
+QString AssetPageModel::RefProbe() const {
+    if (refs_ == nullptr) {
+        return QStringLiteral("refs=0; busy=0; drops=1; first=none");
+    }
+    return AssetRefProbe(refFacts_, refBusy_, true, refSelectedId_);
 }
 
 } // namespace shine::app
