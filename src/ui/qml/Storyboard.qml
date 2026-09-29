@@ -21,12 +21,22 @@
 //     translateY(-2px) 抢 y → binding loop。区块一律显式 x/y。
 //  3. 每张 Card 内部只放**一个**填满的 Item（Card 的 body 是 Column，会接管直接子项的 y）。
 //  4. hover 抬升挂在外层 Item 上，不挂在 anchors.fill 的 Rectangle 上。
-//  5. 不用 Flow/Row 的地方只有两处，都是设计稿本身就是 flex 且子项**不做位移**的：
-//     StageFlow 的行（.stageflow 是 display:flex）与连续性 chip 的换行（.chips 是 flex-wrap）。
+//  5. 页面层不用 Flow/Row 的地方只剩**一处**：连续性 chip 的换行（.chips 是 flex-wrap，
+//     且 chip 自身不做位移）。阶段行已整体交给共享 StageFlow（它内部自带 Flickable + Row，
+//     纪律见 StageFlow.qml 文件头三条）。
+//
+// ⚠️ 通用控件一律用**共享件**（docs/10-modules/qml-kit.md）：Button / Tag / Chip / Spinner /
+//  Card / StageFlow。本页原有的四件页私有副本（按钮 / 标签 / 胶囊 / 阶段节点，即同目录里那
+//  四个 `Storyboard` 前缀的同名件）已分别被 Button.qml / Tag.qml / Chip.qml / StageNode.qml
+//  （阶段那件经 StageFlow 整行调用）取代；迁移后本页只保留真正私有的
+//  StoryboardCardHead / StoryboardShotCard / StoryboardDialog。
+//  共享件是对着 CSS 逐条核过的，**与设计稿冲突时以共享件为准**（含两处已知的旧偏差修正：
+//  按钮的按下 scale、脉冲环用 accent-glow 而非 tone 色）。
 //
 // ⚠️ 色值：全部走 ThemeBridge（colors / toneBg / toneEdge），本文件不出现任何色值字面量。
 //  设计稿的 --accent-glow(30%) / --accent-dim(14%) / tone 40%·10% 混色在桥上没有对应档，
-//  统一取 toneEdge(35%) / toneBg(12%) 并在用到的地方注明。
+//  本页仍取 toneEdge(35%) / toneBg(12%) 并在用到的地方注明；阶段节点里的那几档已由共享
+//  StageNode 按 CSS 字面比例（Qt.alpha）落地。
 import QtQuick
 import Shine 1.0
 
@@ -59,6 +69,13 @@ Ctl {
         { code: "C07", name: "伤妆痕迹" }, { code: "C08", name: "天气一致" },
         { code: "C09", name: "镜头轴线" }, { code: "C10", name: "场景出入" },
         { code: "C11", name: "画幅一致" }, { code: "C12", name: "色彩基调" }
+    ]
+    // V1–V8 的阶段定义（设计稿 mock.js V_STAGES；共享 StageFlow 契约的 stages 槽位）
+    readonly property var vStages: [
+        { code: "V1", name: "场景输入" }, { code: "V2", name: "节拍拆解" },
+        { code: "V3", name: "镜头切分" }, { code: "V4", name: "空间布局" },
+        { code: "V5", name: "表演标注" }, { code: "V6", name: "机位方案" },
+        { code: "V7", name: "光线方案" }, { code: "V8", name: "连续性校验" }
     ]
     // Beat 时间轴默认内容（Storyboard.jsx:115-119）
     property string beatsJson: "[\n  { \"t\": 0.0, \"act\": \"推近\", \"camera\": \"C4 · 缓推\" },\n  { \"t\": 1.2, \"act\": \"火苗点头\", \"vfx\": \"灯芯裂纹微光\" },\n  { \"t\": 2.4, \"act\": \"切近景\", \"note\": \"眼中映着灯影\" }\n]"
@@ -105,11 +122,15 @@ Ctl {
     readonly property real detailCardH: detailBodyH + 32 + 46  // +46 = .card-h 全块（含 -16 偏移）
 
     // 连续性卡：chips + 8 + 说明行 + 10 + dlist(4 行 · p8 2)
+    // 下面四个刻度逐条对应共享 Chip.qml 的排版公式（checkable 档）：
+    //   p0 11（.chip padding: 0 11）· 内 gap 6（.chip gap 6）· h24（Storyboard.jsx:131 的
+    //   inline 高度覆盖，Chip 用 `checkable ? 24 : 26` 承载）· 前导 ✓ 走 Chip 的 glyphW。
+    // ⚠️ 旧的那件页私有胶囊把 ✓ 画成 pixelSize 10 的「盒内字形」；共享 Chip 改按设计稿的
+    //   11×11 图标盒出（views.css:684 的 11px 与 Storyboard.jsx:132 的 11 同一个值）。
     readonly property real chipH: 24
-    readonly property real chipsGap: 6
-    readonly property real chipTextGap: 6
-    readonly property real chipIconW: 11
-    readonly property real chipPadX: 11
+    readonly property real chipsGap: 6                 // .chips { gap: 6px } = Flow 的 spacing
+    readonly property real chipTextGap: 6               // .chip { gap: 6px } = 勾与文字之间
+    readonly property real chipPadX: 11                 // .chip { padding: 0 11px }
     readonly property real noteLH: 12 * root.lh
     readonly property real drowH: 8 * 2 + kvLH
     readonly property real dlistH: 4 * drowH
@@ -145,6 +166,13 @@ Ctl {
         font.family: ThemeBridge.fontFamily
         font.pixelSize: 12
     }
+    // ✓ 的 advance —— 与 Chip.qml 里 glyphText 的 font 完全一致（family 默认档 / 11px / 不加粗）
+    FontMetrics {
+        id: checkFm
+        font.family: ThemeBridge.fontFamily
+        font.pixelSize: 11
+    }
+    readonly property real chipCheckW: checkFm.advanceWidth("✓")
     readonly property var kvKeys: ["动作", "空间", "表演", "机位", "光线", "时长", "情绪"]
     readonly property real kvKeyW: {
         let w = 0
@@ -154,9 +182,10 @@ Ctl {
         return w
     }
 
-    // .chip 宽 = 11(图) + 6(内 gap) + 文字 + 11×2(padding)
+    // .chip 宽 = 11(p0 左右各一份) + ✓ advance + 6(内 gap) + 文字 advance
+    // = Chip.qml 的 implicitWidth 公式（checkable 档：glyphW>0 → gap 计入，count<0 → 无徽标）
     function chipCellWidth(entry) {
-        return root.chipPadX * 2 + root.chipIconW + root.chipTextGap
+        return root.chipPadX * 2 + root.chipCheckW + root.chipTextGap
                + chipFm.advanceWidth(entry.code + " " + entry.name)
     }
     // Flow 只负责换行、不给 implicitHeight，高度按同一套宽度做一次贪心断行
@@ -314,7 +343,7 @@ Ctl {
                     Item {
                         width: headStatusTag.implicitWidth
                         height: 30
-                        StoryboardTag {
+                        Tag {
                             id: headStatusTag
                             anchors.verticalCenter: parent.verticalCenter
                             text: root.shotStatusLabel(root.shot.status)
@@ -322,12 +351,12 @@ Ctl {
                             dot: root.shot.status === "running"   // UI.jsx:36
                         }
                     }
-                    StoryboardButton {
+                    Button {
                         text: "V9/V10 落库"
                         variant: "secondary"
                         onClicked: root.flash("叙事分镜已落库 shots / prompt_artifacts")
                     }
-                    StoryboardButton {
+                    Button {
                         text: "V10 重生成"
                         variant: "secondary"
                         onClicked: {
@@ -336,7 +365,7 @@ Ctl {
                             root.flash("按当前输入状态重新生成 · Prompt 版本递增")
                         }
                     }
-                    StoryboardButton {
+                    Button {
                         text: "运行 V1–V8"
                         variant: "primary"
                         enabled: !root.vActive                      // vActive 时 disabled
@@ -398,7 +427,7 @@ Ctl {
                              : root.vRun >= 8      ? ThemeBridge.colors["status.ok"]
                                                     : ThemeBridge.colors["text.muted"]
                     }
-                    StoryboardTag {
+                    Tag {
                         id: vTag
                         x: parent.width - implicitWidth
                         y: (root.statusLH - height) / 2
@@ -407,33 +436,19 @@ Ctl {
                         sm: true
                     }
 
-                    Flickable {
-                        id: stageFlick
+                    // .stageflow 整行（display:flex · align-items:center · padding 4px 2px ·
+                    // overflow-x:auto）—— 共享 StageFlow 一件套：横向 Flickable + Row + StageNode，
+                    // 本页不再自己排这一行（也不再自搓 .slink / .snode / 转圈 / 状态点）。
+                    // ⚠️ 状态数组与 stages **同下标**；stageState() 读 vRun/vActive，绑定会跟着重算。
+                    StageFlow {
                         x: 0
                         y: root.statusLH + ThemeBridge.spaces["2"]
                         width: parent.width
-                        height: root.stageFlowH
-                        contentWidth: stageRow.width + 4
-                        contentHeight: root.stageFlowH
-                        boundsBehavior: Flickable.StopAtBounds
-                        flickableDirection: Flickable.HorizontalFlick
-                        // .stageflow { display:flex; align-items:center; padding:4px 2px }
-                        // 行内子项（.slink / .snode）**不做位移**，所以这里用 Row 是安全的
-                        Row {
-                            id: stageRow
-                            x: 2
-                            y: 4
-                            height: 30
-                            spacing: 0
-                            StoryboardStage { code: "V1"; stageName: "场景输入"; stageState: root.stageState(0); hasLink: false }
-                            StoryboardStage { code: "V2"; stageName: "节拍拆解"; stageState: root.stageState(1); hasLink: true }
-                            StoryboardStage { code: "V3"; stageName: "镜头切分"; stageState: root.stageState(2); hasLink: true }
-                            StoryboardStage { code: "V4"; stageName: "空间布局"; stageState: root.stageState(3); hasLink: true }
-                            StoryboardStage { code: "V5"; stageName: "表演标注"; stageState: root.stageState(4); hasLink: true }
-                            StoryboardStage { code: "V6"; stageName: "机位方案"; stageState: root.stageState(5); hasLink: true }
-                            StoryboardStage { code: "V7"; stageName: "光线方案"; stageState: root.stageState(6); hasLink: true }
-                            StoryboardStage { code: "V8"; stageName: "连续性校验"; stageState: root.stageState(7); hasLink: true }
-                        }
+                        height: root.stageFlowH          // 30 + 4×2 = StageFlow.implicitHeight
+                        stages: root.vStages
+                        stageStates: [root.stageState(0), root.stageState(1), root.stageState(2),
+                                      root.stageState(3), root.stageState(4), root.stageState(5),
+                                      root.stageState(6), root.stageState(7)]
                     }
                 }
             }
@@ -457,14 +472,14 @@ Ctl {
                         glyph: "▥"
                         Row {
                             spacing: 8                         // .row gap-2
-                            StoryboardButton {
+                            Button {
                                 text: "编辑镜头"
                                 glyph: "✦"                    // Icon name="wand"
                                 variant: "ghost"
                                 sm: true
                                 onClicked: root.editOpen = true
                             }
-                            StoryboardButton {
+                            Button {
                                 text: "送去出图 →"
                                 variant: "ghost"
                                 sm: true
@@ -579,14 +594,14 @@ Ctl {
                             x: 0
                             y: beatsBox.y + beatsBox.height + 8    // inline marginTop 8
                             spacing: 8                              // .row gap-2
-                            StoryboardButton {
+                            Button {
                                 text: "保存 Beat 时间轴"
                                 glyph: "✓"                          // Icon name="check"
                                 variant: "primary"
                                 sm: true
                                 onClicked: root.flash("Beat 时间轴已保存（演示）")
                             }
-                            StoryboardButton {
+                            Button {
                                 text: "批量情绪 → 同场景"
                                 variant: "secondary"
                                 sm: true
@@ -614,7 +629,7 @@ Ctl {
                     StoryboardCardHead {
                         title: "连续性 · C1–C12"
                         glyph: "◎"                            // Icon name="target"
-                        StoryboardTag {
+                        Tag {
                             text: "通过"
                             tone: "ok"
                             sm: true
@@ -623,6 +638,11 @@ Ctl {
 
                     // .chips { display:flex; gap:6; flex-wrap:wrap } —— chip 自身不做位移，
                     // 所以这里可以用 Flow 做换行（高度由 chipsHeight() 按同一套宽度算出）
+                    //
+                    // ⚠️ 语义反转（旧胶囊件的勾选开关默认 true，共享 Chip 的 checkable 默认 false）：
+                    // 这里 12 处连续性胶囊**每一处**都是设计稿那一种（Storyboard.jsx:131-132 的
+                    // inline 覆盖：h24 / ok 字 / ok 边 / 无底 / 前导 ✓），所以逐个显式写
+                    // checkable: true；旧件的 `label` 属性同步改成共享件的 `text`。
                     Flow {
                         id: chipsFlow
                         x: 0
@@ -630,18 +650,18 @@ Ctl {
                         width: parent.width
                         height: root.contChipsH
                         spacing: root.chipsGap
-                        StoryboardChip { label: root.cChecks[0].code + " " + root.cChecks[0].name;  width: root.chipCellWidth(root.cChecks[0]) }
-                        StoryboardChip { label: root.cChecks[1].code + " " + root.cChecks[1].name;  width: root.chipCellWidth(root.cChecks[1]) }
-                        StoryboardChip { label: root.cChecks[2].code + " " + root.cChecks[2].name;  width: root.chipCellWidth(root.cChecks[2]) }
-                        StoryboardChip { label: root.cChecks[3].code + " " + root.cChecks[3].name;  width: root.chipCellWidth(root.cChecks[3]) }
-                        StoryboardChip { label: root.cChecks[4].code + " " + root.cChecks[4].name;  width: root.chipCellWidth(root.cChecks[4]) }
-                        StoryboardChip { label: root.cChecks[5].code + " " + root.cChecks[5].name;  width: root.chipCellWidth(root.cChecks[5]) }
-                        StoryboardChip { label: root.cChecks[6].code + " " + root.cChecks[6].name;  width: root.chipCellWidth(root.cChecks[6]) }
-                        StoryboardChip { label: root.cChecks[7].code + " " + root.cChecks[7].name;  width: root.chipCellWidth(root.cChecks[7]) }
-                        StoryboardChip { label: root.cChecks[8].code + " " + root.cChecks[8].name;  width: root.chipCellWidth(root.cChecks[8]) }
-                        StoryboardChip { label: root.cChecks[9].code + " " + root.cChecks[9].name;  width: root.chipCellWidth(root.cChecks[9]) }
-                        StoryboardChip { label: root.cChecks[10].code + " " + root.cChecks[10].name; width: root.chipCellWidth(root.cChecks[10]) }
-                        StoryboardChip { label: root.cChecks[11].code + " " + root.cChecks[11].name; width: root.chipCellWidth(root.cChecks[11]) }
+                        Chip { text: root.cChecks[0].code + " " + root.cChecks[0].name;  checkable: true; width: root.chipCellWidth(root.cChecks[0]) }
+                        Chip { text: root.cChecks[1].code + " " + root.cChecks[1].name;  checkable: true; width: root.chipCellWidth(root.cChecks[1]) }
+                        Chip { text: root.cChecks[2].code + " " + root.cChecks[2].name;  checkable: true; width: root.chipCellWidth(root.cChecks[2]) }
+                        Chip { text: root.cChecks[3].code + " " + root.cChecks[3].name;  checkable: true; width: root.chipCellWidth(root.cChecks[3]) }
+                        Chip { text: root.cChecks[4].code + " " + root.cChecks[4].name;  checkable: true; width: root.chipCellWidth(root.cChecks[4]) }
+                        Chip { text: root.cChecks[5].code + " " + root.cChecks[5].name;  checkable: true; width: root.chipCellWidth(root.cChecks[5]) }
+                        Chip { text: root.cChecks[6].code + " " + root.cChecks[6].name;  checkable: true; width: root.chipCellWidth(root.cChecks[6]) }
+                        Chip { text: root.cChecks[7].code + " " + root.cChecks[7].name;  checkable: true; width: root.chipCellWidth(root.cChecks[7]) }
+                        Chip { text: root.cChecks[8].code + " " + root.cChecks[8].name;  checkable: true; width: root.chipCellWidth(root.cChecks[8]) }
+                        Chip { text: root.cChecks[9].code + " " + root.cChecks[9].name;  checkable: true; width: root.chipCellWidth(root.cChecks[9]) }
+                        Chip { text: root.cChecks[10].code + " " + root.cChecks[10].name; checkable: true; width: root.chipCellWidth(root.cChecks[10]) }
+                        Chip { text: root.cChecks[11].code + " " + root.cChecks[11].name; checkable: true; width: root.chipCellWidth(root.cChecks[11]) }
                     }
 
                     Text {

@@ -98,6 +98,27 @@ running: <条件> && !root.reduce
 
 `qt_add_resources` 用 `GLOB "src/ui/qml/*.qml"` + `CONFIGURE_DEPENDS`，**扁平**、同目录隐式导入。共享件用无前缀名即可直接 `<Button />`；页私有件靠页面前缀避免撞名。**新增共享件不需要改 CMake。**
 
+## 已淘汰的页私有件（2026-09-29）
+
+本轮收掉 26 份重复实现，文件已删除。共享件的头部注释里仍会提到这些名字 —— 那是**历史来源**（记录每份旧实现贡献了什么、哪里写错了），不是活路径。想知道某个名字对应什么，看下表：
+
+| 已删除 | 收进 |
+|---|---|
+| `GallerySpinner.qml` / `StoryboardSpin.qml` / `ImageFlowSpin.qml` | `Spinner.qml` |
+| `AssetsBtn.qml` / `StoryboardButton.qml` / `ImageFlowBtn.qml`（外加旧冻结版 `Button.qml`） | `Button.qml` |
+| `AssetsTag.qml` / `StoryboardTag.qml` | `Tag.qml` |
+| `AssetsSeg.qml` / `ImageFlowSeg.qml` | `Seg.qml` |
+| `GalleryArt.qml` / `AssetsArt.qml` / `ImageFlowArt.qml` | `Art.qml` |
+| `GalleryDot.qml` / `ImageFlowDot.qml` | `Dot.qml` |
+| `GalleryIconBtn.qml` / `ImageFlowIconBtn.qml` | `IconBtn.qml` |
+| `GalleryKv.qml` / `AssetsKv.qml` | `Kv.qml` |
+| `GalleryProgress.qml` / `ImageFlowProg.qml` | `Progress.qml` |
+| `AssetsChip.qml` / `StoryboardChip.qml` | `Chip.qml` |
+| `GalleryStageFlow.qml` / `StoryboardStage.qml` | `StageFlow.qml` + `StageNode.qml` |
+
+`src/ui/qml` 的文件数从 58 降到 41。
+
+
 ## 自检
 
 ```powershell

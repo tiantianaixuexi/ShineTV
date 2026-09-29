@@ -15,6 +15,21 @@
 //    hover 只改 color，不做 translateY —— 与 Gallery.qml 的纪律 2 同源。
 // 3. 所有色值走 ThemeBridge（属性，不是方法）。唯一两个「非桥」取值是字符图标
 //    与等宽字体名，文件头已注明。
+//
+// ⚠️ 共享套件迁移（本页 6 个页私有件 → 共享 Button/IconBtn/Seg/Art/Dot/Progress）后
+//    有四处**刻意**不再复刻旧实现，都是往设计稿靠，理由写在这里免得下次被当回归改回去：
+//    1. 按钮/图标钮的 `icon:` 改名 `glyph:`（共享件统一叫法，属性名不变的是
+//       text / variant / sm / clicked）。那批页私有件已无人引用，待主 Agent 统一删除。
+//    2. 分段控件的选中段宽度：设计稿 ui.css:215-242 是「文字 + 13 + 13 + margin-left 6
+//       + 圆点 4」= 文字 + 36，旧实现尾部**多算了一个 6**（文字 + 42），连带未选中段也被
+//       套 Row 撑宽。共享 Seg 取 36，是对的，不要改回去。
+//    3. 两处 <Art>：旧实现是**无种子**的固定三色（bg.void / accent.primary / status.warn），
+//       共享 Art 是按种子取 12 组 ART_PAL（UI.jsx:184-197，%12）。
+//       这里给 seed = shot.id + 4（= 9，照抄 ImageFlow.jsx:157），而不是留默认 0。
+//       后果：光源色从 status.warn 变成该组调色板的第三色（seed 9 → status.ok），
+//       山脊拐点也随种子动 —— 这是向设计稿靠的必然视觉变化，出图确认。
+//    4. 进度条的 shimmer 现在扫**整条槽**而不是只扫填充条（ui.css:444-451 的
+//       ::after 包含块是 .prog 自己）；且 value 是 real，不再被 int 截断。
 pragma ComponentBehavior: Bound
 
 import QtQuick
@@ -76,6 +91,12 @@ Ctl {
     ]
 
     // 选中镜头（ImageFlow.jsx:195 的 `SHOTS.find(...) || SHOTS[4]` → id 5 = S05）
+    // ⚠️ shotId 是两处 <Art> 的 seed 派生源：设计稿 ImageFlow.jsx:157 写的是
+    //    `<Art seed={shot.id + 4} …>`，而 mock.js:276-296 的 buildShots 里 n 从 0 起
+    //    **跨章节累加**（每章内部再自增），所以 SHOTS[4].id === 5 → seed 9。
+    //    Art 默认 seed 0，全页两个实例都留 0 会长成同一张；这里显式给确定性种子。
+    readonly property int shotId: 5
+    readonly property int shotArtSeed: shotId + 4      // ImageFlow.jsx:157
     readonly property string shotCode: "S05"
     readonly property string shotChapter: "第 2 章 · 长街灯影"
     readonly property string shotScene: "场景 1"
@@ -296,9 +317,9 @@ Ctl {
             x: 5      // 边 1 + padding 4
             y: 5
             spacing: 4
-            ImageFlowIconBtn { sm: true; icon: "＋"; onClicked: root.zoom = Math.min(2, root.zoom * 1.2) }
-            ImageFlowIconBtn { sm: true; icon: "×"; onClicked: root.zoom = Math.max(0.35, root.zoom / 1.2) }
-            ImageFlowIconBtn { sm: true; icon: "◎"; onClicked: root.fit() }
+            IconBtn { sm: true; glyph: "＋"; onClicked: root.zoom = Math.min(2, root.zoom * 1.2) }
+            IconBtn { sm: true; glyph: "×"; onClicked: root.zoom = Math.max(0.35, root.zoom / 1.2) }
+            IconBtn { sm: true; glyph: "◎"; onClicked: root.fit() }
             // running 时的 spin sm（margin: 4px auto 0 → 顶部留 4、水平居中）
             Item {
                 width: 11
@@ -369,11 +390,11 @@ Ctl {
                     color: ThemeBridge.colors["line.normal"]
                 }
             }
-            ImageFlowBtn { text: "导入";        variant: "ghost";     sm: true; icon: "↑" }
-            ImageFlowBtn { text: "导出";        variant: "ghost";     sm: true; icon: "↓" }
-            ImageFlowBtn { text: "提交前校验";  variant: "secondary"; sm: true; icon: "◎" }
-            ImageFlowBtn { text: "批量出图";    variant: "primary";   sm: true; icon: "▶"
-                           onClicked: { root.tab = "batch" } }
+            Button { text: "导入";        variant: "ghost";     sm: true; glyph: "↑" }
+            Button { text: "导出";        variant: "ghost";     sm: true; glyph: "↓" }
+            Button { text: "提交前校验";  variant: "secondary"; sm: true; glyph: "◎" }
+            Button { text: "批量出图";    variant: "primary";   sm: true; glyph: "▶"
+                     onClicked: { root.tab = "batch" } }
         }
     }
 
@@ -430,10 +451,10 @@ Ctl {
                 text: root.shotStatusLabel
                 tone: root.shotStatusTone
             }
-            ImageFlowIconBtn {
+            IconBtn {
                 anchors { right: parent.right; rightMargin: 15; verticalCenter: parent.verticalCenter }
                 sm: true
-                icon: root.folded ? "▸" : "▾"
+                glyph: root.folded ? "▸" : "▾"
                 onClicked: { root.folded = !root.folded }
             }
             Rectangle {
@@ -460,7 +481,7 @@ Ctl {
                 width: body.width - 26   // 348 - 边 1×2 - padding 12×2
                 spacing: 10
 
-                ImageFlowSeg {
+                Seg {
                     width: parent.width
                     options: root.segOptions
                     value: root.tab
@@ -557,28 +578,33 @@ Ctl {
                     Item {
                         width: parent.width
                         height: 24
-                        ImageFlowBtn {
+                        Button {
                             id: enqueueBtn
                             x: 0
                             anchors.verticalCenter: parent.verticalCenter
                             text: "全部入队"
                             variant: "primary"
                             sm: true
-                            icon: "▶"
+                            glyph: "▶"
                             enabled: root.comfy     // disabled={!comfy}
                             onClicked: { root.batchRunning = true }
                         }
-                        ImageFlowBtn {
+                        Button {
+                            id: stopBtn
                             x: enqueueBtn.width + 8    // .row gap-2
                             anchors.verticalCenter: parent.verticalCenter
                             text: "中断 / 清队列"
                             variant: "secondary"
                             sm: true
-                            icon: "■"
+                            glyph: "■"
                             onClicked: { root.batchRunning = false }
                         }
                         Text {
-                            x: enqueueBtn.width + 8 + 116 + 8
+                            // ⚠️ 原来这里写死 116（= 旧页私有件按「固定 icon 盒 13」算出的
+                            // 按钮宽）。共享 Button 的 implicitWidth 改成按**字形实际
+                            // advance** 算（Button.qml:87-89），常数不再成立，改读 stopBtn
+                            // 的实测宽，避免文字压到按钮上。
+                            x: enqueueBtn.width + 8 + stopBtn.width + 8
                             anchors.verticalCenter: parent.verticalCenter
                             visible: !root.comfy
                             text: "ComfyUI 未连接 · 底部「连接」"
@@ -661,12 +687,19 @@ Ctl {
                                         font.pixelSize: 12
                                         color: ThemeBridge.colors["text.muted"]
                                     }
-                                    ImageFlowProg {
+                                    Progress {
                                         x: batchRow.index === 4 ? 144 : 124
                                         anchors.verticalCenter: parent.verticalCenter
+                                        // ⚠️ 共享 Progress 只给 implicitHeight（6 / 4），
+                                        // 而本调用点的父级是**裸 Item**（不套定位器，不会替
+                                        // 子项套用 implicit 尺寸）—— 不显式给 height 就是 0 高、
+                                        // 整条看不见。旧页私有件也是自带 height 的，这里保持。
+                                        height: 4        // .prog.thin 4px
                                         width: Math.max(20, parent.width - x - 8 - 32 - 8 - btag.width)
                                         thin: true
                                         run: batchRow.modelData.st === "running"
+                                        // value 是 real：pct 推进到 0.x 段时旧 int 属性会把小数
+                                        // 静默截断，条子看着不动（Progress.qml 文件头）。
                                         value: batchRow.modelData.pct
                                     }
                                 }
@@ -693,30 +726,34 @@ Ctl {
                     Item {
                         width: parent.width
                         height: 24
-                        ImageFlowBtn {
+                        Button {
                             id: reviewBtn
                             x: 0
                             anchors.verticalCenter: parent.verticalCenter
                             text: "评审当前图"
                             variant: "primary"
                             sm: true
-                            icon: "◉"
+                            glyph: "◉"
                             onClicked: { root.reviewed = true }
                         }
-                        ImageFlowBtn {
+                        Button {
                             x: reviewBtn.width + 8
                             anchors.verticalCenter: parent.verticalCenter
                             text: "仅重跑 ⚠ 项"
                             variant: "secondary"
                             sm: true
-                            icon: "↻"
+                            glyph: "↻"
                         }
                     }
 
-                    ImageFlowArt {
+                    Art {
                         width: parent.width
                         height: 150
                         dimmed: !root.reviewed
+                        // ⚠️ 设计稿这一处（ImageFlow.jsx:96-104）是**手写内联 SVG、根本没有
+                        // 种子**；本页按「评审页与结果页看的是同一张镜头成图」取与结果页同一个
+                        // 派生种子（shot.id + 4 = 9），而不是留 0。取舍见文件头第 3 条。
+                        seed: root.shotArtSeed
                         // 未评审时的占位层（设计稿是 absolute inset 0 的居中说明）
                         Text {
                             visible: !root.reviewed
@@ -801,9 +838,12 @@ Ctl {
                     spacing: 12
                     visible: root.tab === "result"
 
-                    ImageFlowArt {
+                    Art {
                         width: parent.width
                         height: 190
+                        // ImageFlow.jsx:157 的 `<Art seed={shot.id + 4} cover …>` ——
+                        // 照抄设计稿的派生式（shot.id = 5 → seed 9），不写死 0。
+                        seed: root.shotArtSeed
                         // 未完成时压一层 scrim（设计稿是纯黑 45% 透明，
                         // 这里取 --bg-void 45% 透明，语义等价且不写死黑色）
                         Rectangle {
@@ -951,11 +991,11 @@ Ctl {
                         }
                     }
 
-                    ImageFlowBtn {
+                    Button {
                         text: "重跑本镜出图"
                         variant: "secondary"
                         sm: true
-                        icon: "↻"
+                        glyph: "↻"
                     }
                 }
             }
@@ -995,11 +1035,17 @@ Ctl {
                 Item {
                     width: parent.width
                     height: 22
-                    ImageFlowDot {
+                    Dot {
                         x: 0
                         anchors.verticalCenter: parent.verticalCenter
-                        tone: root.comfy ? ThemeBridge.colors["status.ok"]
-                                         : ThemeBridge.colors["status.warn"]
+                        // ⚠️ 共享 Dot 的 `tone` 是**语义名**不是颜色：设计稿
+                        // ImageFlow.jsx:231 写的就是 <StatusDot tone={comfy ? 'ok' : 'warn'} />。
+                        // 直接给色要走 `toneColor:` 槽，这里有名可名，不该用逃生舱。
+                        // 父级是裸 Item（不套 implicit 尺寸），共享 Dot 只给 implicitWidth/Height，
+                        // 所以 7×7 显式写死（.dot 7px，ui.css:164-169）。
+                        width: 7
+                        height: 7
+                        tone: root.comfy ? "ok" : "warn"
                         run: root.comfy
                     }
                     Text {
@@ -1033,7 +1079,7 @@ Ctl {
                         font.pixelSize: 12
                         color: ThemeBridge.colors["text.muted"]
                     }
-                    ImageFlowBtn {
+                    Button {
                         id: linkBtn
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
@@ -1042,7 +1088,7 @@ Ctl {
                         sm: true
                         onClicked: { root.comfy = !root.comfy }
                     }
-                    ImageFlowBtn {
+                    Button {
                         anchors.right: linkBtn.left
                         anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter

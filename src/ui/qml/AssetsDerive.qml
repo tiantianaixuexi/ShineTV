@@ -78,7 +78,7 @@ Ctl {
                 topRightRadius: root.rMd
                 color: "transparent"
                 clip: true
-                AssetsArt {
+                Art {
                     width: dthumb.width
                     height: dthumb.height
                     seed: 5 + node.index      // jsx: <Art seed={5 + i} />
@@ -106,32 +106,11 @@ Ctl {
                            ? ThemeBridge.colors["status.ok"]      // <StatusDot tone="ok">
                            : ThemeBridge.colors["status.idle"]     // <StatusDot tone="idle">
                 }
-                Rectangle {                       // .spin.sm 11px / 1.5px 边（int → 1）/ 0.7s linear
+                Spinner {                            // .spin.sm：11px / 1.5px 边 / 0.7s linear
                     x: 0
                     y: (dlabel.height - height) / 2
                     visible: node.modelData.state === "run"
-                    width: 11
-                    height: 11
-                    radius: 5.5
-                    color: "transparent"
-                    border.width: 1
-                    border.color: ThemeBridge.colors["line.normal"]
-                    RotationAnimator on rotation {
-                        from: 0
-                        to: 360
-                        duration: 700
-                        loops: Animation.Infinite
-                        running: node.modelData.state === "run" && !root.reduce
-                    }
-                    // border-top 单独换色：border.width 是 int，QML 没有 border-top-color，
-                    // 用一条 1px 的 accent 顶边高亮表示「转圈起点」
-                    Rectangle {
-                        anchors.top: parent.top
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: 11
-                        height: 1
-                        color: ThemeBridge.colors["accent.primary"]
-                    }
+                    sm: true
                 }
                 Text {
                     x: 12                                  // gap 5 + 状态位 7

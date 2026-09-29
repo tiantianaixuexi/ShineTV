@@ -61,13 +61,14 @@ Item {
         font.pixelSize: 13      // .vsec-h .t font-size: 13.5px → 取整 13（与 QssBuilder 的 vsechead 同值）
         font.weight: Font.DemiBold
     }
-    AssetsTag {
+    Tag {
         id: tag
         visible: root.hasTag
         x: root.tagX
         y: (root.height - height) / 2
         text: root.tagText
         tone: root.tagTone
+        sm: true          // 本页设计稿所有 Tag 都带 sm（Assets.jsx:172/244/156）
     }
     Text {
         id: metaText

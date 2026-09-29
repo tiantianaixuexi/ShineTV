@@ -204,7 +204,7 @@ Ctl {
             spacing: 8                      // .tl-below gap: 8px
             Repeater {
                 model: root.shots
-                delegate: AssetsChip {
+                delegate: Chip {
                     required property var modelData
                     height: 24               // jsx 行内 style height: 24
                     text: modelData
@@ -238,7 +238,7 @@ Ctl {
                     radius: root.rSm
                     color: "transparent"
                     clip: true
-                    AssetsArt {
+                    Art {
                         width: parent.width
                         height: parent.height
                         seed: refThumb.modelData + root.artSeed   // seed + cur.art

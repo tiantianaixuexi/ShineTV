@@ -21,6 +21,10 @@ pragma ComponentBehavior: Bound
 //      `ThemeBridge.layerEffectsAvailable && 条件` —— software 场景图后端下
 //      layer.effect: MultiEffect 会把整个 item 吞掉（不是阴影没画，是控件不显示）。
 //
+// 部件全部走共享套件（docs/10-modules/qml-kit.md）：Button / Tag / Seg / Art / Kv /
+// Chip / Ctl。本页不再有这 6 件的私有副本 —— 尺寸与配色以共享件为准（它们逐条对过
+// CSS），本页只提供数据与摆放。
+//
 // 数据：设计稿的 mock 数据（webui/src/data/mock.js 的 ENTITIES / ENTITY_STATUS /
 // DERIVE_CHAIN）。本页不接 C++ 模型（本轮只迁视觉层），所以这些实体是页面私有的
 // 静态数据；宿主接真数据时替换 entities 一处即可。
@@ -219,7 +223,7 @@ Ctl {
                     font.pixelSize: 12   // .vw-sub f12.5px → 取整 12（同 AssetWorkspace.cpp:308 的落地值）
                 }
 
-                // 类型筛选胶囊（带 .cnt 数量徽标，见 AssetsChip 头注释）
+                // 类型筛选胶囊（带 .cnt 数量徽标，见 Chip.qml 头注）
                 Row {
                     id: ovChips
                     x: ovTitle.x + root.titleBlockW + 14
@@ -227,7 +231,7 @@ Ctl {
                     spacing: 6                  // .chips gap: 6px
                     Repeater {
                         model: root.kinds
-                        delegate: AssetsChip {
+                        delegate: Chip {
                             required property var modelData
                             text: modelData
                             count: root.countOf(modelData)
@@ -237,14 +241,14 @@ Ctl {
                     }
                 }
 
-                AssetsBtn {
+                Button {
                     id: ovRefresh
                     x: ovHead.width - width
                     y: (ovHead.height - height) / 2
                     variant: "ghost"
                     glyph: "↻"
                 }
-                AssetsSeg {
+                Seg {
                     x: Math.max(ovChips.x + ovChips.width + 14, ovRefresh.x - 14 - width)
                     y: (ovHead.height - height) / 2
                     options: root.viewOptions
@@ -306,7 +310,7 @@ Ctl {
                 spacing: 6
                 Repeater {
                     model: root.kinds
-                    delegate: AssetsChip {
+                    delegate: Chip {
                         required property var modelData
                         text: modelData
                         count: root.countOf(modelData)
@@ -338,23 +342,23 @@ Ctl {
                     tagTone: root.current.statusTone
                     meta: root.current.kind + " · " + root.current.role + " · 一部一库 assets/"
 
-                    AssetsSeg {
+                    Seg {
                         options: root.viewOptions
                         value: "detail"
                         onPicked: function(v) { root.overview = (v === "overview") }
                     }
-                    AssetsBtn {
+                    Button {
                         text: "生成完整链"
                         glyph: "▶"
                         variant: "primary"
                         sm: true
                     }
-                    AssetsBtn {
+                    Button {
                         text: "导出整版"
                         glyph: "↓"
                         sm: true
                     }
-                    AssetsBtn {
+                    Button {
                         variant: "ghost"
                         sm: true
                         glyph: "↻"
@@ -371,7 +375,7 @@ Ctl {
                     radius: root.rSm
                     color: "transparent"
                     clip: true
-                    AssetsArt {
+                    Art {
                         width: sheetArt.width
                         height: sheetArt.height
                         seed: root.current.art
@@ -395,16 +399,17 @@ Ctl {
                     width: root.sheetRightW
                     height: root.sheetRightH
 
-                    AssetsKv {
+                    Kv {
                         id: sheetKv
                         x: 0
                         y: 0
                         width: sheetRight.width
+                        // 键名是 Kv 的 {key, value}（共享件统一了旧件的 k / v）
                         rows: [
-                            { k: "类别", v: root.current.kind + " · " + root.current.role },
-                            { k: "别名", v: root.aliasOf(root.current.name) },
-                            { k: "出处", v: "第 " + (1 + (root.current.art % 8)) + " 章（见下方时间线）" },
-                            { k: "降级策略", v: "允许超期降级（B 级）" }
+                            { key: "类别", value: root.current.kind + " · " + root.current.role },
+                            { key: "别名", value: root.aliasOf(root.current.name) },
+                            { key: "出处", value: "第 " + (1 + (root.current.art % 8)) + " 章（见下方时间线）" },
+                            { key: "降级策略", value: "允许超期降级（B 级）" }
                         ]
                     }
 
@@ -413,17 +418,17 @@ Ctl {
                         x: 0
                         y: sheetKv.implicitHeight + 12      // .col gap-3
                         spacing: 8
-                        AssetsBtn {
+                        Button {
                             text: "导入图片"
                             glyph: "↑"
                             sm: true
                         }
-                        AssetsBtn {
+                        Button {
                             text: "绑定当前实体"
                             glyph: "↔"
                             sm: true
                         }
-                        AssetsBtn {
+                        Button {
                             text: "查看大图"
                             glyph: "◎"
                             variant: "ghost"

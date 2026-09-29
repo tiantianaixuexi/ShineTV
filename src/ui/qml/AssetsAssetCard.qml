@@ -77,7 +77,7 @@ Ctl {
         topRightRadius: root.rMd
         color: "transparent"
         clip: true
-        AssetsArt {
+        Art {
             width: thumb.width
             height: thumb.height
             seed: root.artSeed
@@ -87,12 +87,13 @@ Ctl {
     }
 
     // .abody
-    AssetsTag {
+    Tag {
         id: statusTag
         x: root.width - root.bodyPadX - width
         y: root.thumbH + 9 + (root.nameRowH - height) / 2
         text: root.statusLabel
         tone: root.statusTone
+        sm: true          // <Tag tone={st.tone} sm>（Assets.jsx:156）
     }
 
     Text {

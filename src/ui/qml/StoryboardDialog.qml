@@ -18,6 +18,9 @@
 //     一套设计稿没有的列表样式，也避开裁剪后看不见的下拉。
 //  3. 输入框/文本域的 3px 焦点环用自绘外框（外扩 3px 描边矩形）—— software 场景图
 //     后端下 layer.effect 会把 item 整个吞掉，ThemeBridge.layerEffectsAvailable 已探测。
+//
+// 底部两个按钮用**共享** Button（迁移自本页已淘汰的那件页私有按钮）：text / variant /
+// glyph / onClicked 四个槽位与旧件同名，图标字号改按设计稿的 .btn .icon 15 盒出。
 import QtQuick
 import QtQuick.Effects        // MultiEffect（.modal 的 shadow-2）
 import Shine 1.0
@@ -457,12 +460,12 @@ Ctl {
                 anchors.rightMargin: root.bodyPad
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 8                                        // .modal-f { gap: 8px }
-                StoryboardButton {
+                Button {
                     text: "取消"
                     variant: "ghost"
                     onClicked: root.cancelled()
                 }
-                StoryboardButton {
+                Button {
                     text: "保存"
                     variant: "primary"
                     glyph: "✓"

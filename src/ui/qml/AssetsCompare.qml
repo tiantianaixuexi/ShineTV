@@ -52,7 +52,7 @@ Ctl {
         height: root.stageH
 
         // 基线（第 1 章）
-        AssetsArt {
+        Art {
             x: 0
             y: 0
             width: stage.width
@@ -67,7 +67,7 @@ Ctl {
             width: root.splitX
             height: stage.height
             clip: true
-            AssetsArt {
+            Art {
                 x: 0
                 y: 0
                 width: stage.width
@@ -124,16 +124,18 @@ Ctl {
             }
         }
 
-        AssetsTag {
+        Tag {
             x: 8
             y: 8
             text: "基线 · 第 1 章"
+            sm: true          // jsx: className="tag sm"（:35-36）
         }
-        AssetsTag {
+        Tag {
             x: stage.width - 8 - width
             y: 8
             text: "当前 · 第 3 章"
             tone: "accent"
+            sm: true          // jsx: className="tag accent sm"（:36）
         }
 
         Rectangle {                     // 描边压在图像之上
@@ -167,16 +169,17 @@ Ctl {
         width: root.rightW
         height: root.rightH
 
-        AssetsKv {
+        Kv {
             id: kv
             x: 0
             y: 0
             width: root.rightW
+            // 键名是 Kv 的 {key, value}（共享件统一了旧件的 k / v）
             rows: [
-                { k: "对比对象", v: "外观基线 · 按章" },
-                { k: "基线帧", v: "第 1 章 · 出场首秀" },
-                { k: "当前帧", v: "第 3 章 · 风起" },
-                { k: "检测项", v: "C1–C12 全过" }
+                { key: "对比对象", value: "外观基线 · 按章" },
+                { key: "基线帧", value: "第 1 章 · 出场首秀" },
+                { key: "当前帧", value: "第 3 章 · 风起" },
+                { key: "检测项", value: "C1–C12 全过" }
             ]
         }
 
@@ -234,13 +237,13 @@ Ctl {
             }
         }
 
-        AssetsBtn {
+        Button {
             x: 0
             y: kv.implicitHeight + 8 + root.diffs.length * 32 + 8
             text: "仅重跑差异项"
             glyph: "↻"
             sm: true
-            onPicked: root.rerunDiff()
+            onClicked: root.rerunDiff()
         }
     }
 }

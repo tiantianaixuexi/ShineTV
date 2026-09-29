@@ -642,7 +642,8 @@ function measure(s) { probe.text = s; return probe.width }   // 先写后读
 
 ### ⑫ 调用方属性名与组件声明名不一致时 QML **不报错**
 
-`Gallery.qml` 写 `states: [...]`，而 `GalleryStageFlow` 声明的是 `stageStates` ——
+页面迁移前的 `Gallery.qml` 写 `states: [...]`，而当时的 `GalleryStageFlow`
+声明的是 `stageStates` ——
 因为 `states` 撞上了 **`Item` 内建的 `states` 成员**（`QQuickItem` 有
 `states`/`transitions`），赋值被静默吞掉，状态数组整条丢失，6 个阶段节点
 全渲染成 `todo`，而**全程零错误零告警**。

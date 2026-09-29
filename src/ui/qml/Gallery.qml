@@ -47,7 +47,9 @@ Ctl {
     readonly property int headH: 37
 
     // —— 页面交互态（对应 Gallery.jsx 的 useState）——
-    property int segIndex: 0            // Segmented 初值「列表」
+    // Segmented 的真值是**选项的 value 字符串**（Gallery.jsx 的 useState('列表')），
+    // 不是下标 —— 下标只是位置身份，重排一次就全错。
+    property string segValue: "列表"
     property int tabIndex: 1            // Tabs 初值「分镜」
     property bool sw: true              // Switch 自动运行
     property bool ck: true              // Checkbox 允许超期降级
@@ -61,7 +63,7 @@ Ctl {
         { key: "seg",    title: "Segmented / Tabs / 进度",          icon: "target",   ch: 147 },
         { key: "field",  title: "Field 表单项 · 五态控件",           icon: "settings", ch: 234 },
         { key: "table",  title: "DataTable 表格 · 排序 / 筛选 / 选中", icon: "grid",    ch: 206 },
-        { key: "flow",   title: "StageFlow 阶段流 · 节点四态",        icon: "flow",     ch: 144 },
+        { key: "flow",   title: "StageFlow 阶段流 · 节点四态",        icon: "flow",     ch: 162 },
         { key: "art",    title: "Art 占位画 · 程序化生成",           icon: "image",    ch: 154 },
         { key: "ink",    title: "水墨装饰 ArtInk · 随主题渲染",      icon: "palette",  ch: 174 },
         { key: "empty",  title: "空态 / 反馈",                       icon: "info",     ch: 244 }
@@ -211,10 +213,12 @@ Ctl {
 
     // —— Card 1：Button 变体 4 × 尺寸 3 ——
     //
-    // ⚠️ 冻结的 Button.qml 只有 text / primary，没有 icon 槽位，也不能改它。
-    //    所以「图标 + 按钮」用 GalleryFlow 的子项包一层 Item：图标贴在按钮左侧
-    //    6px（ui.css `.btn .icon { width: 15px }`）。这是与设计稿唯一的结构差异
-    //    ——图标落在按钮的 14px 内边距之外，而不是里面。
+    // ⚠️ 第一行的四个按钮仍然把图标包在按钮**外面**（Item 垫在 GalleryFlow 里，
+    //    图标贴按钮左侧 6px，ui.css `.btn .icon { width: 15px }`）。
+    //    共享 Button 现在确实有 `glyph` 槽（Button.qml:60），但那个槽画的是**字符**，
+    //    而这里的 GalleryIcon 是逐条照抄 Icon.jsx 的 PathSvg 描边图标 —— 换 glyph 等于
+    //    把设计稿的 SVG 降级成一个字符。所以结构差异保留：图标落在 14px 内边距之外，
+    //    而不是 CSS 的 padding 里面。这是本页的已知取舍。
     Component {
         id: cButton
         Item {
@@ -228,7 +232,7 @@ Ctl {
                         width: 15; height: 15; name: "play"
                         glyphColor: ThemeBridge.colors["accent.primary.fg"]
                     }
-                    Button { id: b1; x: 21; text: "主要"; primary: true }
+                    Button { id: b1; x: 21; text: "主要"; variant: "primary" }
                 }
                 Item {
                     width: 15 + 6 + b2.width; height: 30
@@ -237,7 +241,7 @@ Ctl {
                         width: 15; height: 15; name: "layers"
                         glyphColor: ThemeBridge.colors["text.primary"]
                     }
-                    Button { id: b2; x: 21; text: "次要"; primary: false }
+                    Button { id: b2; x: 21; text: "次要"; variant: "secondary" }
                 }
                 Item {
                     width: 15 + 6 + b3.width; height: 30
@@ -246,7 +250,7 @@ Ctl {
                         width: 15; height: 15; name: "eye"
                         glyphColor: ThemeBridge.colors["text.primary"]
                     }
-                    Button { id: b3; x: 21; text: "幽灵"; primary: false }
+                    Button { id: b3; x: 21; text: "幽灵"; variant: "ghost" }
                 }
                 Item {
                     width: 15 + 6 + b4.width; height: 30
@@ -255,7 +259,11 @@ Ctl {
                         width: 15; height: 15; name: "alert"
                         glyphColor: ThemeBridge.colors["text.primary"]
                     }
-                    Button { id: b4; x: 21; text: "危险"; primary: false }
+                    // 设计稿是 variant="danger"（ui.css:77-85）。共享 Button 的 variant
+                    // 只有 primary/secondary/ghost 三个槽（Button.qml:38-44 记着「不补
+                    // 第四套配色」），所以本页拿 secondary 顶 —— 是页面的取舍，
+                    // 不在共享件里加 danger。
+                    Button { id: b4; x: 21; text: "危险"; variant: "secondary" }
                 }
             }
             // 第 2 行：设计稿这行**没有** icon（Gallery.jsx:41-47），只有 loading
@@ -264,24 +272,38 @@ Ctl {
             GalleryFlow {
                 x: 0; y: 42
                 width: parent.width
-                Button { text: "小号"; primary: true }
-                Button { text: "中号"; primary: true }
-                Button { text: "大号"; primary: true }
+                // ⚠️ 设计稿这三档是 sm / md / lg（Gallery.jsx:42-44），共享 Button 只有
+                //    sm 一档（Button.qml:62 记着「没有 lg 槽位」），所以三颗都是 30px 高 ——
+                //    尺寸档的缺口在本页，不在共享件。「加载中」的转圈同理：共享 Button
+                //    没有 loading 变体（Button.qml:38-44），转圈仍贴在按钮左侧。
+                Button { text: "小号"; variant: "primary" }
+                Button { text: "中号"; variant: "primary" }
+                Button { text: "大号"; variant: "primary" }
                 Item {
                     // 设计稿的 loading 转圈是 13×13（UI.jsx:11），共享 Spinner
                     // 的自然尺寸是 14，这里按 14 排位。
                     width: 14 + 6 + bl.width; height: 30
                     Spinner { y: Math.round((30 - 14) / 2) }
-                    Button { id: bl; x: 20; text: "加载中"; primary: true }
+                    Button { id: bl; x: 20; text: "加载中"; variant: "primary" }
                 }
-                Button { text: "禁用"; primary: true; enabled: false }
+                Button { text: "禁用"; variant: "primary"; enabled: false }
             }
             GalleryFlow {
                 x: 0; y: 84
                 width: parent.width
-                GalleryIconBtn { icon: "refresh" }
-                GalleryIconBtn { icon: "download" }
-                GalleryIconBtn { icon: "settings"; active: true }
+                // ⚠️ 共享 IconBtn 的槽位是 `glyph`（字符位）不是 `icon`（图标名），
+                //    字符取自 Widgets 侧同一张卡片的同一组图标（WidgetGalleryView.cpp:538-545），
+                //    tip 文案照 Gallery.jsx:49-51。设计稿的 SVG 描边图标在本仓没有资源，
+                //    共享件统一降级成字符（IconBtn.qml:35）。
+                // ⚠️ `active` 归调用方：共享 IconBtn 只发 clicked()、不自翻转
+                //    （IconBtn.qml:87-90），所以第三颗要自己绑。
+                IconBtn { glyph: "↻"; tip: "图标钮 · tooltip" }        // Icon name="refresh"
+                IconBtn { glyph: "⤓"; tip: "下载" }                      // Icon name="download"
+                IconBtn {
+                    glyph: "⚙"                                            // Icon name="settings"
+                    tip: "设置"
+                    active: true
+                }
             }
         }
     }
@@ -307,12 +329,12 @@ Ctl {
             GalleryFlow {
                 x: 0; y: 32
                 width: parent.width
-                GalleryDot { tone: "ok" }
-                GalleryDot { tone: "warn" }
-                GalleryDot { tone: "danger" }
-                GalleryDot { tone: "busy"; run: true }
-                GalleryDot { tone: "idle" }
-                GalleryDot { tone: "pending" }
+                Dot { tone: "ok" }
+                Dot { tone: "warn" }
+                Dot { tone: "danger" }
+                Dot { tone: "busy"; run: true }
+                Dot { tone: "idle" }
+                Dot { tone: "pending" }
                 Text {
                     text: "状态六态"
                     color: ThemeBridge.colors["text.muted"]
@@ -344,23 +366,39 @@ Ctl {
     Component {
         id: cSeg
         Item {
-            GallerySeg {
+            // ⚠️ 共享 Seg 的槽位是 `options: [{value, label}]` + `value: string` +
+            //    `picked(v)` 信号 —— 组件**不改**自己的 value（Seg.qml:52-53），
+            //    真值归调用方。旧的页私有 Seg 是 `string[] + current: int` 且组件
+            //    **自改** current，语义不一样，所以页面状态也换成了字符串 value
+            //    （对应 Gallery.jsx:16 的 useState('列表')）。
+            Seg {
                 x: 0; y: 0
-                options: ["列表", "看板", "日/周/月"]
-                current: root.segIndex
+                options: [
+                    { value: "list",   label: "列表" },
+                    { value: "board",  label: "看板" },
+                    { value: "period", label: "日/周/月" }
+                ]
+                value: root.segValue
+                onPicked: (v) => { root.segValue = v }
             }
             GalleryTabs {
                 x: 0; y: 46
                 tabs: ["剧本", "分镜", "渲染", "设定集"]
                 current: root.tabIndex
             }
-            // 进度行：.row gap-3 —— grow 进度条 + 两个步进钮 + 右对齐百分比
+            // 进度行：.row gap-3（Gallery.jsx:89-94）—— grow 进度条 + 两个步进钮 + 右对齐百分比。
+            //
+            // ⚠️ 这一行的**定位方向换成了从右往左**：两个步进钮先按自身宽度从右端排开，
+            //    进度条再由 minusBtn.x 倒推宽度。旧写法是
+            //    `progBar.width = minusBtn.x - 12` 且 `minusBtn.x = progBar.width + 12`
+            //    —— width ↔ x 互相依赖，是一条真绑定环；新 Progress 的 implicitWidth
+            //    是 90（旧页私有件是 160），环一断，宽度就停在隐式值上。
             Item {
                 x: 0; y: 91
                 width: parent.width
                 height: 30
 
-                GalleryProgress {
+                Progress {
                     id: progBar
                     x: 0
                     anchors.verticalCenter: parent.verticalCenter
@@ -369,32 +407,25 @@ Ctl {
                     run: true
                 }
                 Button {
-                    id: minusBtn
-                    x: progBar.width + 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "-"
-                    primary: false
-                    // 冻结的 Button 没有对外的点击钩子，这里叠一层
-                    // hoverEnabled:false 的 MouseArea 接点击：命中测试按 z 序
-                    // 找最上层的 mouse handler，所以点击归它，而 hover 事件
-                    // 会跳过它继续落到 Button 自己的 MouseArea 上（btn 的
-                    // fill-hover 仍然生效）。
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: false
-                        onClicked: root.prog = Math.max(0, root.prog - 18)
-                    }
-                }
-                Button {
-                    x: minusBtn.x + minusBtn.width + 12
+                    id: plusBtn
+                    x: parent.width - 34 - 12 - width
                     anchors.verticalCenter: parent.verticalCenter
                     text: "+"
-                    primary: false
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: false
-                        onClicked: root.prog = Math.min(100, root.prog + 18)
-                    }
+                    variant: "secondary"
+                    // 共享 Button 有 `signal clicked()`（Button.qml:63），这里直接接。
+                    // 旧写法是在按钮上叠一层 hoverEnabled:false 的透明 MouseArea 抢点击
+                    // （命中测试按 z 序找最上层的 mouse handler，所以点击归它、hover 仍落到
+                    // 按钮自己的 MouseArea 上）—— 那是旧 Button 没有对外点击钩子时的绕法，
+                    // 现在两行都删掉，hover 与点击都由组件内部那一层 MouseArea 负责。
+                    onClicked: root.prog = Math.min(100, root.prog + 18)
+                }
+                Button {
+                    id: minusBtn
+                    x: plusBtn.x - 12 - width
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "-"
+                    variant: "secondary"
+                    onClicked: root.prog = Math.max(0, root.prog - 18)
                 }
                 Text {
                     x: parent.width - 34
@@ -533,7 +564,7 @@ Ctl {
     Component {
         id: cFlow
         Item {
-            GalleryStageFlow {
+            StageFlow {
                 x: 0; y: 0
                 width: parent.width
                 stages: [
@@ -562,13 +593,18 @@ Ctl {
                 font.family: ThemeBridge.fontFamily
                 font.pixelSize: 12
             }
-            GalleryKv {
+            // ⚠️ 共享 Kv 的 rows 键名是 `{key, value}`（不是旧私有件的 `[k, v]` 数组对，
+            //    Kv.qml:52），且**键列宽由组件自己测**（TextMetrics + 延后重算）——
+            //    页面不再回填 keyW，也不再挂 ThemeBridge 的 Connections 监听字体族变化。
+            // ⚠️ 行高从旧私有件的 14 变成设计稿档的 20（12.5 × 1.6，Kv.qml:23-24），
+            //    三行高 = 3×20 + 2×6 = 72，所以下面这张卡的 ch 从 144 抬到 162。
+            Kv {
                 x: 0; y: 90
                 width: parent.width
                 rows: [
-                    ["阶段产物", "214 个"],
-                    ["LLM 调用", "86 次 · 高档 12"],
-                    ["估算成本", "¥12.40"]
+                    { key: "阶段产物", value: "214 个" },
+                    { key: "LLM 调用", value: "86 次 · 高档 12" },
+                    { key: "估算成本", value: "¥12.40" }
                 ]
             }
         }
@@ -586,9 +622,15 @@ Ctl {
             GalleryFlow {
                 x: 0; y: 0
                 width: parent.width
+                // ⚠️ 共享 Art 的 `seed` 槽位与旧私有件同名同义；调色板统一成设计稿的
+                //    12 组（Art.qml:45-53，旧私有件只有 6 组），几何/绘制都走共享件那份。
+                //    设计稿这里写了 className="hoverable"（Gallery.jsx:151），但
+                //    `.art.hoverable` 在 CSS 里**没有规则**（ui.css:196 只定义了
+                //    `.card.hoverable`，1.07 的缩放挂在 `.asset-card:hover .thumb svg`），
+                //    所以本页不开 zoom/zoomed。
                 Repeater {
                     model: 6
-                    delegate: GalleryArt {
+                    delegate: Art {
                         required property int index
                         width: 92
                         height: 60
@@ -646,10 +688,13 @@ Ctl {
             GalleryFlow {
                 x: 0; y: 194
                 width: parent.width
-                Button { text: "Info"; primary: false }
-                Button { text: "Success"; primary: true }
-                Button { text: "Warning"; primary: false }
-                Button { text: "Error"; primary: false }
+                // Toast 四色（ui.css 的 .toast-ok/warn/err/info）在本仓是 Widgets 侧的
+                // QML toast，QML 页只摆四个按钮示意；variant 沿用旧页的
+                // false/true → secondary/primary 映射，语义不表示四色。
+                Button { text: "Info"; variant: "secondary" }
+                Button { text: "Success"; variant: "primary" }
+                Button { text: "Warning"; variant: "secondary" }
+                Button { text: "Error"; variant: "secondary" }
             }
             Text {
                 x: 0; y: 230

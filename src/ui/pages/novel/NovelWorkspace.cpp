@@ -420,7 +420,7 @@ NovelWorkspace::NovelWorkspace(QWidget* parent) : QWidget(parent) {
 
     // —— 「本章产物」（webui Novel.jsx:469-479）——
     // ⚠️ 设计稿上一段的「预览」占位画（<Art seed>）本页**没实现**：占位画目前只有
-    // QML 侧的实现（src/ui/qml/AssetsArt.qml），Widgets 侧无对应件，本页不拿假图充数。
+    // QML 侧的实现（共享件 src/ui/qml/Art.qml），Widgets 侧无对应件，本页不拿假图充数。
     // 该段在设计稿里只有「占位画 + 一行写死的说明文案」，两者都无真实数据源。
     il->addSpacing(theme::space::kSteps[5]); // 16：段标题 margin-top 16px（Novel.jsx:469 的 '16px 0 8px'）
     auto* artHead = widgets::SectionTitle(QStringLiteral("本章产物"), inspector);
