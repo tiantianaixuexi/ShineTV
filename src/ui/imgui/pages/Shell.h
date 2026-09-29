@@ -38,6 +38,19 @@ enum class Workspace {
 
 inline constexpr int kWorkspaceCount = 7;
 
+// 命令面板里每一条的动作。显式枚举而不是「一个 int 兼表两种含义」——
+// 早先那版用 `int workspace`，-1/-2/-3.. 表示各种命令，而 Enter 的执行体只有
+// `if (picked.workspace >= 0) SetWorkspace(...)` 一句 ⇒ 14 条里 8 条是空操作。
+// 改成枚举后新增动作必须同时写执行体，漏了编译就断。
+enum class PaletteAction {
+    Workspace,   // arg = 工作区下标
+    Theme,       // arg = kAllThemes 下标（切到那一个；轮换用 ThemeNext）
+    ThemeNext,   // arg = 0，切到下一个主题
+    NewProject,
+    OpenProject,
+    SaveLayout,
+};
+
 [[nodiscard]] const char* WorkspaceIcon(int workspace);
 [[nodiscard]] const char* WorkspaceLabel(int workspace);
 [[nodiscard]] const char* WorkspaceSubtitle(int workspace);
@@ -88,11 +101,17 @@ public:
             ToggleCommandPalette();
         }
     }
+    // 动作判据要读**产品自己的状态读数**，不能自己复算一份。命令面板的开态
+    // 早先只有写没有读 —— 探针只能去猜，于是判据一度整条失灵。
+    [[nodiscard]] bool commandPaletteOpen() const { return paletteOpen_; }
     void SetTheme(shine::theme::ThemeId id);
     void ToggleSidePanel();
     void ToggleDock();
     void ToggleInspector();
     void ToggleCommandPalette();
+    // 运行 / 停止的执行体。顶栏按钮与 Ctrl+Enter 走同一份，别写两遍。
+    void RequestRunStart();
+    void RequestRunStop();
     // 资产选中：**唯一**的写入口。侧栏 kind 树点叶子和取证脚本都走它 ——
     // 拆成两处调用（一个改 BookSideView、一个改 AssetsPage::selected_）迟早会漏一边，
     // 表现就是侧栏高亮和主区详情对不上。
@@ -131,6 +150,19 @@ public:
     [[nodiscard]] int ArtifactRowCount() const {
         return static_cast<int>(artifacts_.size());
     }
+    // 面包屑第三段。**按工作区现算**（小说取真章、资产取真实体名），不是存下来的值 ——
+    // 以前 `SetWorkspace` 无条件写 "总览"，字段全仓再无别处会改，切到小说页面包屑
+    // 照样是「项目 › 小说 › 总览」。
+    [[nodiscard]] std::string DerivedViewLabel() const;
+
+    // 取证用：布局态的指纹。
+    //
+    // 用途：给「快捷键 / 命令面板条目按了到底有没有发生」一条**可自动判定**的信号。
+    // 早先这些只能靠肉眼看截图，而「按了没反应」在静息态截图上和「按了」长得一样。
+    // 覆盖的正是 SaveLayout/LoadLayout 会落盘的那批字段（工作区、三个面板可见性与
+    // 宽度、底栏页签与高度、reduceMotion、工程名、视图标签）—— 换句话说，它就是
+    // 「用户可见的界面状态」本身，不另发明一份平行定义。
+    [[nodiscard]] std::uint64_t LayoutStateHash() const;
     // toast：设计稿的 notify(...)。以前 toastTimer_ 是死字段、DrawOverlays 是空函数。
     void Notify(std::string text, shine::theme::Tone tone = shine::theme::Tone::Idle);
     [[nodiscard]] kit::Rect workspaceRect() const { return workspace_; }
@@ -138,6 +170,9 @@ public:
     // 进项目中心时整个外壳让位，Esc 或再点一次退出。
     void ToggleProjectHub();
     [[nodiscard]] bool projectHubOpen() const { return hubOpen_; }
+    // 取证用：直接开关项目中心。快捷键判据里 Ctrl+N / Ctrl+O 会打开它，
+    // 跑完必须复位，否则后续取证都在全屏的项目中心里跑。
+    void SetHubOpen(bool open) { hubOpen_ = open; }
 
     // 打开/新建项目后登记工程根：顶栏胶囊、总控页、后续各工作区都从这里取。
     // root 为空表示「未打开项目」——总控页会显示真实空态，不编数字。
@@ -169,6 +204,21 @@ private:
     void DrawBreadcrumbs(kit::Rect area, ImDrawList* draw);
     void DrawWorkspace(kit::Rect area, ImDrawList* draw);
     void DrawCommandPalette();
+    // 命令面板 Enter 与快捷键共用的**唯一一份**动作执行体。写成两处的话，
+    // 迟早只改得动一边（这正是「一个动作只存一份」那条纪律）。
+    void RunPaletteAction(PaletteAction action, int arg);
+    // 顶栏两处开设置模态（齿轮键 + 连接状态行）共用的入口，附带浮层互斥。
+    // 刻意**不**复用上面那个取证用的 SetSettingsOpen：取证要能独立控制浮层态，
+    // 塞进互斥逻辑会让截图前置动作互相干扰。
+    void ToggleSettingsModal(bool open) {
+        settingsOpen_ = open;
+        // 设置模态与主题菜单都浮在顶栏之上，可以同时开着 —— 开着主题菜单点「设置」，
+        // 菜单会盖在模态上面，模态从上方看就缺一块。主题按钮那侧早就手动清了
+        // themeMenuOpen_，这侧漏了；两边都走这里才不会漏。
+        if (open) {
+            themeMenuOpen_ = false;
+        }
+    }
     void DrawOverlays(ImDrawList* draw);
     void ApplyShortcuts();
     // 往底栏「日志」页追加一行（"03:12:44 [info] 文本"）。
@@ -212,6 +262,10 @@ private:
     std::vector<std::string> collapsedKinds_;
     std::vector<std::string> logLines_;
     bool paletteOpen_ = false;
+    // 刚打开的那一帧：用来把焦点交给输入框（命令面板的用法是「打开就打字」）。
+    bool paletteJustOpened_ = false;
+    // SetKeyboardFocusHere 必须在 InputText 之前那一帧调用，所以拆成两步。
+    bool paletteFocusInput_ = false;
     char paletteQuery_[128] = {};
     int paletteSelected_ = 0;
     int paletteMatches_ = 0;

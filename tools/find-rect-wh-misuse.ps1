@@ -9,10 +9,19 @@
 #   - 第 4 个实参是裸浮点字面量
 # 命中只说明「疑似」，要人眼看一眼：第 3/4 参若是 x+w / y+h 这种就是合法的 min/max。
 #
+# ⚠️ **纯字面量的合法 min/max 会被报出来，这是有意的保守取舍。**
+#    `Rect{0.0f, 0.0f, 96.0f, 32.0f}` 是完全合法的 (minX,minY,maxX,maxY)，但它同时
+#    满足上面两条判据（第 3 参是裸浮点、第 4 参是裸浮点）—— 语法层面无法与
+#    `Rect{x, y, cardW, 192.0f}` 区分。宁可多报也不漏报（漏报的后果是控件整张不画）。
+#    真实树报 0 只是因为那里合法的 min/max 第 4 参几乎都不是裸字面量。
+#
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tools\find-rect-wh-misuse.ps1
 #       powershell ... -File tools\find-rect-wh-misuse.ps1 -Root <目录>
 # -Root 只为**自检**存在：改扫描逻辑后必须证明它还抓得到真误用（用一份含真/假样本的
 # 临时目录跑，期望命中数 = 真样本数）。一个「改完报 0」的扫描器和一个坏掉的没区别。
+# ⚠️ 自检样本里的「合法样本」必须用**末参非裸字面量**的形态（`Rect{a.min.x,…,a.max.y}`）
+#    或走 `RectAt(...)`。拿纯字面量 min/max 当合法样本，期望数一定对不上 ——
+#    那是样本写错了，不是扫描器坏了（我第一版就栽在这，期望 3 却得到 6）。
 param(
     [string]$Root = ''
 )

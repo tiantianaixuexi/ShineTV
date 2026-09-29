@@ -728,6 +728,25 @@ void BindNovelProject(std::filesystem::path root) { BindBook(std::move(root)); }
 void BindAssetsProject(std::filesystem::path root) { BindBook(std::move(root)); }
 void BindStoryboardProject(std::filesystem::path root) { BindBook(std::move(root)); }
 
+// 页面层 → 外壳的 toast 通道。没注入时（单跑页面、或注入前的那几帧）调用是空操作，
+// 不会崩，也不会静默吞掉 —— 调用点是「用户点了个按钮」，静默吞掉等于按钮又变成空操作。
+namespace {
+std::function<void(std::string)>& ToastSink() {
+    static std::function<void(std::string)> sink;
+    return sink;
+}
+} // namespace
+
+void SetWorkspaceToast(std::function<void(std::string)> sink) { ToastSink() = std::move(sink); }
+
+void WorkspaceToast(std::string message) {
+    if (auto& sink = ToastSink(); sink) {
+        sink(std::move(message));
+    } else {
+        shine::log::Warn("pages: 提示无处可送（外壳未注入 toast 通道）· {}", message);
+    }
+}
+
 // ---- P4 外壳（Shell 侧栏树 / 检查器）要的那份只读视图 ----
 // ⚠️ 这三个也必须在匿名命名空间**之外**（与上面三个 Bind 同一批），
 //    否则 Shell 在 SetProjectRoot 里链接不到它们。
@@ -1470,9 +1489,16 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
                    area.min.y + 56.0f};
     DrawShadowed(draw, bar.min, bar.max, 10.0f, GlassColor(), ColorLineNormal(), 1.0f);
     DrawIcon(draw, "image", ImVec2(bar.min.x + 12.0f, bar.center().y - 7.0f), 14.0f, ColorAccent());
-    const char* barTitle = "出图流程 · 分镜图_v3";
-    draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(bar.min.x + 32.0f, bar.center().y - 6.25f),
-                  ColorText(), barTitle, barTitle + std::strlen(barTitle));
+    // ⚠️ 早先是 `const char* barTitle = "出图流程 · 分镜图_v3"` —— 「分镜图_v3」是
+    //    **设计稿的 mock 字符串**，照抄等于把一个不存在的资产名写死在界面上
+    //    （与「实体 · 林晚」同一类错误，见 DrawBreadcrumbs 的注释）。
+    //    换成结构性标签：真有的东西是「本章有几个镜」。
+    {
+        const pages::BookSideView& bs = pages::BookSide();
+        const std::string barTitle = "出图流程 · 本章 " + std::to_string(bs.shots.size()) + " 镜";
+        draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(bar.min.x + 32.0f, bar.center().y - 6.25f),
+                      ColorText(), barTitle.data(), barTitle.data() + barTitle.size());
+    }
     draw->AddLine(ImVec2(bar.min.x + 196.0f, bar.min.y + 8.0f),
                   ImVec2(bar.min.x + 196.0f, bar.max.y - 8.0f), ColorLineNormal(), 1.0f);
     ButtonSpec smallPrimary;
@@ -1480,8 +1506,14 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
     smallPrimary.size = ButtonSize::Small;
     const char* submit = "批量出图";
     const float submitW = ButtonWidth(ButtonSize::Small, 0.0f, LabelWidth(FontBoldAt(12.0f), 12.0f, submit));
-    Button(draw, RectAt(bar.max.x - submitW - 12.0f, bar.center().y - 12.0f, submitW, 24.0f), submit,
-           smallPrimary, "if-submit");
+    // ⚠️ 早先这里 `Button(...)` 的**返回值直接丢弃** —— 画了个 primary 主按钮，点了
+    //    什么也不发生。同一页 `panelTab_ == 1` 分支里明明写着「批量提交未接」。
+    //    改成点了给 toast 把原因说清楚：面板是**可折叠**的（folded_），禁用了按钮
+    //    用户就只能看到「按不动」，而按不动的原因写在可能被折起来的面板里。
+    if (Button(draw, RectAt(bar.max.x - submitW - 12.0f, bar.center().y - 12.0f, submitW, 24.0f), submit,
+               smallPrimary, "if-submit")) {
+        WorkspaceToast("批量提交未接 · 业务层没有替前端提交 V4 出图的接口");
+    }
 
     // 浮动面板（右 348px，内缩 16，r14）
     const float panelHeight = folded_ ? 48.0f : std::min(560.0f, area.height() - 32.0f);
@@ -1629,9 +1661,55 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
                             "逐项评分（构图/光线/服饰/色彩）没有只读投影，这里只列生产状态。", true);
         }
     } else {
-        Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 190.0f}, 9, true);
-        KeyValues(draw, Rect{body.min.x, body.min.y + 200.0f, body.max.x, body.min.y + 300.0f},
-                  {{"尺寸", "1024x576"}, {"步数", "28"}, {"种子", "1289471"}, {"耗时", "12.4s"}});
+        // ---- 结果 ----
+        //
+        // ⚠️ 早先这里是
+        //   `KeyValues({{"尺寸","1024x576"},{"步数","28"},{"种子","1289471"},{"耗时","12.4s"}})`
+        //    四个**编出来的**生成参数。业务层没有出图结果的只读投影 —— visual_assets
+        //    只有 status（生产状态），没有尺寸/步数/种子/耗时这些字段。所以这四个数字
+        //    没有任何一个是真的，却长得极像一次真实的出图结果。
+        //
+        // 改成列 BookAssetView 里**真有的**字段：名字 / 生产状态 / 层数完成度 / 是否降级。
+        // 一条视觉资产都没有时说清楚为什么没有，不拿 Art 占位图 + 假参数撑场面。
+        const BookSideView& rv = BookSide();
+        Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 150.0f}, 6, true);
+        const float listTop = body.min.y + 180.0f;
+        bool any = false;
+        int row = 0;
+        for (const BookAssetView& asset : rv.assets) {
+            if (!asset.hasAsset) {
+                continue;
+            }
+            const float rowY = listTop + 24.0f * static_cast<float>(row);
+            if (rowY + 22.0f > body.max.y) {
+                break;
+            }
+            ++row;
+            any = true;
+            const std::string name = asset.name.empty() ? std::string(kDash) : asset.name;
+            const std::string status =
+                asset.statusLabel.empty() ? std::string(kDash) : asset.statusLabel;
+            DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x, rowY),
+                            body.width() - 200.0f, ColorText(), name, true);
+            // 层数完成度是真的（layers / layersDone 来自 visual_assets 的分层表）。
+            const std::string layers =
+                asset.layers > 0
+                    ? ("分层 " + std::to_string(asset.layersDone) + "/" + std::to_string(asset.layers))
+                    : std::string(kDash);
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.max.x - 190.0f, rowY + 3.0f),
+                            90.0f, ColorTextMuted(), layers, true);
+            const std::string flag = asset.degraded ? "已降级" : "完整";
+            const float fw = TagWidth(flag, false, true);
+            Tag(draw, RectAt(body.max.x - fw, rowY - 1.0f, fw, 20.0f), flag,
+                asset.degraded ? theme::Tone::Warn : theme::Tone::Ok, false, true);
+        }
+        if (!any) {
+            Empty(draw, Rect{body.min.x, listTop, body.max.x, body.max.y}, "check",
+                  "这一类实体还没有出图结果",
+                  rv.bound ? "visual_assets 里还没有任何已产出的图像。业务层也没有出图结果的"
+                             "只读投影，所以这里不列参数。"
+                           : "还没打开工程。");
+        }
     }
 
     // 画布工具（左下竖排）
@@ -1688,15 +1766,43 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
     }
     const Rect body{panel.min.x + 16.0f, panel.min.y + 90.0f, panel.max.x - 16.0f, panel.max.y - 16.0f};
     if (panelTab_ == 0) {
-        float y = body.min.y;
-        for (int i = 0; i < 3; ++i) {
-            const std::string label = "S0" + std::to_string(10 + i) + " -> S0" + std::to_string(11 + i);
-            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x, y), ColorTextSecondary(),
-                          label.data(), label.data() + label.size());
-            const float tw = TagWidth(i == 1 ? "断链" : "已连接", false, false);
-            Tag(draw, RectAt(body.max.x - tw, y - 3.0f, tw, 20.0f), i == 1 ? "断链" : "已连接",
-                i == 1 ? theme::Tone::Warn : theme::Tone::Ok, false, false);
-            y += 26.0f;
+        // ---- 首尾帧链 ----
+        //
+        // ⚠️ 早先这里循环 3 次造 `"S0" + (10+i) + " -> S0" + (11+i)`，连接状态写死
+        //    `i == 1 ? "断链" : "已连接"` —— 镜号是编的，断链也是编的（与本工程无关）。
+        //    真值源：BookSide().shots 里**当前选中章相邻的两个镜**。
+        //    「断链」这个结论需要判定帧链连通性，业务层没有这个只读投影，所以不编 ——
+        //    改列每个镜自己的 canonStatus（真字段），那才是真知道的东西。
+        const BookSideView& cv = BookSide();
+        if (cv.shots.size() < 2) {
+            Empty(draw, body, "link",
+                  cv.bound ? "本章还不足两个镜" : "还没打开工程",
+                  cv.bound ? "首尾帧链是**相邻两镜**之间的关系，至少要两个镜才画得出来。"
+                           : "镜列表来自 novel.db 的 shots 表。");
+        } else {
+            float y = body.min.y;
+            const std::size_t pairs = cv.shots.size() - 1;
+            for (std::size_t i = 0; i < pairs; ++i) {
+                if (y + 26.0f > body.max.y) {
+                    break;
+                }
+                const BookShotView& from = cv.shots[i];
+                const BookShotView& to = cv.shots[i + 1];
+                const std::string label =
+                    ShotCode(from.ord) + " → " + ShotCode(to.ord);
+                draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x, y), ColorTextSecondary(),
+                              label.data(), label.data() + label.size());
+                // 右侧标签显示**后一个镜**自己的设定状态 —— 真字段，不臆断链路通断。
+                const std::string canon = to.canonStatus.empty() ? std::string(kDash) : to.canonStatus;
+                const float tw = TagWidth(canon, false, false);
+                Tag(draw, RectAt(body.max.x - tw, y - 3.0f, tw, 20.0f), canon, theme::Tone::Idle, false,
+                    false);
+                y += 26.0f;
+            }
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.max.y - 16.0f),
+                            body.width(), ColorTextMuted(),
+                            "标签是后一个镜的设定状态；帧链是否断需要连续性报告，"
+                            "本页不臆断。", true);
         }
     } else if (panelTab_ == 1) {
         // ---- 视频任务：走 Comfy 队列的**真实快照** ----
@@ -1732,38 +1838,87 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
             }
         }
     } else {
-        KeyValues(draw, body,
-                  {{"分辨率", "1920x1080"}, {"帧率", "24fps"}, {"帧数", "112"}, {"缺失镜头", "S013"}});
+        // ---- 成片 ----
+        //
+        // ⚠️ 早先这里是 `KeyValues({{"分辨率","1920x1080"},{"帧率","24fps"},
+        //    {"帧数","112"},{"缺失镜头","S013"}})` —— 四个**编出来的**成片参数，
+        //    连「缺失镜头 S013」这种具体断言都是假的。
+        // 业务层没有成片产物的只读投影（没有 video 文件的扫描接口接到这一层），
+        // 所以这里只说清楚「真知道什么」：本章有几个镜、每个镜多长。
+        const BookSideView& fv = BookSide();
+        if (fv.shots.empty()) {
+            Empty(draw, body, "film", fv.bound ? "本章没有镜" : "还没打开工程",
+                  fv.bound ? "成片要由镜生成，业务层还没有把成片产物的只读投影接到这一层。"
+                           : "镜列表来自 novel.db 的 shots 表。");
+        } else {
+            std::vector<std::pair<std::string, std::string>> kv;
+            kv.emplace_back("本章镜数", std::to_string(fv.shots.size()));
+            int totalSec = 0;
+            for (const BookShotView& shot : fv.shots) {
+                totalSec += shot.durationSec;
+            }
+            kv.emplace_back("总时长", std::to_string(totalSec) + "s");
+            kv.emplace_back("视觉资产", std::to_string(static_cast<int>([&] {
+                int n = 0;
+                for (const BookAssetView& a : fv.assets) {
+                    if (a.hasAsset) {
+                        ++n;
+                    }
+                }
+                return n;
+            }())) + " 项");
+            KeyValues(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 96.0f}, kv);
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.min.y + 110.0f),
+                            body.width(), ColorTextMuted(),
+                            "分辨率 / 帧率 / 缺失镜头都没有只读投影，这里不编。", true);
+        }
     }
 
-    // 底部胶片条：left16 / right384，6 × 118px
+    // 底部胶片条：left16 / right384，格宽 118 + 6 间距。
+    //
+    // ⚠️ 早先这里无条件循环 6 次，`const bool ready = i < 3;` —— 前 3 格画缩略图 +
+    // 编出来的镜号 `S010..S012` + 编出来的 `24fps` + 一个绿点，后 3 格写「待出片」。
+    // 整个条与本工程毫无关系。而且 1711 行的注释还写着「队列空就是空，不补 6 条占位」
+    // —— 面板那边已经改成真值源了，胶片条这边还是补 6 条。
+    //
+    // 真值源：BookSide().shots（当前选中章的镜）。格数跟着镜数走，镜号 / 时长 / 设定
+    // 状态都是真字段。**没有镜就整条不出**（保留容器与标题，写明为什么空），
+    // 而不是拿 6 个编出来的格子撑场面。
     const Rect strip{area.min.x + 16.0f, area.max.y - 92.0f, area.max.x - 384.0f, area.max.y - 16.0f};
     DrawShadowed(draw, strip.min, strip.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
     const char* stripTitle = "成片";
     draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(strip.min.x + 14.0f, strip.min.y + 12.0f),
                   ColorTextMuted(), stripTitle, stripTitle + std::strlen(stripTitle));
-    float x = strip.min.x + 52.0f;
-    for (int i = 0; i < 6; ++i) {
-        const bool ready = i < 3;
-        const Rect cell{x, strip.min.y + 8.0f, x + 118.0f, strip.max.y - 8.0f};
-        DrawRoundRect(draw, cell.min, cell.max, 8.0f, ready ? ColorFillMuted() : 0, ColorLineNormal(),
-                      1.0f);
-        if (ready) {
+    const BookSideView& sv = BookSide();
+    if (sv.shots.empty()) {
+        static constexpr char kNoShots[] = "本章没有镜 · 成片条按镜数生成，不补占位格";
+        draw->AddText(FontAt(11.5f), 11.5f,
+                      ImVec2(strip.min.x + 52.0f, strip.center().y - 5.75f), ColorTextMuted(),
+                      kNoShots, kNoShots + sizeof(kNoShots) - 1);
+    } else {
+        float x = strip.min.x + 52.0f;
+        for (const BookShotView& shot : sv.shots) {
+            if (x + 118.0f > strip.max.x - 8.0f) {
+                break;  // 放不下就不画，不压缩也不重叠
+            }
+            const Rect cell{x, strip.min.y + 8.0f, x + 118.0f, strip.max.y - 8.0f};
+            DrawRoundRect(draw, cell.min, cell.max, 8.0f, ColorFillMuted(), ColorLineNormal(), 1.0f);
             Art(draw, Rect{cell.min.x + 6.0f, cell.min.y + 6.0f, cell.min.x + 62.0f, cell.max.y - 6.0f},
-                i, true);
-            const std::string code = "S0" + std::to_string(10 + i);
+                shot.ord, true);
+            const std::string code = ShotCode(shot.ord);
             draw->AddText(MonoAt(10.5f), 10.5f, ImVec2(cell.min.x + 70.0f, cell.min.y + 12.0f),
                           ColorAccent(), code.data(), code.data() + code.size());
-            const char* fps = "24fps";
+            // 时长是 BookShotView 的真字段（durationSec），不是写死的 24fps。
+            const std::string dur = std::to_string(shot.durationSec) + "s";
             draw->AddText(FontAt(10.5f), 10.5f, ImVec2(cell.min.x + 70.0f, cell.min.y + 28.0f),
-                          ColorTextMuted(), fps, fps + 5);
-            StatusDot(draw, ImVec2(cell.min.x + 74.0f, cell.min.y + 44.0f), theme::Tone::Ok, false);
-        } else {
-            const char* pending = "待出片";
-            draw->AddText(FontAt(11.5f), 11.5f, ImVec2(cell.min.x + 12.0f, cell.center().y - 5.75f),
-                          ColorTextMuted(), pending, pending + std::strlen(pending));
+                          ColorTextMuted(), dur.data(), dur.data() + dur.size());
+            // 圆点色调跟着 canonStatus 的空/非空走：设定状态是判据，没有就画中性灰，
+            // 不画成「已完成」的绿 —— 绿点在胶片条上会被读成「这一格出好了」。
+            const bool hasCanon = !shot.canonStatus.empty();
+            StatusDot(draw, ImVec2(cell.min.x + 74.0f, cell.min.y + 44.0f),
+                      hasCanon ? theme::Tone::Accent : theme::Tone::Idle, false);
+            x += 124.0f;
         }
-        x += 124.0f;
     }
 }
 

@@ -10,6 +10,7 @@
 #include "ui/imgui/theme/Theme.h"
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,24 @@ void DrawOverview(kit::Rect area, ImDrawList* draw);
 // 总控页绑定"当前工程根"的唯一入口（对应 Qt 版 PipelineWorkspace::SetContext）。
 // 绑上以后页面的进度 / 预算 / 账本 / 停止判定才是 Runner 的真实返回值；没绑就是空态。
 void BindOverviewProject(std::filesystem::path root);
+
+// 阶段执行体是否已接入。未接入时全流程**真的跑不了**（业务层没有「替前端跑一个
+// T 阶段」的服务接口；真执行体在 novel/，签名与 pipeline::StageExecutor 不同形状，
+// 没有适配层）。顶栏的「运行」与总控页的「一键全流程」都靠这一个读数决定给不给按 ——
+// 两边各写一份判断的话，迟早只改得动一边。
+[[nodiscard]] bool OverviewPipelineWired();
+
+// 「执行体未接入」这句话的**唯一一份**措辞。页面、toast、按钮提示说的必须是同一句。
+[[nodiscard]] const char* StageExecutorMissingReason();
+
+// 页面层 → 外壳的 toast 通道。页面不该认识 Shell（那是外壳的活），所以由 Shell
+// 在初始化时把 `Notify` 注入进来。没注入时调用是安全的空操作。
+//
+// 为什么需要它：出图页工具条上那个「批量出图」按钮的业务**没有接**（业务层没有替前端
+// 提交 V4 的接口）。画一个点了没反应的主按钮是最差的一种 —— 而把原因写死在页面某处
+// 又会因为面板可折叠而看不见。点了弹一句 toast 是唯一能同时做到「诚实」和「原因可达」的。
+void SetWorkspaceToast(std::function<void(std::string)> sink);
+void WorkspaceToast(std::string message);
 
 // ---- 小说 / 资产 / 分镜：绑定"当前工程根"（照 BindOverviewProject 的模式）----
 //

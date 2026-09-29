@@ -319,7 +319,25 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
             // 后端可能又把位置写回真实光标了，再钉一次，保证 NewFrame 看到的是覆盖值。
             ImGui::GetIO().MousePos = ImVec2(mouseOverrideX_, mouseOverrideY_);
         }
+        // 按键覆盖同理，走 ImGui 的事件队列（`NewFrame` 会把它折进按下沿）。
+        // ⚠️ 必须排在后端 NewFrame **之后**：win32 后端会按真实键盘状态覆写 Key*Map。
+        if (ctrlOverride_) {
+            ImGui::GetIO().AddKeyEvent(ImGuiKey_LeftCtrl, true);
+        }
+        if (keyOverrideSet_ && keyOverride_ != 0) {
+            ImGui::GetIO().AddKeyEvent(static_cast<ImGuiKey>(keyOverride_), keyOverrideDown_);
+        }
         ImGui::NewFrame();
+        if (ctrlOverride_) {
+            // ⚠️ 必须在 `NewFrame` **之后**再钉一次 `KeyCtrl`。
+            //    `ImGui_ImplWin32_NewFrame` 里的 `UpdateKeyModifiers()` 是按**后端自己的**
+            //    键数组算修饰键的，离屏/后台时那个数组是空的 ⇒ 它把 `io.KeyCtrl` 写回
+            //    false，而且发生在我们 AddKeyEvent 之后。实测表现：字母键注入到位
+            //    （IsKeyPressed 为真）而 `KeyCtrl` 恒假，于是 `ApplyShortcuts` 里
+            //    `ctrl && …` 那道判据全不成立 —— 看起来像 7 条快捷键全是空动作。
+            //    症状与「产品有缺陷」一模一样，靠猜必然改错地方。
+            ImGui::GetIO().KeyCtrl = true;
+        }
         if (onFrame) {
             onFrame(1.0f / 60.0f);
         }

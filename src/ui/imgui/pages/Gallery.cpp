@@ -151,8 +151,17 @@ void Card_Inputs(ImDrawList* draw, Rect area) {
     y = field2.min.y + 84.0f;
     const std::vector<std::string> options{"S011 · 远景", "S012 · 中景", "S013 · 近景"};
     Select(draw, RectAt(area.min.x, y, 200.0f, 30.0f), options, selectIndex, "gal-sel");
-    Switch(draw, RectAt(area.min.x + 220.0f, y + 5.0f, 34.0f, 19.0f), on, "gal-sw");
-    Checkbox(draw, RectAt(area.min.x + 270.0f, y, 140.0f, 20.0f), checked, "启用", "gal-cb");
+    // ⚠️ 早先这两行是 `Switch(draw, ..., on, "gal-sw");` / `Checkbox(draw, ..., checked, ...)`，
+    //    **返回值直接丢弃**。kit::Switch / Checkbox 的 `bool on` 是**按值**传进去的
+    //    （Widgets.h），它们返回的是「是否被翻转」这个信号。所以点一百次开关都停在 on。
+    //    这是组件画廊页：它存在的意义就是**演示这些控件可用**，一个按不动的开关
+    //    在这里比在业务页更不能接受 —— 画廊是给人看「这套控件做得对不对」的。
+    if (Switch(draw, RectAt(area.min.x + 220.0f, y + 5.0f, 34.0f, 19.0f), on, "gal-sw")) {
+        on = !on;
+    }
+    if (Checkbox(draw, RectAt(area.min.x + 270.0f, y, 140.0f, 20.0f), checked, "启用", "gal-cb")) {
+        checked = !checked;
+    }
 }
 
 void Card_Progress(ImDrawList* draw, Rect area) {

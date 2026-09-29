@@ -182,6 +182,19 @@ void SyncSnapshot(OverviewRun& s) {
 } // namespace
 
 // 外壳把"当前工程根"交给本页的唯一入口（对应 Qt 版 PipelineWorkspace::SetContext）。
+// 阶段执行体是否已接入。
+//
+// 未接入时全流程**真的跑不了**，所以顶栏的「运行」和本页的「一键全流程」
+// 都靠这一个读数决定要不要给用户按。两边各写一份判断的话，迟早只改得动一边。
+bool OverviewPipelineWired() { return false; }
+
+// 「没接入」这句话**只有这一份**。页面上、toast 里、按钮 tooltip 里说的必须是同一句，
+// 措辞不一致会让人以为是两回事。
+const char* StageExecutorMissingReason() {
+    return "阶段执行体未接入 · 业务层没有「替前端跑一个 T 阶段」的服务接口（"
+           "真执行体在 novel/ 且签名与 StageExecutor 不同形状）";
+}
+
 // 调用方是 Shell.cpp —— 必须在匿名命名空间**之外**，否则外部链接不到。
 // 没绑定时本页就是空态，不编数。
 void BindOverviewProject(std::filesystem::path root) {
@@ -190,17 +203,31 @@ void BindOverviewProject(std::filesystem::path root) {
         return;
     }
     s.root = std::move(root);
-    // 阶段执行体：shine_core 目前没有暴露"替前端跑一个 T 阶段"的服务接口，
-    // 所以这里只让 Runner 走它自己的**真实**记账路径（预算消费 + 产物落盘 + 账本），
-    // 阶段内部工作留白。不给 HashProvider —— 用 Runner 自己的兜底（StageCode），
-    // 比前端编一个哈希诚实。
-    s.runner.Configure(s.root, pipeline::RunMode::Auto,
-                       [](pipeline::StageId, const std::string&, std::string&) { return true; }, nullptr);
+    // 阶段执行体：**没有接入**，所以传 nullptr 而不是编一个。
+    //
+    // ⚠️ 早先这里注入的是 `[](StageId, const std::string&, std::string&) { return true; }`
+    //    —— 一个什么都不做、直接报成功的空 lambda。后果是整页看起来**完全正常**：
+    //    Runner 认定 17 个阶段全部成功，账本里落下 17 条 work/T*.json 占位、预算扣成
+    //    「17 次 LLM / ¥0.17」、进度条走到 100%、状态写「全流程完成：产物与账本已落盘」。
+    //    **一个阶段都没真跑过。**
+    //    这比旧版的字面量假数据（12480 / 3/17）更坏：字面量一眼看得出是假的，
+    //    而这一套是真数据通路算出来的假结果 —— 验不出来，只能不产生它。
+    //
+    // 传 nullptr 也不是没成本：Runner::RunNext 在**调用执行体之前**就先扣预算
+    // （Runner.cpp:40 的 ConsumeLlm 在 :46 的 executor_ 调用之前），所以「让执行体
+    // 返回 false」这条路仍会留下一条「1 次 LLM / ¥0.01」的假账。正解是
+    // StartRun 里压根不调 RunNext —— 见那里。
+    //
+    // 真正能跑 T 链的执行体在 novel/（NovelDirector::GenerateChapter、
+    // novelcore::GenerateOneChapter、NovelContinuity），但它们的签名是
+    // expected<...> / ChapterGenOutcome，与 StageExecutor = bool(StageId, string&, string&)
+    // **不是同一形状，也没有适配层**。补那个适配层是跨模块的事，不在这里顺手编一个假的。
+    s.runner.Configure(s.root, pipeline::RunMode::Auto, nullptr, nullptr);
     s.bound = true;
     s.finished = false;
     s.userStopped = false;
     s.stopRule.clear();
-    s.stopReason.clear();
+    s.stopReason = StageExecutorMissingReason();
     s.runningStage = s.runner.CurrentStage();
     std::error_code ec;
     const auto checkpointFile = s.root / "work" / "checkpoint.json";
@@ -218,6 +245,19 @@ void StartRun(OverviewRun& s, int steps) {
     if (s.running || !s.bound) {
         return;
     }
+    // ⚠️ 执行体没接入时**不能调 RunNext**。哪怕让它返回 false 也一样会留下假数据：
+    //    Runner::RunNext 先 `budget_.ConsumeLlm(...)`（Runner.cpp:40）**才**调执行体
+    //    （:46），所以「执行失败」这条路会留下一条「1 次 LLM / ¥0.01」的真·假账。
+    //    不调，就一个数字都不产生。
+    if (!OverviewPipelineWired()) {
+        s.finished = false;
+        s.userStopped = false;
+        s.stopRule.clear();
+        s.stopReason = StageExecutorMissingReason();
+        s.running = false;
+        s.runningStage = s.runner.CurrentStage();
+        return;
+    }
     s.running = true;
     s.finished = false;
     s.userStopped = false;
@@ -227,11 +267,15 @@ void StartRun(OverviewRun& s, int steps) {
     s.runningStage = s.runner.CurrentStage();
     const auto flag = s.stopFlag;
     auto* runner = &s.runner;  // OverviewState 是函数内 static，生命周期长于 worker
-    async::RunOnWorker([runner, flag, steps] {
+    // ⚠️ 早先这里是 `AllStages().size()` = **28**（T1..T17 + V0..V11），而本页呈现的
+    //    chain 只取 chain=="text" 的 17 个。于是「一键全流程」会跑 28 个阶段，进度条的
+    //    分母却是 17 —— 数字自己跟自己就对不上。分母得跟界面上画出来的一致。
+    //    在 lambda **外面**算：s 是 UI 侧状态，worker 不该碰它。
+    const int total = steps < 0 ? static_cast<int>(s.chain.size()) : steps;
+    async::RunOnWorker([runner, flag, steps, total] {
         std::string reason;
         pipeline::Budget budget;
         std::vector<pipeline::LedgerEntry> entries;
-        const int total = steps < 0 ? static_cast<int>(pipeline::AllStages().size()) : steps;
         for (int i = 0; i < total; ++i) {
             if (flag->load()) {
                 break;
@@ -315,7 +359,7 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     ButtonSpec secondary;
     secondary.variant = ButtonVariant::Secondary;
     secondary.icon = "zap";
-    secondary.disabled = s.running || !s.bound;
+    secondary.disabled = s.running || !s.bound || !OverviewPipelineWired();
     if (Button(draw, RectAt(right.max.x - runW - nextW - 12.0f, right.min.y, nextW, 30.0f), nextLabel,
                secondary, "ov-next")) {
         StartRun(s, 1);
@@ -323,6 +367,9 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     ButtonSpec primary;
     primary.variant = s.running ? ButtonVariant::Danger : ButtonVariant::Primary;
     primary.icon = s.running ? "stop" : "play";
+    // 「一键全流程」在执行体未接入时也 disabled —— 它不是"点了会失败"，是**真的跑不了**。
+    // 早先它可点，点完跑出一整套看起来正常的假数字（见 BindOverviewProject 注释）。
+    primary.disabled = !s.running && (!s.bound || !OverviewPipelineWired());
     if (Button(draw, RectAt(right.max.x - runW, right.min.y, runW, 30.0f), runLabel, primary,
                s.running ? "ov-stop" : "ov-all")) {
         if (s.running) {
@@ -330,6 +377,17 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         } else {
             StartRun(s, -1);
         }
+    }
+    // 禁用原因写在按钮**下面**而不是 tooltip：取证截图抓不到 tooltip，
+    // 而「为什么按不动」必须在那张图上看得见。
+    //
+    // ⚠️ AddText 的长度参数是**字节数**。这里跟着字面量走（sizeof），不手数 ——
+    //    「阶段执行体未接入 · 两个运行按钮已禁用」手算成 33 会少画两个字且不报错。
+    if (!s.running && !OverviewPipelineWired() && s.bound) {
+        static constexpr char kDisabledWhy[] = "阶段执行体未接入 · 两个运行按钮已禁用";
+        draw->AddText(FontAt(11.5f), 11.5f,
+                      ImVec2(right.max.x - runW - nextW - 12.0f, right.min.y + 34.0f),
+                      ColorTextMuted(), kDisabledWhy, kDisabledWhy + sizeof(kDisabledWhy) - 1);
     }
 
     // 1) 运行状态卡 + StageFlow
@@ -349,6 +407,12 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         statusColor = ColorOf(theme::Current().statusWarn);
     } else if (!s.bound) {
         status = "未绑定工程根 · 打开一本小说后这里才有真实数据";
+    } else if (!OverviewPipelineWired()) {
+        // ⚠️ 早先这个状态走的是下面的「等待运行 · 从 T1 开始」分支。执行体没接入时
+        //    「等待运行」是在**许诺一件做不到的事** —— 用户会一直等下去。
+        // 直接把「跑不了」和原因写在这一行，而不是藏进某个脚注。
+        status = std::string("未接入阶段执行体 · 本页不产生任何运行数据") ;
+        statusColor = ColorOf(theme::Current().statusWarn);
     } else if (s.entries.empty()) {
         status = "等待运行 · 从 " + (s.chain.empty() ? std::string("T1") : s.chain.front().code) + " 开始";
     } else {
@@ -392,8 +456,15 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         (content.width() - 14.0f * static_cast<float>(kpiCols - 1)) / static_cast<float>(kpiCols);
     // 五张卡的数全部来自 Budget / 账本。脚注写的是**口径**（上限、档位、条数），
     // 不是 mock 里那种没有业务字段可对应的"较上轮 +12"。
+    //
+    // ⚠️ 执行体未接入时，账本/预算恒为全 0。于是这五行会显示「0/17 · LLM 0 次 ·
+    //    估算成本 ¥0.00 · 镜头 0 个 · 阶段产物 0 条」—— 看着像**测出来的零**，
+    //    其实是**从来没测**。这两个 0 在界面上必须长得不一样，否则就是谎报。
+    //    统一改成「未接入」，口径信息（上限/档位）保留。
+    const bool wired = OverviewPipelineWired();
     const int totalStages = static_cast<int>(s.chain.size());
     const bool overBudget = s.budget.Exceeded();
+    const std::string kNoData = "未接入";
     struct Kpi {
         std::string label;
         std::string value;
@@ -402,20 +473,24 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         int tone;
     };
     const Kpi kpis[] = {
-        {"阶段进度", std::to_string(s.doneChain.size()) + "/" + std::to_string(totalStages), "",
-         s.doneChain.empty()
-             ? std::string("账本里还没有阶段产物")
-             : ("已落盘 " + s.doneChain.front() +
-                (s.doneChain.size() > 1 ? " – " + s.doneChain.back() : std::string())),
+        {"阶段进度",
+         wired ? std::to_string(s.doneChain.size()) + "/" + std::to_string(totalStages) : kNoData,
+         "",
+         !wired ? std::string("执行体未接入 · 进度无从产生")
+                : (s.doneChain.empty()
+                       ? std::string("账本里还没有阶段产物")
+                       : ("已落盘 " + s.doneChain.front() +
+                          (s.doneChain.size() > 1 ? " – " + s.doneChain.back() : std::string()))),
          0},
-        {"LLM 调用", std::to_string(s.budget.llm_calls), "次",
+        {"LLM 调用", wired ? std::to_string(s.budget.llm_calls) : kNoData, "次",
          "高档 " + std::to_string(s.budget.high_quality_calls) + " · 上限 " +
              std::to_string(s.budget.max_llm_calls),
          1},
-        {"估算成本", Money(s.budget.cost), "", "上限 " + Money(s.budget.max_cost), 2},
-        {"镜头", std::to_string(s.budget.shots), "个",
+        {"估算成本", wired ? Money(s.budget.cost) : kNoData, "",
+         "上限 " + Money(s.budget.max_cost), 2},
+        {"镜头", wired ? std::to_string(s.budget.shots) : kNoData, "个",
          "上限 " + std::to_string(s.budget.max_shots), 3},
-        {"阶段产物", std::to_string(static_cast<int>(s.entries.size())), "条",
+        {"阶段产物", wired ? std::to_string(static_cast<int>(s.entries.size())) : kNoData, "条",
          overBudget ? ("预算已停：" + (s.budget.Reason().empty() ? std::string("超限") : s.budget.Reason()))
                     : std::string("work/ 下每阶段一文件"),
          4},

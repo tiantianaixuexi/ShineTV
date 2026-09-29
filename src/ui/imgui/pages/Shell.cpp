@@ -240,7 +240,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
                       ColorTextSecondary(), text.data(), text.data() + text.size());
         if (hit.clicked) {
             // 点开设置模态看连接细节，而不是像设计稿那样凭空把连接状态翻个面。
-            settingsOpen_ = true;
+            ToggleSettingsModal(true);
         }
         rx -= w + 6.0f;
     }
@@ -248,7 +248,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     rx -= 28.0f;
     if (IconButton(draw, RectAt(rx, cy - 14.0f, 28.0f, 28.0f), "settings", false, false,
                    "tb-settings", "设置")) {
-        settingsOpen_ = !settingsOpen_;
+        ToggleSettingsModal(!settingsOpen_);
     }
 
     // 「主题」是**幽灵按钮 + 文字**（Shell.jsx:51），点开的是主题菜单，
@@ -267,7 +267,9 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
         themeMenuAnchor_ = ImVec2(rx, cy + 15.0f);
         if (Button(draw, RectAt(rx, cy - 15.0f, bw, 30.0f), label, themeSpec, "tb-theme")) {
             themeMenuOpen_ = !themeMenuOpen_;
-            settingsOpen_ = false;
+            if (themeMenuOpen_) {
+                settingsOpen_ = false;
+            }
         }
     }
     rx -= 12.0f;
@@ -288,8 +290,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
         stopSpec.icon = "stop";
         if (Button(draw, RectAt(rx, 0.5f * (area.min.y + area.max.y) - 15.0f, stopW, 30.0f),
                    stopLabel, stopSpec, "tb-stop")) {
-            runActive_ = false;
-            PushLog("warn", "流水线已请求停止");
+            RequestRunStop();
         }
     } else {
         const std::string_view runLabel = "运行";
@@ -298,15 +299,42 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
         ButtonSpec runSpec;
         runSpec.variant = ButtonVariant::Primary;
         runSpec.icon = "play";
+        // 执行体未接入时**不禁用**按钮：点了会弹 toast 说明为什么跑不了，
+        // 这比一个按不动的灰按钮有用 —— 用户能问出原因。
+        // 总控页那侧才禁用（那里离原因更远，页面上直接写了禁用说明）。
         if (Button(draw, RectAt(rx, 0.5f * (area.min.y + area.max.y) - 15.0f, runW, 30.0f),
                    runLabel, runSpec, "tb-run")) {
-            runActive_ = true;
-            runFinished_ = false;
-            runStageIndex_ = 0;
-            runPercent_ = 0;
-            PushLog("info", "流水线开始运行");
+            RequestRunStart();
         }
     }
+}
+
+// 运行 / 停止的执行体提成函数：顶栏按钮与 Ctrl+Enter 走**同一份**。
+// 写成两处的话，迟早只改得动一边 —— 这正是「一个动作只存一份」那条纪律。
+//
+// ⚠️ 阶段执行体**未接入**，所以「运行」不做任何假装在跑的事。理由见
+//    WorkspaceA.cpp 的 OverviewPipelineWired()：Runner 的执行体拿不到，真执行体在
+//    novel/ 且签名与 StageExecutor 不同形状。
+//    早先这里会置 `runActive_ = true; runStageIndex_ = 0; runPercent_ = 0`，于是状态栏
+//    稳定输出「T1/17 · 0%」—— 一个**永远不会前进**的进度条。那三个字段全文件只有
+//    「写 0」和「读出来显示」两处，结构上就不可能前进，不是「跑到一半卡住」。
+//    界面看起来在跑、实际上什么都不会发生，这比显示「未接入」糟得多。
+void Shell::RequestRunStart() {
+    if (!pages::OverviewPipelineWired()) {
+        PushLog("warn", "运行请求被拒绝：阶段执行体未接入");
+        Notify(pages::StageExecutorMissingReason(), theme::Tone::Warn);
+        return;
+    }
+    runActive_ = true;
+    runFinished_ = false;
+    runStageIndex_ = 0;
+    runPercent_ = 0;
+    PushLog("info", "流水线开始运行");
+}
+
+void Shell::RequestRunStop() {
+    runActive_ = false;
+    PushLog("warn", "流水线已请求停止");
 }
 
 // ---------------------------------------------------------------- P4.3 导航栏
@@ -1247,32 +1275,93 @@ void Shell::DrawStatusBar(Rect area, ImDrawList* draw) {
     rightX -= themeW + 16.0f;
     draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX + 8.0f, cy - 5.75f), ColorTextSecondary(),
                   themeName.data(), themeName.data() + themeName.size());
-    // 96px 细进度 + T{n}/17 · {pct}%
-    // ⚠️ 这里是**真实运行态**，不是写死的 "T3/17 · 42%"。未运行时显示"未运行"，
-    //    已完成显示"已完成"（webui Shell.jsx:330 三态），只有运行中才报阶段号。
-    std::string progress = "未运行";
+    // 96px 细进度 + 运行态文案。
+    //
+    // ⚠️ 早先这里是 `"T" + (runStageIndex_+1) + "/17 · " + runPercent_ + "%"`，而
+    //    runStageIndex_ / runPercent_ **全文件只有「写 0」与「读出来显示」**，没有任何
+    //    自增点 —— 那是一个结构上不可能前进的进度条，注释却写着「这里是真实运行态」。
+    //    执行体未接入时如实说「执行体未接入」，不做进度条。
+    //    另外那个 "17" 是硬编码字面量（T1..T17 恰好 17 个），全仓库没有 kStageCount。
+    std::string progress;
+    ImU32 progressColor = ColorTextSecondary();
     if (runActive_) {
         progress = "T" + std::to_string(runStageIndex_ + 1) + "/17 · " +
                    std::to_string(runPercent_) + "%";
     } else if (runFinished_) {
         progress = "已完成";
+    } else if (!pages::OverviewPipelineWired()) {
+        progress = "阶段执行体未接入";
+        progressColor = ColorOf(theme::Current().statusWarn);
+    } else {
+        progress = "未运行";
     }
     const float progressW =
         FontAt(11.5f)->CalcTextSizeA(11.5f, 1e9f, 0.0f, progress.data(), progress.data() + progress.size()).x;
     rightX -= 96.0f + 8.0f + progressW + 8.0f;
+    // 进度条宽度也跟状态走：未接入/未运行时画一条 0% 的空轨道，是在暗示「进度是 0」
+    // 而不是「没有进度可言」。
     Progress(draw, Rect{rightX, cy - 2.0f, rightX + 96.0f, cy + 2.0f},
-             static_cast<float>(runPercent_), runActive_, true);
+             runActive_ ? static_cast<float>(runPercent_) : 0.0f, runActive_, true);
     rightX -= progressW + 8.0f;
-    draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX, cy - 5.75f), ColorTextSecondary(),
+    draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX, cy - 5.75f), progressColor,
                   progress.data(), progress.data() + progress.size());
 }
 
 // ---------------------------------------------------------------- P4.8 面包屑
+//
+// 设计稿 `Crumbs()` 的第三段：小说页取「第 N 章 · 标题」，其余走 `defaultTabName()`。
+// ⚠️ 而那份 `defaultTabName` 表里 assets 的「实体 · 林晚」、image 的「分镜图_v3」
+//    **本身就是 mock 字符串** —— 照抄等于把假名字写死在界面上。
+// 规则：能从真状态推的推，推不出来的用**结构性**标签，一个假名都不编。
+std::string Shell::DerivedViewLabel() const {
+    switch (layout_.workspace) {
+    case static_cast<int>(pages::Workspace::Overview):
+        return "总控台";
+    case static_cast<int>(pages::Workspace::Novel): {
+        const pages::BookSideView& s = pages::BookSide();
+        if (!s.bound || s.chapters.empty()) {
+            return "章节";
+        }
+        const int idx = std::clamp(s.selectedChapter, 0, static_cast<int>(s.chapters.size()) - 1);
+        const pages::BookChapterView& ch = s.chapters[static_cast<std::size_t>(idx)];
+        if (ch.title.empty()) {
+            return "第 " + std::to_string(ch.ord) + " 章";
+        }
+        return "第 " + std::to_string(ch.ord) + " 章 · " + ch.title;
+    }
+    case static_cast<int>(pages::Workspace::Assets): {
+        const pages::BookSideView& s = pages::BookSide();
+        if (!s.bound || s.assets.empty()) {
+            return "实体";
+        }
+        const int idx = std::clamp(s.selectedAsset, 0, static_cast<int>(s.assets.size()) - 1);
+        const pages::BookAssetView& a = s.assets[static_cast<std::size_t>(idx)];
+        // 实体名是空的就不写「实体 · 」（设计稿的「实体 · 林晚」是 mock，不是格式要求）。
+        return a.name.empty() ? std::string("实体")
+                              : std::string("实体 · ") + a.name;
+    }
+    case static_cast<int>(pages::Workspace::Storyboard):
+        return "镜头表";
+    case static_cast<int>(pages::Workspace::ImageFlow):
+        return "分镜图";
+    case static_cast<int>(pages::Workspace::VideoFlow):
+        return "H3 视频";
+    case static_cast<int>(pages::Workspace::Gallery):
+        return "组件画廊";
+    default:
+        return layout_.lastViewLabel.empty() ? "总览" : layout_.lastViewLabel;
+    }
+}
+
 void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
     const float cy = area.center().y;
     float x = area.min.x + 24.0f;
-    const char* crumbs[] = {"项目", WorkspaceLabel(layout_.workspace),
-                            layout_.lastViewLabel.empty() ? "总览" : layout_.lastViewLabel.c_str()};
+    // ⚠️ 第三段以前恒为 "总览"：`SetWorkspace` 无条件写 `lastViewLabel = "总览"`，
+    // 而 `lastViewLabel` 全仓没有任何别的地方会改它 ⇒ 切到小说页，面包屑照样是
+    // 「项目 › 小说 › 总览」。状态字段没跟动作走，和「只显示不联动」是同一类。
+    const std::string derived = DerivedViewLabel();
+    const std::string viewLabel = derived.empty() ? std::string("总览") : derived;
+    const char* crumbs[] = {"项目", WorkspaceLabel(layout_.workspace), viewLabel.c_str()};
     for (int i = 0; i < 3; ++i) {
         const bool current = (i == 2);
         draw->AddText(current ? FontBoldAt(12.5f) : FontAt(12.5f), 12.5f, ImVec2(x, cy - 6.25f),
@@ -1324,36 +1413,77 @@ void Shell::DrawCommandPalette() {
     const Rect input{bounds.min.x + 18.0f, bounds.min.y + 18.0f, bounds.max.x - 18.0f,
                      bounds.min.y + 56.0f};
     ImFont* font = FontAt(15.0f);
-    if (ImGui::IsItemActive() || paletteQuery_[0] == '\0') {
+    // 打开面板就把焦点交给输入框。
+    //
+    // ⚠️ 这里原来是个**被掏空的 `if`（条件成立、里面空的）**，`SetKeyboardFocusHere`
+    //    被删掉了。后果：Ctrl+K 打开面板之后**直接打字不进过滤框**，必须先用鼠标点一下
+    //    输入框 —— 而命令面板的基本用法就是「打开就打字」。整个过滤逻辑（下面那段
+    //    includes）是真的，所以症状是「面板能开、列表能滚，但好像打不了字」。
+    //    `SetKeyboardFocusHere` 必须在 InputText **之前**那一帧调用（同一帧内、
+    //    该 item 提交之前即可），我们只在「刚打开」的第一帧调，避免每帧抢焦点。
+    // 「这一帧是不是刚打开的那一帧」要在**消费** paletteJustOpened_ 之前抓住。
+    // 下面关闭判定要用它：同一次按键沿既该打开面板、又不该立刻把它关掉。
+    const bool openedThisFrame = paletteJustOpened_;
+    if (paletteJustOpened_) {
+        paletteJustOpened_ = false;
+        paletteFocusInput_ = true;
     }
-    // 直接用 ImGui 输入框承载中文输入法
     ImGui::SetCursorScreenPos(input.min);
     ImGui::SetNextItemWidth(input.width());
     ImGui::PushFont(font);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 4.0f));
     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImU32(0));
     ImGui::PushStyleColor(ImGuiCol_Text, ColorText());
+    if (paletteFocusInput_) {
+        paletteFocusInput_ = false;
+        ImGui::SetKeyboardFocusHere(-1);
+    }
     ImGui::InputText("##palette", paletteQuery_, sizeof(paletteQuery_));
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar();
     ImGui::PopFont();
 
     // 三组：页面 / 命令 / 主题；过滤 = label+hint+group 的小写 includes，空组丢弃
+    //
+    // ⚠️ 这里早先用一个 `int workspace` 同时表达「切到第 N 个工作区」与「别的命令」
+    //    （-1 命令 / -2 切主题 / -3..-7 五个主题），而 Enter 的执行体只有
+    //    `if (picked.workspace >= 0) SetWorkspace(...)` 一句 ⇒ **14 条里 8 条是空操作**：
+    //    面板只是关掉，什么都没发生。主题组那 5 条尤其扎眼 —— 面板上明明列着「深空/
+    //    薄暮/纸墨/水墨/极夜」，按 Enter 却毫无反应。
+    //    改成显式的 action 枚举（见 Shell.h 的 PaletteAction）：新增一个动作必须同时
+    //    写执行体，编译器盯着。
     struct Item {
         std::string group;
         std::string label;
         std::string hint;
-        int workspace;
+        PaletteAction action;
+        int arg;  // Workspace = 工作区下标；Theme = kAllThemes 下标
     };
     const std::vector<Item> all = {
-        {"页面", "总控", "pipeline", 0},       {"页面", "小说", "novel", 1},
-        {"页面", "资产", "assets", 2},        {"页面", "分镜", "storyboard", 3},
-        {"页面", "出图", "imageflow", 4},     {"页面", "出片", "videoflow", 5},
-        {"页面", "组件画廊", "gallery", 6},    {"命令", "新建项目", "Ctrl+N", -1},
-        {"命令", "打开项目", "Ctrl+O", -1},    {"命令", "保存布局", "layout.dat", -1},
-        {"命令", "切换主题", "Ctrl+T", -2},    {"主题", "深空", "deepspace", -3},
-        {"主题", "薄暮", "dusk", -4},          {"主题", "纸墨", "paperink", -5},
-        {"主题", "水墨", "inkwash", -6},       {"主题", "极夜", "polarnight", -7},
+        {"页面", "总控", "pipeline", PaletteAction::Workspace, 0},
+        {"页面", "小说", "novel", PaletteAction::Workspace, 1},
+        {"页面", "资产", "assets", PaletteAction::Workspace, 2},
+        {"页面", "分镜", "storyboard", PaletteAction::Workspace, 3},
+        {"页面", "出图", "imageflow", PaletteAction::Workspace, 4},
+        {"页面", "出片", "videoflow", PaletteAction::Workspace, 5},
+        {"页面", "组件画廊", "gallery", PaletteAction::Workspace, 6},
+        // 新建 / 打开都落到项目中心：那里既有项目列表也有工具条上的「新建项目」按钮。
+        // ⚠️ 不假装能直接开新建向导 —— 向导是项目中心内部的一个 flag（HubState::wizard），
+        //    而 hub 是 DrawProjectHub 里的函数内状态，跨不过去。要直达得先把它提为成员，
+        //    那是另一件事，别在这里顺手改。
+        {"命令", "新建项目", "Ctrl+N", PaletteAction::NewProject, 0},
+        {"命令", "打开项目", "Ctrl+O", PaletteAction::OpenProject, 0},
+        {"命令", "保存布局", "layout.dat", PaletteAction::SaveLayout, 0},
+        // Ctrl+T 语义是「切主题」。早先它被注册成**打开命令面板**，于是面板上写着
+        // 「切换主题 Ctrl+T」、真按 Ctrl+T 却把面板又打开了一遍 —— 套娃。
+        // 轮换用 ThemeNext（切到下一个），「主题」组那 5 条才是切到**指定**那个。
+        // 两者早先共用 Theme，于是「切换主题」实际只是切到 index 1。
+        {"命令", "切换主题", "Ctrl+T", PaletteAction::ThemeNext, 0},
+        {"主题", "深空", "deepspace", PaletteAction::Theme, 0},
+        {"主题", "薄暮", "dusk", PaletteAction::Theme, 1},
+        {"主题", "纸墨", "paperink", PaletteAction::Theme, 2},
+        {"主题", "水墨", "inkwash", PaletteAction::Theme, 3},
+        {"主题", "极夜", "polarnight", PaletteAction::Theme, 4},
     };
     std::string query = paletteQuery_;
     std::transform(query.begin(), query.end(), query.begin(),
@@ -1449,17 +1579,89 @@ void Shell::DrawCommandPalette() {
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false)) {
         paletteSelected_ = (paletteSelected_ + paletteMatches_ - 1) % std::max(1, paletteMatches_);
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_K, false)) {
+    // ⚠️ 这里原来写成**裸** `IsKeyPressed(ImGuiKey_K)`，与 `ApplyShortcuts` 里打开面板的
+    //    `Ctrl+K` 撞在一起：`ApplyShortcuts()` 在 `DrawCommandPalette()` **之前**跑，
+    //    于是同一帧里「打开」被「关闭」立刻抵消 ⇒ **Ctrl+K 永远打不开命令面板**。
+    //    副症状更常见：面板开着时输入任何含 `k` 的查询都会把面板关掉。
+    //    判据必须和打开侧**同一把尺子**：`Ctrl+K` 才关，裸 K 不关。
+    // ⚠️ 关闭判定必须**跳过「刚打开的那一帧」**。
+    //    ApplyShortcuts() 在帧首跑，DrawCommandPalette() 在帧尾跑：同一帧里 Ctrl+K 先把
+    //    paletteOpen_ 置 true，走到这段时**同一个按键沿**又把它置 false ⇒ Ctrl+K 永远
+    //    打不开命令面板（面板上却明明白白写着「命令面板 Ctrl+K」）。
+    //    动作判据 r53 打出的就是 `palette=closed → palette=closed`，且 saw-ctrl / saw-pressed
+    //    都为真 —— 注入没问题，是产品这一侧的同帧抵消。
+    //
+    // 副症状（更常见）：面板开着时输入任何含 `k` 的查询都会把面板关掉。所以关闭侧必须
+    // 和打开侧**同一把尺子**：只认 `Ctrl+K`，裸 `K` 不关。
+    //
+    // ⚠️ 只把条件从裸 K 收窄成 Ctrl+K 是不够的（早先那么改过，症状一样）—— 问题不在
+    //    条件宽不宽，在于**打开与关闭读到的是同一个按键沿**。
+    if (!openedThisFrame &&
+        (ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+         (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_K, false)))) {
         paletteOpen_ = false;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) && paletteMatches_ > 0) {
         const Item& picked = *matched[static_cast<std::size_t>(paletteSelected_)];
-        if (picked.workspace >= 0) {
-            SetWorkspace(picked.workspace);
-        }
+        RunPaletteAction(picked.action, picked.arg);
         paletteOpen_ = false;
         paletteQuery_[0] = '\0';
         paletteSelected_ = 0;
+    }
+}
+
+// 命令面板 Enter 与 ApplyShortcuts 的 Ctrl+N / Ctrl+O / Ctrl+T 共用这一份。
+// 分成两处的话，迟早只改得动一边 —— 本仓已经吃过一次（Ctrl+T 套娃）。
+void Shell::RunPaletteAction(PaletteAction action, int arg) {
+    switch (action) {
+    case PaletteAction::Workspace:
+        SetWorkspace(arg);
+        break;
+    case PaletteAction::ThemeNext: {
+        // 「切换主题」= 切到**下一个**主题。写死一个索引会让第二轮点回同一个主题，
+        // 看着像没生效。
+        const std::size_t count = std::size(theme::kAllThemes);
+        std::size_t cur = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (theme::kAllThemes[i] == theme::CurrentThemeId()) {
+                cur = i;
+                break;
+            }
+        }
+        const theme::ThemeId next = theme::kAllThemes[(cur + 1) % count];
+        SetTheme(next);
+        Notify(std::string("主题 · ") + theme::ThemeIdKey(next), theme::Tone::Ok);
+        break;
+    }
+    case PaletteAction::Theme: {
+        const std::size_t count = std::size(theme::kAllThemes);
+        if (arg < 0 || static_cast<std::size_t>(arg) >= count) {
+            return;
+        }
+        const theme::ThemeId id = theme::kAllThemes[static_cast<std::size_t>(arg)];
+        SetTheme(id);
+        Notify(std::string("主题 · ") + theme::ThemeIdKey(id), theme::Tone::Ok);
+        break;
+    }
+    case PaletteAction::NewProject:
+        if (!hubOpen_) {
+            ToggleProjectHub();
+        }
+        Notify("项目中心 · 点工具条上的「新建项目」", theme::Tone::Info);
+        break;
+    case PaletteAction::OpenProject:
+        if (!hubOpen_) {
+            ToggleProjectHub();
+        }
+        Notify("项目中心 · 从最近列表里挑一个打开", theme::Tone::Info);
+        break;
+    case PaletteAction::SaveLayout: {
+        // ⚠️ 别写成 `SaveLayout() ? … : …` —— 那是**调用两次**，文件写两遍。
+        const bool ok = SaveLayout();
+        Notify(ok ? "布局已保存 · layout.dat" : "布局保存失败 · layout.dat",
+               ok ? theme::Tone::Ok : theme::Tone::Danger);
+        break;
+    }
     }
 }
 
@@ -1505,6 +1707,35 @@ void Shell::DrawOverlays(ImDrawList* draw) {
                    WithAlpha(ColorText(), alpha), toastText_.data(), toastText_.data() + toastText_.size());
 }
 
+std::uint64_t Shell::LayoutStateHash() const {
+    // FNV-1a 64，和取证那边的像素哈希同一套 —— 同一份实现，判据与产品别各写一遍。
+    std::uint64_t h = 1469598103934665603ull;
+    const auto mix = [&h](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= static_cast<std::uint8_t>((v >> (i * 8)) & 0xFFu);
+            h *= 1099511628211ull;
+        }
+    };
+    mix(static_cast<std::uint64_t>(layout_.workspace));
+    mix(layout_.sidePanelVisible ? 1u : 0u);
+    mix(layout_.dockVisible ? 1u : 0u);
+    mix(layout_.inspectorVisible ? 1u : 0u);
+    mix(static_cast<std::uint64_t>(layout_.sidePanelWidth));
+    mix(static_cast<std::uint64_t>(layout_.inspectorWidth));
+    mix(static_cast<std::uint64_t>(layout_.dockHeight));
+    mix(static_cast<std::uint64_t>(layout_.dockTab));
+    mix(layout_.reduceMotion ? 1u : 0u);
+    for (const char c : layout_.projectName) {
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 1099511628211ull;
+    }
+    for (const char c : layout_.lastViewLabel) {
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
 // ---------------------------------------------------------------- 快捷键
 void Shell::ApplyShortcuts() {
     const bool ctrl = ImGui::GetIO().KeyCtrl;
@@ -1520,8 +1751,32 @@ void Shell::ApplyShortcuts() {
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_K, false)) {
         ToggleCommandPalette();
     }
+    // Ctrl+Enter = 运行（phases.md:286 的契约，设计稿顶栏「运行 / 下一阶段」也在这条
+    // 快捷键的语义上）。以前**没注册**：全树的 IsKeyPressed 只有面板的 ↑↓/Enter/Esc/K
+    // 和上面这三条，phases.md 要求的这条一直缺着。
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+        if (runActive_) {
+            RequestRunStop();
+        } else {
+            RequestRunStart();
+        }
+    }
     if (ctrl && ImGui::IsKeyPressed(ImGuiKey_T, false)) {
-        paletteOpen_ = !paletteOpen_;
+        // ⚠️ 这里原来写的是 `paletteOpen_ = !paletteOpen_`，而命令面板里那条
+        // 「切换主题 / Ctrl+T」承诺的是**切主题**。于是按 Ctrl+T 把命令面板打开一遍，
+        // 面板上那条 Ctrl+T 又只能把面板再开关一次 —— 套娃，永远切不到主题。
+        // 改成真的轮换主题；面板里那条走 RunPaletteAction(ThemeNext)，同一份逻辑。
+        RunPaletteAction(PaletteAction::ThemeNext, 0);
+    }
+    // ⚠️ 这两条以前**根本没注册**：命令面板上写着「新建项目 / Ctrl+N」「打开项目 /
+    //    Ctrl+O」，但 ApplyShortcuts 里只有 B / J / I / K / T。面板里那条早先也是空操作，
+    //    于是这行提示从头到尾是**两处都死的**。
+    // 执行体走 RunPaletteAction —— 与面板 Enter 那条共用一份，不在这里重写一遍。
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+        RunPaletteAction(PaletteAction::NewProject, 0);
+    }
+    if (ctrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) {
+        RunPaletteAction(PaletteAction::OpenProject, 0);
     }
     // 浮层的关闭键。设计稿的三处都写了 Esc 关闭（校验报告 modal 的 footer、
     // 设置向导、命令面板），补齐后浮层才算真正可用。
@@ -1542,7 +1797,8 @@ void Shell::ApplyShortcuts() {
 
 void Shell::SetWorkspace(int index) {
     layout_.workspace = std::clamp(index, 0, kWorkspaceCount - 1);
-    layout_.lastViewLabel = "总览";
+    // 第三段面包屑改成**按工作区现算**（DerivedViewLabel），这里不再无条件写死
+    // "总览" —— 写了它就永远盖住真状态。字段保留只为 layout.dat 的向后兼容。
 }
 
 void Shell::SetDockTab(int tab) { layout_.dockTab = std::clamp(tab, 0, 3); }
@@ -1585,6 +1841,9 @@ void Shell::ToggleCommandPalette() {
         // 每次打开从顶上开始，并选中第一项 —— 沿用上次的滚动位置会让人以为列表被过滤过。
         paletteScroll_ = 0.0f;
         paletteSelected_ = 0;
+        // 焦点交给输入框：「打开就打字」才是命令面板的基本用法。早先这里没有这一句，
+        // 打开后必须先用鼠标点一下输入框才能打字（SetKeyboardFocusHere 被删过）。
+        paletteJustOpened_ = true;
     }
 }
 
@@ -1745,6 +2004,15 @@ void Shell::DrawFrame(float dt) {
         comfy::ComfySession::Instance().Init(Settings().comfyBaseUrl);
     }
     comfy::ComfySession::Instance().Tick(dt);
+
+    // 页面层的 toast 通道：页面不认识 Shell（那是外壳的活），所以由外壳注入自己的
+    // Notify。首帧之后页面才可能有按钮被点，注入放在这里一次就够。
+    // ⚠️ 捕获 this 而不是裸函数指针：Notify 是成员函数。
+    static bool toastWired = false;
+    if (!toastWired) {
+        toastWired = true;
+        pages::SetWorkspaceToast([this](std::string message) { Notify(std::move(message)); });
+    }
 
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0, 0));

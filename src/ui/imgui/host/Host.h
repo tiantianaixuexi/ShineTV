@@ -79,6 +79,25 @@ public:
     }
     void ClearFrameMouseOverride() { mouseOverrideSet_ = false; }
 
+    // 取证用：把一次按键**在 `NewFrame` 之前**注入，跨 frames 帧有效。
+    //
+    // 为什么必须提前：`ImGui::IsKeyPressed` 读的是 `ImGui::NewFrame()` 里推进的按下沿
+    // 队列。在帧回调里注入（NewFrame 之后）就永远晚一帧，判定等于没接线。
+    // 跟 SetFrameMouseOverride 同一个道理。
+    //
+    // 只支持无修饰键与 LeftCtrl：快捷键判据要验的是「按了会发生什么」，
+    // 而 Ctrl+X 能不能触发取决于「Ctrl 有没有被算进 KeyCtrl」，所以 Ctrl 要能注入。
+    // key 用 ImGuiKey 的**整数**值而不是 ImGuiKey —— 同样是别把 imgui 头拖进这个 TU。
+    void SetFrameKeyOverride(int key, bool down) {
+        keyOverride_ = key;
+        keyOverrideDown_ = down;
+        keyOverrideSet_ = true;
+    }
+    void ClearFrameKeyOverride() { keyOverrideSet_ = false; }
+    // 辅助：把 ImGuiKey_LeftCtrl 之类换成本 TU 能用的整数（调用方自己 include imgui.h）。
+    void SetFrameCtrlOverride(bool down) { ctrlOverride_ = down; }
+    void ClearFrameCtrlOverride() { ctrlOverride_ = false; }
+
     [[nodiscard]] HWND window() const noexcept { return hwnd_; }
     [[nodiscard]] HGLRC glContext() const noexcept { return glContext_; }
 
@@ -96,7 +115,11 @@ private:
     HDC hdc_ = nullptr;          // 窗口的设备上下文，WGL 绑定在它上面
     float mouseOverrideX_ = 0.0f;
     float mouseOverrideY_ = 0.0f;
-    bool mouseOverrideSet_ = false;    HGLRC glContext_ = nullptr;  // GL 上下文
+    bool mouseOverrideSet_ = false;
+    int keyOverride_ = 0;
+    bool keyOverrideDown_ = false;
+    bool keyOverrideSet_ = false;
+    bool ctrlOverride_ = false;    HGLRC glContext_ = nullptr;  // GL 上下文
     bool imguiReady_ = false;
     bool quit_ = false;
 };
