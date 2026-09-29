@@ -108,33 +108,57 @@ last_verified: 2026-09-29
 `kAllThemes` 的下标就是 `ThemeId` 的枚举值，**顺序不可重排**（已持久化的主题名按名查，
 但运行时缓存按下标寻址）。
 
-**已知未对齐**：水墨块额外覆盖了 `--font-ui`（衬线族：`Noto Serif SC` / `SimSun` 等）。
-`ColorToken` 只装颜色、`QssBuilder` 只做 `%N` 颜色替换，要落地得给主题加非颜色字段，
-会动 `ColorTokenToJson/FromJson` 的序列化契约（%N 占位符位置即字段顺序）——
-不在设计系统基线这一轮里，留作独立一轮。
+**每主题字体族（已落地）**：水墨块额外覆盖了 `--font-ui`（衬线族：`Noto Serif SC` /
+`SimSun` 等）。实现**没有**给 `ColorToken` 加字段——`ColorToken` 的字段顺序就是
+QSS 的 `%N` 占位序、也是 `ColorTokenToJson/FromJson` 的键序（两者必须逐位一致，
+插入即整体错位），塞一个非颜色的字符串进去会让「每个 token 都被 QSS 消费」的
+自检判据失真。
 
-**待运行验证**：水墨在「主题菜单 → 切换 → 各页面」的实际观感（尤其深色系控件残留、
-浅色主题下的焦点环对比）只跑过自检，尚未截图。
+改为：字体族另立一张按下标寻址的小表（`Theme.cpp` 的 `kFontFamilies`，与 `kAllThemes`
+同序），QSS 模板里的基准规则用**非颜色占位符** `$FONTFAMILY$`，由 `QssBuilder::Build`
+在 `FillTokens` 之后单独替换。`SelfCheck` 另加一条判据：输出里残留 `$FONTFAMILY$`
+即判 FAIL（漏替换会让 Qt 把它当字体名解析）。自定义主题没有字体概念，回落到当前
+内置主题的族。序列化契约与 `%N` 顺序因此**零改动**——五套主题 JSON 一个字没改。
+
+> **这条思路已复用到 color-mix**（见第一节）：「需要在 QSS 里用某个 token 派生出新值、
+> 又不能进 `%N` 序列」时，一律走「按下标寻址的小表 + `$XXX$` 非颜色占位符 +
+> `SelfCheck` 盯残留」三件套。`$TONEBG$n$` / `$TONEEDGE$n$` 就是这么加的，
+> 同样零改动五套主题 JSON。
+
+**已截图验证**（`SHINE_P10_REVIEW` 主题矩阵，5 主题 × 流水线/出图/出片 = 15 张）：
+水墨的 `pipeline-水墨.png` 与 `深空` 同页对照，标题与正文已是衬线族，浅色底上
+**无深色系控件残留**，焦点环与主色可区分。
+
+**仍未验证**：通过「主题菜单 → 切换」的**运行期交互**路径（而非 harness 直接
+`ThemeService::Switch`）观感未截；本机无可交互桌面会话（见第五节第 4 条）。
 
 ---
 
-## 一、渲染器能力边界（Qt QSS 不支持，无法 1:1 移植）
+## 一、渲染器能力边界
 
-Qt 样式表是 CSS 的子集，设计稿里这些属性在 QSS 中**根本没有对应声明**，
-写了也不生效。不要为它们编造半成品实现。
+> **判据先说清**：QSS 缺的属性 ≠ Qt 缺的能力。QSS 是 CSS 的子集，但 **Qt Widgets
+> 本身**的 API 面宽得多（`QGraphicsDropShadowEffect` / `QTimer`+`paintEvent` 自绘 /
+> `QStyledItemDelegate` / `QGraphicsLayout`）。写「Qt 做不到」之前先确认那条能力在
+> Qt 侧真的没有 —— 本文件历史上曾把「水墨主题衬线字体」记成「要动 ColorToken 序列化
+> 契约，留作独立一轮」，而实际上另立一张按下标寻址的小表就解决了（见第〇节），
+> 契约零改动。**下表 10 条里只有 `backdrop-filter` 一条是真边界。**
 
-| 设计稿属性 | webui 出处 | Qt 现状 | 替代做法 |
+Qt 样式表是 CSS 的子集，设计稿里这些属性在 **QSS** 中没有对应声明。右列写的是
+Qt 侧的实际落地手段。
+
+| 设计稿属性 | webui 出处 | QSS 现状 | Qt 侧实际做法 |
 |---|---|---|---|
-| `box-shadow` | `.tl-card:hover`、`shadow-1/2/accent` 等 | **QSS 无此属性，但 Qt 有现成方案**：`QGraphicsDropShadowEffect`，已封装为 `widgets::ApplyShadow(w, ShadowLevel)` | 直接用，见下方「阴影」小节 |
-| `backdrop-filter: blur()` | 浮动面板毛玻璃 | QSS 无滤镜系统 | 用 `bg.overlay` 不透明底（见下方说明） |
-| `transform: translateY(-2px)` / `scale(0.97)` | `.card.hoverable:hover`、`.btn:active` | QSS 不能改几何 | 用 `motion::Tween` 主动画（`Card::Lift` 已做，按 2px / motion.base）；按钮按压缩放**未做** |
-| `transition: all var(--dur-N)` | `.chip`、按钮、卡片全局 | QSS 无 transition | 用 `kit::motion::Tween` + `Easing` 主动画（`kDurFastMs=120` / `kDurBaseMs=200` / `kDurSlowMs=320` 三档 token 已存在） |
-| `color-mix()` | `.tag.ok` 等 tone 底、`.btn-danger:hover` 底、`accent-dim` | QSS 无 | 沿用既有近似 token：tone 底用实心 `status.*` + `text.inverse` 字；`.btn-danger:hover` 用 `fill.hover` 底 + `danger` 边 |
-| `opacity: 0.45` | `.btn:disabled`、`.stageflow .snode.skip` | QSS 无 opacity 属性 | 用 `bg.surface` 底 + `text.muted` 字 + `line.subtle` 边表达「不可用」 |
-| `@keyframes` 循环动画 | `.prog.run` 微光、`.dot.run` 脉冲、`.empty .glyph` 浮动 | QSS 无 keyframes | 定时器自绘（`Spinner` 已做）；进度条微光与状态点脉冲**未做** |
-| `:focus-within` | `.search:focus-within` | QSS 只认控件自身焦点 | 事件过滤把焦点转发到父框的 `focused` 属性（`SearchBox` 已做） |
-| 每主题改字体族 | `[data-theme="inkwash"] --font-ui`（衬线） | `ColorToken` 只装颜色，`QssBuilder` 只按 `%N` 替换颜色 | **未做**：水墨主题仍是 UI 衬线族，要落地得给主题加非颜色字段（会动序列化契约） |
-| CSS Grid / Flex 的 `minmax()`、`auto-fit` | `.asset-grid`、`.flowwrap` | QSS 不参与布局 | `QGridLayout` + `ResizeEvent` 重算，或用 `QScrollArea` + 固定列宽 |
+| `box-shadow` | `.tl-card:hover`、`shadow-1/2/accent` | 无此属性 | **已做**：`widgets::ApplyShadow(w, ShadowLevel)` 包 `QGraphicsDropShadowEffect`，见下方「阴影」小节 |
+| `backdrop-filter: blur()` | 浮动面板毛玻璃 | 无滤镜系统 | **真边界**。Qt 没有「采样背后窗口」的 API（`QGraphicsBlurEffect` 只能糊控件自己的内容，不是背景）。已定契约：`bg.overlay` 走**不透明**底 + `shadow.scrim` 遮罩 |
+| `transform: translateY(-2px)` / `scale(0.97)` | `.card.hoverable:hover`、`.btn:active` | QSS 不能改几何 | **均已做**：`Card::Lift` 用 `motion::Tween` 移 2px；`Button::mousePressEvent` 走 `CaptureBackdrop` + 中心缩放自绘，按下 0.97、松开回 1.0 |
+| `transition: all var(--dur-N)` | `.chip`、按钮、卡片全局 | 无 transition | **已做**：`kit::motion::Tween` + `Easing` 主动画（`kDurFastMs=120` / `kDurBaseMs=200` / `kDurSlowMs=320` 三档 token 已存在） |
+| `color-mix()` | `.tag.ok` 等 tone 底、`.gantt .gcell`、`gates` | 无 | **已做**：在 `QssBuilder::Build` 阶段按主题把 tone 色按 12%（底）/ 35%（边）预合成到 `bg.surface`，经 `$TONEBG$n$` / `$TONEEDGE$n$` 派生态占位符注入。`ColorToken` 字段序**零改动** |
+| `opacity: 0.45` | `.btn:disabled`、`.stageflow .snode.skip` | 无 opacity 属性 | **未做**。注意**不能**用 `QGraphicsOpacityEffect` 补：一个控件只允许挂一个 graphics effect，会把 hover/选中的阴影顶掉（`pages/storyboard/StoryboardTimeline.cpp:31` 记了这个坑，现改用直接给像素图乘 alpha）。要补得走自绘路线 |
+| `@keyframes` 循环动画 | `.prog.run` 微光、`.dot.run` 脉冲、`.empty .glyph` 浮动 | 无 keyframes | **均已做**：`Spinner` / `StatusDot` / `ProgressBar` 微光 / `EmptyState` 的 `FloatGlyph`（4s ±6px）全部 QTimer 推进相位 + `paintEvent` 自绘；「减少动效」下退化为静态 |
+| `:focus-within` | `.search:focus-within` | 只认控件自身焦点 | **已做**：事件过滤把焦点转发到父框的 `focused` 属性（`SearchBox`） |
+| 每主题改字体族 | `[data-theme="inkwash"] --font-ui`（衬线） | `QssBuilder` 只按 `%N` 替换颜色 | **已做**：不进 `ColorToken`，另立 `kFontFamilies` 表 + 非颜色占位符 `$FONTFAMILY$`，见第〇节 |
+| CSS Grid 的 `minmax()` / `auto-fit` | `.asset-grid`、`.gal-grid` | QSS 不参与布局 | **已做**：`QGridLayout` 本身没有 auto-fit，改由宿主在宽度变化时回调重算列数 + `setColumnStretch` 复刻 `1fr`（`AssetWorkspace::ReflowAssets` / `WidgetGalleryView.cpp` 的 `GalGrid::ColumnsFor`）；`flex-wrap` 由 `layout/FlowLayout.h` 覆盖 |
+
 
 ### 阴影（已实现，不要重复造）
 
@@ -272,11 +296,25 @@ chip 行 + 「参考图」缩略图）已在 `AssetDetailView` 的 `RelTimeline`
 **已知偏差**：设计稿 `.stem` 是 `top:30 h14`，会与上方 `.ev` 标签（约 26–39）重叠，
 当前实现把 stem 改到 40–44 让它正好搭上轴线、避开标签。其余数值逐条照抄 CSS。
 
-### 2. `.tl-below` 不换行（`flex-wrap` 缺替身）
+### 2. `flex-wrap` 的替身（已补：`layout/FlowLayout.h`）
 
 `views.css:840` 的 `.tl-below` 是 `flex-wrap: wrap`，检查器变窄时 chip 会折到第二行。
-Qt Widgets 没有 flow layout。当前把 chip 钉在各自 `sizeHint` 上，窄时**溢出而不裁切**
-（安全但不是换行）。真要换行得在 `kit/layout/` 写一个流式布局，属另一轮工作量。
+此前 Qt Widgets 没有 flow layout，只能把 chip 钉在各自 `sizeHint` 上，窄时**溢出而不裁切**
+（安全但不是换行）。
+
+**已实现**：`src/ui/layout/FlowLayout.h` 提供 `FlowLayout`（布局本体）与
+`FlowContainer`（把高度对齐到 `heightForWidth()` 的薄容器）。`.tl-below` 已改用它。
+
+用这个类要注意两件事，都是 Qt 的硬限制而不是实现取巧：
+
+- **高度要显式给**。`QLayout` 不能反向通知父控件要多高，而 QWidget 布局系统也不会
+  主动调 `QLayout::heightForWidth()`。直接 `new FlowLayout(parent)` 塞进 `QVBoxLayout`
+  会导致换行后底部被裁 —— 所以配了 `FlowContainer`（自身高度 = 当前宽度下的
+  `heightForWidth`）。要自己写容器的话，必须在 `resizeEvent` 里同步高度。
+- **换行按 `sizeHint` 判定**，所以子控件别为了塞进一行而调小 `minimumSizeHint`，
+  那会让断行位置算错。
+
+`AddStretch()` 对应 CSS 的 `flex:1` 留白（弹性空隙吃掉本行剩余宽度，不触发换行）。
 
 ### 3. 评审抓图曾覆盖不到检查器内容（已修）
 
@@ -305,7 +343,7 @@ Qt Widgets 没有 flow layout。当前把 chip 钉在各自 `sizeHint` 上，窄
 | 控件 | 设计稿要点 | 本轮状态 |
 |---|---|---|
 | Button | secondary = `bg-elevated` 底；ghost = `text-secondary` 字；danger = 透明底 + `line-normal` 边 | **已对齐**（此前 secondary 用 `bg.panel`、ghost 用 accent 字、danger 是实心 danger 底） |
-| Button | `:active` `scale(0.97)`、`:disabled` `opacity .45`、primary 的 inset 高光 | 未做，见第一节（QSS 无 transform/opacity） |
+| Button | `:active` `scale(0.97)`、`:disabled` `opacity .45`、primary 的 inset 高光 | 按压缩放**已做**（`Button::CaptureBackdrop` + 中心缩放自绘，`motion.dur.fast`）；`:disabled` 的 opacity 与 primary inset 高光**未做**（QSS 无 opacity / inset，见第一节） |
 | IconButton | 28×28（sm 22×22）、r-sm、`text-secondary` 字、active = `fill.selected` + accent | **已对齐**（尺寸此前是 32/24，active 态多画了一圈边） |
 | Tag | h20 p0 8 r-pill f11.5 w600；tone 底 = 12% 混色 | 几何已对齐；tone 底仍是实心 `status.*`（`color-mix` 缺失） |
 | Card | r10 + `line-subtle`；hover = `line-strong` + shadow-1 + `translateY(-2px)` / dur-2 | **已对齐**（抬升此前是 1px + motion.fast） |
@@ -316,15 +354,15 @@ Qt Widgets 没有 flow layout。当前把 chip 钉在各自 `sizeHint` 上，窄
 | SearchBox | **独立**控件：r-pill + `line-subtle` + h30 + `:focus-within` | **已对齐**（此前复用 `.input` 的 r-sm；焦点转发到 `focused` 属性） |
 | Switch | 34×19 pill；旋钮 13px、起点 2、行程 15；关 = `bg-elevated` 底 + `text-secondary` 旋钮 | **已对齐**（此前 36×20，旋钮恒为 `bg-surface` 且行程按宽度算） |
 | Checkbox / Radio | 15×15、r-xs、1.5px `line-strong` 边、文字 gap 8；常态 `text-secondary`，选中 `text-primary` | **已对齐**（此前 16×16 + 1px + 常态就是 `text-primary`） |
-| Progress | h6 r-pill + `fill-muted`；`thin` h4；`run` 微光 | h6 + pill 已对齐（此前 `setMinimumHeight(8)` 压过 QSS）；`thin` / `run` 未做 |
+| Progress | h6 r-pill + `fill-muted`；`thin` h4；`run` 微光 | **已对齐**：`SetThin(true)` 走 QSS 的 `shineSize="thin"`（4px，min/max 双向钉死，只写 min 会被 sizeHint 抬高）；`SetShimmer(true)` 是 QTimer 推进相位 + `paintEvent` 在 chunk 上叠一条平移的渐变高光，并按胶囊做 `QPainterPath` 裁剪 |
 | Spinner | 14px / sm 11px，2px 边、顶边 accent，0.7s 线性 | Qt 为 14/20/32 三档、周期约 0.53s（按钮 loading 用的是 14 档，与 CSS 一致） |
 | Tooltip | `bg-overlay` + `line-normal` + r6 + p4 9 + f11.5 | **已对齐**；`scale(.94→1)` 与 shadow-1 未做（无边框 window 挂阴影会被窗口边界裁掉） |
-| Empty | p40 20 + gap 10；`.glyph` 52×52 r-lg 虚线框 + 24px 图标；标题 f13 w600 `text-secondary` | **已对齐**（此前没有 52×52 字形框，标题走 `statetitle` 的 `text-primary`）；`float-y` 浮动未做 |
+| Empty | p40 20 + gap 10；`.glyph` 52×52 r-lg 虚线框 + 24px 图标；标题 f13 w600 `text-secondary` | **已对齐**（此前没有 52×52 字形框，标题走 `statetitle` 的 `text-primary`）；`float-y` 浮动**已做**（`Feedback.cpp` 的 `FloatGlyph`：整框 + 图标一体自绘，4s 周期 ±6px 余弦相位，「减少动效」下退化为静态） |
 | Table | th f11.5 w600 p8 12 + 仅下边线；td p9 12 + `line-subtle` | **已对齐**（此前 th 多一条竖分隔线、p6 12；td 是 p5 12） |
-| Table | 行 `:hover` = `fill-hover`；`.sel` = `fill.selected` + inset 2px accent 左条 | **未做**：QSS 没有 `::row:hover`，也没有 `inset` 阴影 |
+| Table | 行 `:hover` = `fill-hover`；`.sel` = `fill.selected` + inset 2px accent 左条 | **已对齐**：QSS 既没有 `::row:hover` 也没有 `inset` 阴影，改由 `data/Table.h` 的 `RowChrome` 代理自绘（hover 底铺 `fill.hover`；选中左条只在最左可见列画，避免逐 cell 变 N 根竖条）。选中行的底色与文字色仍由全局 QSS 的 `item:selected` 兑现 |
 | Tree | `.node` h28 p0 8 r6；`.kids` 左侧竖线 + 缩进 | kit 只给 `QTreeView` 基类（f12 + item 圆角）；行高与缩进在页面布局里 |
 | Kbd | min-w18 h18 p0 5 r-xs 底边 2px f10.5 w600 | **已对齐**（此前 p1 6 且无字号/字重） |
-| StatusDot | `.dot` 7px 正圆、`.dot.run` 脉冲 | 点态 = `Badge` 的 dot，**已对齐** 7px；脉冲动画未做；**没有独立的 StatusDot 控件** |
+| StatusDot | `.dot` 7px 正圆、`.dot.run` 脉冲 | **已对齐**：新增独立控件 `widgets::StatusDot`（7px 正圆，tone 走 `status.*` token）。`.dot.run` 的脉冲用 QTimer 推进相位 + `paintEvent` 自绘光晕环与本体呼吸；`SetPulse` 在「减少动效」下退化为静态实心点（语义仍是「运行中」） |
 | KeyValue / Steps | `.kv` f12.5 + gap 6 14；`.steps` 20px 圆圈序号 | 控件在 `src/ui/kit/data/Panels.*`，**不在本轮范围**，未核对 |
 
 ---
@@ -352,7 +390,6 @@ root->setStyleSheet(StoryboardQss());
 |---|---|---|---|
 | `ReviewView` K01–K29 | 3 元素 gate 行 | 保留 5 列 `DataTable`（多 `detail`/`severity`） | `06` §2.3 验收判据要这两列；改列会动断言。**要不要为 1:1 牺牲这两列，待产品决定** |
 | 出图/出片分栏 | `Segmented` 胶囊 | `QTabWidget` 下划线页签 | `P07Review.cpp` / `P08Review.cpp` 用 `findChild<QTabWidget*>()` 反查并切页 |
-| `.tl-below` | `flex-wrap: wrap` | 窄时**溢出而不裁切** | Qt Widgets 无 flow layout；裁切会丢内容，溢出安全 |
 | 浮动面板 | `absolute inset` | 共享 grid cell + alignment | 窄窗下面板被压缩而非盖住画布；改 child-over-parent 手动 `move()` 是另一轮工作量 |
 | 顶栏「运行/停止」 | 单按钮两态 | 两个按钮 | P09 流水线状态未接，做成切换就是假状态 |
 | `.stem` 时间轴竖线 | `top:30 h14` | 改到 40–44 | CSS 原值会与上方 `.ev` 文字行（26–39）重叠 |
@@ -408,7 +445,7 @@ setStyleSheet → StyleChange → 重刷 → setStyleSheet 的死循环，
 
 | 现象 | 位置 | 说明 |
 |---|---|---|
-| `Could not parse stylesheet of object QLabel` | P10 运行期 | 既有噪音，与本轮改动无关（已用 stash 对照验证过） |
+| `Could not parse stylesheet of object QLabel` | P10 运行期 | 既有噪音，与本轮改动无关（已用 stash 对照验证过）。2026-09-29 复核 P10 主题矩阵（15 张）时 stderr 未再出现，来源仍未定位——**别当成已修复**，可能是主题/时序相关 |
 | `QString::arg: 1 argument(s) missing` | P05 fixture 搭建 | 既有噪音 |
 | `SHINE_P10_S8` / `SHINE_P10_S10` FAIL | `checks/P10Checks.cpp` | 断言 `dist/ShineTVStudio2/ShineTVStudio.exe` 存在，那是**打包产物**；本工作区无 `dist/`（`build/` 已 gitignore）。与 UI 无关 |
 | P04_S1–S4 报告格式不同 | `checks/P04WorldChecks.cpp` 等 | 用 `key=val PASS` 而非 `[PASS]`，按 `[PASS]` 正则统计会误显示为 0 项，**别误判成"没跑"** |
@@ -424,7 +461,13 @@ setStyleSheet → StyleChange → 重刷 → setStyleSheet 的死循环，
   也别在 `QssBuilder` 注释里写色值字面量（第五节第 3 条）。
 - **改 UI 前**：先查第二节，避免再踩 `QPushButton` 尺寸、QSS padding 这类已修过的坑。
 - **给页面加私有样式**：按第五节第 1 条走局部 `setStyleSheet`，不要往 `QssBuilder` 里塞页面规则。
-- **被要求"再像一点"**：第一节是硬边界，别在这里浪费时间；能动的在第二、三、四节。
-- **评审截图与设计稿有差异时**：先确认差异是否落在第一节（能力边界，无法修），
+- **想「做得更像设计稿」时**：**别把第一节当放弃的理由**。第一节现在只有 `backdrop-filter`
+  一条是真边界（Qt 没有采样背后窗口的 API），其余 9 条都已用 Qt API 补齐。写「Qt 做不到」
+  之前先问一句：**这是 QSS 的限制还是 Qt 的限制？**两者结论完全不同 ——
+  `box-shadow` → `QGraphicsDropShadowEffect`、`transform`/`@keyframes` → `QTimer`+`paintEvent`
+  自绘、`::row:hover` → `QStyledItemDelegate`、`flex-wrap` → 自写 `QLayout`、
+  `color-mix` → Build 阶段预合成。历史上「水墨主题衬线字体」被误记成「要动 ColorToken
+  序列化契约、留作独立一轮」，实际另立一张按下标寻址的小表就解决了，契约零改动。
+- **评审截图与设计稿有差异时**：先确认差异是否落在第一节（真能力边界，当前仅毛玻璃），
   再看是不是第二、三、四节的未完成项；第五节第 2 条列的是**有意识的取舍**，别当 bug 顺手"修掉"。
 - **补完任一条后，**同步更新本文件**并删掉对应条目，别留"已修复"的记录当历史。

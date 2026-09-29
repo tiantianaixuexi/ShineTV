@@ -9,6 +9,7 @@
 
 #include <QFrame>
 #include <QLabel>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSize>
 #include <QString>
@@ -21,6 +22,9 @@
 
 class QHBoxLayout;
 class QVBoxLayout;
+namespace shine::motion {
+class Tween;
+} // namespace shine::motion
 
 namespace shine::widgets {
 
@@ -43,6 +47,29 @@ class Spinner : public QWidget {
     double angle_ = 0.0; // 角度制
 };
 
+// StatusDot —— webui ui.css:164-172 的 `.dot` / `.dot.run`
+//   .dot     { width:7px; height:7px; border-radius:50% }
+//   .dot.run { animation: pulse-dot 1.6s var(--ease) infinite }
+// QSS 没有 keyframes，脉冲只能自绘（QTimer 推进相位 + paintEvent）。
+// 色值走 status.* token；「减少动效」下 run 退化为静态实心点（语义不变）。
+class StatusDot : public QWidget {
+  public:
+    explicit StatusDot(const char* tone = "", QWidget* parent = nullptr);
+
+    void SetPulse(bool on);                        // .dot.run
+    void SetTone(const char* tone);                // ""（accent）/ ok / warn / danger / idle / busy
+    [[nodiscard]] int DiameterPx() const { return 7; } // ui.css .dot 正 7px
+
+  protected:
+    void paintEvent(QPaintEvent* ev) override;
+
+  private:
+    QTimer timer_;
+    double phase_ = 0.0; // 0→1 一个脉冲周期
+    bool pulse_ = false;
+    QString tone_;
+};
+
 // Button —— primary/secondary/ghost/danger × sm/md/lg
 // loading 态 = 转圈 + 禁点 + 保持宽度（不跳动）
 class Button : public QPushButton {
@@ -58,14 +85,27 @@ class Button : public QPushButton {
 
   protected:
     void resizeEvent(QResizeEvent* ev) override;
+    void paintEvent(QPaintEvent* ev) override;
+    void mousePressEvent(QMouseEvent* ev) override;
+    void mouseReleaseEvent(QMouseEvent* ev) override;
 
   private:
     void PlaceSpinner();
+    // webui ui.css:22-24 `.btn:active { transform: scale(0.97) }`。QSS 没有 transform，
+    // 而 scale 是**几何**变化（不是颜色），只能自绘：按压缩放时按钮四周会露出一圈
+    // 原控件的像素（QWidget 不像场景图那样重绘兄弟节点），所以先把「按钮背后的
+    // 父容器内容」缓存成一张图，按下时先铺它、再画缩放后的按钮，露出的那圈才不会
+    // 残留上一帧的按钮边缘（残影）。
+    void CaptureBackdrop();
+    void AnimatePress(double scale);
 
     bool loading_ = false;
     int fixed_w_ = 0;
     QString saved_text_;
     Spinner* spinner_ = nullptr;
+    double press_scale_ = 1.0; // 当前按压缩放（1.0 = 松开）
+    QPixmap backdrop_;         // 按钮背后的父容器内容（仅按压期间有效）
+    class motion::Tween* press_tween_ = nullptr; // 成员复用，不在事件里反复 new
 };
 
 // IconButton —— 字符图标钮（P03 换真图标）；必带 tooltip；active 高亮（活动栏）

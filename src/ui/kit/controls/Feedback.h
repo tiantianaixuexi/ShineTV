@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QString>
+#include <QTimer>
 #include <QWidget>
 
 class QVBoxLayout;
@@ -26,8 +27,29 @@ class ProgressBar : public QProgressBar {
     void SetInlineText(const QString& t); // 内嵌文字（替代默认百分比）
     void SetState(const char* state);     // "" / "ok" / "error"
 
+    // .prog.thin（webui ui.css:452）：4px 细条。几何走 QSS 的 shineSize="thin"。
+    void SetThin(bool on);
+    [[nodiscard]] bool IsThin() const { return thin_; }
+
+    // .prog.run（webui ui.css:444-451）：chunk 上叠一层循环微光。
+    // QSS 没有 keyframes，这条只能自绘 —— 用 QTimer 推进相位 + paintEvent 叠加
+    // 一条斜向渐变高光（CSS 是 background-size 200% + shimmer 1.4s linear）。
+    void SetShimmer(bool on);
+    [[nodiscard]] bool IsShimmering() const { return timer_.isActive(); }
+
+  protected:
+    // 覆写以叠加微光：先让基类按 QSS 画完（胶囊底 + chunk），再补高光。
+    // 不覆写 sizeHint / geometry —— QSS 已把高度钉死。
+    void paintEvent(QPaintEvent* ev) override;
+
   private:
+    // chunk 实际像素宽（= 高光作用范围）。indeterminate 时返回整条宽度。
+    [[nodiscard]] int ChunkWidthPx() const;
+
     bool indeterminate_ = false;
+    bool thin_ = false;
+    QTimer timer_;
+    double shimmer_phase_ = 0.0; // 0→1 一个 shimmer 周期
 };
 
 // EmptyState —— 图标 + 主文案 + 副文案 + 主行动按钮（必须给出下一步）

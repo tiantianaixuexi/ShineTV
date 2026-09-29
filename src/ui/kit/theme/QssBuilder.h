@@ -10,13 +10,16 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace shine::theme {
 
 class QssBuilder {
   public:
     // Token → 全局 QSS 文本（覆盖 QWidget/QPushButton/QListView/QScrollBar/QMenu/QToolTip…）
+    // fontFamily 缺省取当前主题的 --font-ui（webui tokens.css；水墨为衬线族）。
     [[nodiscard]] static std::string Build(const ColorToken& c);
+    [[nodiscard]] static std::string Build(const ColorToken& c, std::string_view fontFamily);
 
     // S2 自检：QSS 里每个色值必须等于某个 Token 的发射串（#RRGGBB 或 rgba(...)）
     [[nodiscard]] static bool SelfCheck(const ColorToken& c, std::string* detail);

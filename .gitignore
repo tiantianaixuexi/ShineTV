@@ -88,3 +88,7 @@ novel-*-preview.html
 .mimocode/tmp/
 .mimocode/*.db
 .mimocode/*.sqlite*
+
+# React 设计稿（仅作视觉参照，不进版本库；其 node_modules 体积很大）
+webui/
+.zcodeignore

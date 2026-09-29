@@ -7,7 +7,11 @@
 #include <QHBoxLayout>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPixmap>
+#include <QRegion>
 #include <QResizeEvent>
+#include <QStyle>
+#include <QStyleOptionButton>
 #include <QVariant>
 #include <QVBoxLayout>
 
@@ -66,6 +70,87 @@ void Spinner::paintEvent(QPaintEvent* ev) {
     p.rotate(angle_);
     const double r = (DiameterPx() - pen.widthF()) / 2.0;
     p.drawArc(QRectF{-r, -r, 2 * r, 2 * r}, 0, 90 * 16);
+}
+
+// ============================================================= StatusDot
+
+StatusDot::StatusDot(const char* tone, QWidget* parent) : QWidget(parent) {
+    SetKind(this, "statusdot");
+    setFixedSize(DiameterPx(), DiameterPx()); // ui.css .dot 7×7
+    // 1.6s 一个周期（ui.css:171）。定时器步长取 40ms：相位连续推进，
+    // 由 paintEvent 插值出实际半径/透明度，不会在两个离散帧之间跳。
+    timer_.setInterval(40);
+    connect(&timer_, &QTimer::timeout, this, [this] {
+        phase_ += 40.0 / 1600.0; // 40ms / 1.6s
+        if (phase_ >= 1.0) {
+            phase_ -= 1.0;
+        }
+        update();
+    });
+    SetTone(tone);
+}
+
+void StatusDot::SetPulse(bool on) {
+    pulse_ = on;
+    if (on && !motion::ReduceMotion()) {
+        phase_ = 0.0;
+        timer_.start();
+    } else {
+        timer_.stop(); // 「减少动效」：静态点，语义仍是「运行中」
+    }
+    update();
+}
+
+void StatusDot::SetTone(const char* tone) {
+    tone_ = QString::fromLatin1(tone);
+    update();
+}
+
+void StatusDot::paintEvent(QPaintEvent* ev) {
+    QWidget::paintEvent(ev);
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+
+    // tone → status.* token；空 tone 走 accent（设计稿 .dot 默认随状态给色）
+    const theme::ColorToken& c = theme::Current();
+    QColor col = TokenQColor(c.accentPrimary);
+    if (tone_ == QLatin1String("ok")) {
+        col = TokenQColor(c.statusOk);
+    } else if (tone_ == QLatin1String("warn")) {
+        col = TokenQColor(c.statusWarn);
+    } else if (tone_ == QLatin1String("danger")) {
+        col = TokenQColor(c.statusDanger);
+    } else if (tone_ == QLatin1String("idle")) {
+        col = TokenQColor(c.statusIdle);
+    } else if (tone_ == QLatin1String("busy")) {
+        col = TokenQColor(c.statusBusy);
+    }
+
+    const QPointF center{width() / 2.0, height() / 2.0};
+    const double d = DiameterPx();
+
+    if (pulse_ && timer_.isActive()) {
+        // pulse-dot：外扩的光晕环 + 本体轻微缩放，循环相位 0→1
+        // 光晕半径 1.0→1.9 直径、alpha 0.35→0（本体的淡出尾迹）
+        const double t = phase_;
+        const double glow = d * (1.0 + 0.9 * t);
+        QColor halo = col;
+        halo.setAlphaF(0.35 * (1.0 - t));
+        p.setBrush(halo);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(center, glow / 2.0, glow / 2.0);
+
+        // 本体随相位轻微呼吸（1.0 → 0.86 → 1.0），用正弦模拟 CSS 的 keyframes 起伏
+        const double breathe = 1.0 - 0.14 * (0.5 - 0.5 * std::cos(2.0 * M_PI * t));
+        const double body = d * breathe;
+        p.setBrush(col);
+        p.drawEllipse(center, body / 2.0, body / 2.0);
+        return;
+    }
+
+    p.setBrush(col);
+    p.setPen(Qt::NoPen);
+    p.drawEllipse(center, d / 2.0, d / 2.0);
 }
 
 // ================================================================= Button
@@ -128,6 +213,89 @@ void Button::PlaceSpinner() {
     if (spinner_ != nullptr) {
         const int d = spinner_->DiameterPx();
         spinner_->move((width() - d) / 2, (height() - d) / 2);
+    }
+}
+
+void Button::CaptureBackdrop() {
+    // 把按钮自身排除后再抓父容器：父控件 render() 会连同子控件一起绘制，
+    // 若按钮在画面上，抓回来的就是「已经含按钮」的图 —— 缩小后那圈露边仍是
+    // 旧按钮的像素，残影照旧。hide/show 发生在同一个事件处理里、绘制入队之前，
+    // 因此不会看到中间态（也不会触发按下取消，按钮的按压态由鼠标事件维护）。
+    //
+    // ⚠️ 隐藏控件会把焦点交出去（setVisible(true) 不会还回来）。键盘导航过的
+    // 按钮按下瞬间焦点本来就在自己身上，所以这里显式存取一次；QAbstractButton
+    // 随后的 mousePressEvent 也会再次 setFocus，两者不冲突。
+    QWidget* p = parentWidget();
+    backdrop_ = QPixmap();
+    if (p == nullptr || !isVisible() || size().isEmpty()) {
+        return;
+    }
+    QWidget* focus_before = focusWidget();
+    setVisible(false);
+    QPixmap shot(size());
+    shot.fill(Qt::transparent);
+    p->render(&shot, QPoint(-pos()), QRegion(rect()));
+    setVisible(true);
+    if (focus_before != nullptr && focus_before != this) {
+        focus_before->setFocus();
+    }
+    backdrop_ = shot;
+}
+
+void Button::AnimatePress(double scale) {
+    // 复用同一个 Tween 实例：Tween 不自删（见 Tween.h），每次交互 new 一个会
+    // 随交互次数单调累积。Run() 内部会 restart()，直接重跑即可。
+    if (press_tween_ == nullptr) {
+        press_tween_ = new motion::Tween{theme::motion::kStandard, this};
+    }
+    const double from = press_scale_;
+    press_tween_->Run(from, scale, theme::motion::kDurFastMs, [this](const QVariant& v) {
+        press_scale_ = v.toDouble();
+        // 回到 1.0 后背景图失效，走正常绘制路径
+        if (press_scale_ >= 0.999) {
+            backdrop_ = QPixmap();
+        }
+        update();
+    });
+}
+
+void Button::paintEvent(QPaintEvent* ev) {
+    // backdrop 尺寸必须与当前控件一致：loading 切换会 setFixedWidth()，若此时
+    // 正在按压，尺寸已变而图还是旧的，缩放定位会整体偏移 —— 直接放弃该帧缩放。
+    const bool can_scale = press_scale_ < 0.999 && !backdrop_.isNull() &&
+                           backdrop_.size() == size();
+    if (!can_scale) {
+        QPushButton::paintEvent(ev);
+        return;
+    }
+    // 先铺「按钮背后的内容」，再把按钮本体以中心为基准缩放绘制。
+    // 走 QStyle 而不是基类 paintEvent：基类会走 Qt 自己的绘制路径，
+    // 而我们要的是把 CE_PushButton 画进一个已被平移/缩放的 painter。
+    QPainter p(this);
+    p.drawPixmap(0, 0, backdrop_);
+    QStyleOptionButton opt;
+    initStyleOption(&opt);
+    p.save();
+    p.translate(width() / 2.0, height() / 2.0);
+    p.scale(press_scale_, press_scale_);
+    p.translate(-width() / 2.0, -height() / 2.0);
+    style()->drawControl(QStyle::CE_PushButton, &opt, &p, this);
+    p.restore();
+}
+
+void Button::mousePressEvent(QMouseEvent* ev) {
+    // webui `.btn:disabled { transform: none }`：禁用态不缩放
+    if (isEnabled() && !isCheckable()) {
+        CaptureBackdrop();
+        AnimatePress(0.97); // webui ui.css:23
+    }
+    QPushButton::mousePressEvent(ev);
+}
+
+void Button::mouseReleaseEvent(QMouseEvent* ev) {
+    QPushButton::mouseReleaseEvent(ev);
+    if (press_scale_ < 0.999) {
+        AnimatePress(1.0);
     }
 }
 

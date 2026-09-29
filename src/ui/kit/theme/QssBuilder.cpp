@@ -5,10 +5,12 @@
 
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace shine::theme {
@@ -29,6 +31,20 @@ std::string EmitColor(std::uint32_t rgba) {
     return buf;
 }
 
+// 非颜色占位符的字面替换（$FONTFAMILY$ / $TONEBG$n$ / $TONEEDGE$n$ 共用）。
+// 之所以不并进 FillTokens 的 %N 通道：%N 的序号就是 ColorToken 的字段序，
+// 中途插入会让整张模板错位（见 Token.h）；派生值一律在 FillTokens 之后替换。
+void ReplaceToken(std::string& out, const std::string& key, const std::string& val) {
+    if (key.empty() || val.empty()) {
+        return;
+    }
+    std::size_t pos = 0;
+    while ((pos = out.find(key, pos)) != std::string::npos) {
+        out.replace(pos, key.size(), val);
+        pos += val.size();
+    }
+}
+
 std::string Trim(std::string s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
         s.erase(s.begin());
@@ -37,6 +53,86 @@ std::string Trim(std::string s) {
         s.pop_back();
     }
     return s;
+}
+
+// ---- color-mix 的替身 --------------------------------------------------------
+//
+// 设计稿的 `.tag.ok`（ui.css:139）等一批规则用 color-mix 调 tone 底/边：
+//   color:            var(--ok)
+//   border-color:     color-mix(in srgb, var(--ok) 35%, transparent)
+//   background:       color-mix(in srgb, var(--ok) 12%, transparent)
+//
+// QSS 没有 color-mix，EmitColor 只会吐 #rrggbb / rgba(...)，而「某 token 按比例
+// 混到底色上」这件事写不进 %N 序列（%N 只能替换成一个字面色）。给 ColorToken
+// 追加字段同样不可行 —— 字段序就是 %N 序号、也就是 ColorTokenToJson 的键序，
+// 插入即整体错位（水墨字体的教训，见 Token.h 的说明）。
+//
+// 所以走第三条路：在 Build 阶段按当前主题现算，产出一组**按下标寻址的派生色**，
+// 模板里用非颜色占位符 $TONEBG$n$ / $TONEEDGE$n$（n = kToneMix 顺序），
+// 与 $FONTFAMILY$ 同一套替换机制、自检同样盯残留。
+//
+// 底色基准取 bg.surface：color-mix 的第二色是 transparent，叠在「标签所在的容器」
+// 上；本仓既有约定（水墨主题把 line.*/fill.* 预合成到 bg.surface）也是拿
+// bg.surface 做基准，保持一致。
+
+struct Rgba {
+    int r;
+    int g;
+    int b;
+    int a;
+};
+
+Rgba Unpack(std::uint32_t v) {
+    return {static_cast<int>((v >> 24) & 0xFF), static_cast<int>((v >> 16) & 0xFF),
+            static_cast<int>((v >> 8) & 0xFF), static_cast<int>(v & 0xFF)};
+}
+
+std::uint32_t Pack(const Rgba& c) {
+    return (static_cast<std::uint32_t>(c.r) << 24) | (static_cast<std::uint32_t>(c.g) << 16) |
+           (static_cast<std::uint32_t>(c.b) << 8) | static_cast<std::uint32_t>(c.a);
+}
+
+// top 按 ratio 叠在 bottom 上（ratio=0.12 即 CSS 的「色 12%」）
+std::uint32_t MixOver(std::uint32_t top, std::uint32_t bottom, double ratio) {
+    const Rgba t = Unpack(top);
+    const Rgba b = Unpack(bottom);
+    const auto mix = [ratio](int x, int y) {
+        return static_cast<int>(std::lround(static_cast<double>(x) * ratio +
+                                            static_cast<double>(y) * (1.0 - ratio)));
+    };
+    Rgba out{mix(t.r, b.r), mix(t.g, b.g), mix(t.b, b.b), mix(t.a, b.a)};
+    return Pack(out);
+}
+
+// tone 顺序 = 模板里 $TONEBG$n$ / $TONEEDGE$n$ 的 n，**不可重排**。
+// 前六项对应 ui.css:139-144 的六个 tone 变体；pending 是本仓补的状态轴一员
+// （tokens.css 有 --pending），按同样的比例混，避免它退回实心底。
+constexpr std::array<std::size_t, 7> kToneMix = {13, 17, 18, 19, 20, 21, 23};
+constexpr double kToneBgRatio = 0.12;   // CSS: background 12%
+constexpr double kToneEdgeRatio = 0.35; // CSS: border-color 35%
+
+// 7 tone × (底, 边) 共 14 个派生态的字面值，顺序 = $TONEBG$n$ / $TONEEDGE$n$。
+// FillToneMixes 拿它填模板，SelfCheck 拿它放行色值扫描 —— 派生色同样可回溯
+// （= 某个 tone token 按固定比例混 bg.surface），只是它本身不是 token。
+std::vector<std::string> ToneMixColors(const std::array<std::uint32_t, kColorTokenCount>& values) {
+    std::vector<std::string> out;
+    out.reserve(kToneMix.size() * 2);
+    const std::uint32_t base = values[1]; // bg.surface
+    for (std::size_t i = 0; i < kToneMix.size(); ++i) {
+        const std::uint32_t tone = values[kToneMix[i] - 1];
+        out.push_back(EmitColor(MixOver(tone, base, kToneBgRatio)));
+        out.push_back(EmitColor(MixOver(tone, base, kToneEdgeRatio)));
+    }
+    return out;
+}
+
+void FillToneMixes(std::string& out, const std::array<std::uint32_t, kColorTokenCount>& values) {
+    const std::vector<std::string> cols = ToneMixColors(values);
+    for (std::size_t i = 0; i < kToneMix.size(); ++i) {
+        const std::string n = std::to_string(i);
+        ReplaceToken(out, "$TONEBG$" + n + "$", cols[i * 2]);
+        ReplaceToken(out, "$TONEEDGE$" + n + "$", cols[i * 2 + 1]);
+    }
 }
 
 // 整张 QSS 模板：**零字面颜色**（设计原则）——所有颜色是 %1..%28 占位符，
@@ -49,8 +145,10 @@ constexpr std::string_view kTemplate = R"QSS(
 
 /* 基准字号 13px：base.css body 是 13.5px，但 Qt 会把 font-size 量化到整像素，
    13.5px 实际渲染成 14px 反而更偏；13px 也是 ui.css 里控件用得最多的整像素档
-   （详见 Token.h 的 font::kBase 与 docs/90-reference/ui-design-parity-gaps.md）。 */
-QWidget { color: %9; background-color: %2; font-size: 13px; }
+   （详见 Token.h 的 font::kBase 与 docs/90-reference/ui-design-parity-gaps.md）。
+   font-family 走 $FONTFAMILY$ 占位（每主题取值 = tokens.css 的 --font-ui，
+   水墨为衬线族）：字体是字符串不是色值，不能进 %N 序列（否则破坏色值表字段序）。 */
+QWidget { color: %9; background-color: %2; font-size: 13px; font-family: $FONTFAMILY$; }
 QWidget:disabled { color: %11; }
 
 QMainWindow { background-color: %1; }
@@ -307,24 +405,24 @@ constexpr std::string_view kKitTemplate = R"QSS(
 *[shineKind="sectionsub"] { background: transparent; color: %11; }
 *[shineKind="sectionchevron"] { background: transparent; color: %10; }
 
-/* —— Tag：webui .tag h20 p0 8 r-pill f11.5(→11) w600（色来自 status.* / accent.*） ——
-   tone 的底/边在 CSS 里是 color-mix(色 12%/35%)，QSS 无 color-mix，
-   沿用仓库既有约定：实心 tone 底 + text.inverse 字。 */
+/* —— Tag：webui .tag h20 p0 8 r-pill f11.5(→11) w600 —— */
 *[shineKind="tag"] {
   border: 1px solid %7; border-radius: 999px; padding: 0 8px; min-height: 20px;
   background-color: %26; color: %10; font-size: 11px; font-weight: 600;
 }
 
-/* tone 变体：CSS 用 color-mix(色 35% 边 / 12% 底)，QSS 无 color-mix，
-   沿用仓库既有约定 = 实心 tone 底 + text.inverse 字；
+/* tone 变体：webui ui.css:139-144 —— color: var(--tone)；
+   border-color: color-mix(tone 35%, transparent)；background: color-mix(tone 12%, transparent)。
+   底/边由 QssBuilder::FillToneMixes 按当前主题预合成到 bg.surface 后填入
+   （$TONEBG$n$ / $TONEEDGE$n$，n = accent/info/ok/warn/danger/busy/pending）。
    .tag.idle 例外：CSS 只覆盖文字色，底/边沿用 .tag 基色。 */
-*[shineKind="tag"][tone="accent"] { background-color: %13; color: %15; border-color: %13; }
-*[shineKind="tag"][tone="info"] { background-color: %17; color: %12; border-color: %17; }
-*[shineKind="tag"][tone="ok"] { background-color: %18; color: %12; border-color: %18; }
-*[shineKind="tag"][tone="warn"] { background-color: %19; color: %12; border-color: %19; }
-*[shineKind="tag"][tone="danger"] { background-color: %20; color: %12; border-color: %20; }
-*[shineKind="tag"][tone="busy"] { background-color: %21; color: %12; border-color: %21; }
-*[shineKind="tag"][tone="pending"] { background-color: %23; color: %12; border-color: %23; }
+*[shineKind="tag"][tone="accent"] { background-color: $TONEBG$0$; color: %13; border-color: $TONEEDGE$0$; }
+*[shineKind="tag"][tone="info"] { background-color: $TONEBG$1$; color: %17; border-color: $TONEEDGE$1$; }
+*[shineKind="tag"][tone="ok"] { background-color: $TONEBG$2$; color: %18; border-color: $TONEEDGE$2$; }
+*[shineKind="tag"][tone="warn"] { background-color: $TONEBG$3$; color: %19; border-color: $TONEEDGE$3$; }
+*[shineKind="tag"][tone="danger"] { background-color: $TONEBG$4$; color: %20; border-color: $TONEEDGE$4$; }
+*[shineKind="tag"][tone="busy"] { background-color: $TONEBG$5$; color: %21; border-color: $TONEEDGE$5$; }
+*[shineKind="tag"][tone="pending"] { background-color: $TONEBG$6$; color: %23; border-color: $TONEEDGE$6$; }
 *[shineKind="tag"][tone="idle"] { background-color: %26; color: %22; border-color: %7; }
 *[shineKind="tag"]:hover { border-color: %8; }
 *[shineKind="tag"][shineState="hover"] { border-color: %8; }
@@ -487,6 +585,9 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
   min-height: 6px; max-height: 6px;
 }
 *[shineKind="progressbar"]::chunk { background-color: %13; border-radius: 999px; }
+/* .prog.thin：height 4px（ui.css:452）。QSS 用 min/max-height 双向钉死，
+   只写 min 会被 sizeHint 抬高。 */
+*[shineKind="progressbar"][shineSize="thin"] { min-height: 4px; max-height: 4px; }
 *[shineKind="progresslabel"] { background: transparent; color: %10; }
 *[shineKind="progressbar"][state="error"]::chunk { background-color: %20; }
 *[shineKind="progressbar"][state="ok"]::chunk { background-color: %18; }
@@ -495,12 +596,13 @@ QSlider::sub-page:vertical[shineKind="slider"] { background-color: %13; border-r
 /* —— EmptyState / ErrorState（容器三态中的两态）——
    webui .empty：p40 20 居中 gap10；.glyph 52×52 + r-lg(14) + 虚线边 + fill-muted，
    .title f13 w600 text-secondary —— */
-/* .glyph 外框：52×52 圆角方框 + 虚线描边（CSS 的 float-y 浮动动效 QSS/Qt 无对应，见缺口文档） */
+/* .glyph 外框：52×52 圆角方框 + 虚线描边。
+   float-y 浮动（CSS 的 transform）已由 Feedback.cpp 的 FloatGlyph 整框自绘实现 ——
+   框不再挂 QLabel 子控件，图标字也由它自己按 24px + text-muted 画，故此处只留外框规则。 */
 *[shineKind="emptyglyph"] {
   background-color: %26; border: 1px dashed %7; border-radius: 14px;
   width: 52px; height: 52px;
 }
-*[shineKind="emptyglyph"] QLabel { background: transparent; color: %11; font-size: 24px; }
 *[shineKind="emptystate"] { background: transparent; }
 *[shineKind="errorstate"] { background: transparent; }
 /* .empty .title：f13 w600 text-secondary（与全局 statetitle 的 text-primary 有别） */
@@ -760,13 +862,35 @@ void FillTokens(std::string& out, const std::array<std::uint32_t, kColorTokenCou
     }
 }
 
+// $FONTFAMILY$ → 当前主题的 --font-ui 族串（webui tokens.css）。
+// 空串时保留模板里的默认族，避免生成 font-family: ; 这种废声明。
+void ReplaceFontFamily(std::string& out, std::string_view family) {
+    if (family.empty()) {
+        return;
+    }
+    ReplaceToken(out, std::string{"$FONTFAMILY$"}, std::string{family});
+}
+
 } // namespace
 
 std::string QssBuilder::Build(const ColorToken& c) {
+    return Build(c, CurrentFontFamily());
+}
+
+std::string QssBuilder::Build(const ColorToken& c, std::string_view fontFamily) {
     const std::array<std::uint32_t, kColorTokenCount> values = TokenValues(c);
     std::string out{kTemplate};
     out += kKitTemplate; // kit/widgets 样式段（P02-S5）
     FillTokens(out, values);
+    // 基准字体族（webui tokens.css 的 --font-ui，按主题取值：水墨为衬线族）。
+    // ⚠️ 走字面替换而不是 %N 占位符：字体是字符串不是颜色，塞进 ColorToken 会
+    // 破坏 %N 序号与 JSON 键序的逐位一致（见 Theme.h 的说明）。
+    // 占位符用 $FONTFAMILY$，与 %N 不冲突，且不会被 FillTokens 的降序替换误伤。
+    // 自绘控件（如 Spinner/StatusDot）用 QFont 取当前字体，不受此规则影响。
+    ReplaceFontFamily(out, fontFamily);
+    // color-mix 的派生态（$TONEBG$n$ / $TONEEDGE$n$）：必须在 FillTokens 之后，
+    // 因为它们要读的是已按主题取好值的 token 表。
+    FillToneMixes(out, values);
     return out;
 }
 
@@ -777,9 +901,14 @@ bool QssBuilder::SelfCheck(const ColorToken& c, std::string* detail) {
     // 所有字面颜色必须是某个 Token 的 EmitColor（禁止散落色值）
     static const std::regex kColorRe{R"((#[0-9A-Fa-f]{3,8}|rgba?\([^)]*\)))"};
     std::vector<std::string> allowed;
-    allowed.reserve(values.size());
+    allowed.reserve(values.size() + kToneMix.size() * 2);
     for (std::uint32_t v : values) {
         allowed.push_back(EmitColor(v));
+    }
+    // color-mix 的派生态同样放行：它们是 tone token 按固定比例混 bg.surface 的
+    // 结果（见 FillToneMixes），可回溯到 token，只是不是 token 本身的值。
+    for (std::string& c : ToneMixColors(values)) {
+        allowed.push_back(std::move(c));
     }
 
     bool ok = true;
@@ -814,6 +943,25 @@ bool QssBuilder::SelfCheck(const ColorToken& c, std::string* detail) {
     for (int n = 1; n <= static_cast<int>(values.size()); ++n) {
         if (qss.find("%" + std::to_string(n)) != std::string::npos) {
             leftover += "%" + std::to_string(n) + " ";
+        }
+    }
+
+    // 字体占位符同样不能残留（漏替换会让 Qt 把 "$FONTFAMILY$" 当字体名解析）
+    if (qss.find("$FONTFAMILY$") != std::string::npos) {
+        ok = false;
+        leftover += "$FONTFAMILY$ ";
+    }
+    // color-mix 派生态占位符同理：$TONEBG$n$ / $TONEEDGE$n$ 残留即判 FAIL
+    // （Qt 会把 "$TONEBG$0$" 当成非法颜色，整条 background 规则失效）
+    for (std::size_t i = 0; i < kToneMix.size(); ++i) {
+        const std::string n = std::to_string(i);
+        if (qss.find("$TONEBG$" + n + "$") != std::string::npos) {
+            ok = false;
+            leftover += "$TONEBG$" + n + "$ ";
+        }
+        if (qss.find("$TONEEDGE$" + n + "$") != std::string::npos) {
+            ok = false;
+            leftover += "$TONEEDGE$" + n + "$ ";
         }
     }
 
