@@ -3,6 +3,11 @@
 #include "core/Log.h"
 #include "ui/imgui/theme/Tokens.h"
 
+// ImFontGlyphRangesBuilder 在 imgui_internal.h 里；GetModuleFileNameW 需要 Win32。
+#include <windows.h>
+
+#include <imgui_internal.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -16,11 +21,13 @@ namespace shine::kit {
 namespace {
 
 // ---- 设计稿实测的全部字号（design-spec §1.1）----
-// 只建常用档：每个字号都要乘以 2500 个 CJK 字形，全量建会顶到显存上限。
-// 未建档由 FontAt() 向上取最近一档。
-const std::vector<float> kUiSizes = {10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f,
-                                      13.5f, 14.0f, 15.0f, 18.0f, 20.0f, 24.0f, 28.0f};
-const std::vector<float> kMonoSizes = {10.5f, 11.5f, 12.5f, 13.0f, 14.0f, 18.0f};
+// 只建常用档：每个字号都要乘以整个字形集，全量建会顶到显存上限。
+// 未建档由 FontAt() 向上取最近一档（向上取会画大，缺档要尽量补齐）。
+// 14.5 / 17 / 26 三档来自 views.css:98 / ui.css:518 / views.css:42，
+// 曾经漏建导致这三处字号被向上取档画大，是静默的像素偏差。
+const std::vector<float> kUiSizes = {10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f, 13.5f, 14.0f,
+                                      14.5f, 15.0f, 17.0f, 18.0f, 20.0f, 24.0f, 26.0f, 28.0f};
+const std::vector<float> kMonoSizes = {10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f, 14.0f, 18.0f};
 
 struct FontPaths {
     std::string ui = "C:/Windows/Fonts/msyh.ttc";
@@ -172,6 +179,142 @@ bool ReadFile(const std::string& path, std::vector<std::uint8_t>& out) {
     return !out.empty();
 }
 
+// ---- 业务字形集（P2.5 硬判据：不能有豆腐块）----
+//
+// GetGlyphRangesChineseSimplifiedCommon() 只有 2500 常用字，而本项目的
+// 业务名（"章节"/"提示词"/"一致性校验"/"降级策略"…）大半**不在其中**——
+// 图集里没有的字形会被画成 '?'，而且不报任何错。
+//
+// 这里扫源码里出现的中文字符，合并进常用字集。扫的是 UTF-8 字节里
+// >= 0xE0 的三字节序列（GBK 注释里的汉字同样会落进来，多烘焙一些无妨，
+// 相对于 2500 字只是零头）。字形集最终按 codepoint 去重排序。
+//
+// 为什么不走动态字形：ImGui 1.93 的动态路径要在每帧后重建图集并重传
+// 纹理，而取证通道要的是「同一帧内所有字形都已在图集里」的确定性。
+// 静态集合 + 源码扫描能同时满足这两个要求。
+const std::vector<std::string>& GlyphScanRoots() {
+    static const std::vector<std::string> roots = [] {
+        std::vector<std::string> found;
+        std::error_code ec;
+        // 扫的是整个 src/ 下有业务汉字的目录。
+        const std::vector<const char*> kSubs = {"ui/imgui", "novel", "pipeline", "visual",
+                                                "media",  "project", "flow", "core", "comfy",
+                                                "paint",  "mcp",     "llm"};
+
+        // ⚠️ 顺序很重要：**先从 exe 路径回溯**，再用 CWD。
+        //    程序常被从 build/ 或任意目录启动，CWD 未必是仓库根 —— 只认 CWD 时
+        //    扫描会一个文件都找不到，字形集退回 2500 常用字，节点副行里的
+        //    「雨夜」「转身」这类词就变 '?'（实测踩过）。
+        const auto tryRoot = [&](const std::filesystem::path& repoRoot) {
+            std::vector<std::string> hit;
+            for (const char* sub : kSubs) {
+                const std::filesystem::path dir = repoRoot / "src" / sub;
+                if (std::filesystem::exists(dir, ec)) {
+                    hit.emplace_back(dir.string());
+                }
+            }
+            return hit;
+        };
+
+        wchar_t buffer[MAX_PATH]{};
+        if (const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH); length > 0) {
+            std::filesystem::path dir = std::filesystem::path(buffer).parent_path();
+            for (int up = 0; up < 5; ++up) {
+                found = tryRoot(dir);
+                if (!found.empty()) {
+                    break;
+                }
+                const std::filesystem::path parent = dir.parent_path();
+                if (parent == dir) {
+                    break;
+                }
+                dir = parent;
+            }
+        }
+        if (found.empty()) {
+            found = tryRoot(std::filesystem::current_path(ec));
+        }
+        return found;
+    }();
+    return roots;
+}
+
+// 把一个 UTF-8 片段里的中文 codepoint 记进 builder
+void AddUtf8Cjk(std::string_view text, ImFontGlyphRangesBuilder& builder) {
+    for (std::size_t i = 0; i < text.size();) {
+        const auto byte = static_cast<unsigned char>(text[i]);
+        if (byte < 0x80) {
+            builder.AddChar(static_cast<ImWchar>(byte));
+            ++i;
+        } else if ((byte & 0xE0) == 0xC0 && i + 1 < text.size()) {
+            builder.AddChar(static_cast<ImWchar>(((byte & 0x1Fu) << 6) |
+                                                  (static_cast<unsigned char>(text[i + 1]) & 0x3Fu)));
+            i += 2;
+        } else if ((byte & 0xF0) == 0xE0 && i + 2 < text.size()) {
+            const auto cp = static_cast<ImWchar>(
+                ((byte & 0x0Fu) << 12) | ((static_cast<unsigned char>(text[i + 1]) & 0x3Fu) << 6) |
+                (static_cast<unsigned char>(text[i + 2]) & 0x3Fu));
+            // 只收 CJK 统一表意文字（U+4E00..U+9FFF）+ 扩展 A + 兼容表意
+            if ((cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
+                (cp >= 0xF900 && cp <= 0xFAFF)) {
+                builder.AddChar(cp);
+            }
+            i += 3;
+        } else if ((byte & 0xF8) == 0xF0 && i + 3 < text.size()) {
+            i += 4; // 四字节序列（扩展 B+），本项目用不到，跳过
+        } else {
+            ++i;
+        }
+    }
+}
+
+// 常用 2500 字 ∪ 源码里出现的业务汉字。返回的数组由 ImFontAtlas 持有。
+const ImWchar* BuildGlyphRanges(ImFontAtlas* atlas) {
+    ImFontGlyphRangesBuilder builder;
+    // 基线：ImGui 自带的 2500 常用字 + 拉丁 + 标点
+    for (const ImWchar* range = atlas->GetGlyphRangesChineseSimplifiedCommon(); range != nullptr &&
+                                range[0] != 0;) {
+        for (ImWchar c = range[0]; c <= range[1] && c != 0xFFFF; ++c) {
+            builder.AddChar(c);
+        }
+        if (range[1] == 0xFFFF) {
+            break;
+        }
+        range += 2;
+    }
+    // 叠加：源码扫描
+    std::error_code ec;
+    for (const std::string& root : GlyphScanRoots()) {
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
+            if (!entry.is_regular_file(ec)) {
+                continue;
+            }
+            const std::string ext = entry.path().extension().string();
+            if (ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".json") {
+                continue;
+            }
+            std::ifstream stream(entry.path(), std::ios::binary);
+            if (!stream) {
+                continue;
+            }
+            const std::string content((std::istreambuf_iterator<char>(stream)),
+                                      std::istreambuf_iterator<char>());
+            AddUtf8Cjk(content, builder);
+        }
+    }
+    ImVector<ImWchar> ranges;
+    builder.BuildRanges(&ranges);
+    // 补 NUL 结尾（BuildRanges 已保证，这里只是防御）
+    if (ranges.empty() || ranges.back() != 0) {
+        ranges.push_back(0);
+    }
+    // 字形集是 P2.5 的硬判据，扫不到根目录就必须吵：静默退回 2500 常用字时，
+    // 界面只表现为个别字变 '?'，不报错也不崩。
+    shine::log::Info("glyph ranges: {} roots, {} codepoints", GlyphScanRoots().size(),
+                     static_cast<std::size_t>(ranges.Size > 0 ? ranges.Size - 1 : 0));
+    return ranges.Data;
+}
+
 } // namespace
 
 int FindTtcIndex(const std::string& path, const std::string& familyName) {
@@ -234,9 +377,10 @@ bool BuildFontAtlas(bool serif) {
 
     atlas->Clear();
 
-    // GetGlyphRangesChineseSimplifiedCommon() 覆盖 ASCII + 常用汉字 2500 + 标点。
-    // ⚠️ 不能用 ChineseFull()：21000 字 × 13 档字号，图集会顶到几百 MB。
-    const ImWchar* cjkRanges = atlas->GetGlyphRangesChineseSimplifiedCommon();
+    // 字形集 = 常用 2500 字 ∪ 源码里出现的业务汉字（见 BuildGlyphRanges 的说明）。
+    // ⚠️ 范围数组的生命周期归 ImFontAtlas 所有：AddFontFromFileTTF 会在
+    //    Build 时把字形烘焙进去，之后不再回读这个指针。
+    const ImWchar* cjkRanges = BuildGlyphRanges(atlas);
 
     g_fonts.clear();
     for (const float size : kUiSizes) {
@@ -281,18 +425,35 @@ bool BuildFontAtlas(bool serif) {
     // 正文基准 13px 是 ui.css 里声明最多的控件字号。
     io.FontDefault = FontAt(theme::font::kBase);
 
-    // 等宽：--font-mono 的 Cascadia Code / JetBrains Mono / Consolas，只取拉丁。
+    // 等宽：--font-mono 的 Cascadia Code / JetBrains Mono / Consolas。
+    //
+    // ⚠️ 这些字体**只有拉丁字形**，中文一律缺。而本项目的等宽位置并不只放哈希：
+    // 节点副行（"第 3 章 雨夜"）、产物路径、剧本片段都是中文 —— 只挂等宽字体时
+    // 它们全变 '?'（截图里节点标题正常、副行全是问号就是这个原因）。
+    //
+    // 修法是给每个等宽字体接一条**雅黑回落链**：MergeMode 往同一个 ImFont 里追加，
+    // ImGui 按 codepoint 逐个查，第一个没命中的（中文）落到第二个字体的字形上。
+    // 拉丁仍走 Cascadia 的等距字形（KV 对齐不塌），中文走雅黑（可读）。
     const std::string monoPath = FirstExisting({paths.monoAlt, paths.mono});
     g_mono.clear();
-    if (!monoPath.empty()) {
+    if (!monoPath.empty() && uiFontNo >= 0) {
         for (const float size : kMonoSizes) {
             ImFontConfig config;
             config.SizePixels = size * io.DisplayFramebufferScale.x;
             config.PixelSnapH = true;
-            ImFont* font = atlas->AddFontFromFileTTF(monoPath.c_str(), config.SizePixels, &config);
-            if (font != nullptr) {
-                g_mono[size] = font;
+            ImFont* monoFont =
+                atlas->AddFontFromFileTTF(monoPath.c_str(), config.SizePixels, &config);
+            if (monoFont == nullptr) {
+                continue;
             }
+            ImFontConfig fallback;
+            fallback.FontNo = uiFontNo;
+            fallback.SizePixels = config.SizePixels;
+            fallback.PixelSnapH = true;
+            fallback.GlyphRanges = cjkRanges;
+            fallback.MergeMode = true; // 追加进上面那个 ImFont，不新建
+            atlas->AddFontFromFileTTF(uiPath.c_str(), config.SizePixels, &fallback);
+            g_mono[size] = monoFont;
         }
     }
     if (g_mono.empty()) {

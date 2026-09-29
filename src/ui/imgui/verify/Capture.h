@@ -7,6 +7,8 @@
 //
 // 保留的既有契约（scripts/*.ps1 依赖，改了会连带改脚本）：
 //   * manifest 行格式  "<name> <bytes> saved|FAILED"
+//   * manifest **文件名** "shots-manifest.txt"（scripts/run_reviews.ps1:56）
+//   * manifest 结尾一行  "overall=PASS|FAIL"（同脚本 :61 靠它判 verdict）
 //   * 全部 SHINE_* 环境变量名与分派点
 //
 // 取证纪律（refactor/phases.md P6，本机反复踩过）：
@@ -24,6 +26,10 @@
 #include <vector>
 
 namespace shine::imguiverify {
+
+// manifest 文件名。Review.cpp 与 Capture.cpp 都会用，必须是**同一个**：
+// 两边各写一个文件的话，脚本只读到一个，判据就只覆盖一半。
+inline constexpr const char* kManifestName = "shots-manifest.txt";
 
 // 后备缓冲是 BGRA，PNG 要 RGBA —— 这里做通道交换。
 // 返回 false = 像素尺寸为 0 或编码失败。

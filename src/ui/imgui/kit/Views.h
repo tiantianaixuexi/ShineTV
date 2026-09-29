@@ -49,4 +49,51 @@ float StageFlow(ImDrawList* draw, Rect bounds, const std::vector<StageNode>& nod
 void StageList(ImDrawList* draw, Rect bounds, const std::vector<StageNode>& nodes,
                std::string_view artifactColumn = {});
 
+// ---- 23. FlowCanvas（FlowCanvas.jsx）----
+// ⚠️ 整个重构最难的单个控件（refactor/phases.md P3.5 风险 R3）。
+// 节点 150×76；5 态 todo/run/done/fail/skip；端口在左右两侧 y+38；
+// 连线是三次贝塞尔（dx = max(36, |Δx| * 0.55)）；
+// 滚轮**以光标为锚**缩放（0.35..2.0）、拖节点、拖背景平移、适应视图、
+// 左上浮动工具条（放大/缩小/适应 + 运行中转圈）。
+//
+// 为什么状态要外部持有：ImGui 的自绘控件不接管生命周期，节点坐标、选中项、
+// 视图变换必须由调用方（页面）存着，组件本身无状态可留 —— 跨帧状态放
+// ImGui 内部 storage 会在页面切换后错位。
+enum class FlowState { Todo, Running, Done, Failed, Skipped };
+
+struct FlowNode {
+    int id = 0;
+    std::string icon;   // 16px 节点头图标
+    std::string title;  // 节点标题
+    std::string sub;    // 节点副行（等宽）
+    FlowState state = FlowState::Todo;
+    float x = 0.0f;     // 世界坐标
+    float y = 0.0f;
+};
+
+struct FlowLink {
+    int from = 0;
+    int to = 0;
+};
+
+// 视图变换（平移 + 缩放）。调用方持有，跨帧保持。
+struct FlowView {
+    float x = 40.0f;
+    float y = 30.0f;
+    float z = 1.0f;
+};
+
+inline constexpr float kFlowNodeW = 150.0f;
+inline constexpr float kFlowNodeH = 76.0f;
+
+// 把节点铺成网格并重置视图（首帧/数据集变化时调一次）。
+void FlowLayoutNodes(std::vector<FlowNode>& nodes, FlowView& view);
+// 自适应视图：把全部节点缩放居中放进 bounds（FlowCanvas.jsx:36 的 fit()）。
+void FlowFit(const std::vector<FlowNode>& nodes, Rect bounds, float fitInset, FlowView& view);
+
+// 画一整张画布。nodes 会被就地改写（拖拽/平移），selectedInOut 读写选中项。
+void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
+                const std::vector<FlowLink>& links, FlowView& view, int& selected,
+                float fitInset = 0.0f);
+
 } // namespace shine::kit

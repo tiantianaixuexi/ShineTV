@@ -164,10 +164,13 @@ int RunApp(int argc, char** argv) {
         const auto result = shine::imguiverify::RunReview(host, shell, review_dir);
         std::printf("[imgui-review] shots=%d failed=%d dir=%s\n", result.captured, result.failed,
                     review_dir.string().c_str());
+        // ⚠️ 退出码必须与 scripts/run_reviews.ps1:66 的约定一致：PASS↔0 / FAIL↔1。
+        //    早先这里 FAIL 返 2，脚本判成 "agree=False" —— 失败也报不一致，
+        //    绿灯和红灯都失去意义。
         host.Shutdown();
         shine::async::Shutdown();
         shine::log::Shutdown();
-        std::_Exit(result.failed == 0 ? 0 : 2);
+        std::_Exit(result.failed == 0 ? 0 : 1);
     }
 
     host.RunLoop([&shell](float dt) { shell.DrawFrame(dt); });
