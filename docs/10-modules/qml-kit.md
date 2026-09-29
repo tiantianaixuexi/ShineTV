@@ -141,6 +141,7 @@ Button {
 - `onWidthChanged` / `onHeightChanged` 的**单表达式体**会被 QQml 当成属性赋值；用块体 `onPaintKeyChanged: { requestPaint() }` 或合并成一个 `paintKey` 字符串。
 - Canvas 读 `ThemeBridge` 时用 `renderStrategy: Canvas.Immediate`（Cooperative 会把它挪到渲染线程）。
 - `PathAngleArc` 的角度：0° 在 3 点钟方向，y 轴向下，**正角度在屏幕上顺时针**（90°=6 点，180°=9 点，270°=12 点）。要画顶部一段写 `startAngle: -135; sweepAngle: 90`。
+- **`PathSvg` 没有 `viewBox`**：路径串里的坐标按 1:1 设备像素画，不做任何缩放。从 `Icon.jsx` 抄 24 视口的路径进一个 15×15 的盒子，几何会原样画成 24×24 并往右下溢出。正确做法是给承载的 `Shape` 一个 `transformOrigin: Item.TopLeft` + `scale: width / 24` 的**整体缩放**，描边宽用设计稿原值（随 scale 一起变小）。⚠️ 只把 `strokeWidth` 乘 `width/24` 换算是**半截修复**，几何没缩，结果就是「图标比文字大、吊在文字下面、没居中」——`GalleryIcon.qml` 曾长期如此。
 - `Loader.item` 的静态类型是 `QObject`，直接读 `implicitHeight` 会被 qmllint 报 `missing-property`；显式声明成 `Item` 又变成 `incompatible-type`。量正文高度用 `loader.childrenRect.height`（`GalleryCard.qml` 是参考实现）。
 - 上面那条的另一半：被 `Loader` 加载的正文，**根对象必须自写 `height: implicitHeight`**。不写的话 Loader 会接管高度，和外面读 `childrenRect` 的那层形成绑定环（`Binding loop detected`）。
 

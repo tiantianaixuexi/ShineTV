@@ -1,9 +1,15 @@
 ﻿// src/ui/qml/GalleryIcon.qml —— 线性图标（复刻 webui/src/components/Icon.jsx）
 //
 // 逐条照抄 Icon.jsx 的 P 表：同一份 24 视口路径、同一 stroke-width 1.6、
-// 同一 round cap / round join。唯一的差别是描边宽要按渲染尺寸换算：
-// SVG 的 stroke-width 写在 viewBox 坐标里，缩到 15px 显示时自然变细；
-// QML 的 Shape 直接画在设备像素上，必须显式乘 width/24 才等效。
+// 同一 round cap / round join。
+//
+// ⚠️ **路径必须整体缩放，描边宽不要单独换算**（2026-09-29 修的真 bug）。
+//    `PathSvg` 只解析 path 串，**没有 viewBox**：路径里的 24 单位坐标会按 1:1 设备
+//    像素画进本组件的盒子。原来只把 strokeWidth 乘了 width/24 就算「换算」过了，
+//    几何原封不动 —— 于是 15×15 的盒子里画着一张 24×24 的图，往右下溢出 9px：
+//    出图表现就是「图标比文字大、吊在文字下面、没居中」（.btn 里的 play/eye/alert
+//    三个最明显）。正确做法是给承载的 Shape 一个缩放，让 0..24 映射到 0..width，
+//    描边随缩放一起变小，就该用设计稿原值 1.6，不要再乘 width/24（那是乘两遍）。
 //
 // ⚠️ 查不到名字时回落到 P.info —— Gallery.jsx 的 icon="flow" 就不在表里，
 // 设计稿本身走的就是这条回落路径。
@@ -16,6 +22,8 @@ Ctl {
 
     property string name: ""
     property color glyphColor: ThemeBridge.colors["text.primary"]
+    // 设计稿的 stroke-width（Icon.jsx），写在 24 视口坐标里 —— 不要在这里换算，
+    // 换算由下面 Shape 的 scale 统一做。
     property real strokeWidth: 1.6
 
     // ⚠️ 必须显式给 transparent：Ctl 的基类是 Rectangle，而 Rectangle.color
@@ -27,7 +35,9 @@ Ctl {
     implicitHeight: 16
 
     readonly property string d: iconPaths[root.name] !== undefined ? iconPaths[root.name] : iconPaths["info"]
-    readonly property real scaledStroke: root.strokeWidth * (root.width / 24)
+    // 24 视口 → 本组件盒子。设计稿的 .icon 恒为正方形（15 / sm 13），所以两轴同值；
+    // 万一被塞进非正方形的盒子，取小的那个至少保证不溢出（宁可留白也不画出去）。
+    readonly property real viewScale: Math.min(root.width, root.height) / 24
 
     // ⚠️ 属性名不能以大写字母开头（QML 把它当类型名），所以是 iconPaths 不是 PATHS
     readonly property var iconPaths: ({
@@ -52,11 +62,22 @@ Ctl {
         "zap": "M13 3 5 13.5h5.5L11 21l8-10.5h-5.5L13 3Z"
     })
 
+    // ⚠️ 不能 `anchors.fill: parent` —— 那等于声明「路径就在 0..width 里」，
+    //    而路径实际是 0..24，框再大也拦不住。改成固定 24×24 的画布 + 整体缩放。
+    //    transformOrigin 必须是 TopLeft：缩放要绕左上角才能把 0..24 映到 0..width，
+    //    取 Center 会让整幅画向左上平移 w/2×(k-1)（同 Art.qml 那条坑）。
     Shape {
-        anchors.fill: parent
+        x: 0
+        y: 0
+        width: 24
+        height: 24
+        transformOrigin: Item.TopLeft
+        scale: root.viewScale
+        antialiasing: true
         ShapePath {
             strokeColor: root.glyphColor
-            strokeWidth: root.scaledStroke
+            // 设计稿原值 1.6：随上面的 scale 一起变小，15px 下等效 1.0px
+            strokeWidth: root.strokeWidth
             fillColor: "transparent"
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
