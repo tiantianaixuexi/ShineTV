@@ -87,6 +87,12 @@ struct BookChapterView {
     std::string title;
     std::string status;
     int words = 0;
+    // 卷归属。`chapters.volume_id` + `volumes.title` 都是**已有的**库字段 ——
+    // 侧栏树缺「卷」这一层从来不是数据层的问题，是 UI 侧没读。
+    // volumeTitle 为空 = 这一章没归到任何卷（或老工程的 volumes 表是空的），
+    // 侧栏按「未归卷」如实显示，不编卷名。
+    int volumeId = 0;
+    std::string volumeTitle;
 };
 
 // 资产工作区侧栏的一行。kind 是**实体 kind 的英文原文**（entities.kind，

@@ -438,6 +438,19 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
 
         const int overview = static_cast<int>(pages::Workspace::Overview);
         grabDriven("dock-reports", overview, base);
+
+        // 「绑定工程之后」的总控台 —— 与第一段的 `ws-gauge` 是**不同分支**。
+        //
+        // ⚠️ 第一段那 7 张拍的是**未打开项目**：`s.bound == false`，于是运行状态卡走
+        //    「未绑定工程根」分支，两个运行按钮因为 `!s.bound` 而灰掉，而「阶段执行体
+        //    未接入 · 两个运行按钮已禁用」那行说明的条件里有 `s.bound` ⇒ **不画**。
+        //    也就是说：不单独拍这一张，新增的这条分支在整轮里**一次都跑不到**。
+        //    这与「fixture 缺数据造成覆盖洞」是同一族：图拍到了 ≠ 分支跑到了。
+        //    （KPI 那半边相反：`wired == false` 是无条件的，所以 ws-gauge 里已经是「未接入」。）
+        shell.SetWorkspace(overview);
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("overview-bound", overview, base);
+
         // 两个模态状态拍的是**不同内容**（一份有未过项、一份有未核对项），
         // 于是它们既不该与列表图相同，也不该彼此相同。
         shell.SetReportDetail(1);

@@ -429,22 +429,38 @@ namespace {
 
 // 侧栏树的「可见节点扁平序号」（先序）↔ (章下标, 镜下标) 的互转。
 // kit::Tree 只认一个 int，且只画**展开**节点的子节点 —— 所以两处都按同一套先序走，
-// 收起节点的子树不占序号。镜下标 = -1 表示命中的是章节点。
+// 收起节点的子树不占序号。镜下标 = -1 表示命中的是章节点；命中卷节点时两个都置 -1。
+//
+// ⚠️ 树是**三层**（卷 → 章 → 镜，设计稿 Shell.jsx:583-662 的 NovelSideTree）。
+//    而 `chapter` 是 `BookSideView::chapters` 里的**全局下标**，不是「某卷内的下标」——
+//    所以必须用独立的 `seen` 计数器走遍**所有**卷，哪怕卷收起了（收起的卷不占扁平
+//    序号，但它的章仍然存在于 chapters 里）。用「当前卷内下标」比就会在第二卷
+//    之后整体错位：点第 5 章高亮第 1 章。
 int FlatTreeIndex(const std::vector<TreeNode>& nodes, int chapter, int shot) {
-    int i = 0;
-    for (std::size_t c = 0; c < nodes.size(); ++c) {
-        const int at = i++;
-        if (static_cast<int>(c) == chapter) {
-            if (shot < 0) {
+    int i = 0;     // 可见节点的扁平序号
+    int seen = 0;  // 已走过的章数（= chapters 的全局下标）
+    for (const TreeNode& vol : nodes) {
+        i++;  // 卷节点本身占一个号
+        if (!vol.expanded) {
+            seen += static_cast<int>(vol.children.size());
+            continue;
+        }
+        for (std::size_t c = 0; c < vol.children.size(); ++c) {
+            const TreeNode& chap = vol.children[c];
+            const int at = i++;
+            if (seen == chapter) {
+                if (shot < 0) {
+                    return at;
+                }
+                if (chap.expanded && shot < static_cast<int>(chap.children.size())) {
+                    return at + 1 + shot;
+                }
                 return at;
             }
-            if (nodes[c].expanded) {
-                return at + 1 + shot;
+            ++seen;
+            if (chap.expanded) {
+                i += static_cast<int>(chap.children.size());
             }
-            return at;
-        }
-        if (nodes[c].expanded) {
-            i += static_cast<int>(nodes[c].children.size());
         }
     }
     return -1;
@@ -453,20 +469,35 @@ int FlatTreeIndex(const std::vector<TreeNode>& nodes, int chapter, int shot) {
 void ResolveTreeIndex(const std::vector<TreeNode>& nodes, int index, int& chapterOut,
                       int& shotOut) {
     int i = 0;
-    for (std::size_t c = 0; c < nodes.size(); ++c) {
+    int seen = 0;
+    for (const TreeNode& vol : nodes) {
         if (i++ == index) {
-            chapterOut = static_cast<int>(c);
+            // 命中卷节点：只切展开 / 收起，不选中任何章（与资产树的分组行同语义）。
+            chapterOut = -1;
             shotOut = -1;
             return;
         }
-        if (!nodes[c].expanded) {
+        if (!vol.expanded) {
+            seen += static_cast<int>(vol.children.size());
             continue;
         }
-        for (std::size_t k = 0; k < nodes[c].children.size(); ++k) {
+        for (std::size_t c = 0; c < vol.children.size(); ++c) {
+            const TreeNode& chap = vol.children[c];
             if (i++ == index) {
-                chapterOut = static_cast<int>(c);
-                shotOut = static_cast<int>(k);
+                chapterOut = seen;
+                shotOut = -1;
                 return;
+            }
+            ++seen;
+            if (!chap.expanded) {
+                continue;
+            }
+            for (std::size_t k = 0; k < chap.children.size(); ++k) {
+                if (i++ == index) {
+                    chapterOut = seen - 1;  // seen 在上面已经为这一章 +1 过
+                    shotOut = static_cast<int>(k);
+                    return;
+                }
             }
         }
     }
@@ -876,46 +907,106 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
         y += 64.0f;
     }
 
-    // ⚠️ 设计稿的 NovelSideTree 是「书 / 卷 / 章」三层（Shell.jsx:583-662）。卷这一层要
-    //    novelcore::NovelGraph::ListVolumes()，而它**不存在**（只有 UpsertVolume）——
-    //    补它要动 shine_core。所以这里画「书 / 章」两层，卷层级在进度文档里记为缺口。
+    // 设计稿的 NovelSideTree 是「书 / 卷 / 章 / 镜」三层 + 叶（Shell.jsx:583-662）。
     //
-    //    镜只挂在**当前选中章**下面：场/镜是对选中章取的，没选过的章没有镜数据，
-    //    画一排空节点等于骗人。
+    // ⚠️ 早先这里注释写着「卷这一层要 novelcore::NovelGraph::ListVolumes()，而它不存在，
+    //    补它要动 shine_core，所以画两层」—— **那个归因是错的**。卷根本不需要新接口：
+    //    `ChapterRow::volume_id` 早就有（`src/novel/NovelTypes.h:115`，`ListChapters` 的
+    //    SELECT 也带了它），`volumes` 表也一直在。缺的只是 UI 侧把这两列读出来。
+    //    一个被记成「要改业务层」的缺口，其实是**两行没搬的字段**。
+    //
+    // 卷默认全展开：多一层点击才能看到章，与设计稿的意图不符；展开态暂不持久化。
+    //
+    // 镜只挂在**当前选中章**下面：场/镜是对选中章取的，没选过的章没有镜数据，
+    // 画一排空节点等于骗人。
     const bool withShots = layout_.workspace != static_cast<int>(Workspace::Novel);
+    // 先按 volumeId 归拢；volumeId == 0 或查不到卷名的一律归到「未归卷」——
+    // 老工程的 volumes 表可能是空的，那时如实显示「未归卷」而不是编一个卷名。
     std::vector<TreeNode> nodes;
-    nodes.reserve(book.chapters.size());
+    std::vector<std::pair<int, std::string>> volumeOrder;  // volumeId → 标题（保序、去重）
+    std::vector<int> chapterBucket(book.chapters.size(), 0);  // 章下标 → 哪个卷桶
     for (std::size_t i = 0; i < book.chapters.size(); ++i) {
         const BookChapterView& chapter = book.chapters[i];
-        TreeNode node;
-        node.label = "第 " + std::to_string(chapter.ord) + " 章" +
+        const int key = chapter.volumeId;
+        const std::string title =
+            chapter.volumeTitle.empty() ? std::string("未归卷") : chapter.volumeTitle;
+        int bucket = -1;
+        for (std::size_t k = 0; k < volumeOrder.size(); ++k) {
+            if (volumeOrder[k].first == key) {
+                bucket = static_cast<int>(k);
+                break;
+            }
+        }
+        if (bucket < 0) {
+            bucket = static_cast<int>(volumeOrder.size());
+            volumeOrder.emplace_back(key, title);
+        }
+        chapterBucket[i] = bucket;
+
+        TreeNode chap;
+        chap.label = "第 " + std::to_string(chapter.ord) + " 章" +
                      (chapter.title.empty() ? "" : " · " + chapter.title);
-        node.icon = "book";
-        node.trailing = OrDash(chapter.status);
-        node.expanded = withShots && static_cast<int>(i) == book.selectedChapter;
-        node.hasChildren = node.expanded;
-        if (node.expanded) {
+        chap.icon = "book";
+        chap.trailing = OrDash(chapter.status);
+        chap.expanded = withShots && static_cast<int>(i) == book.selectedChapter;
+        chap.hasChildren = chap.expanded;
+        if (chap.expanded) {
             for (const BookShotView& shot : book.shots) {
                 TreeNode leaf;
                 leaf.label = ShotCode(shot.ord) + (shot.action.empty() ? "" : " · " + shot.action);
                 leaf.icon = "clapper";
-                node.children.push_back(std::move(leaf));
+                chap.children.push_back(std::move(leaf));
             }
         }
-        nodes.push_back(std::move(node));
+        nodes.push_back(std::move(chap));
+    }
+    // 把章按卷重新装桶：卷 → 章 → 镜。
+    std::vector<TreeNode> volumes;
+    volumes.reserve(volumeOrder.size());
+    for (std::size_t k = 0; k < volumeOrder.size(); ++k) {
+        TreeNode vol;
+        vol.label = volumeOrder[k].second;
+        vol.icon = "layers";
+        for (std::size_t i = 0; i < book.chapters.size(); ++i) {
+            if (chapterBucket[i] != static_cast<int>(k)) {
+                continue;
+            }
+            vol.children.push_back(std::move(nodes[i]));
+        }
+        vol.trailing = std::to_string(vol.children.size());
+        vol.hasChildren = !vol.children.empty();
+        vol.expanded =
+            std::find(collapsedVolumes_.begin(), collapsedVolumes_.end(), volumeOrder[k].first) ==
+            collapsedVolumes_.end();
+        volumes.push_back(std::move(vol));
     }
 
-    const int wanted = withShots ? FlatTreeIndex(nodes, book.selectedChapter, book.selectedShot)
-                                 : FlatTreeIndex(nodes, book.selectedChapter, -1);
+    // ⚠️ 先序遍历里**顶层节点总是前 N 个**（它们的子节点排在它们后面），所以扁平序号
+    //    就等于在 volumes 里的下标 —— 命中卷节点不必再遍历一遍。
+    const auto wanted = withShots
+                            ? FlatTreeIndex(volumes, book.selectedChapter, book.selectedShot)
+                            : FlatTreeIndex(volumes, book.selectedChapter, -1);
     int picked = wanted;
     const Rect treeArea{x, y, area.max.x - 20.0f, area.max.y - 10.0f};
-    Tree(draw, treeArea, nodes, picked, "side-tree");
+    Tree(draw, treeArea, volumes, picked, "side-tree");
     if (picked == wanted) {
         return;  // 没点中
     }
+    if (picked >= 0 && picked < static_cast<int>(volumes.size())) {
+        // 卷行只切展开 / 收起，不选中任何章（与资产树的 kind 分组行同语义，
+        // 设计稿的卷行 onClick 也只有 setOpen）。
+        const int key = volumeOrder[static_cast<std::size_t>(picked)].first;
+        const auto at = std::find(collapsedVolumes_.begin(), collapsedVolumes_.end(), key);
+        if (at == collapsedVolumes_.end()) {
+            collapsedVolumes_.push_back(key);
+        } else {
+            collapsedVolumes_.erase(at);
+        }
+        return;
+    }
     int chapterIndex = -1;
     int shotIndex = -1;
-    ResolveTreeIndex(nodes, picked, chapterIndex, shotIndex);
+    ResolveTreeIndex(volumes, picked, chapterIndex, shotIndex);
     if (chapterIndex < 0) {
         return;
     }

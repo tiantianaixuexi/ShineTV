@@ -43,31 +43,110 @@ using namespace shine::kit;
 
 constexpr float kGap = 16.0f;
 
+// 业务层没有这一项时的**诚实**占位（区别于编一个 0 / 写死一个哈希）。
+//
+// ⚠️ 定义**提前**到匿名命名空间开头：出图 / 出片的节点图（下面那两个 Make*FlowNodes）
+//    要用它 —— 「这一步没有只读投影」就写 kDash，而不是编一个看起来像实测值的参数
+//    （早先的「seed 42 · 28 step」「CLIP 0.918」「2× → 48fps」就是这么来的）。
+constexpr const char* kDash = "—";
+
 float LabelWidth(ImFont* font, float size, const char* text) {
     return font->CalcTextSizeA(size, 1e9f, 0.0f, text, text + std::strlen(text)).x;
 }
 
-// 出图/出片的节点图。节点与连线照 webui mock（ImageFlow.jsx / VideoFlow.jsx
-// 的 IMAGE_NODES / VIDEO_NODES），后续接 flow::GraphHost 的真数据时只换这里。
+// 出图/出片的节点图。
+//
+// ⚠️ 这里原来照抄 webui mock（ImageFlow.jsx / VideoFlow.jsx 的 IMAGE_NODES /
+//    VIDEO_NODES），**连副行带状态一起抄了**：
+//      出图 8 节点：「第 3 章 雨夜」「prompt_v3」「沈砚 · 3 视图」「openpose_v2」
+//                 「seed 42 · 28 step」「latent → rgb」「CLIP 0.918」「out/S012_v3.png」
+//      出片 5 节点：「S011 尾帧」「S012 首帧」「24fps · 112 帧」「2× → 48fps」「h264 · 1080p」
+//    每一个字面量都与本工程无关，而「Done / Running / Todo」也是写死的 —— 于是这一屏
+//    永远显示「KSampler 正在跑 seed 42」，跟你打开的是哪本书毫无关系。
+//
+// 现在：**节点的 title 是流程阶段的真名**（那是结构，不是数据），但**副行与状态一律
+// 从真数据算**：
+//   * 章 / 镜号 / 镜数 / 资产数 → BookSide() 快照
+//   * 采样、生成是否在跑       → comfy::ComfySession 的真实队列
+//   * 没有只读投影的步骤（VAE / 一致性校验 / 补帧 / 编码）→ kDash，**不编参数**
+//     （「latent → rgb」是流程的定性描述，保留；「seed 42 · 28 step」「CLIP 0.918」
+//       「2× → 48fps」「h264 · 1080p」「24fps · 112 帧」都是**看起来像实测值的编造**）
+
+// visual_assets.status 八值 → 流程节点的三态。只在**有行**时才算得出 Done/Running。
+FlowState StageStateFromStatus(const std::string& status) {
+    if (status == "READY") {
+        return FlowState::Done;
+    }
+    if (status == "PROMPTING" || status == "REF_READY" || status == "SHEET_READY" ||
+        status == "WARDROBE_READY" || status == "GENERATING") {
+        return FlowState::Running;
+    }
+    return FlowState::Todo;  // PENDING / FAILED / STALE / 空
+}
+
+// 当前选中章里**已有成品视觉资产**的实体数（出图链路第 3 步「角色参考」的口径）。
+int ReadyAssetCount(const BookSideView& book) {
+    int n = 0;
+    for (const BookAssetView& a : book.assets) {
+        if (a.hasAsset && a.assetStatus == "READY") {
+            ++n;
+        }
+    }
+    return n;
+}
+
+// Comfy 队列里有没有正在跑的任务 —— 这是**唯一**一个真的会自己动起来的信号，
+// 拿它当「运行中」的判据，比写死 `FlowState::Running` 诚实得多。
+[[nodiscard]] bool ComfyHasRunning() {
+    for (const comfy::QueueModel::Row& row :
+         comfy::ComfySession::Instance().Queue().Snapshot()) {
+        if (row.state == comfy::TaskState::Running) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<FlowNode> MakeImageFlowNodes() {
+    const BookSideView& book = BookSide();
     struct Def {
         int id;
         const char* icon;
         const char* title;
-        const char* sub;
+        std::string sub;
         FlowState state;
     };
-    static const Def defs[] = {
-        {1, "book", "章节", "第 3 章 雨夜", FlowState::Done},
-        {2, "text", "提示词", "prompt_v3", FlowState::Done},
-        {3, "masks", "角色参考", "沈砚 · 3 视图", FlowState::Done},
-        {4, "image", "姿势骨架", "openpose_v2", FlowState::Done},
-        {5, "wand", "KSampler", "seed 42 · 28 step", FlowState::Running},
+    // 当前选中章：没有就显示「未选章」，不拿第一章顶替。
+    std::string chapterSub = kDash;
+    FlowState chapterState = FlowState::Todo;
+    if (book.selectedChapter >= 0 &&
+        book.selectedChapter < static_cast<int>(book.chapters.size())) {
+        const BookChapterView& ch = book.chapters[static_cast<std::size_t>(book.selectedChapter)];
+        chapterSub = "第 " + std::to_string(ch.ord) + " 章" +
+                     (ch.title.empty() ? "" : " · " + ch.title);
+        chapterState = ch.words > 0 ? FlowState::Done : FlowState::Todo;
+    }
+    const bool comfying = ComfyHasRunning();
+    const int ready = ReadyAssetCount(book);
+    const std::vector<Def> defs = {
+        {1, "book", "章节", chapterSub, chapterState},
+        {2, "text", "提示词", "本章 " + std::to_string(book.shots.size()) + " 镜", chapterState},
+        {3, "masks", "角色参考", ready > 0 ? (std::to_string(ready) + " 个实体已出图")
+                                          : std::string("还没有实体出图"),
+         ready > 0 ? FlowState::Done : FlowState::Todo},
+        {4, "image", "姿势骨架",
+         book.shots.empty() ? kDash : (ShotCode(book.shots.front().ord) + " 起 " +
+                                       std::to_string(book.shots.size()) + " 镜"),
+         comfying ? FlowState::Running : FlowState::Todo},
+        {5, "wand", "KSampler",
+         comfying ? "队列里有任务在跑" : std::string("队列里没有任务"),
+         comfying ? FlowState::Running : FlowState::Todo},
         {6, "aperture", "VAE 解码", "latent → rgb", FlowState::Todo},
-        {7, "eye", "一致性校验", "CLIP 0.918", FlowState::Todo},
-        {8, "download", "落盘", "out/S012_v3.png", FlowState::Todo},
+        {7, "eye", "一致性校验", kDash, FlowState::Todo},
+        {8, "download", "落盘", kDash, FlowState::Todo},
     };
     std::vector<FlowNode> nodes;
+    nodes.reserve(defs.size());
     for (const Def& def : defs) {
         nodes.push_back(FlowNode{def.id, def.icon, def.title, def.sub, def.state, 0.0f, 0.0f});
     }
@@ -75,30 +154,49 @@ std::vector<FlowNode> MakeImageFlowNodes() {
 }
 
 std::vector<FlowLink> MakeImageFlowLinks() {
-    // 线性主干 1→2→3→4→5→6→7→8，外加一条 3→4 的参考分支
+    // 线性主干 1→2→3→4→5→6→7→8。节点数跟着 MakeImageFlowNodes 走，不写死 8。
     std::vector<FlowLink> links;
-    for (int i = 1; i < 8; ++i) {
+    const int n = static_cast<int>(MakeImageFlowNodes().size());
+    for (int i = 1; i < n; ++i) {
         links.push_back(FlowLink{i, i + 1});
     }
     return links;
 }
 
 std::vector<FlowNode> MakeVideoFlowNodes() {
+    const BookSideView& book = BookSide();
     struct Def {
         int id;
         const char* icon;
         const char* title;
-        const char* sub;
+        std::string sub;
         FlowState state;
     };
-    static const Def defs[] = {
-        {1, "film", "首帧", "S011 尾帧", FlowState::Done},
-        {2, "film", "尾帧", "S012 首帧", FlowState::Done},
-        {3, "wand", "H3 生成", "24fps · 112 帧", FlowState::Running},
-        {4, "zap", "RIFE 补帧", "2× → 48fps", FlowState::Todo},
-        {5, "encode", "编码", "h264 · 1080p", FlowState::Todo},
+    const bool comfying = ComfyHasRunning();
+    const std::string head =
+        book.shots.empty() ? kDash : ShotCode(book.shots.front().ord);
+    const std::string tail =
+        book.shots.empty() ? kDash : ShotCode(book.shots.back().ord);
+    int totalSec = 0;
+    for (const BookShotView& shot : book.shots) {
+        totalSec += shot.durationSec;
+    }
+    const std::vector<Def> defs = {
+        {1, "film", "首帧", head, book.shots.empty() ? FlowState::Todo : FlowState::Done},
+        {2, "film", "尾帧", tail, book.shots.empty() ? FlowState::Todo : FlowState::Done},
+        // ⚠️ 早先这里是「24fps · 112 帧」—— 编的。帧数**真有一个可算的来源**
+        //    （本章各镜 durationSec 之和），所以报「N 镜 / 共 Xs」；采样参数本身
+        //    没有只读投影，就不编。
+        {3, "wand", "H3 生成",
+         book.shots.empty() ? kDash
+                            : (std::to_string(book.shots.size()) + " 镜 / 共 " +
+                               std::to_string(totalSec) + "s"),
+         comfying ? FlowState::Running : FlowState::Todo},
+        {4, "zap", "RIFE 补帧", kDash, FlowState::Todo},
+        {5, "encode", "编码", kDash, FlowState::Todo},
     };
     std::vector<FlowNode> nodes;
+    nodes.reserve(defs.size());
     for (const Def& def : defs) {
         nodes.push_back(FlowNode{def.id, def.icon, def.title, def.sub, def.state, 0.0f, 0.0f});
     }
@@ -106,7 +204,9 @@ std::vector<FlowNode> MakeVideoFlowNodes() {
 }
 
 std::vector<FlowLink> MakeVideoFlowLinks() {
-    return {FlowLink{1, 3}, FlowLink{2, 3}, FlowLink{3, 4}, FlowLink{4, 5}};
+    // 1、2 都汇进 3，之后 3→4→5。节点数跟着 MakeVideoFlowNodes 走。
+    std::vector<FlowLink> links{FlowLink{1, 3}, FlowLink{2, 3}, FlowLink{3, 4}, FlowLink{4, 5}};
+    return links;
 }
 
 } // namespace
@@ -154,11 +254,16 @@ void VideoFlowPage::BuildGraph() {
 namespace {
 using novelcore::RowId;
 
-// 业务层没有这一项时的**诚实**占位（区别于编一个 0 / 写死一个哈希）
-constexpr const char* kDash = "—";
-
 struct BookChapter {  // 小说页「章节」模式 + 分镜页的当前章
     RowId id = 0;
+    // 卷归属。⚠️ `ChapterRow` 早就有 `volume_id`（`src/novel/NovelTypes.h:115`），
+    //    `ListChapters` 的 SELECT 也带了它（`src/novel/NovelGraph.cpp:410,421`）——
+    //    只是早先往这个结构体搬字段时**漏了**，于是「卷」这一层在 UI 侧凭空消失。
+    //    顺带纠正一个归因：卷层级**并不缺 shine_core 接口**，`chapters.volume_id` 与
+    //    独立的 `volumes` 表都在；缺的只是 UI 侧没读。设计稿的「书 / 卷 / 章」三层
+    //    一直只画得出两层，根因就在这两行，不是「没有 ListVolumes」。
+    RowId volumeId = 0;
+    std::string volumeTitle;  // 来自 volumes 表；查不到 = 这一行是「未归卷」
     int ord = 0;
     std::string title;
     std::string status;
@@ -382,6 +487,23 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     novelcore::NovelGraph graph(db);
     novelcore::NovelVisual visual(db);
 
+    // —— 卷（设计稿侧栏树的中间层）——
+    //
+    // ⚠️ 这里**没有**用 NovelGraph —— 因为它没有 ListVolumes。
+    //    卷表只有两列（id/title/ord/summary）且就在同一个 db 上，而 UI 层本来就已经
+    //    持有一个只读句柄（上面 `db.Open({.readOnly=true})`），一条 SELECT 就够。
+    //    不为此去动 shine_core，也不在 UI 侧另发明一套查询封装 —— 只用 db 层
+    //    已经在用的 Prepare/Step/ColumnText。
+    //
+    // 查不到**不算错误**：老工程的 volumes 表可能是空的。那时每章的 volumeTitle 为空，
+    // 侧栏按「未归卷」分组如实显示，而不是伪造卷名。
+    std::map<RowId, std::string> volumeTitles;
+    if (auto st = db.Prepare("SELECT id,title FROM volumes ORDER BY ord")) {
+        while (st->Step() == db::sqlite::StepResult::Row) {
+            volumeTitles.emplace(static_cast<RowId>(st->ColumnInt(0)), st->ColumnText(1));
+        }
+    }
+
     // —— 章（小说页 + 分镜页的当前章）——
     auto chapters = graph.ListChapters(2000);
     if (!chapters) {
@@ -391,6 +513,10 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     for (const novelcore::ChapterRow& c : *chapters) {
         BookChapter row;
         row.id = c.id;
+        row.volumeId = c.volume_id;
+        if (const auto it = volumeTitles.find(c.volume_id); it != volumeTitles.end()) {
+            row.volumeTitle = it->second;
+        }
         row.ord = c.ord;
         row.title = c.title;
         row.status = c.status;
@@ -571,6 +697,8 @@ void RebuildBookSide(const BookState& s) {
         row.title = c.title;
         row.status = c.status;
         row.words = c.words;
+        row.volumeId = static_cast<int>(c.volumeId);
+        row.volumeTitle = c.volumeTitle;
         v.chapters.push_back(std::move(row));
     }
     // ⚠️ 只有**当前选中章**的镜（shots 与 BookState.shots 同口径），不是全书。

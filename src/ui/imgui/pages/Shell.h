@@ -260,6 +260,9 @@ private:
     // 「收起的」而不是「展开的」—— 存反了的话新分组会默认收起，与设计稿相反。
     // 存成员上而不是每帧新建的局部变量，否则点一下展开、下一帧立刻收回。
     std::vector<std::string> collapsedKinds_;
+    // 侧栏树的**卷**层展开态（key = chapters.volume_id；0 = 「未归卷」也是合法 key）。
+    // 与 collapsedKinds_ 同一个道理：树每帧从快照重建，展开态存局部变量的话下一帧就收回。
+    std::vector<int> collapsedVolumes_;
     std::vector<std::string> logLines_;
     bool paletteOpen_ = false;
     // 刚打开的那一帧：用来把焦点交给输入框（命令面板的用法是「打开就打字」）。
