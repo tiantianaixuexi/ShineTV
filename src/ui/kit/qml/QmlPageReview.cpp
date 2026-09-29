@@ -9,8 +9,10 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QGuiApplication>
 #include <QImage>
 #include <QQmlError>
+#include <QScreen>
 #include <QTimer>
 #include <QUrl>
 
@@ -49,17 +51,60 @@ struct State {
     std::vector<std::string> manifest;
 };
 
-// 取证超采样倍率。见 QuickHost::SetSupersample 的注释：
-// 软件场景图后端下 Rectangle 圆角是细分多边形，3× 放大可见斜切面；
-// 这里用 2×2 SSAA + SmoothTransformation 缩回来，只影响取证、运行时零成本。
-constexpr int kSupersample = 2;
+// 取证超采样倍率（上限）。见 QuickHost::SetSupersample 的注释：
+// 软件场景图后端下 Rectangle 圆角是细分多边形，放大看可见斜切面；
+// 超采样 + SmoothTransformation 缩回可让圆弧和文字都干净，且运行时零成本。
+//
+// ⚠️ **不能写死**：宿主窗口尺寸 = 页宽 × N，而窗口不能超过桌面。本机桌面逻辑尺寸
+// 上限约 2304×1440，所以 1440×900 的业务页在 2× 下（2880×1800）**会被系统裁剪**，
+// 根 item 于是拿到「比预期小」的布局，出图再缩回就是把错误比例放大 ——
+// 文字发虚、间距错位，manifest 却仍报 saved。
+// 因此倍率按页算，见 SupersampleFor()；下面的 ClampCheck 兜底。
+constexpr int kSupersampleMax = 2;
 
-bool SplitFilter(std::string_view filter, std::string_view name) {
-    const std::size_t comma = filter.find(',');
-    if (comma == std::string_view::npos) {
-        return filter == name;
+// 按桌面尺寸算出这一页能用的倍率（1..kSupersampleMax）。
+int SupersampleFor(int page_w, int page_h) {
+    if (qApp == nullptr) {
+        return 1;
     }
-    return filter.substr(0, comma) == name;
+    const QScreen* screen = qApp->primaryScreen();
+    if (screen == nullptr) {
+        return 1;
+    }
+    // availableGeometry 是逻辑像素，与 QWidget::size() 同单位。
+    const QRect avail = screen->availableGeometry();
+    if (avail.width() <= 0 || avail.height() <= 0) {
+        return 1;
+    }
+    int n = kSupersampleMax;
+    while (n > 1 &&
+           (page_w * n > avail.width() || page_h * n > avail.height())) {
+        --n;
+    }
+    return n;
+}
+
+// filter 形如 "a,b,c"，命中任意一段即算选中。
+// ⚠️ 别只比 substr(0, firstComma) —— 那样 "a,b,c" 永远只认 "a"，
+// 后面几页会被静默跳过、manifest 里连一行都没有。
+bool MatchesFilter(std::string_view filter, std::string_view name) {
+    if (filter.empty()) {
+        return true;
+    }
+    std::size_t pos = 0;
+    while (pos <= filter.size()) {
+        const std::size_t comma = filter.find(',', pos);
+        const std::string_view seg = filter.substr(
+            pos, comma == std::string_view::npos ? std::string_view::npos : comma - pos);
+        if (seg == name) {
+            return true;
+        }
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        pos = comma + 1;
+    }
+    return false;
 }
 
 // 判断整张图是否只有一种颜色。
@@ -93,10 +138,28 @@ void ShootPage(State* state, const PageEntry& page) {
     // 会在 setSource 里访问违例（0xC0000005，见 gaps 文档 五之二 ④），
     // 所以**一页一宿主、拍完即弃**，不要试图复用或提前建好下一批。
     auto* host = new QuickHost();
-    // 宿主按 N 倍尺寸建，QML 根 item 仍是逻辑尺寸（QuickHost 内部 setScale）
-    host->setFixedSize(page.w * kSupersample, page.h * kSupersample);
-    host->SetSupersample(kSupersample);
+    // 宿主按 N 倍尺寸建，QML 根 item 仍是逻辑尺寸（QuickHost 内部 setScale）。
+    // N 按桌面算，见 SupersampleFor。
+    const int ss = SupersampleFor(page.w, page.h);
+    const QSize want{page.w * ss, page.h * ss};
+    host->setFixedSize(want);
+    host->SetSupersample(ss);
     host->show();
+
+    // ⚠️ 窗口仍可能被系统裁剪（多屏、缩放策略、setFixedSize 被主题/Qt 改写等）。
+    // 一旦裁剪，根 item 拿到的是「比预期小」的布局，再缩回页宽就是
+    // **把错误比例的布局放大** —— 文字发虚、间距错位，但 manifest 仍会报 saved。
+    // **必须在这里判失败**，不能拿一张比例错误的图当验收证据。
+    if (host->size() != want) {
+        ReportFailure(state, std::string{page.name},
+                      "host-clamped want=" + std::to_string(want.width()) + "x" +
+                          std::to_string(want.height()) + " got=" +
+                          std::to_string(host->size().width()) + "x" +
+                          std::to_string(host->size().height()) +
+                          " (超采样倍率超过桌面尺寸，请调低 kSupersampleMax)");
+        delete host;
+        return;
+    }
 
     if (!host->Load(res)) {
         // ⚠️ 必须把 errors() **全部**打进 manifest，不能只取第一条：
@@ -151,7 +214,7 @@ void ShootPage(State* state, const PageEntry& page) {
 
 void Run(State* state, std::string_view filter) {
     for (const PageEntry& page : Pages()) {
-        if (!filter.empty() && !SplitFilter(filter, page.name)) {
+        if (!MatchesFilter(filter, page.name)) {
             continue;
         }
         ShootPage(state, page);
