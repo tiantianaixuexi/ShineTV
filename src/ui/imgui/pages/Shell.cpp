@@ -10,7 +10,10 @@
 #include "ui/imgui/pages/Gallery.h"
 #include "ui/imgui/pages/WorkspacePages.h"
 #include "util/Encoding.h"
+#include "util/File.h"
 #include "util/Shell.h"
+
+#include <yyjson.h>
 
 #include <windows.h>
 
@@ -18,6 +21,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace shine::pages {
@@ -33,6 +38,10 @@ constexpr float kInspectorWidth = 280.0f;
 constexpr float kDockHeight = 190.0f;
 constexpr float kStatusBarHeight = 26.0f;
 constexpr float kCrumbHeight = 34.0f;
+
+// 命令面板的组标题高与行高（内容总高靠这两个累加，滚动跟随选中行也靠它）。
+constexpr float kPaletteGroupH = 22.0f;
+constexpr float kPaletteRowH = 30.0f;
 
 // layout.dat 的 magic 与 Qt 侧一致（P1.5 的契约）
 constexpr char kLayoutMagic[16] = {'s', 'h', 'i', 'n', 'e', 't', 'v', '-', 'l', 'a', 'y', 'o',
@@ -711,7 +720,9 @@ void Shell::DrawCommandPalette() {
     const float width = std::min(560.0f, display.x - 40.0f);
     const Rect bounds{(display.x - width) * 0.5f, display.y * 0.22f, (display.x + width) * 0.5f,
                       display.y * 0.22f + 420.0f};
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    // 浮层必须画在 foreground：页面/底栏各自跑在 BeginChild 里，child 在父窗口那份
+    // draw list **之后**渲染，画在父 list 上的浮层会被整片盖住（见 DrawReportModal 的注释）。
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
 
     DrawRoundRect(draw, bounds.min, bounds.max, 14.0f, ColorScrim());
     DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
@@ -767,7 +778,43 @@ void Shell::DrawCommandPalette() {
     paletteMatches_ = static_cast<int>(matched.size());
     paletteSelected_ = std::clamp(paletteSelected_, 0, std::max(0, paletteMatches_ - 1));
 
-    float y = input.max.y + 6.0f;
+    // 先量一遍：键盘移动选中项后要靠它算出「该滚到哪」，滚动跟随选中行是命令面板的基本行为。
+    std::vector<float> rowTops;
+    {
+        float probe = 0.0f;
+        std::string group;
+        rowTops.reserve(static_cast<std::size_t>(paletteMatches_));
+        for (int i = 0; i < paletteMatches_; ++i) {
+            const Item& item = *matched[static_cast<std::size_t>(i)];
+            if (item.group != group) {
+                group = item.group;
+                probe += kPaletteGroupH;
+            }
+            rowTops.push_back(probe);
+            probe += kPaletteRowH;
+        }
+        paletteContentH_ = probe;
+    }
+    // ⚠️ 列表必须裁到面板内。16 条目 + 3 组标题 = 546px，而输入框下面只有 358px ——
+    //    不裁的话末尾几行会画到面板外面、压在工作区上（实测：薄暮/纸墨/水墨/极夜 漏在外面）。
+    const Rect listArea{bounds.min.x, input.max.y + 6.0f, bounds.max.x, bounds.max.y - 12.0f};
+    const float listH = std::max(0.0f, listArea.height());
+    if (ImGui::IsMouseHoveringRect(listArea.min, listArea.max, true)) {
+        paletteScroll_ -= ImGui::GetIO().MouseWheel * 30.0f;
+    }
+    if (paletteSelected_ < static_cast<int>(rowTops.size()) && listH > 0.0f) {
+        const float top = rowTops[static_cast<std::size_t>(paletteSelected_)];
+        if (top - paletteScroll_ < 0.0f) {
+            paletteScroll_ = top;
+        } else if (top + kPaletteRowH - paletteScroll_ > listH) {
+            paletteScroll_ = top + kPaletteRowH - listH;
+        }
+    }
+    paletteScroll_ =
+        std::clamp(paletteScroll_, 0.0f, std::max(0.0f, paletteContentH_ - listH));
+
+    draw->PushClipRect(listArea.min, listArea.max, true);
+    float y = listArea.min.y - paletteScroll_;
     std::string lastGroup;
     ImFont* groupFont = FontBoldAt(11.5f);
     ImFont* labelFont = FontAt(13.0f);
@@ -777,9 +824,9 @@ void Shell::DrawCommandPalette() {
             lastGroup = item.group;
             draw->AddText(groupFont, 11.5f, ImVec2(bounds.min.x + 18.0f, y + 6.0f), ColorTextMuted(),
                           item.group.data(), item.group.data() + item.group.size());
-            y += 22.0f;
+            y += kPaletteGroupH;
         }
-        const Rect row{bounds.min.x + 12.0f, y, bounds.max.x - 12.0f, y + 28.0f};
+        const Rect row{bounds.min.x + 12.0f, y, bounds.max.x - 12.0f, y + kPaletteRowH};
         if (i == paletteSelected_) {
             DrawRoundRect(draw, row.min, row.max, 6.0f, ColorFillSelected());
         }
@@ -787,7 +834,19 @@ void Shell::DrawCommandPalette() {
                       item.label.data(), item.label.data() + item.label.size());
         draw->AddText(FontAt(11.5f), 11.5f, ImVec2(row.max.x - 80.0f, row.min.y + 7.0f),
                       ColorTextMuted(), item.hint.data(), item.hint.data() + item.hint.size());
-        y += 30.0f;
+        y += kPaletteRowH;
+    }
+    draw->PopClipRect();
+    // 滚动条：装不下才画。
+    if (paletteContentH_ > listH && listH > 0.0f) {
+        const float trackW = 4.0f;
+        const float trackX = bounds.max.x - 8.0f - trackW;
+        const float thumbH = std::max(24.0f, listH * (listH / paletteContentH_));
+        const float thumbY = listArea.min.y + (listH - thumbH) * (paletteScroll_ / (paletteContentH_ - listH));
+        draw->AddRectFilled(ImVec2(trackX, listArea.min.y), ImVec2(trackX + trackW, listArea.max.y),
+                            ColorFillMuted());
+        draw->AddRectFilled(ImVec2(trackX, thumbY), ImVec2(trackX + trackW, thumbY + thumbH),
+                            ColorLineStrong());
     }
 
     // 键盘：↑↓ / Enter / Esc
@@ -854,6 +913,16 @@ void Shell::SetWorkspace(int index) {
     layout_.lastViewLabel = "总览";
 }
 
+void Shell::SetDockTab(int tab) { layout_.dockTab = std::clamp(tab, 0, 3); }
+
+void Shell::SetReportDetail(int index) {
+    reportDetail_ = index;
+    reportScroll_ = 0.0f;  // 换一份报告就从顶上读，别留着上一份的滚动位置
+    if (reportDetail_ >= static_cast<int>(reports_.size())) {
+        reportDetail_ = -1;  // 没那么多报告就别开 —— 模态只认列表里真实存在的下标
+    }
+}
+
 void Shell::SetTheme(shine::theme::ThemeId id) {
     theme::ApplyTheme(id);
     // 水墨是唯一换衬线族的主题 → 字体图集要重建，其余主题只换 ImGuiStyle。
@@ -878,7 +947,14 @@ void Shell::SetTheme(shine::theme::ThemeId id) {
 void Shell::ToggleSidePanel() { layout_.sidePanelVisible = !layout_.sidePanelVisible; }
 void Shell::ToggleDock() { layout_.dockVisible = !layout_.dockVisible; }
 void Shell::ToggleInspector() { layout_.inspectorVisible = !layout_.inspectorVisible; }
-void Shell::ToggleCommandPalette() { paletteOpen_ = !paletteOpen_; }
+void Shell::ToggleCommandPalette() {
+    paletteOpen_ = !paletteOpen_;
+    if (paletteOpen_) {
+        // 每次打开从顶上开始，并选中第一项 —— 沿用上次的滚动位置会让人以为列表被过滤过。
+        paletteScroll_ = 0.0f;
+        paletteSelected_ = 0;
+    }
+}
 
 void Shell::PushLog(std::string_view level, std::string_view message) {
     SYSTEMTIME now{};
@@ -1088,7 +1164,7 @@ void Shell::DrawFrame(float dt) {
     DrawCommandPalette();
     DrawSettingsModal();
     DrawReportModal();
-    DrawThemeMenu(themeMenuAnchor_, draw);
+    DrawThemeMenu(themeMenuAnchor_, ImGui::GetForegroundDrawList());
     DrawOverlays(draw);
 
     ImGui::End();
@@ -1173,15 +1249,17 @@ void Shell::RequestArtifactScan() {
             artifactScanning_ = false;
             artifactRoot_ = root;
             artifacts_ = std::move(rows);
-            artifactRefreshAt_ = 0.0f;
+            // 排下一次重扫。与报告页同一处修正：这里原来也是 `= 0.0f`，
+            // 于是 aged 恒假、除了换工程再没有触发点。
+            artifactRefreshAt_ = ImGui::GetTime() + 2.0f;
         });
     });
 }
 
 void Shell::DrawDockArtifacts(Rect body, ImDrawList* draw) {
-    // 换工程 / 3 秒节流后重扫。空工程根不扫，直接给诚实空态。
+    // 换工程 / 2 秒后重扫。空工程根不扫，直接给诚实空态。
     const bool stale = artifactScanRoot_ != layout_.projectRoot;
-    const bool aged = artifactRefreshAt_ > 0.0f;
+    const bool aged = artifactRefreshAt_ > 0.0f && ImGui::GetTime() >= artifactRefreshAt_;
     if (stale || aged) {
         artifactScanning_ = false;  // 上一次的结果作废
         RequestArtifactScan();
@@ -1230,25 +1308,318 @@ void Shell::DrawDockArtifacts(Rect body, ImDrawList* draw) {
 }
 
 // ---------------------------------------------------------------- P4.6d 校验报告
+//
+// 真值源：novelcore::RunContinuityChecks 落盘的 <project>/work/ch<NNN>/v08_continuity.json
+// —— V8 连续性，也就是 pipeline T12 / T15 的产出，字段见 NovelContinuity.cpp:467。
+//
+// 早先这一页只给诚实空态，紧邻的 DrawReportModal 更糟：它是个**永远打不开的空壳** ——
+// 驱动它的 reportDetail_ 全代码只有 `= -1` 初始化与复位，从没有任何地方把它设成 ≥0，
+// 于是那个模态框一次都没出现过，Esc 逐层关闭里的那一层也永远走不到。
+// 现在列表按章列真报告，点行走模态看逐项结论。
+
+namespace {
+
+// work/ch<NNN> → NNN。返回 0 = 不是按章组织的报告目录（跳过，不拿它当一份空报告充数）。
+int ChapterOrdFromDir(const std::filesystem::path& dir) {
+    const std::string name = util::PathToUtf8(dir.filename());
+    if (name.size() < 3 || name.compare(0, 2, "ch") != 0) {
+        return 0;
+    }
+    int ord = 0;
+    for (std::size_t i = 2; i < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') {
+            return 0;
+        }
+        ord = ord * 10 + (name[i] - '0');
+    }
+    return ord;
+}
+
+} // namespace
+
+theme::Tone Shell::SeverityTone(std::string_view severity) {
+    if (severity == "high") {
+        return theme::Tone::Danger;
+    }
+    if (severity == "medium") {
+        return theme::Tone::Warn;
+    }
+    return theme::Tone::Idle;  // low（设计稿给的是 var(--text-muted)）
+}
+
+theme::Tone Shell::ReportTone(const ChapterReport& report) {
+    if (report.failed > 0) {
+        return theme::Tone::Danger;
+    }
+    if (report.unverified > 0) {
+        return theme::Tone::Warn;  // 数据不足：既不算通过，也别粉饰成失败
+    }
+    return theme::Tone::Ok;
+}
+
+std::string Shell::ReportSummary(const ChapterReport& report) {
+    // 三态分开报，不合并成一个数：failed 与 unverified 是两回事。
+    // ⚠️ failed==0 且 unverified>0 时**不能**写「全部通过」—— 那 2 条根本没核对过。
+    std::string s;
+    if (report.failed > 0) {
+        s = std::to_string(report.failed) + " 未过 · ";
+    } else if (report.unverified > 0) {
+        s = "无未过项 · ";
+    } else {
+        s = "全部通过 · ";
+    }
+    if (report.unverified > 0) {
+        s += std::to_string(report.unverified) + " 未核对 · ";
+    }
+    s += std::to_string(report.pairs) + " 镜对";
+    return s;
+}
+
+std::vector<Shell::CheckRow> Shell::BuildCheckRows(const ChapterReport& report) {
+    std::vector<CheckRow> rows;
+    rows.reserve(report.issues.size() + report.notes.size());
+    for (const ReportIssue& issue : report.issues) {
+        CheckRow row;
+        row.code = issue.code;
+        row.level = issue.severity;
+        row.levelTone = SeverityTone(issue.severity);
+        // 结论口径照设计稿 Shell.jsx:292：未过且 level=low 记「提示」，否则记「未过」。
+        const bool hint = issue.severity == "low";
+        row.verdict = hint ? "提示" : "未过";
+        row.verdictTone = hint ? theme::Tone::Warn : theme::Tone::Danger;
+        row.detail = issue.detail;
+        rows.push_back(std::move(row));
+    }
+    // notes 形如「C3：数据不足…」—— 冒号前是规则码，后面是人话。
+    // ⚠️ 拆不出「码：说明」就整条丢掉：宁可少一行，也不编一个码出来顶账。
+    for (const std::string& note : report.notes) {
+        const std::size_t sep = note.find("：");
+        if (sep == std::string::npos || sep == 0) {
+            continue;
+        }
+        CheckRow row;
+        row.code = note.substr(0, sep);
+        row.level = "-";
+        row.levelTone = theme::Tone::Idle;
+        row.verdict = "未核对";
+        row.verdictTone = theme::Tone::Info;
+        row.detail = note.substr(sep + 1);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+bool Shell::ParseContinuityReport(const std::filesystem::path& file, ChapterReport& out) {
+    std::ifstream stream(file, std::ios::binary);
+    if (!stream) {
+        return false;
+    }
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    yyjson_doc* doc = yyjson_read(text.c_str(), text.size(), 0);
+    if (doc == nullptr) {
+        return false;  // 损坏的报告当没有 —— 不猜、不补
+    }
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    const char* stage = yyjson_get_str(yyjson_obj_get(root, "stage"));
+    if (stage == nullptr || std::string_view{stage} != "V8") {
+        yyjson_doc_free(doc);
+        return false;  // work/ 下别的 JSON —— 不当校验报告充数
+    }
+    const auto num = [&root](const char* key) {
+        return static_cast<int>(yyjson_get_int(yyjson_obj_get(root, key)));
+    };
+    out.chapterId = num("chapter_id");
+    out.shots = num("shots");
+    out.pairs = num("pairs");
+    out.rulesChecked = num("rules_checked");
+    out.failed = num("failed");
+    out.unverified = num("unverified");
+    if (yyjson_val* issues = yyjson_obj_get(root, "issues"); yyjson_is_arr(issues)) {
+        yyjson_arr_iter iter;
+        yyjson_arr_iter_init(issues, &iter);
+        for (yyjson_val* item = nullptr; (item = yyjson_arr_iter_next(&iter)) != nullptr;) {
+            const auto str = [item](const char* key) {
+                const char* raw = yyjson_get_str(yyjson_obj_get(item, key));
+                return raw != nullptr ? std::string(raw) : std::string{};
+            };
+            ReportIssue issue;
+            issue.code = str("code");
+            issue.severity = str("severity");
+            issue.detail = str("detail");
+            out.issues.push_back(std::move(issue));
+        }
+    }
+    if (yyjson_val* notes = yyjson_obj_get(root, "notes"); yyjson_is_arr(notes)) {
+        yyjson_arr_iter iter;
+        yyjson_arr_iter_init(notes, &iter);
+        for (yyjson_val* item = nullptr; (item = yyjson_arr_iter_next(&iter)) != nullptr;) {
+            if (const char* raw = yyjson_get_str(item); raw != nullptr) {
+                out.notes.emplace_back(raw);
+            }
+        }
+    }
+    yyjson_doc_free(doc);
+    return true;
+}
+
+void Shell::RequestReportScan() {
+    if (layout_.projectRoot.empty()) {
+        return;
+    }
+    const std::filesystem::path root = layout_.projectRoot / "work";
+    reportScanning_ = true;
+    reportScanRoot_ = layout_.projectRoot;
+    async::RunOnWorker([this, root] {
+        std::vector<ChapterReport> found;
+        std::error_code ec;
+        if (std::filesystem::is_directory(root, ec)) {
+            for (auto it = std::filesystem::directory_iterator(root, ec);
+                 it != std::filesystem::directory_iterator(); it.increment(ec)) {
+                if (ec) {
+                    break;
+                }
+                if (!it->is_directory(ec)) {
+                    continue;
+                }
+                const int ord = ChapterOrdFromDir(it->path());
+                if (ord <= 0) {
+                    continue;
+                }
+                const std::filesystem::path file = it->path() / "v08_continuity.json";
+                ChapterReport report;
+                if (!ParseContinuityReport(file, report)) {
+                    continue;  // 目录在但报告没落盘 / 损坏 —— 不拿它凑一条空报告
+                }
+                report.chapterOrd = ord;
+                report.path = util::PathToUtf8(file);
+                found.push_back(std::move(report));
+            }
+        }
+        std::stable_sort(found.begin(), found.end(),
+                         [](const ChapterReport& a, const ChapterReport& b) {
+                             return a.chapterOrd < b.chapterOrd;
+                         });
+        async::PostToUi([this, rows = std::move(found)] {
+            reportScanning_ = false;
+            reports_ = std::move(rows);
+            // 排下一次重扫的时点。⚠️ 这一行以前写的是 `= 0.0f`，于是
+            // DrawDockReports 里的 `aged` 恒为假 —— 换工程之外再也没有第二个触发点，
+            // 跑完一个阶段后这一页会一直停在「尚无校验报告」。这里给真的时点。
+            reportRefreshAt_ = ImGui::GetTime() + 2.0f;
+            // 重扫后别让模态指着一条已经没了的报告。-1（本来就没打开）保持 -1。
+            if (reportDetail_ >= static_cast<int>(reports_.size())) {
+                reportDetail_ = reports_.empty() ? -1 : 0;
+            }
+        });
+    });
+}
+
+void Shell::ExportReport(int index) {
+    if (index < 0 || index >= static_cast<int>(reports_.size())) {
+        return;
+    }
+    const ChapterReport report = reports_[static_cast<std::size_t>(index)];
+    if (report.path.empty()) {
+        return;
+    }
+    const std::filesystem::path src(report.path);
+    // 逐字节复制原报告，不重新序列化 —— 序列化会把排版和未知字段抹掉。
+    // 写盘走 worker：UI 线程不做同步 IO。
+    async::RunOnWorker([this, src] {
+        const std::optional<std::string> bytes = util::ReadFileBytes(src);
+        if (!bytes.has_value()) {
+            async::PostToUi([this, src] {
+                PushLog("err", "导出校验报告失败：读不到 " + util::PathToUtf8(src));
+            });
+            return;
+        }
+        const std::filesystem::path dst = layout_.projectRoot / "output" / src.filename();
+        const bool ok = util::WriteFileEnsuredDir(dst, *bytes);
+        async::PostToUi([this, dst, ok] {
+            PushLog(ok ? "info" : "err",
+                    ok ? "已导出校验报告 " + util::PathToUtf8(dst)
+                       : "导出校验报告失败：写不进 " + util::PathToUtf8(dst));
+        });
+    });
+}
+
 void Shell::DrawDockReports(Rect body, ImDrawList* draw) {
-    // 校验报告的真值源是 novel.db 的章节状态校验（pipeline T15 / T12 的产出），
-    // ImGui 前端**还没接那条查询**，所以这里给的是诚实空态 + 可执行的下一步，
-    // 而不是设计稿里那组写死的 REPORTS 行。早先这一页连分支都没有，整页空白。
+    // 换工程 / 2 秒后重扫（与 DrawDockArtifacts 同一套判定，不发明第二份）。
+    const bool stale = reportScanRoot_ != layout_.projectRoot;
+    const bool aged = reportRefreshAt_ > 0.0f && ImGui::GetTime() >= reportRefreshAt_;
+    if (stale || aged) {
+        reportScanning_ = false;  // 上一次的结果作废
+        RequestReportScan();
+    }
     if (layout_.projectRoot.empty()) {
         Empty(draw, Rect{body.min.x, body.min.y + 6.0f, body.min.x + 520.0f, body.min.y + 90.0f},
               "target", "未打开工程", "打开工程并跑完 T12 / T15 后，逐项校验报告会在此列出");
         return;
     }
-    Empty(draw, Rect{body.min.x, body.min.y + 6.0f, body.min.x + 620.0f, body.min.y + 100.0f},
-          "target", "尚无校验报告", "校验只比较状态，不让 LLM 自行猜测连续性 · 跑完 T12 / T15 后在此查看逐项结论");
+    if (reports_.empty() && !reportScanning_) {
+        Empty(draw, Rect{body.min.x, body.min.y + 6.0f, body.min.x + 620.0f, body.min.y + 100.0f},
+              "target", "尚无校验报告", "校验只比较状态，不让 LLM 自行猜测连续性 · 跑完 T12 / T15 后在此查看逐项结论");
+        return;
+    }
+
+    // 行 = code(70) | name(90) | 结论 Tag | 尾部 chevron。设计稿这一组是 flex 行
+    // （Shell.jsx:255-262）**没有列头**，所以这里不套 DataTable，也不加排序。
+    float y = body.min.y;
+    for (std::size_t i = 0; i < reports_.size(); ++i) {
+        if (y + 26.0f > body.max.y - 20.0f) {
+            break;
+        }
+        const ChapterReport& report = reports_[i];
+        const Rect line{body.min.x, y, body.min.x + 560.0f, y + 26.0f};
+        // 一个矩形只 HitTest 一次：hover 高亮与点击读同一个 Hit。
+        const Hit hit = HitTest(line, "dock-report-" + std::to_string(i));
+        if (hit.hovered) {
+            DrawRoundRect(draw, line.min, line.max, 6.0f, ColorFillHover());
+        }
+        std::string code = "ch" + std::to_string(report.chapterOrd);
+        while (code.size() < 5) {
+            code.insert(code.begin() + 2, '0');
+        }
+        DrawTextClipped(draw, MonoAt(10.5f), 10.5f, ImVec2(line.min.x + 4.0f, y + 8.0f), 62.0f,
+                        ColorTextMuted(), code);
+        DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(line.min.x + 74.0f, y + 6.0f), 150.0f,
+                        ColorTextSecondary(), "连续性 C1-C12");
+        const std::string summary = ReportSummary(report);
+        Tag(draw, RectAt(line.min.x + 232.0f, y + 5.0f, TagWidth(summary, true, false),
+                         TagHeight(true)),
+            summary, ReportTone(report), /*small=*/true);
+        DrawIcon(draw, "chevron", ImVec2(line.max.x - 16.0f, line.center().y - 5.0f), 10.0f,
+                 ColorTextMuted());
+        if (hit.clicked) {
+            reportDetail_ = static_cast<int>(i);
+        }
+        y += 26.0f;
+    }
+    const std::string foot = "报告来自 work/ch<NNN>/v08_continuity.json · 点击任一行查看逐项结论（检查 / 级别 / 结论 / 详情）";
+    DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(body.min.x, body.max.y - 14.0f),
+                    body.width(), ColorTextMuted(), foot);
 }
 
 void Shell::DrawReportModal() {
     if (reportDetail_ < 0) {
         return;
     }
+    if (reportDetail_ >= static_cast<int>(reports_.size())) {
+        reportDetail_ = -1;  // 重扫后这条没了 —— 别让模态指着一个不存在的下标
+        return;
+    }
+    const ChapterReport& report = reports_[static_cast<std::size_t>(reportDetail_)];
+    const std::vector<CheckRow> rows = BuildCheckRows(report);
+
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    // ⚠️ 必须是 **foreground** draw list，不能用 GetWindowDrawList()。
+    //    外壳的页面 / 底栏各自跑在 ScrollRegion(BeginChild) 里，而 child 是在
+    //    父窗口那份 draw list **之后**渲染的 —— 画在父 list 上的浮层会被整片盖住。
+    //    实测症状：遮罩和面板都画了，但工作区的 KPI 卡片压在模态上面，
+    //    截图上「模态」只剩一条表头带，manifest 还写着 saved。
+    //    本仓 Tooltip 早就用同一招并在 Widgets.cpp:793 记了原因。
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    // 设计稿内联 width 640 / height min(74vh,660)（Shell.jsx:272）—— 尺寸原样保留。
     const float w = 640.0f;
     const float h = std::min(660.0f, display.y * 0.74f);
     const Rect bounds{(display.x - w) * 0.5f, (display.y - h) * 0.5f, (display.x + w) * 0.5f,
@@ -1262,8 +1633,151 @@ void Shell::DrawReportModal() {
         !ImGui::IsMouseHoveringRect(bounds.min, bounds.max, true)) {
         reportDetail_ = -1;
     }
-    if (IconButton(draw, RectAt(bounds.max.x - 34.0f, bounds.min.y + 8.0f, 22.0f, 22.0f), "x",
-                   false, false, "report-close")) {
+
+    const float headerH = 46.0f;
+    const float footerH = 12.0f * 2.0f + ButtonHeight(ButtonSize::Medium) + 1.0f;
+
+    // ---- .modal-h（ui.css:955-965）：padding 14/18 + gap 10 + 1px 下边 ----
+    // ⚠️ 标题里的规则组写作 "C1-C12"（ASCII 连字符）而不是设计稿的 en dash：
+    //    U+2013 不在图集的字形基线里，用它会画成缺字形方块。
+    const std::string title = "连续性 C1-C12 · 第 " + std::to_string(report.chapterOrd) + " 章";
+    DrawIcon(draw, "target", ImVec2(bounds.min.x + 18.0f, bounds.min.y + 15.0f), 17.0f, ColorAccent());
+    DrawTextClipped(draw, FontBoldAt(14.0f), 14.0f, ImVec2(bounds.min.x + 45.0f, bounds.min.y + 15.0f),
+                    260.0f, ColorText(), title);
+    ButtonSpec exportSpec;
+    exportSpec.variant = ButtonVariant::Ghost;
+    exportSpec.size = ButtonSize::Small;
+    exportSpec.icon = "download";
+    const std::string exportLabel = "导出 JSON";
+    const float exportW = ButtonWidth(ButtonSize::Small, 13.0f,
+                                       FontAt(10.5f)->CalcTextSizeA(
+                                           10.5f, 1e9f, 0.0f, exportLabel.data(),
+                                           exportLabel.data() + exportLabel.size())
+                                           .x);
+    if (Button(draw, RectAt(bounds.max.x - 18.0f - 22.0f - 8.0f - exportW, bounds.min.y + 12.0f,
+                            exportW, ButtonHeight(ButtonSize::Small)),
+               exportLabel, exportSpec, "report-export")) {
+        ExportReport(reportDetail_);
+    }
+    if (IconButton(draw, RectAt(bounds.max.x - 18.0f - 22.0f, bounds.min.y + 12.0f, 22.0f, 22.0f),
+                   "x", false, false, "report-close")) {
+        reportDetail_ = -1;
+    }
+    draw->AddLine(ImVec2(bounds.min.x, bounds.min.y + headerH - 0.5f),
+                  ImVec2(bounds.max.x, bounds.min.y + headerH - 0.5f), ColorLineSubtle(), 1.0f);
+
+    // ---- .modal-b（ui.css:966-969）：fill-muted 底 + padding 18 + 纵向滚 ----
+    //
+    // ⚠️ 这里**必须**用 draw->PushClipRect 自己裁，**不能**用 ScrollRegion（BeginChild）。
+    //    BeginChild 会另开一个 ImGuiWindow，而 ImGui 的渲染次序是「后建的先画」——
+    //    这个 child 就沉到了工作区那个 child 底下，父 draw list 上的部分（面板底、
+    //    标题栏、表头）还看得见，落在 child 里的表体却被工作区整片盖住。
+    //    实测症状：模态只剩一条表头带，下面全是工作区的 KPI 卡片。
+    //    模态是单帧定尺的浮层，本来就不需要独立窗口 —— 全留在同一个 draw list 上，
+    //    z 序由调用顺序决定，不用赌 ImGui 的窗口次序。
+    const Rect body{bounds.min.x, bounds.min.y + headerH, bounds.max.x, bounds.max.y - footerH};
+    const float tableX = bounds.min.x + 18.0f;
+    const float tableW = w - 36.0f;
+    const float headH = TableHeaderHeight(true);
+    const float rowH = TableRowHeight(true);
+    const float summaryH = TagHeight(true) + 10.0f;
+    const float contentH =
+        18.0f + summaryH + headH + (rows.empty() ? rowH : static_cast<float>(rows.size()) * rowH) + 18.0f;
+    const float maxScroll = std::max(0.0f, contentH - body.height());
+    if (ImGui::IsMouseHoveringRect(body.min, body.max, true)) {
+        reportScroll_ -= ImGui::GetIO().MouseWheel * 40.0f;
+    }
+    reportScroll_ = std::clamp(reportScroll_, 0.0f, maxScroll);
+
+    draw->PushClipRect(body.min, body.max, true);
+    // .modal-b 的底是 --fill-muted（Shell.jsx:280 内联），不是模态框的 overlay。
+    draw->AddRectFilled(body.min, body.max, ColorFillMuted());
+    float y = body.min.y + 18.0f - reportScroll_;
+
+    // 摘要 Tag，tone=info（设计稿 Shell.jsx:281-283）。
+    const std::string summary = ReportSummary(report) + " · 阈值：high 未过即 FAIL";
+    Tag(draw, RectAt(tableX, y, TagWidth(summary, true, false), TagHeight(true)), summary,
+        theme::Tone::Info, /*small=*/true);
+    y += summaryH;
+
+    // 表头。设计稿那张表**渲染 5 个 td 却只写了 4 个标题**（Shell.jsx:285 vs 289-293），
+    // 照抄会留下一列没有表头的裸格子；这里保留它的 4 个标题，但都落在有内容的列上。
+    const float codeW = 56.0f;
+    const float levelW = 88.0f;
+    const float verdictW = 88.0f;
+    const float levelX = tableX + codeW;
+    const float verdictX = levelX + levelW;
+    const float detailX = verdictX + verdictW;
+    const float detailW = std::max(60.0f, tableX + tableW - detailX);
+    draw->AddRectFilled(ImVec2(tableX, y), ImVec2(tableX + tableW, y + headH), ColorPanel());
+    ImFont* headFont = FontBoldAt(11.5f);
+    for (const auto& [x, titleText] :
+         {std::pair{tableX, "检查"}, std::pair{levelX, "级别"}, std::pair{verdictX, "结论"},
+          std::pair{detailX, "详情"}}) {
+        DrawTextClipped(draw, headFont, 11.5f, ImVec2(x + 8.0f, y + 7.0f), 200.0f, ColorTextMuted(),
+                        titleText);
+    }
+    draw->AddLine(ImVec2(tableX, y + headH - 0.5f), ImVec2(tableX + tableW, y + headH - 0.5f),
+                  ColorLineNormal(), 1.0f);
+    y += headH;
+
+    if (rows.empty()) {
+        // 没有 issue 也没有 note = 这一章一条都没判出来。照实说，别写成「全部通过」。
+        DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(tableX + 8.0f, y + 7.0f), tableW - 16.0f,
+                        ColorTextMuted(),
+                        report.pairs > 0 ? "本组没有记下任何不一致项" : "没有可比较的镜对");
+        y += rowH;
+    }
+    for (const CheckRow& row : rows) {
+        const Rect line{tableX, y, tableX + tableW, y + rowH};
+        if (ImGui::IsMouseHoveringRect(line.min, line.max, true)) {
+            draw->AddRectFilled(line.min, line.max, ColorFillHover());
+        }
+        DrawTextClipped(draw, MonoAt(11.5f), 11.5f, ImVec2(line.min.x + 8.0f, y + 7.0f), codeW - 16.0f,
+                        ColorAccent(), row.code);
+        Tag(draw, RectAt(levelX + 8.0f, y + 6.0f, TagWidth(row.level, true, false), TagHeight(true)),
+            row.level, row.levelTone, /*small=*/true);
+        Tag(draw,
+            RectAt(verdictX + 8.0f, y + 6.0f, TagWidth(row.verdict, true, false), TagHeight(true)),
+            row.verdict, row.verdictTone, /*small=*/true);
+        // 详情超宽出省略号，全文挂 tooltip（.ellipsis 的等价物）。
+        const float detailTextX = detailX + 8.0f;
+        const float detailDrawn = DrawTextClipped(draw, FontAt(12.0f), 12.0f,
+                                                  ImVec2(detailTextX, y + 7.0f), detailW - 16.0f,
+                                                  ColorTextSecondary(), row.detail);
+        if (detailDrawn >= detailW - 16.0f - 0.5f) {
+            Tooltip(line, row.detail);
+        }
+        draw->AddLine(ImVec2(tableX, y + rowH - 0.5f), ImVec2(tableX + tableW, y + rowH - 0.5f),
+                      ColorLineSubtle(), 1.0f);
+        y += rowH;
+    }
+    draw->PopClipRect();
+
+    // 滚动条：内容装不下时才画（thumb = 可见比例，track = 主体高度）。
+    if (maxScroll > 0.0f) {
+        const float trackW = 4.0f;
+        const float trackX = bounds.max.x - 18.0f - trackW;
+        const float thumbH = std::max(24.0f, body.height() * (body.height() / contentH));
+        const float thumbY =
+            body.min.y + (body.height() - thumbH) * (reportScroll_ / maxScroll);
+        draw->AddRectFilled(ImVec2(trackX, body.min.y), ImVec2(trackX + trackW, body.max.y),
+                            ColorFillMuted());
+        draw->AddRectFilled(ImVec2(trackX, thumbY), ImVec2(trackX + trackW, thumbY + thumbH),
+                            ColorLineStrong());
+    }
+
+    // ---- .modal-f（ui.css:970-975）：padding 12/18 + 1px 上边 ----
+    draw->AddLine(ImVec2(bounds.min.x, bounds.max.y - footerH + 0.5f),
+                  ImVec2(bounds.max.x, bounds.max.y - footerH + 0.5f), ColorLineSubtle(), 1.0f);
+    DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(bounds.min.x + 18.0f, bounds.max.y - 12.0f - 14.0f),
+                    w - 120.0f, ColorTextMuted(),
+                    "校验只比较状态，不让 LLM 自行猜测连续性 · Esc 关闭");
+    ButtonSpec closeSpec;
+    closeSpec.variant = ButtonVariant::Ghost;
+    if (Button(draw, RectAt(bounds.max.x - 18.0f - 72.0f, bounds.max.y - 12.0f - ButtonHeight(ButtonSize::Medium),
+                            72.0f, ButtonHeight(ButtonSize::Medium)),
+               "关闭", closeSpec, "report-dismiss")) {
         reportDetail_ = -1;
     }
 }
@@ -1360,7 +1874,8 @@ void Shell::DrawSettingsModal() {
         return;
     }
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-    ImDrawList* draw = ImGui::GetWindowDrawList();
+    // 同 DrawReportModal：浮层走 foreground，否则会被 BeginChild 里的页面内容盖住。
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
     const float w = 560.0f;
     const float h = 452.0f;
     const Rect bounds{(display.x - w) * 0.5f, (display.y - h) * 0.5f, (display.x + w) * 0.5f,

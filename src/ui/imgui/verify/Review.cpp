@@ -2,10 +2,15 @@
 
 #include "core/Log.h"
 #include "ui/imgui/verify/Capture.h"
+#include "util/File.h"
 
+#include <chrono>
 #include <cstdio>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace shine::imguiverify {
@@ -78,6 +83,48 @@ constexpr int kThemedWorkspaces[] = {
     static_cast<int>(pages::Workspace::VideoFlow),
 };
 
+// 等报告扫描回投的帧数上限。PumpFrames 是紧循环、不 sleep，光推帧未必给 worker
+// 调度机会，所以调用方每帧还要真的让出一会儿。
+constexpr int kReportWaitFrameCap = 400;
+
+// 造一个**格式与 NovelContinuity.cpp:467 完全一致**的报告集合，只为取证流水线有东西可拍。
+//
+// ⚠️ 这是**取证流水线的输入 fixture**，写在输出目录下的临时工程里，由本文件自己造。
+//    应用侧绝不造报告 —— DrawDockReports 只读 business 层落盘的文件。
+//    三章各给一种结论（全过 / 有未过 / 有未核对），列表与模态才拍得出三态的区别：
+//    只给一种的话，「有未核对」那条分支在证据图里等于没被覆盖。
+bool SeedReportFixture(const std::filesystem::path& root) {
+    struct Seed {
+        int ord;
+        const char* json;
+    };
+    const Seed seeds[] = {
+        {1,
+         R"({"stage":"V8","stage_name":"CONTINUITY","chapter_id":1,"shots":13,"pairs":12,)"
+         R"("rules_checked":12,"failed":0,"unverified":0,"issues":[],"notes":[]})"},
+        {2,
+         R"({"stage":"V8","stage_name":"CONTINUITY","chapter_id":2,"shots":10,"pairs":9,)"
+         R"("rules_checked":12,"failed":2,"unverified":0,"issues":[)"
+         R"({"code":"C1","severity":"high","detail":"主角外套在第 2 场与第 5 场之间由深灰变为藏青"},)"
+         R"({"code":"C7","severity":"low","detail":"第 3 镜缺 prev_shot_id，跨镜比较只用了单侧状态"}],)"
+         R"("notes":[]})"},
+        {3,
+         R"({"stage":"V8","stage_name":"CONTINUITY","chapter_id":3,"shots":8,"pairs":7,)"
+         R"("rules_checked":12,"failed":0,"unverified":2,"issues":[],)"
+         R"("notes":["C4：场 2 未登记起止状态，时间线无从比较",)"
+         R"("C9：第 8 镜没有关联实体，服装一致性无从核对"]})"},
+    };
+    for (const Seed& seed : seeds) {
+        std::ostringstream dir;
+        dir << "ch" << std::setw(3) << std::setfill('0') << seed.ord;
+        if (!util::WriteFileEnsuredDir(root / "work" / dir.str() / "v08_continuity.json",
+                                       seed.json)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& outputDir) {
@@ -124,6 +171,62 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     // 跑完回到起始主题，别把用户的 theme.json 留在取证用的最后一套上。
     shell.SetTheme(base);
 
+    // ---- 第三段：底栏「校验报告」页 + 逐项详情模态 ----
+    //
+    // ⚠️ 这三张的前置动作必须写全：摆一个带**真实格式**报告的工程 → 选第 4 个页签 →
+    //    等 worker 那次目录遍历真的回投 → 才推进到可抓图的状态。
+    //    少任何一步，拍到的就是「未打开工程」或「尚无校验报告」空态 ——
+    //    图名和内容对不上，而 manifest 照样记 saved。
+    bool reportScanConverged = false;
+    const std::filesystem::path fixture = outputDir / "_review_reports_project";
+    if (!SeedReportFixture(fixture)) {
+        shine::log::Error("review: 报告 fixture 写不出来，校验报告三张取证跳过");
+    } else {
+        // SetProjectRoot 会立刻写 layout.dat —— 先把用户登记的工程根读出来，抓完原样还回去。
+        const std::filesystem::path savedRoot = shell.projectRoot();
+        const std::string savedName = shell.projectName();
+        const int savedTab = shell.dockTab();
+
+        shell.SetProjectRoot(fixture, "取证样例工程");
+        shell.SetDockTab(3);
+        int waited = 0;
+        while (!shell.ReportsReady() && waited < kReportWaitFrameCap) {
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            ++waited;
+        }
+        // ⚠️ 等待的结论要写进 manifest。上一轮把一个等待的返回值 (void) 掉，
+        //    拍到「扫描中 · 已载入 0 张」那一帧，manifest 依旧 saved。
+        reportScanConverged = shell.ReportsReady();
+        WriteManifest(manifest, std::string("report-scan=") +
+                                    (reportScanConverged ? "converged" : "TIMEOUT") +
+                                    " after " + std::to_string(waited) + " frames");
+
+        const int overview = static_cast<int>(pages::Workspace::Overview);
+        grab("dock-reports", overview, base);
+        // 两个模态状态拍的是**不同内容**（一份有未过项、一份有未核对项），
+        // 于是它们既不该与列表图相同，也不该彼此相同。
+        shell.SetReportDetail(1);
+        grab("report-modal", overview, base);
+        shell.SetReportDetail(2);
+        grab("report-modal-unverified", overview, base);
+        // ⚠️ 必须**先**关掉报告模态再拍下面两个：同一 foreground draw list 上
+        //    浮层的 z 序由 DrawFrame 里的调用顺序决定，报告模态画在设置模态**之后**，
+        //    两个同时开着时后画的会盖住先画的 —— 拍出来两张图会一模一样。
+        shell.SetReportDetail(-1);
+
+        // 另外两个浮层同样要验：它们与页面分别画在不同 draw list 上，z 序错了不崩不报，
+        // 只是被工作区内容盖住。上一轮就是靠这两张才发现「模态只剩一条表头带」。
+        shell.SetSettingsOpen(true);
+        grab("overlay-settings", overview, base);
+        shell.SetSettingsOpen(false);
+        shell.SetCommandPaletteOpen(true);
+        grab("overlay-palette", overview, base);
+        shell.SetCommandPaletteOpen(false);
+        shell.SetProjectRoot(savedRoot, savedName);
+        shell.SetDockTab(savedTab);
+    }
+
     // ---- 判据二：同一工作区在 5 套主题下的像素必须两两不同 ----
     // 只判「PNG 写出来了」的旧门禁会漏掉「主题压根没加载」这种整轮崩掉的情况。
     int identicalPairs = 0;
@@ -142,10 +245,13 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     }
 
     // ⚠️ overall 行必须存在且与退出码一致（脚本 :66 要求 PASS↔0 / FAIL↔1）。
-    const bool pass = result.failed == 0 && identicalPairs == 0;
+    //    reportScanConverged 也进判据：报告三张没拍成就是没拍成，不能因为
+    //    「37 张都写出来了」就整轮报绿。
+    const bool pass = result.failed == 0 && identicalPairs == 0 && reportScanConverged;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
-                                "  identical-theme-pairs: " + std::to_string(identicalPairs));
+                                "  identical-theme-pairs: " + std::to_string(identicalPairs) +
+                                "  report-scan: " + (reportScanConverged ? "converged" : "TIMEOUT"));
     WriteManifest(manifest, std::string("overall=") + (pass ? "PASS" : "FAIL"));
     shine::log::Info("review done: {} saved, {} failed -> {}", result.captured, result.failed,
                      outputDir.string());

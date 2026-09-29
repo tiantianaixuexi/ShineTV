@@ -69,6 +69,25 @@ public:
     // 取证 / 快捷键用
     void SetWorkspace(int index);
     [[nodiscard]] int workspace() const { return layout_.workspace; }
+    // 取证用：选中底栏页签（0 任务队列 / 1 日志 / 2 产物 / 3 校验报告）。
+    // 底栏页签平时只能点 `Tabs` 切换，取证要复现"停在第 N 页"就得有这条入口。
+    void SetDockTab(int tab);
+    // 取证用：打开第 index 份校验报告的逐项详情模态（-1 = 关闭）。
+    // 走的是列表点击同一条状态路径（reportDetail_），不是给模态开后门。
+    void SetReportDetail(int index);
+    // 取证用：报告扫描是否已经回投（列表非空且当前不在扫）。
+    // ⚠️ 抓图前必须等它为 true —— worker 上那一次目录遍历没回投就抓图，
+    //    拍到的是「尚无校验报告」空态，图名和内容对不上（phases.md P6 第 3 条）。
+    [[nodiscard]] bool ReportsReady() const { return !reportScanning_ && !reports_.empty(); }
+    // 取证用：直接开 / 关设置模态与命令面板。
+    // ⚠️ 浮层的 z 序**只有截图能验** —— 它们与页面各自画在不同 draw list 上，
+    //    画错时不会崩、不报错，只是被工作区内容盖住，manifest 照样记 saved。
+    void SetSettingsOpen(bool open) { settingsOpen_ = open; }
+    void SetCommandPaletteOpen(bool open) {
+        if (open != paletteOpen_) {
+            ToggleCommandPalette();
+        }
+    }
     void SetTheme(shine::theme::ThemeId id);
     void ToggleSidePanel();
     void ToggleDock();
@@ -84,6 +103,10 @@ public:
     // root 为空表示「未打开项目」——总控页会显示真实空态，不编数字。
     void SetProjectRoot(std::filesystem::path root, std::string name);
     [[nodiscard]] const std::filesystem::path& projectRoot() const { return layout_.projectRoot; }
+    // 取证要临时切工程根（SetProjectRoot 会立刻写 layout.dat），所以得能读回来还原，
+    // 别让一次取证把用户登记的工程根覆盖成临时目录。
+    [[nodiscard]] const std::string& projectName() const { return layout_.projectName; }
+    [[nodiscard]] int dockTab() const { return layout_.dockTab; }
     // 从持久化的项目注册表里挑一个打开（项目中心「打开」按钮与命令面板都走它）。
     bool OpenProjectByName(const std::string& name);
 
@@ -120,6 +143,9 @@ private:
     void DrawDockQueue(kit::Rect body, ImDrawList* draw);
     // 底栏「日志」页：运行期真实事件（PushLog 写入的行）。
     void DrawDockLogs(kit::Rect body, ImDrawList* draw);
+    // 底栏「校验报告」页：扫 <project>/work/ch<NNN>/v08_continuity.json，IO 放 worker
+    // （与 RequestArtifactScan 同一套模式，不发明第二份）。
+    void RequestReportScan();
     // 底栏「校验报告」页 + 点开后的逐项详情模态。
     void DrawDockReports(kit::Rect body, ImDrawList* draw);
     void DrawReportModal();
@@ -134,6 +160,10 @@ private:
     char paletteQuery_[128] = {};
     int paletteSelected_ = 0;
     int paletteMatches_ = 0;
+    // 列表滚动偏移与内容总高。16 条目 + 3 个组标题 = 546px，面板只有 358px 可用，
+    // 不裁也不滚的话末尾几行会溢出面板、压在工作区上。
+    float paletteScroll_ = 0.0f;
+    float paletteContentH_ = 0.0f;
     float lastDelta_ = 0.0f;
     kit::DebugWindows debug_;
     // 当前字体图集是不是衬线族。Host 初始化时已按启动主题建过一次，
@@ -162,6 +192,63 @@ private:
     std::filesystem::path artifactScanRoot_;
     bool artifactScanning_ = false;
     float artifactRefreshAt_ = 0.0f;
+
+    // ---- 底栏「校验报告」页：<project>/work/ch<NNN>/v08_continuity.json 的真实报告 ----
+    //
+    // 真值源是 novelcore::RunContinuityChecks（V8 连续性，pipeline T12 / T15 的产出）落盘的那份
+    // JSON，字段见 NovelContinuity.cpp:467。IO 走 worker，UI 线程只读缓存。
+    // 早先这一页只给诚实空态，而 DrawReportModal 更糟：它是个**永远打不开的空壳** ——
+    // 驱动它的 reportDetail_ 全代码只有 `= -1` 初始化与复位，从没有任何地方把它设成 ≥0。
+    // 现在列表按章列真报告，点行开逐项详情。
+    struct ReportIssue {
+        std::string code;      // "C1".."C12"
+        std::string severity;  // high | medium | low
+        std::string detail;    // 中文，可直接显示
+    };
+    struct ChapterReport {
+        int chapterOrd = 0;  // ch<NNN> 的序号（文件名给的；JSON 里只有库内的 chapter_id）
+        int chapterId = 0;   // novel.db 的 chapter_id
+        int shots = 0;
+        int pairs = 0;
+        int rulesChecked = 0;
+        int failed = 0;
+        int unverified = 0;
+        std::vector<ReportIssue> issues;
+        std::vector<std::string> notes;  // unverified 的原因，每条一次
+        std::string path;                 // 报告落盘位置
+    };
+    // 模态里那张 compact 表的一行。设计稿那张表实际渲染 5 个 td 而表头只写了 4 个标题
+    // （Shell.jsx:285 vs 289-293，设计稿自身缺陷）：表头照设计稿写 4 个，name 列留空 ——
+    // 业务层的 ContinuityIssue 本来就没有独立的名称字段，不编一个出来。
+    struct CheckRow {
+        std::string code;
+        std::string level;   // high | medium | low；未核对为空
+        theme::Tone levelTone = theme::Tone::Idle;
+        std::string verdict;  // 过 / 未过 / 提示 / 未核对
+        theme::Tone verdictTone = theme::Tone::Idle;
+        std::string detail;
+    };
+    std::vector<ChapterReport> reports_;
+    std::filesystem::path reportScanRoot_;
+    bool reportScanning_ = false;
+    float reportRefreshAt_ = 0.0f;
+    // 模态主体的纵向滚动偏移。12 条 issue 装不满时用滚轮滚。
+    float reportScroll_ = 0.0f;
+
+    // severity 串 → 色调（设计稿 Shell.jsx:291：high→danger / medium→warn / low→idle）。
+    static theme::Tone SeverityTone(std::string_view severity);
+    // 整条报告的三态：failed > unverified > 通过。unverified 是「数据不足」，
+    // 给 Warn 而不是 Ok —— 照实显示，不粉饰成通过。
+    static theme::Tone ReportTone(const ChapterReport& report);
+    // 行尾 Tag 的文案，例如「1 未过 · 2 未核对 · 12 镜对」。
+    static std::string ReportSummary(const ChapterReport& report);
+    // issues + notes 铺成模态那张表的行。notes 形如「C3：数据不足…」，
+    // 冒号前是规则码，取出来当「检查」列。
+    static std::vector<CheckRow> BuildCheckRows(const ChapterReport& report);
+    // 解析一个 v08_continuity.json。false = 文件缺失 / 非法 JSON / 缺 stage 字段（跳过该目录）。
+    static bool ParseContinuityReport(const std::filesystem::path& file, ChapterReport& out);
+    // 模态标题栏「导出 JSON」：把这一份报告写到 <project>/output/，写盘放 worker。
+    void ExportReport(int index);
 
     // 流水线运行态（顶栏「运行 / 停止」二选一，webui Shell.jsx:44-48）。
     // Runner 是同步阻塞的，真正的执行放 worker；这里只存 UI 侧的状态。

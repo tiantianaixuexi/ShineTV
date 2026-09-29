@@ -281,6 +281,12 @@ last_verified: 2026-09-30
 | 2026-09-30 | **P7.7** | 产物体积 | strip 后 **12,435,968 B = 11.9 MB**（目标 < 30 MB） | ✅ |
 | 2026-09-30 | P6.3 | 全新零 Qt 构建跑取证 | 37/37 saved · `overall=PASS` · 退出码 0 | ✅ |
 | 2026-09-30 | P6.3 | **取证门禁假绿** | exe 放在没有 `themes/` 的目录 → 37 张只有 13 张唯一，旧门禁仍报 PASS；补判据二后 `identical-theme-pairs: 36` → FAIL | ✅ |
+| 2026-09-30 | 缺口 3 | **底栏「校验报告」页接真数据** | 真值源是 `RunContinuityChecks` 落盘的 `work/ch<NNN>/v08_continuity.json`；列表按章列三态，点行走模态看逐项 C1–C12。关闭了「校验报告页」缺口 | ✅ |
+| 2026-09-30 | 缺陷 | **`DrawReportModal` 是永远打不开的空壳** | 驱动它的 `reportDetail_` 全代码只有 `= -1` 初始化与复位，从无任何地方设为 ≥0 —— 模态一次都没出现过，Esc 逐层关闭里那一层也永远走不到。列表行点击补上这条路径 | ✅ |
+| 2026-09-30 | 缺陷 | **四个浮层全被工作区盖住** | 报告 / 设置 / 命令面板 / 主题菜单都用 `GetWindowDrawList()`，而页面与底栏跑在 `ScrollRegion`(BeginChild) 里、child 在父窗口那份 list **之后**渲染。症状：遮罩与面板都画了，工作区 KPI 卡片压在模态上，「模态」只剩一条表头带，manifest 仍记 `saved`。全部改走 `GetForegroundDrawList()`（本仓 `Tooltip` 早已用同一招并记了原因） | ✅ |
+| 2026-09-30 | 缺陷 | **命令面板列表溢出面板外** | 16 条目 + 3 组标题 = 546px，输入框下面只有 358px，且无裁剪无滚动 —— 末尾几行画到面板外压在工作区上。补 `PushClipRect` + 选中跟随滚动 + 滚动条 | ✅ |
+| 2026-09-30 | 缺陷 | **「3 秒节流」是死计时器** | 产物页与报告页的 `*RefreshAt_` 只被赋 `0.0f`，`aged` 恒为假 —— 除了换工程再没有第二个触发点，跑完阶段后页面会一直停在旧内容。改成真时点 | ✅ |
+| 2026-09-30 | 验证 | 浮层与报告页取证 | **42/42 saved · md5 42 张全唯一 · `identical-theme-pairs: 0` · `report-scan: converged` · `overall=PASS`**；`report-scan` 结论进 manifest 且进 overall 判据 | ✅ |
 
 ---
 
@@ -291,10 +297,10 @@ last_verified: 2026-09-30
 | 缺口 | 归因 | 说明 |
 |---|---|---|
 | 阶段执行体是桩 | `shine_core` | 没有「替前端跑一个 T 阶段」的服务接口。Runner 的**记账**（预算 / `work/*.json` / 账本）是真的，阶段**本体**不是。补它要动 `shine_core`，超出「重构期不改业务层」的边界。 |
-| S1–S12 停止规则表 | `pipeline/StopPolicy` | 只判 5 组，且没有可枚举的规则表（同 `src/ui/pages/pipeline/StopReportView.h` 的旧结论）。 |
-| 校验报告页 | `novel.db` | T12/T15 的逐项产出在库里，ImGui 侧未接查询，底栏第 4 页目前是诚实空态。 |
-| 章节×阶段双轴甘特 | `pipeline::Ledger` | 无章节维度，设计稿的双轴甘特无法完整实现。 |
-| 侧栏树 / 检查器 | 页面层 | 结构由各工作区持有，需要页面暴露查询接口；目前是诚实空态而非假数据。 |
+| S1–S12 停止规则表 | `pipeline/StopPolicy` | 只判 5 组，且没有可枚举的规则表（同 `src/ui/pages/pipeline/StopReportView.h` 的旧结论）。页面当前显示 S1–S8，是**实有的 5 组 + 3 条 LLM 判据**，不补齐就不该声称是 S1–S12。 |
+| 章节×阶段双轴甘特 | `pipeline::Ledger` | `LedgerEntry` 只有 `{stage, input_hash, output_path, degradation}`，`Flush` 写出的 `_manifest.json` 里也没有章节字段 —— **章节维度在数据层根本不存在**，不是 UI 少画了一根轴。补它要改 `Ledger`。 |
+| 侧栏树 / 检查器的**卷层级** | `shine_core` | `NovelGraph` 只有 `UpsertVolume`，**没有 `ListVolumes`**（`src/novel/NovelGraph.h` 全文确认）。卷标题与卷序取不到。 |
+| 侧栏树 / 检查器主体 | 页面层 | **可直接实现，不越界**：`ListChapters` / `ListScenes` / `ListShotsByChapter` / `ListSceneCast` 全是现成只读查询；`BookState` 已有 `chapters` 与 `shots`，只差把 `SceneRow` 存进快照。镜属性 13 字段已在手，实体属性可走 `GetPersona` / `GetLatestCharacterStatus` / `GetRelations` / `ListKnowledge` / `ListArcs`。唯一硬缺口是上一行的卷层级。 |
 
 另有一条**已接受降级**：`Derived::gateBg` / `checkRowBg` 当年按纯 alpha 算，
 与设计稿的实色差一个底。字段按「只加不减」冻结，要 1:1 请用新增的
