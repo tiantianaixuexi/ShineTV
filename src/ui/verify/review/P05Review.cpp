@@ -59,8 +59,8 @@ struct ReviewState {
         "assets-grid", "assets-nav-tree", "assets-inspector",
         "assets-empty", "assets-card-states",
         "sheet-full", "sheet-missing-layers",
-        // 高视口全页：覆盖折叠线以下的详情区（参考库 / 依赖策略两块）
-        "assets-detail-tall",
+        // 真实视口下滚动到底：覆盖折叠线以下的详情区（参考库 / 依赖策略两块）
+        "assets-detail-bottom",
         "assets-mixed-theme", "toast-shadow"};
     std::vector<std::string> manifest;
     // 迁移后无等价实现的取证项：显式记账，不进 expected，也就不会拉低 overall。
@@ -356,7 +356,11 @@ void RunReview(ReviewState* st) {
     layout->addWidget(st->assets->NavWidget(), 1);
     layout->addWidget(st->assets, 3);
     layout->addWidget(st->assets->InspectorBody(), 2);
-    host->resize(1600, 980);
+    // 取证视口 = **真实分辨率** 1920×1080。评审摆三列（导航 | 内容 | 检查器），
+    // 1280 太挤（应用自己的 1280×800 默认窗口），1600×980 这种数不是任何真实
+    // 屏幕。取证图的意义是「用户在这个尺寸下看到的就是这样」，所以视口本身
+    // 必须是能真实出现的尺寸。
+    host->resize(1920, 1080);
     host->show();
     QString error;
     if (!st->assets->OpenBook(st->root / "db" / "novel.db", st->root, &error)) {
@@ -388,19 +392,20 @@ void RunReview(ReviewState* st) {
     review::Pump();
     review::Grab(st->assets, st->dir, "sheet-missing-layers", st->manifest);
 
-    // 详情区**下半部分**（④ 项目参考库 / ⑤ 依赖等待与降级策略）默认落在
-    // 980px 视口的折叠线以下 —— 上面那几张永远拍不到它们。缺了这一张，
-    // 这两块就等于**没有取证**，而取证表里「没这一行」会被读成「跑了没问题」。
+    // 详情区**下半部分**（④ 项目参考库 / ⑤ 依赖等待与降级策略）落在视口的
+    // 折叠线以下，上面那几张拍不到。缺了这一张就等于**没有取证**，而取证表里
+    // 「没这一行」会被读成「跑了没问题」。
     //
-    // 做法：临时把评审窗口拉高抓一张全页，抓完立刻复原，免得影响后面的取证。
-    // 不用「滚动到底再抓」是因为滚动位置会跟着实体选择变，写进 expected 的
-    // 判据必须是确定的一帧。
+    // ⚠️ 做法必须是「真实视口 + 显式钉死滚动位置」，不能把宿主拉高抓一张全页 ——
+    // 后者得到的图不对应任何真实屏幕（本应用自己的窗口是 1280×800），
+    // 而取证图的全部意义就是「用户在那个尺寸下看到的就是这样」。
+    // 位置钉死用 SetScrollY，故它是确定的一帧，不随实体选择漂移。
     st->assets->SelectEntity(st->full_entity);
     st->assets->WaitVisualsReady();
-    host->resize(1600, 2400);
+    st->assets->SetScrollY(1e9); // 钉到最底（QML 侧会 clamp 到 contentHeight - height）
     review::Pump();
-    review::Grab(st->assets, st->dir, "assets-detail-tall", st->manifest);
-    host->resize(1600, 980);
+    review::Grab(st->assets, st->dir, "assets-detail-bottom", st->manifest);
+    st->assets->SetScrollY(-1); // 交还控制权，别影响后面的取证
     review::Pump();
 
     // ⚠️ 以下几块在 QML 迁移后**没有等价实现**，显式记为未覆盖，

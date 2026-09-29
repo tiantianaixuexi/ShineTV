@@ -174,6 +174,15 @@ void QmlAssetsPage::ShowDetailPage(int index) {
     }
 }
 
+void QmlAssetsPage::SetScrollY(double y) {
+    // 取证钉位：把内容滚动位置显式写死，供抓折叠线以下的内容。
+    // 传负值回到顶部并交还控制权（QML 侧 -1 = 不接管）。
+    if (auto* root = content_->rootObject()) {
+        root->setProperty("scrollY", y);
+    }
+    content_->Pump(0);
+}
+
 bool QmlAssetsPage::WaitReferences(int timeout_ms) {
     if (model_->waitReferences(timeout_ms)) {
         content_->Pump(0);

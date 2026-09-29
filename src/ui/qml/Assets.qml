@@ -65,6 +65,12 @@ Ctl {
     // —— 页面状态（宿主可写）——
     property bool overview: false
     property int viewIndex: 0          // 0=总览 1=详情（QmlAssetsPage::ShowDetailPage 写）
+
+    // 取证用：把内容滚动位置**显式钉死**（QmlAssetsPage::SetScrollY 写）。
+    // ⚠️ 别改成「临时把宿主拉高再抓一张全页」—— 那是把视口撑成一个不存在的
+    // 尺寸，取到的图不对应任何真实屏幕。真实视口 + 显式 contentY 才能既拍到
+    // 折叠线以下、又不谎报视口。写 -1 表示回到顶部。
+    property real scrollY: -1
     // 产物大图预览（点「查看大图」时置位）
     property var previewLayer: null
     property bool previewVisible: false
@@ -259,6 +265,16 @@ Ctl {
         contentWidth: width
         contentHeight: root.contentH
         boundsBehavior: Flickable.StopAtBounds
+        // 取证钉位：root.scrollY >= 0 时接管滚动位置，否则交给用户。
+        // 用 Binding 而不是直接赋 contentY —— 直接赋会被 Flickable 自己的
+        // 拖动/惯性改回去，抓图就抓不到钉住的那一帧。
+        Binding {
+            target: flick
+            property: "contentY"
+            value: root.scrollY < 0 ? 0 : Math.min(root.scrollY, Math.max(0, flick.contentHeight - flick.height))
+            when: root.scrollY >= 0
+            restoreMode: Binding.RestoreBindingOrValue
+        }
 
         // ============ 总览 ============
         Item {

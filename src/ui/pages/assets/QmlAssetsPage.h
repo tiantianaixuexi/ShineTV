@@ -57,6 +57,10 @@ class QmlAssetsPage : public QWidget {
     std::size_t ImportReferences(const std::vector<std::filesystem::path>& paths);
     void RefreshReferences();
     void ShowDetailPage(int index);
+    // 取证钉位：把内容滚动位置显式写死（负值 = 回到顶部并交还控制权）。
+    // 用来在**真实视口**下拍折叠线以下的内容 —— 别改成把宿主拉高，那会让
+    // 取证图的视口不对应任何真实屏幕。
+    void SetScrollY(double y);
 
     // 参考库导入是异步的（worker 解码 + 写回 refs.json）。等它收敛用，
     // 免得调用方在 UI 线程硬 sleep。超时返回 false。

@@ -150,8 +150,10 @@ S7/S8（全局图库三来源扫描 / 图片用量跳转）**显式记 NOT-COVER
 至今未迁 QML，`GlobalGalleryProbe()` 固定返回 `gallery=unavailable`，
 照原样跑只会对着桩报假绿。跑场景：`scripts/run_p05.ps1`。
 
-参考库与策略面板两块落在 980px 视口的折叠线以下，由 `P05Review` 的
-`assets-detail-tall`（1600×2400 全页）覆盖，该图在 `expected` 里、缺一张即 FAIL。
+参考库与策略面板两块落在视口的折叠线以下，由 `P05Review` 的
+`assets-detail-bottom` 覆盖：取证视口是真实分辨率 1920×1080，滚动位置由
+`QmlAssetsPage::SetScrollY` 显式钉死（**不是**把宿主拉高取一张全页）。
+该图在 `expected` 里、缺一张即 FAIL。
 
 ## FlowCanvas
 
