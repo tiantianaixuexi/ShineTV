@@ -56,6 +56,10 @@ const std::vector<PageEntry> kPages{
 struct State {
     std::filesystem::path dir;
     std::vector<std::string> manifest;
+    // 失败计数。⚠️ 以前所有失败（宿主被裁剪 / QML 加载失败 / 空图 / 纯色图）
+    // 只写进 manifest 那一行，然后无条件 _Exit(0) —— 恒 0 的退出码等于没验收：
+    // harness 按退出码判会吃假绿，按 `overall:` 解析则整行缺失、像「没跑」。
+    int failures = 0;
 };
 
 // 取证超采样倍率（上限）。见 QuickHost::SetSupersample 的注释：
@@ -134,6 +138,7 @@ bool IsFlatColor(const QImage& img) {
 
 // 报一条并继续（不中断整批取证）：单页失败不该让其余页的证据也丢。
 void ReportFailure(State* state, const std::string& page, const std::string& detail) {
+    ++state->failures;
     state->manifest.push_back("qml-" + page + " 0 FAILED " + detail);
     std::printf("[qml-review] FAILED %s : %s\n", page.c_str(), detail.c_str());
     std::fflush(nullptr);
@@ -239,7 +244,9 @@ void ShootPage(State* state, const PageEntry& page) {
         }
         state->manifest.push_back(stem + " " + std::to_string(bytes.value_or(std::string{}).size()) +
                                   " " + verdict);
-        if (!ok || verdict.rfind("FAILED", 0) == 0) {
+        const bool failed = !ok || verdict.rfind("FAILED", 0) == 0;
+        if (failed) {
+            ++state->failures;
             std::printf("[qml-review]   %s -> %s\n", stem.c_str(), verdict.c_str());
             std::fflush(nullptr);
         }
@@ -255,6 +262,13 @@ void Run(State* state, std::string_view filter) {
         ShootPage(state, page);
     }
 
+    // 一页都没匹配上 filter 是个真错误，不是「跑完了没图」。
+    if (state->manifest.empty()) {
+        state->failures += 1;
+        state->manifest.push_back("no page matched filter (SHINE_QML_PAGES 拼错了?) FAILED");
+    }
+
+    const bool ok = state->failures == 0;
     std::string report = "QML page review (theme matrix, one host per page, live theme switch)\n";
     if (!filter.empty()) {
         report += "filter: " + std::string{filter} + "\n";
@@ -262,10 +276,12 @@ void Run(State* state, std::string_view filter) {
     for (const auto& line : state->manifest) {
         report += line + "\n";
     }
+    report += "failures=" + std::to_string(state->failures) + "\n";
+    report += std::string("overall=") + (ok ? "PASS" : "FAIL") + "\n";
     (void)util::WriteFileBytes(state->dir / "shots-manifest.txt", report);
     std::printf("%s", report.c_str());
     std::fflush(nullptr);
-    std::_Exit(0);
+    std::_Exit(ok ? 0 : 1);
 }
 
 } // namespace

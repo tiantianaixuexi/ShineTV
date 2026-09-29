@@ -39,7 +39,10 @@ struct PageEntry {
 // 返回已注册页面（顺序即取证顺序）。注册表在 .cpp 的匿名命名空间里维护。
 [[nodiscard]] const std::vector<PageEntry>& Pages();
 
-// 拍全部（或 filter 指定的）页面 × 5 套主题，出图 + manifest 后 _Exit(0)。
+// 拍全部（或 filter 指定的）页面 × 5 套主题，出图 + manifest。
+// **退出码跟着判据走**：任一页宿主被裁剪 / QML 加载失败 / 空图 / 纯色图
+// （场景图没真渲染）→ 报告写 overall=FAIL 且退出码非零。filter 没匹配上任何页
+// 也算失败。计数见 .cpp 的 State::failures。
 void SaveQmlPageReview(const std::filesystem::path& dir, std::string_view filter);
 
 } // namespace shine::qml

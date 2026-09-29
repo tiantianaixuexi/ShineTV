@@ -123,7 +123,8 @@ struct FinishOptions {
 struct FinishResult {
     bool ok = true;
     std::string report;
-    std::vector<std::string> missing;
+    std::vector<std::string> missing;      // 文件不存在
+    std::vector<std::string> undersized;   // 存在但小于 min_bytes
     std::vector<std::string> duplicates;
 };
 
@@ -132,9 +133,17 @@ inline FinishResult EvaluateShots(const FinishOptions& opt) {
     std::vector<std::pair<std::string, std::string>> digests; // (md5, name)
     for (const std::string& name : opt.expected) {
         const auto bytes = shine::util::ReadFileBytes(opt.dir / name);
-        if (!bytes || bytes->size() < opt.min_bytes) {
+        if (!bytes) {
             result.ok = false;
             result.missing.push_back(name);
+            continue;
+        }
+        // ⚠️ 「太小」与「缺」分开报。一张 40 字节的 PNG 读成 MISSING 会把排障方向
+        //    指到「抓图没跑」，而真实原因是「跑了但内容是空的」。
+        if (bytes->size() < opt.min_bytes) {
+            result.ok = false;
+            result.undersized.push_back(name + " " + std::to_string(bytes->size()) + "B < " +
+                                        std::to_string(opt.min_bytes) + "B");
             continue;
         }
         QByteArray raw(reinterpret_cast<const char*>(bytes->data()),
@@ -146,7 +155,13 @@ inline FinishResult EvaluateShots(const FinishOptions& opt) {
     }
     for (std::size_t i = 0; i < digests.size(); ++i) {
         for (std::size_t j = i + 1; j < digests.size(); ++j) {
-            if (digests[i].first != digests[j].second && digests[i].first == digests[j].first) {
+            // 守卫比的是**名字 vs 名字**。（原先误写成 md5 vs 名字，靠「md5 是 32 位
+            // 十六进制、文件名以 .png 结尾所以永远不相等」才恒真 —— 一旦调用方在
+            // expected 里重复列了同一个名字，就会报出 `a.png == a.png` 的自重复。）
+            if (digests[i].second == digests[j].second) {
+                continue;
+            }
+            if (digests[i].first == digests[j].first) {
                 result.duplicates.push_back(digests[i].second + " == " + digests[j].second);
             }
         }
@@ -168,6 +183,9 @@ inline FinishResult EvaluateShots(const FinishOptions& opt) {
     }
     for (const std::string& name : result.missing) {
         report += name + " MISSING\n";
+    }
+    for (const std::string& name : result.undersized) {
+        report += name + " UNDERSIZED\n";
     }
     if (!result.duplicates.empty()) {
         report += "--- duplicate shots (逐字节相同 = 有一张没拍到它该拍的) ---\n";

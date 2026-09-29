@@ -73,6 +73,46 @@ last_verified: 2026-09-29
 - 判定「布局对不对」用**目视 + 结构推理**（元素个数、是否重叠、是否居中、行高是否取该行最高），不要用像素差；
 - **PNG 字节数不是内容指标**（同一条铁律的第二个证据）。
 
+## 验收的退出码必须跟着判据走
+
+**恒 0 的退出码等于没验收。** 2026-09-29 全量排查发现：八份评审取证
+（`P03`–`P10` 的 `*Review.cpp`）里有六份是「写完 manifest 就 `std::_Exit(0)`」——
+缺图、超时、空图全报成功。后果有两层：按退出码判的 harness 直接吃假绿；
+按 `overall: (\w+)` 解析的 harness 读出来是「没有这行」，看起来像**没跑**而不是**跑挂了**。
+
+现在统一走 `src/ui/verify/review/ReviewProbe.h` 的 `FinishOptions` /
+`EvaluateShots` / `WriteAndExit`，判据三条：
+
+1. `expected` 里每个文件都存在 → 否则 `MISSING`；
+2. 字节数 ≥ `min_bytes`（默认 100B）→ 否则 `UNDERSIZED`（**与缺分开报**：
+   一张 40 字节的 PNG 读成 MISSING 会把排障方向指到「抓图没跑」）；
+3. 可选 `fail_on_duplicate`：两张图**逐字节相同**即 FAIL。两个图名共用一份
+   像素 = 有一张没拍到它该拍的状态。
+
+`WriteAndExit` 写 `overall=PASS|FAIL` 并 `_Exit(ok ? 0 : 1)`。
+`P02/P03` 的 Checks 侧同样改成由判据决定退出码。
+
+**每次跑完先对 md5**（见上一节）。字节数不同不算信号，逐字节相同的 md5 才是。
+
+### 跑法
+
+| 场景 | 命令 | 报告 |
+|---|---|---|
+| P05 八个场景 | `powershell -File scripts/run_p05.ps1 [-Scenes S7,S8]` | `build/p05/p05_S*.txt` |
+| 全部视觉评审 | `powershell -File scripts/run_reviews.ps1 [P05 P09]` | `build/reviews/<Pxx>/shots-manifest.txt` |
+| QML 页主题矩阵 | `SHINE_QML_REVIEW=<dir> SHINE_QML_PAGES=<页名,...>` | `<dir>/shots-manifest.txt` |
+
+`run_reviews.ps1` 额外核对「`overall` 与退出码是否一致」—— 判 PASS 却退非零
+（或反之）本身就是一处假绿，会被单列出来。
+
+⚠️ **取退出码踩了三个坑**（PowerShell 5.1 on Windows）：
+
+1. `Start-Process -PassThru` 返回的 Process 对象**恒不填 `ExitCode`**（直接跑 exe、
+   包一层 `cmd /c` 都一样空）——所以 Exit 列长期是装饰品；
+2. 只有**前台**执行 `cmd /c`，`$LASTEXITCODE` 才有值；
+3. 前台执行没有超时 → 超时用**看门狗进程**实现，**不要**把主体塞进 `Start-Job`
+   （实测会丢掉输出，拿不到退出码）。
+
 ## 失败处理
 
 - 复现后再改；

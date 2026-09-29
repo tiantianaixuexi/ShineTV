@@ -28,12 +28,38 @@ namespace fs = std::filesystem;
 struct State {
     fs::path dir;
     ImageFlowWorkspace* workspace = nullptr;
+    // 与本轮 review::Grab 调用点**一一对应**（11 个 grab，11 个名字）。
+    // 本文件 11 处抓图全部无条件执行，expected 里没有「清单有、本轮不拍」的条目。
     std::vector<std::string> expected{
         "flow-canvas-normal", "flow-canvas-empty", "flow-node-states", "flow-wiring",
         "flow-200-nodes", "binding-normal", "binding-missing", "batch-running",
         "batch-degraded", "review-findings", "comfy-panel-busy"};
     std::vector<std::string> manifest;
 };
+
+void Finish(State* state) {
+    // 判据走共享的 review::WriteAndExit（见 ReviewProbe.h 的 FinishOptions）：
+    // expected 逐个查存在 + 字节数下限 + 逐字节重复检测，退出码跟着 ok 走。
+    // 以前这里是「拼报告 → 写盘 → std::_Exit(0)」，恒 0。
+    std::vector<std::string> files;
+    files.reserve(state->expected.size());
+    for (const std::string& name : state->expected) {
+        files.push_back(name + ".png");
+    }
+    const review::FinishOptions opt{
+        .dir = state->dir,
+        .header = "P07-S13 shots",
+        .expected = files,
+        .manifest = &state->manifest,
+        .min_bytes = 100,
+        // 保持 false：三张画布图合法地长得一样（见 Run() 里的 note 行）。
+        // 其余 8 张承诺的状态都不同，重复检测结果仍会写进报告的 duplicate 段。
+        .fail_on_duplicate = false,
+    };
+    const review::FinishResult result = review::EvaluateShots(opt);
+    std::printf("[p07-review]\n%s", result.report.c_str());
+    review::WriteAndExit(opt);
+}
 
 void Run(State* state) {
     auto* empty = new ImageFlowWorkspace();
@@ -85,14 +111,19 @@ void Run(State* state) {
     state->workspace->Comfy()->SetDemoBusy(true);
     review::Grab(state->workspace->Comfy(), state->dir, "comfy-panel-busy", state->manifest);
 
-    std::string report = "P07-S13 shots\n";
-    for (const auto& line : state->manifest) report += line + "\n";
-    for (const auto& name : state->expected) {
-        if (!fs::is_regular_file(state->dir / (name + ".png"))) report += name + " MISSING\n";
-    }
-    (void)util::WriteFileBytes(state->dir / "shots-manifest.txt", report);
-    std::fflush(nullptr);
-    std::_Exit(0);
+    // ⚠️ 已知的一处「一张图三个名字」，写进报告而不是靠退出码掩盖：
+    // ImageFlowWorkspace::LoadMock() 内部已经 SelectNode("4")，而下面这三张
+    // 之间**没有任何状态变化**（flow-node-states 紧接 flow-canvas-normal；
+    // flow-wiring 又 SelectNode("4")，选中的还是同一个节点），所以三张图
+    // 逐字节相同。重复检测因此保持 false —— 但检测结果仍然会进报告的
+    // duplicate 段，不会被藏起来。补齐 node-states / wiring 的独立取证需要
+    // 改 P07Review.cpp 的抓图顺序（ClearSelection + 选不同节点），属取证设计
+    // 变更，不在本次「修假绿」范围内。
+    state->manifest.push_back(
+        "note flow-canvas-normal == flow-node-states == flow-wiring 同一帧："
+        "LoadMock() 已选中 4 号节点，三次抓图之间无状态变化");
+
+    Finish(state);
 }
 
 } // namespace

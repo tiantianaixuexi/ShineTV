@@ -53,25 +53,47 @@ foreach ($s in $scenes) {
     [Environment]::SetEnvironmentVariable("SHINE_P05_$s", $report, 'Process')
   }
 
-  $p = Start-Process -FilePath $exe -PassThru -NoNewWindow `
-         -RedirectStandardOutput (Join-Path $outDir "p05_$s.out") `
-         -RedirectStandardError  (Join-Path $outDir "p05_$s.err")
-  # Hard timeout: a scene that never writes its report means the app fell through
-  # to its normal main loop (e.g. the env var didn't match any check). Without this
-  # the harness waits forever instead of reporting a failure.
-  $timedOut = -not $p.WaitForExit(120000)
-  if ($timedOut) {
-    Write-Host "TIMEOUT after 120s, killing $s"
-    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-    $p.WaitForExit(5000) | Out-Null
+  # Taking the exit code took three wrong turns on this machine; the conclusions
+  # are recorded here so nobody repeats them:
+  #   1. `Start-Process -PassThru` hands back a Process object whose ExitCode is
+  #      ALWAYS EMPTY here (same for running the exe directly, and for wrapping it
+  #      in cmd /c). That is why the Exit column used to be blank decoration.
+  #   2. Only a FOREGROUND `cmd /c` populates $LASTEXITCODE (verified working).
+  #   3. But a foreground call has no timeout. So the timeout is a **watchdog
+  #      process** instead of pushing the subject into Start-Job -- pushing the
+  #      subject into a Job was measured to lose its output (NO-EXITCODE).
+  # Exit code and report verdict must agree; a PASS that exits non-zero is itself
+  # a false green, so it is surfaced as PASS-BUT-EXIT instead of being dropped.
+  $out = Join-Path $outDir "p05_$s.out"
+  $err = Join-Path $outDir "p05_$s.err"
+  $stamp = Join-Path $outDir "p05_$s.timeout"
+
+  # Watchdog: exits on its own if not triggered; writes a marker when it fires.
+  $watchdog = Start-Job -ScriptBlock {
+    param($marker, $limit)
+    Start-Sleep -Seconds $limit
+    if (Get-Process ShineTVStudio -ErrorAction SilentlyContinue) {
+      New-Item -ItemType File -Path $marker -Force | Out-Null
+      Get-Process ShineTVStudio -ErrorAction SilentlyContinue | Stop-Process -Force
+    }
+  } -ArgumentList $stamp, 120
+
+  $cmdline = '""{0}" 1> ""{1}"" 2> ""{2}""' -f $exe, $out, $err
+  cmd /c $cmdline
+  $code = $LASTEXITCODE
+  Stop-Job $watchdog -ErrorAction SilentlyContinue
+  if (Test-Path $stamp) {
+    Write-Host "TIMEOUT after 120s: $s"
+    $code = 'TIMEOUT'
   }
-  $code = if ($timedOut) { 'TIMEOUT' } else { $p.ExitCode }
+
   $verdict = 'MISSING'
   if (Test-Path $report) {
     $verdict = (Select-String -Path $report -Pattern '\[P05-\w+\] overall: (\w+)' |
                 Select-Object -First 1).Matches.Groups[1].Value
     if (-not $verdict) { $verdict = 'NO-VERDICT' }
   }
+  if ($verdict -eq 'PASS' -and $code -ne 0) { $verdict = "PASS-BUT-EXIT=$code" }
   $results += [pscustomobject]@{ Scene = $s; Exit = $code; Verdict = $verdict }
   Write-Host ("{0,-4} exit={1,-8} {2}" -f $s, $code, $verdict)
 }

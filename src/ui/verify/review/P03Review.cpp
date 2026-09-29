@@ -15,7 +15,6 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QLabel>
-#include <QPixmap>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
@@ -28,36 +27,71 @@ namespace shine::app {
 
 namespace {
 
+// 命令面板两项量化判据的预算。原来它们只是写进 manifest 的一行字，不影响 ok ——
+// 面板慢到 2s 也照样 overall=PASS。阈值集中在这里，报告行也引用同一组数字。
+constexpr qint64 kPaletteBudgetMs = 200; // Ctrl+K 到出结果
+constexpr int kRichTextWidthMax = 150;   // 同一 HTML 串 RichText ≈ 4 个汉字宽
+
 struct ReviewState {
     MainWindow* window = nullptr;
     std::filesystem::path dir;
     std::vector<std::string> manifest;
+    // 本轮真会产出的图 = 每个 Shot 登记的图名（不带扩展名）。**唯一来源就是
+    // Grab 调用点**，不另抄一份清单：两份清单迟早漂，漂了就等于少拍一张图还报 PASS。
+    // 名字在抓图**之前**登记 —— 控件为空 / save 失败时文件不存在 → 判据读出 MISSING
+    // → overall=FAIL。条件产物（对话框、抽屉可能没起来）也照样登记，否则
+    // 「没拍到」和「没打算拍」在报告里长得一模一样，那才是真正的悄悄少拍一张。
+    std::vector<std::string> expected;
+    // 命令面板两项断言的测量值。-1 = 根本没测到（poll 没跑完），同样判 FAIL。
+    qint64 palette_ms = -1;
+    int richtext_width = -1;
 };
 
-// 抓一张：grab 前强制重绘（P02-S7 教训：grab 前不 repaint 会抓到空帧）
-void Grab(QWidget* w, const std::filesystem::path& file, ReviewState* st) {
-    w->repaint();
-    const QPixmap pm = w->grab();
-    const QString qpath = QString::fromStdWString(file.wstring());
-    const bool ok = pm.save(qpath);
-    st->manifest.push_back(shine::util::FileNameToUtf8(file) + " " +
-                           std::to_string(shine::util::ReadFileBytes(file).value_or("").size()) +
-                           (ok ? " saved" : " FAILED"));
-}
-
+// 抓一张。走共享的 review::Grab（见 ReviewProbe.h 头注）：它处理空控件，
+// 并且按 QQuickWidget 的场景图路径取帧 —— QWidget::grab() 抓到的是「上一次
+// 渲染留下的那一帧」，换实体/换主题后可以拍出**逐字节相同**的图而 manifest
+// 照样记 saved。
 void Shot(ReviewState* st, QWidget* w, const char* name) {
-    Grab(w, st->dir / (std::string{name} + ".png"), st);
+    st->expected.emplace_back(name); // 先登记，后抓 —— 见 ReviewState::expected
+    review::Grab(w, st->dir, name, st->manifest);
 }
 
 void Finish(ReviewState* st) {
-    std::string report = "P03-S11 shots\n";
-    for (const std::string& line : st->manifest) {
-        report += line + "\n";
+    // 判据走共享的 review::WriteAndExit（见 ReviewProbe.h 的 FinishOptions）：
+    // expected 逐个查存在 + 字节数下限 + 逐字节重复检测，退出码跟着 ok 走。
+    std::vector<std::string> files;
+    files.reserve(st->expected.size());
+    for (const std::string& name : st->expected) {
+        files.push_back(name + ".png");
     }
-    (void)shine::util::WriteFileBytes(st->dir / "shots-manifest.txt", report);
-    std::printf("[p03-review]\n%s", report.c_str());
-    std::fflush(nullptr);
-    std::_Exit(0);
+    const bool palette_ok = st->palette_ms >= 0 && st->palette_ms < kPaletteBudgetMs;
+    const bool richtext_ok = st->richtext_width >= 0 && st->richtext_width < kRichTextWidthMax;
+    // 没测到也要在报告里留痕（名字本身带 NOT-MEASURED），不能因为「没量」而不出现。
+    const std::string palette_name =
+        st->palette_ms >= 0
+            ? "palette-results-ms=" + std::to_string(st->palette_ms) + " (<200ms)"
+            : std::string{"palette-results-ms=NOT-MEASURED"};
+    const std::string richtext_name =
+        st->richtext_width >= 0
+            ? "palette-richtext-width=" + std::to_string(st->richtext_width) + " (<150px)"
+            : std::string{"palette-richtext-width=NOT-MEASURED"};
+    const review::FinishOptions opt{
+        .dir = st->dir,
+        .header = "P03-S11 shots",
+        .expected = files,
+        .manifest = &st->manifest,
+        .min_bytes = 100,
+        // 本页每张图承诺的状态都不同（空态/有数据/四步向导/三种分辨率/面板/两套主题/
+        // 抽屉/首启两页/六个工作区）。两张逐字节相同 = 有一张没拍到它该拍的状态
+        // （切页是死属性时最典型），必须 FAIL，而不是照旧报 saved。
+        .fail_on_duplicate = true,
+        .extra = {
+            {palette_name, palette_ok},
+            {richtext_name, richtext_ok},
+        },
+    };
+    std::printf("[p03-review]\n%s", review::EvaluateShots(opt).report.c_str());
+    review::WriteAndExit(opt);
 }
 
 } // namespace
@@ -71,7 +105,8 @@ void SaveP03Review(const std::string& dirUtf8) {
     std::filesystem::remove_all(dir / "_proj", ec);
 shine::util::EnsureDir(dir);
 
-    auto* st = new ReviewState{nullptr, dir, {}};
+    auto* st = new ReviewState;
+    st->dir = dir;
     auto* window = new MainWindow();
     st->window = window;
     window->resize(1280, 800);
@@ -116,8 +151,10 @@ shine::util::EnsureDir(root);
             st->window->property("p03wizard").value<QWidget*>());
         if (wizard != nullptr) {
             wizard->GoToStep(0);
-            Shot(st, wizard, "wizard-step1-模板");
         }
+        // 对话框没起来也照样登记 + 抓：空控件由 review::Grab 记 FAILED，文件缺失
+        // → MISSING → FAIL。少一张必须是红的，不许因为「没窗口」就从清单里消失。
+        Shot(st, wizard, "wizard-step1-模板");
     });
     QTimer::singleShot(1900, window, [st] {
         auto* wizard = qobject_cast<ProjectWizardDialog*>(
@@ -129,8 +166,8 @@ shine::util::EnsureDir(root);
             bad.templateId = "film";
             wizard->SetSpec(bad);
             wizard->GoToStep(1);
-            Shot(st, wizard, "wizard-step2-命名与位置");
         }
+        Shot(st, wizard, "wizard-step2-命名与位置");
     });
     QTimer::singleShot(2150, window, [st] {
         auto* wizard = qobject_cast<ProjectWizardDialog*>(
@@ -143,15 +180,17 @@ shine::util::EnsureDir(root);
             spec.premise = "一盏灯把迷路的人带回家";
             wizard->SetSpec(spec);
             wizard->GoToStep(2);
-            Shot(st, wizard, "wizard-step3-一句话创意");
         }
+        Shot(st, wizard, "wizard-step3-一句话创意");
     });
     QTimer::singleShot(2400, window, [st] {
         auto* wizard = qobject_cast<ProjectWizardDialog*>(
             st->window->property("p03wizard").value<QWidget*>());
         if (wizard != nullptr) {
             wizard->GoToStep(3);
-            Shot(st, wizard, "wizard-step4-确认");
+        }
+        Shot(st, wizard, "wizard-step4-确认");
+        if (wizard != nullptr) {
             wizard->close(); // 程序化 close 不弹确认（向导刻意如此，自动化不断链）
         }
     });
@@ -184,8 +223,9 @@ shine::util::EnsureDir(root);
         poll->setInterval(1);
         QObject::connect(poll, &QTimer::timeout, st->window, [st, elapsed, poll] {
             if (st->window->Palette()->QueryCount(QString{}) > 0 || elapsed->elapsed() > 2000) {
-                st->manifest.push_back("palette-results-ms=" + std::to_string(elapsed->elapsed()) +
-                                       (elapsed->elapsed() < 200 ? " PASS(<200ms)" : " FAIL(>=200ms)"));
+                // 测量值存进 state，由 Finish 变成 FinishOptions::extra 的判据。
+                // 原来只是往 manifest 写一行字：面板 2s 才出结果也照样 overall=PASS。
+                st->palette_ms = elapsed->elapsed();
                 poll->stop();
                 poll->deleteLater();
                 delete elapsed;
@@ -194,9 +234,7 @@ shine::util::EnsureDir(root);
                 {
                     QLabel probeLabel(QStringLiteral("<div style=\"font-size:14px;\">新建项目</div>"));
                     probeLabel.setTextFormat(Qt::RichText);
-                    const int w = probeLabel.sizeHint().width();
-                    st->manifest.push_back("palette-richtext-width=" + std::to_string(w) +
-                                           (w < 150 ? " PASS(富文本渲染)" : " FAIL(标签当纯文本)"));
+                    st->richtext_width = probeLabel.sizeHint().width();
                 }
                 Shot(st, st->window->Palette(), "palette-open");
                 st->window->Palette()->ClosePalette();
@@ -218,13 +256,18 @@ shine::util::EnsureDir(root);
     // t=5150：附加证据 —— 状态栏点开详情抽屉（S8「可点开详情」）。
     // Drawer 是独立顶层：抓 window 抓不到（实测与主题图逐字节同哈希），必须抓抽屉本体。
     QTimer::singleShot(5100, window, [st] {
-        if (auto* drawer = st->window->ShowStatusDetail(StatusItem::Llm); drawer != nullptr) {
-            QTimer::singleShot(400, drawer, [st, drawer] {
-                Shot(st, drawer, "bonus-status-detail");
-            });
-        } else {
-            st->manifest.push_back("bonus-status-detail FAILED (no drawer)");
+        auto* drawer = st->window->ShowStatusDetail(StatusItem::Llm);
+        if (drawer == nullptr) {
+            // 没抽屉也照样登记 + 记 FAILED（review::Grab 处理空控件），文件缺失
+            // → MISSING → FAIL。少一张必须是红的，不许因为「没抽屉」就从清单里消失。
+            Shot(st, nullptr, "bonus-status-detail");
+            return;
         }
+        // 计时器的 context 必须是 drawer 本身：抽屉若在 400ms 内被关掉，Qt 会取消
+        // 这次回调。换成 st->window 就会拿着已析构的指针去抓图。
+        QTimer::singleShot(400, drawer, [st, drawer] {
+            Shot(st, drawer, "bonus-status-detail");
+        });
     });
 
     // t=5700：首启引导。切深空再取证——向导第③步是 Select（摘要按钮 / Field 标签 /

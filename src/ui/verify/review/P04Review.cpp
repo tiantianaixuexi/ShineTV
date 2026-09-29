@@ -10,6 +10,7 @@
 #include "ui/pages/novel/StateDiffView.h"
 #include "ui/pages/novel/WorldBoardView.h"
 #include "ui/pages/shell/MainWindow.h"
+#include "ui/verify/review/ReviewProbe.h"
 #include "db/sqlite/SqliteDb.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/theme/ThemeService.h"
@@ -248,23 +249,48 @@ void SeedNormalProject(const project::ProjectRef& ref) {
     (void)novelcore::WriteStageArtifact(ref.rootDir, 1, "CHAPTER_REPAIR", R"({"round":1,"revised":true})", "review-hash");
 }
 
+// 收尾判据的等待参数。最后几张 shot 是异步落的（PollShot 的 ready 轮询、跨步骤的
+// UI 落定），Finish 被调用的瞬间可能还有文件没写完，所以要等。
+// 上一版是「!ok 就重试 30 次」：prompt_ok 为 false 时也会空转 30 次 500ms，而重试
+// **不会**重跑 agent 自检 —— 于是「等图超时」和「判据全过」在代码里长得一样，真失败
+// 被这层重试盖住，报告里也看不出是哪一条没过。现在只有「缺图」才等；等不到就是 FAIL，
+// 并且把这个事实连同重试次数写进报告，而不是按旧值悄悄过。
+constexpr int kFinishRetryMs = 500;
+constexpr int kFinishRetries = 30;
+
+[[nodiscard]] review::FinishOptions ShotsOptions(const ReviewState* st) {
+    return review::FinishOptions{
+        .dir = st->dir,
+        .header = "P04-S11 shots",
+        // 清单里存的就是**含扩展名**的文件名：Grab 按 <name>.png 落盘，
+        // review::EvaluateShots 也按含扩展名的名字查。这里不要再拼一次 .png
+        // （拼成 *.png.png 会让 15 张图全部变 MISSING）。
+        .expected = st->expected,
+        .manifest = &st->manifest,
+        .min_bytes = 100,
+    };
+}
+
 void Finish(ReviewState* st) {
-    bool ok = true;
-    for (const std::string& name : st->expected) {
-        const fs::path file = st->dir / name;
-        const auto bytes = shine::util::ReadFileBytes(file);
-        if (!bytes || bytes->empty()) {
-            ok = false;
-        }
-    }
+    // ① agent 自检：本轮**只跑一次**，它的返回值就是最终结论。语义保留（等它），
+    //    但它不再决定「要不要重试」—— 只作为一条具名判据出现在报告里，
+    //    这样「自检没过」和「图没拍到」在报告里可以分开读。
     if (!st->prompt_checked) {
         st->prompt_checked = true;
         st->prompt_ok = shine::agent::RunMultiAgentSelfCheck();
     }
-    ok = ok && st->prompt_ok;
-    if (!ok && st->finish_attempts++ < 30) {
-        QTimer::singleShot(500, st->window, [st] { Finish(st); });
+    // ② 等图：只有 expected 里还缺的文件才等。缺图是「可能还在落」，
+    //    自检失败是「已经失败了」—— 两者不该共用同一个重试分支。
+    const review::FinishResult probe = review::EvaluateShots(ShotsOptions(st));
+    if (!probe.missing.empty() && st->finish_attempts < kFinishRetries) {
+        ++st->finish_attempts;
+        QTimer::singleShot(kFinishRetryMs, st->window, [st] { Finish(st); });
         return;
+    }
+    if (!probe.missing.empty()) {
+        st->manifest.push_back("wait-shots TIMEOUT missing=" + std::to_string(probe.missing.size()) +
+                               "/" + std::to_string(st->expected.size()) + " after " +
+                               std::to_string(st->finish_attempts) + " retries");
     }
     const std::string fonts = R"json({
   "font_chain": ["Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"],
@@ -301,19 +327,21 @@ void Finish(ReviewState* st) {
     const bool fontsOk = shine::util::WriteFileBytes(st->dir / "fonts.json", fonts);
     const bool promptOk = shine::util::WriteFileBytes(st->dir / "agent-prompt-check.json", prompt);
     const bool dshOk = shine::util::WriteFileBytes(st->dir / "dsh-attachments.json", dsh);
-    ok = ok && fontsOk && promptOk && dshOk;
-    std::string report = "P04-S11 shots\n";
-    for (const std::string& line : st->manifest) {
-        report += line + "\n";
-    }
-    report += std::string{"fonts.json="} + (fontsOk ? "saved" : "FAILED") + "\n";
-    report += std::string{"agent-prompt-check.json="} + (promptOk ? "saved" : "FAILED") + "\n";
-    report += std::string{"dsh-attachments.json="} + (dshOk ? "saved" : "FAILED") + "\n";
-    report += std::string{"overall="} + (ok ? "PASS" : "FAIL") + "\n";
-    (void)shine::util::WriteFileBytes(st->dir / "shots-manifest.txt", report);
-    std::printf("[p04-review]\n%s", report.c_str());
-    std::fflush(nullptr);
-    std::_Exit(ok ? 0 : 1);
+    st->manifest.push_back(std::string{"fonts.json="} + (fontsOk ? "saved" : "FAILED"));
+    st->manifest.push_back(std::string{"agent-prompt-check.json="} + (promptOk ? "saved" : "FAILED"));
+    st->manifest.push_back(std::string{"dsh-attachments.json="} + (dshOk ? "saved" : "FAILED"));
+
+    review::FinishOptions opt = ShotsOptions(st);
+    // 写不出文件也是判据（extra），不是只在报告里留一行字。
+    // 这四条的 PASS/FAIL 会逐条打印，按 overall: 解析的 harness 能看出是哪一条没过。
+    opt.extra = {
+        {"agent-self-check", st->prompt_ok},
+        {"fonts.json", fontsOk},
+        {"agent-prompt-check.json", promptOk},
+        {"dsh-attachments.json", dshOk},
+    };
+    std::printf("[p04-review]\n%s", review::EvaluateShots(opt).report.c_str());
+    review::WriteAndExit(opt);
 }
 void RunNext(ReviewState* st);
 
