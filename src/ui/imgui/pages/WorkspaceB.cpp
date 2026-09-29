@@ -368,6 +368,9 @@ struct BookState {
     std::string error;  // 业务层返回的中文原因；空 = 没出错
 
     std::vector<BookChapter> chapters;
+    // 章节 × V1–V7 的产物计数，与 chapters 同下标（全 0 = 没跑过视觉链）。
+    // 取自 ListStageArtifacts 的返回条数 —— 这个维度在**视觉链**上数据层就有。
+    std::vector<std::array<int, 7>> chapterVStages;
     std::vector<BookAsset> assets;
     std::vector<BookShot> shots;  // 当前章
     std::vector<BookSceneLink> sceneLinks;  // 当前章：场序 + 场标题 + 该场伏笔标题
@@ -559,6 +562,22 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
         out.chapters.push_back(std::move(row));
     }
 
+    // 章节 × V1–V7 的产物计数（全书）。真值源是 `ListStageArtifacts` 的返回条数。
+    //
+    // 逐章 × 逐阶段各查一次：N 章就是 7N 次预编译查询，跑在 worker 上，每次微秒级，
+    // 且语义直接来自业务层接口 —— 不另写一条 GROUP BY 的 SQL，避免「界面算的」和
+    // 「业务层算的」两套口径（上一轮刚吃过一次：一个空执行体让真通路算出了假结果）。
+    out.chapterVStages.resize(out.chapters.size());
+    for (std::size_t ci = 0; ci < out.chapters.size(); ++ci) {
+        for (int v = 1; v <= 7; ++v) {
+            const std::string code = "V" + std::to_string(v);
+            if (auto arts = visual.ListStageArtifacts(out.chapters[ci].id, code)) {
+                out.chapterVStages[ci][static_cast<std::size_t>(v - 1)] =
+                    static_cast<int>(arts->size());
+            }
+        }
+    }
+
     // —— 资产页：实体 + 主视觉资产 + 形象层进度 ——
     // 同 Qt 版 AssetPageModel::RefreshAssets 的口径；查不到资产 = 该实体还没有。
     if (auto entities = graph.ListEntities({}, {}, 2000)) {
@@ -733,6 +752,8 @@ void RebuildBookSide(const BookState& s) {
         row.volumeTitle = c.volumeTitle;
         v.chapters.push_back(std::move(row));
     }
+    // 章节 × V 阶段矩阵原样搬过去（worker 已经查完，这里只做拷贝）。
+    v.chapterVStages = s.chapterVStages;
     // ⚠️ 只有**当前选中章**的镜（shots 与 BookState.shots 同口径），不是全书。
     v.shots.reserve(s.shots.size());
     for (const BookShot& shot : s.shots) {

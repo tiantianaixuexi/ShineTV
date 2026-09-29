@@ -9,6 +9,7 @@
 #include "ui/imgui/kit/Widgets.h"
 #include "ui/imgui/theme/Theme.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -142,6 +143,14 @@ struct BookSideView {
     // 筛选是工作区 UI 态（见 BookKindFilter），筛完的树按下标回指这里。
     std::vector<BookAssetView> assets;
     BookRelationView relation;  // 随选中项重建，给检查器「关联」段
+    // 每章的 V1–V7 阶段产物数，**下标与 chapters 一一对应**（全 0 = 这一章没跑过视觉链）。
+    //
+    // 真值源：`novel::ListStageArtifacts(chapterId, "V<n>")` 的返回条数 ——
+    // 这个只读接口一直存在（`src/novel/NovelVisual.h:242-243`），表 `stage_artifacts`
+    // 也带 `chapter_id`。所以「章节 × 阶段」这个维度在**视觉链**上是数据层就有的，
+    // 并不是缺口；早先的判断（「章节维度在数据层根本不存在」）只对 T 链成立 ——
+    // T 链的 `LedgerEntry` / `work/T1.json` 确实不带章节。
+    std::vector<std::array<int, 7>> chapterVStages;
 };
 
 // 只读视图。UI 线程读，不做任何 IO。
