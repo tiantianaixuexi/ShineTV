@@ -614,19 +614,11 @@ add_executable(ShineTVStudio
   src/ui/verify/review/P06Review.h
   src/ui/verify/review/P06Review.cpp
   src/ui/verify/review/P03Review.cpp
-  src/ui/pages/assets/AssetWorkspace.h
-  src/ui/pages/assets/AssetWorkspace.cpp
-  src/ui/pages/assets/AssetDetailView.h
-  src/ui/pages/assets/AssetDetailView.cpp
-  src/ui/pages/assets/AssetPolicyPanel.h
-  src/ui/pages/assets/AssetPolicyPanel.cpp
   src/ui/pages/assets/AssetPolicy.h
   src/ui/pages/assets/AssetPageModel.h
   src/ui/pages/assets/AssetPageModel.cpp
   src/ui/pages/assets/QmlAssetsPage.h
   src/ui/pages/assets/QmlAssetsPage.cpp
-  src/ui/pages/assets/ConsistencyView.h
-  src/ui/pages/assets/ConsistencyView.cpp
   src/ui/pages/storyboard/StoryboardWorkspace.h
   src/ui/pages/storyboard/StoryboardWorkspace.cpp
   src/ui/pages/storyboard/StoryboardTimeline.h
@@ -639,8 +631,6 @@ add_executable(ShineTVStudio
   src/ui/pages/storyboard/ContinuityView.cpp
   src/ui/pages/storyboard/GenShotBridgeView.h
   src/ui/pages/storyboard/GenShotBridgeView.cpp
-  src/ui/pages/assets/RefLibraryView.h
-  src/ui/pages/assets/RefLibraryView.cpp
   src/ui/pages/novel/NovelWorkspace.h
   src/ui/pages/novel/NovelWorkspace.cpp
   src/ui/pages/novel/WorldBoardView.h

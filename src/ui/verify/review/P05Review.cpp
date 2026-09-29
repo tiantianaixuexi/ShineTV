@@ -368,14 +368,14 @@ void RunReview(ReviewState* st) {
     review::Pump();
     review::Grab(st->assets, st->dir, "sheet-missing-layers", st->manifest);
 
-    // ⚠️ 以下三块在 QML 迁移后**没有等价实现**，显式记为未覆盖，
+    // ⚠️ 以下几块在 QML 迁移后**没有等价实现**，显式记为未覆盖，
     // 而不是悄悄少拍一张 —— 取证表里「没这一行」会被读成「跑了没问题」。
     // 写进 notCovered 而不是 manifest：它们本来就不该被 Finish() 当成
     // 「应该有却没有」的图片来判失败。
     st->notCovered.push_back(
-        "detail-vsec  Widgets 的 AssetDetailView 未迁 QML；QML 详情区的设定集段只渲染桥上的字段");
+        "detail-vsec  QML 详情区的设定集段只渲染桥上的字段，没有分层展开取证");
     st->notCovered.push_back(
-        "detail-derive-chain  同上；QML 的 AssetsDerive 已接 Page.deriveChain 真数据，但缺 Widgets 的分层取证");
+        "detail-derive-chain  同上；AssetsDerive 已接 Page.deriveChain 真数据，但缺分层取证");
     st->notCovered.push_back(
         "gallery-grid  全局图库仍是 Widgets 的 GalleryWorkspace，未接入 QML 资产页");
     st->notCovered.push_back(

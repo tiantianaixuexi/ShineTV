@@ -52,6 +52,10 @@ SHINE_SCENE_IMAGE_CHECK
 
 这些是源码内部验收入口，不是稳定用户 API；具体变量以对应 `Register*Checks` 实现为准。变量名使用 ASCII，值可用 UTF-8 路径；PowerShell 脚本本身保持 ASCII，避免 Windows PowerShell 5.1 误解码。
 
+P05 的八个场景有现成跑法：`scripts/run_p05.ps1`（离屏、逐场景清空同族环境变量、
+把报告写到 `build/p05/`，末行汇总哪些不是 PASS）。S7 / S8 是**预期的
+NOT-COVERED**（全局图库未迁 QML），不是失败。
+
 ## 评审沙盒
 
 `SHINE_P03_REVIEW` 至 `SHINE_P10_REVIEW` 会在启动早期把 `APPDATA` 指向评审目录下的 `_appdata`。不要在这些模式下写真实用户设置；评审结束后检查输出目录和 manifest。

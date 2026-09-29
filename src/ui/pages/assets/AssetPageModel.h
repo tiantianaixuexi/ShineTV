@@ -1,7 +1,7 @@
 #pragma once
 // ui/pages/assets/AssetPageModel —— 资产页的 C++→QML 数据桥（QML 迁移）
 //
-// 定位：把 AssetWorkspace 原本直接喂给 QWidget 的数据，原样投影给 QML 页。
+// 定位：把资产页原本直接喂给 QWidget 的数据，原样投影给 QML 页。
 // **零新增真值**：字段、状态词表、tone 映射全部沿用 Widgets 侧原有的那一份
 // （kAssetEntityKinds / StatusLabel / StatusTone），QML 只是换个渲染层。
 //
@@ -51,7 +51,7 @@ class AssetPageModel : public QObject {
     explicit AssetPageModel(QObject* parent = nullptr);
     ~AssetPageModel() override;
 
-    // —— 生命周期：与 AssetWorkspace 同名同义 ——
+    // —— 生命周期：与迁移前的 AssetWorkspace 同名同义 ——
     bool OpenBook(const std::filesystem::path& dbPath, const std::filesystem::path& projectDir,
                   QString* error = nullptr);
     void CloseBook() noexcept;
@@ -168,7 +168,7 @@ class AssetPageModel : public QObject {
     // 而不是让按钮点了没反应、或谎称成功。
     Q_INVOKABLE void exportingUnsupported(const QString& what);
 
-    // —— ① 导出整版设定集 PNG（迁自 AssetDetailView::ExportSheet）——
+    // —— ① 导出整版设定集 PNG（迁自已删除的 Widgets 侧 ExportSheet）——
     // 收集就绪层 → SheetGrid 2×360×280 合成 → 存盘。
     // target 为空时走 QFileDialog 选路径（离屏/验收走显式 target）。
     // 解码 + 合成 + 写盘全在 worker，结果经 async::PostToUi 回填 exportState。
@@ -176,7 +176,7 @@ class AssetPageModel : public QObject {
     // 供验收等结果：合成 + 写盘是否已收敛（不阻塞事件循环）
     Q_INVOKABLE bool exportFinished() const { return !exportBusy_; }
 
-    // —— ② 参考库：导入 / 标记 / 绑定 / 删除（迁自 RefLibraryView）——
+    // —— ② 参考库：导入 / 标记 / 绑定 / 删除（迁自已删除的 Widgets 侧）——
     // 导入是异步的（worker 解码 + 写回 refs.json），返回提交数；
     // 实际落库数看 refImages 与 refProbe。
     Q_INVOKABLE int importReferences(const QStringList& paths);
@@ -190,7 +190,7 @@ class AssetPageModel : public QObject {
     // 验收等导入收敛用
     Q_INVOKABLE bool waitReferences(int timeoutMs = 10000);
 
-    // —— ③ 依赖策略面板（迁自 AssetPolicyPanel）——
+    // —— ③ 依赖策略面板（迁自已删除的 Widgets 侧策略面板）——
     Q_INVOKABLE void setAllowDegrade(bool allow);
     Q_INVOKABLE void setSuspendMinutes(int minutes);
 
@@ -295,7 +295,7 @@ class AssetPageModel : public QObject {
 
     // —— 参考库（④）——
     // 取数一律经 visual::ReferenceLibrary + AssetVisualData.h 的 AssetCollectRefs，
-    // **不在 UI 层另写一份映射**（原来只在 RefLibraryView.cpp 里）。
+    // **不在 UI 层另写一份映射**（原来只在那份已删除的 QWidget 视图里）。
     std::unique_ptr<visual::ReferenceLibrary> refs_;
     QString refSelectedId_;
     std::vector<AssetRefFact> refFacts_;

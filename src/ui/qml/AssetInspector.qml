@@ -1,16 +1,17 @@
 pragma ComponentBehavior: Bound
 // src/ui/qml/AssetInspector.qml —— 资产详情（QML 迁移，右栏检查器）
 //
-// 替代 Widgets 侧 AssetDetailView + AssetPolicyPanel 的可读部分。
+// 原 Widgets 侧 AssetDetailView + AssetPolicyPanel 的可读部分，随迁移退役删除。
 // 数据全部来自 C++ 注入的 `Page`（AssetPageModel），本页无 mock。
 //
 // 内容对应设计稿 Assets.jsx:208 起的设定集 KV（类别 / 别名 / 出处 / 降级策略），
 // 外加形象层派生链（mock.js DERIVE_CHAIN 的真数据形态）与运行态。
 //
-// ⚠️ 一致性 / 参考库两块**本轮不迁**：它们依赖 ConsistencyView / RefLibraryView
-// 的 Worker 解码与多选导入交互，QML 侧没有等价件，硬写会丢功能。
-// 对应地 QmlAssetsPage::ConsistencyProbe() / RefProbe() 显式返回 unavailable，
-// 不是「静默返回空」—— 免得取证把它读成通过。
+// ⚠️ 一致性与参考库的**渲染位置**在本页之外：
+//   一致性 → AssetsCompare.qml（内容区，Assets.qml 内）；
+//   参考库 → AssetsRefLibrary.qml（同上）。
+// 本页只承载设定集 KV / 形象层派生链 / 运行态这三块可读信息。
+// 两者现均已接真数据（ConsistencyProbe / RefProbe 返回真值，不再是 unavailable）。
 import QtQuick
 import Shine 1.0
 

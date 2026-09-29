@@ -3,17 +3,17 @@
 // **只读取数**与数据契约（QML 迁移期间由 Widgets 侧与 AssetPageModel 共用）。
 //
 // 为什么抽出来：这三条链路各自在两个地方被独立实现过一次 ——
-//   一致性：ConsistencyView.cpp（真实现） vs QML 的 AssetsCompare.qml（写死 mock）
-//   派生链：AssetDetailView.cpp 的 kLayers     vs AssetPageModel 构造函数里的硬编码四层
-//   时间线：AssetDetailView.cpp 的 CollectTimeline vs QML 的 AssetsTimeline.qml（写死 mock）
+//   一致性：Widgets 侧 ConsistencyView（真实现） vs QML 的 AssetsCompare.qml（写死 mock）
+//   派生链：Widgets 侧 AssetDetailView 的 kLayers vs AssetPageModel 构造函数里的硬编码四层
+//   时间线：Widgets 侧 AssetDetailView 的 CollectTimeline vs QML 的 AssetsTimeline.qml（写死 mock）
 // 两份实现必然漂移，而且已经漂了（一边是 read-only 假数据，一边是真库）。
 // 收敛到这一份后：真值只在这里算一次，两侧都只是渲染层。
+// （Widgets 侧那三个类已随 QML 迁移退役删除，本头是它们留下的唯一真值。）
 //
 // 纪律（与 AssetPageModel 一致）：
 //   * 全部只读真库（visual_states / character_status / shots / generated_images /
 //     visual_artifacts）与文件系统存在性，**不造假数据**。
 //   * 图像解码不得进本文件：只回路径，像素缩放交给各渲染层的 worker。
-//     （ConsistencyView 的帧图与 AssetDetailView 的缩略图都已在 worker 上解码。）
 #include "novel/NovelGraph.h"
 #include "novel/NovelImageStore.h"
 #include "novel/NovelTypes.h"
@@ -41,7 +41,7 @@ class Database;
 namespace shine::app {
 
 // —— 形象层定义（webui Assets.jsx 的 V0 四层顺序即派生顺序）——
-// 与 AssetDetailView.cpp 的 kLayers 逐字一致，不要在别处再写一份。
+// 这张表是四层顺序与中文层名的**唯一真值**，不要在别处再写一份。
 struct AssetLayerSpec {
     novelcore::AssetLayer layer;
     std::string_view key;    // visual_artifacts.layer
@@ -179,8 +179,8 @@ struct AssetConsistencyFact {
     QString lastLabel;                      // 当前章位
 };
 
-// ⚠️ 本函数只查库、只 stat 文件，**不解码像素**。difference_ 由渲染层拿到
-// 两帧后在 worker 上算（ConsistencyView 原本就是这么做的，别搬回 UI 线程）。
+// ⚠️ 本函数只查库、只 stat 文件，**不解码像素**。difference 由渲染层拿到
+// 两帧后在 worker 上算（别搬回 UI 线程 —— 那正是当初 H-2 那类卡顿）。
 [[nodiscard]] inline AssetConsistencyFact
 AssetCollectConsistency(shine::db::sqlite::Database& db, novelcore::NovelVisual& visual,
                         const novelcore::VisualAssetRow& asset, novelcore::RowId entityId,
@@ -349,8 +349,8 @@ inline void AssetApplyDifference(AssetConsistencyFact& fact, double difference) 
 // ===================================================================
 // ④ 项目参考库：assets/refs/ 的只读投影 + 探针口径
 // ===================================================================
-// 原来这套只在 RefLibraryView.cpp 里（QWidget 版）。QML 迁移后视图要重建，
-// 但**行 → 字段的映射与探针口径不该重写**：一处漂移就会让 QML 与旧验收
+// 这套原先只存在于已删除的 Widgets 侧 RefLibraryView。QML 迁移后视图重建，
+// 但**行 → 字段的映射与探针口径不该重写**：一处漂移就会让 QML 侧与验收脚本
 // 读出不同的 entity/markers。取值仍全部来自 visual::ReferenceLibrary
 // （refs.json + 文件 stat），不新增真值。
 struct AssetRefFact {
@@ -397,13 +397,13 @@ AssetCollectRefs(const std::vector<visual::ReferenceImage>& images,
     return out;
 }
 
-// 标记的展示口径（「、」分隔），与 RefLibraryView::RefProbe 同形。
+// 标记的展示口径（「、」分隔）；无标记时给显式 "none"，不留空串。
 [[nodiscard]] inline QString AssetRefMarkers(const QStringList& markers) {
     return markers.isEmpty() ? QStringLiteral("none") : markers.join(QStringLiteral("、"));
 }
 
-// 参考库探针。字段与 RefLibraryView::RefProbe 逐字对齐 ——
-// 验收脚本按 `refs=N; busy=N; drops=N; first=…` 解析，两边必须同形。
+// 参考库探针。字段口径 `refs=N; busy=N; drops=N; first=…` 由本函数定死 ——
+// 验收脚本按这串解析，改字段名就要同步改脚本。
 [[nodiscard]] inline QString AssetRefProbe(const std::vector<AssetRefFact>& refs, bool busy,
                                            bool drops, const QString& firstId) {
     QString first = QStringLiteral("none");

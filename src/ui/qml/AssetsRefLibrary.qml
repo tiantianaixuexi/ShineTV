@@ -2,10 +2,9 @@ pragma ComponentBehavior: Bound
 // src/ui/qml/AssetsRefLibrary.qml —— 页面私有：项目参考库（QML 迁移）
 //
 // 数据源：C++ 注入的 `Page`（ui/pages/assets/AssetPageModel.h 的 refImages），
-// 取数与 Widgets 侧 RefLibraryView **同一份**（visual::ReferenceLibrary +
-// AssetVisualData.h 的 AssetCollectRefs），本页只做渲染与动作派发。
-// 文案也照抄 Widgets 那一版（导入图片 / 刷新 / 保存标记 / 绑定当前实体 / 移除）——
-// 两个视图的验收断言按文案取值，迁移时别另起一套说法。
+// 取数经 visual::ReferenceLibrary + AssetVisualData.h 的 AssetCollectRefs，
+// 本页只做渲染与动作派发。
+// 文案沿用迁移前那一版（导入图片 / 刷新 / 保存标记 / 绑定当前实体 / 移除）。
 //
 // ⚠️ 三条接缝纪律：
 //   1. **refImages 每项带全键**（id / originalName / absPath / orientation /
@@ -14,10 +13,12 @@ pragma ComponentBehavior: Bound
 //      QString/int 报 "Unable to assign"。所以下面 selectedRef 的空态照
 //      Assets.qml 的 emptyAsset 给一份**带类型零值**的记录（不能是 null：
 //      十几处 selectedRef.xxx 绑���会把空态刷成一片 TypeError）。
-//   2. **选中 id 不是 Q_PROPERTY** —— C++ 侧只有 refSelectedId_ 的写动作，
-//      没有读属性（AssetPageModel.h:153-185 那一段）。所以本页自己镜像一份
-//      selectedId，**只**用于高亮与回填标记框；标记 / 绑定 / 移除三个写动作
-//      都由 C++ 用它自己那份真选择，不依赖这份镜像。
+//   2. **选中 id 必须是 Q_PROPERTY** —— C++ 侧只给 `Page.selectReference(id)` 这个
+//      写动作，方法调用在 QML 依赖图里是空的、只求值一次，首屏之后再选别的图
+//      绑定不会跟着重算。所以读侧补了 `Page.selectedRefId`（AssetPageModel.h），
+//      高亮与标记回填都绑它；本页仍保留一份本地 selectedId 供点击即时反馈，
+//      但**真值以 Page.selectedRefId 为准**，标记 / 绑定 / 移除三个写动作
+//      一律由 C++ 用它自己那份真选择。
 //   3. 缩略图走 `Image.asynchronous` + sourceSize（AssetsTimeline / AssetsCompare
 //      同一写法）：解码在 worker，UI 线程不做同步 IO。cover 裁切交给
 //      `fillMode: Image.PreserveAspectCrop` —— **不要**自己算 scale 去铺满，
@@ -47,9 +48,11 @@ Ctl {
     readonly property bool hasSel: root.selectedRef.id !== ""
     // 对外只读镜像：页面层（Assets.qml 设定集那行的「绑定当前实体」）要先判
     // 有没有选中再调 C++，否则 C++ 会静默返回。
-    readonly property string selectedRefId: root.selectedId
+    // 真值取 C++ 的 Page.selectedRefId（Q_PROPERTY，随 changed 重算）；
+    // 本地 selectedId 只负责点击时的即时反馈，随后会被真值追上。
+    readonly property string selectedRefId: Page.selectedRefId
 
-    // 绑定按钮的标签：有选中实体时带上名字（Widgets 侧 RefLibraryView:160-165 同一口径）
+    // 绑定按钮的标签：有选中实体时带上名字（与迁移前的 Widgets 版同一口径）
     readonly property string bindLabel: {
         var name = Page.selectedEntityId > 0
                  ? Page.entityNameById("" + Page.selectedEntityId) : ""

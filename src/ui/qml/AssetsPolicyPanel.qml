@@ -16,7 +16,7 @@ pragma ComponentBehavior: Bound
 //   顺带是 ThemeBridge.h:18-25 那条纪律的又一个实例：**方法调用在 QML 绑定里
 //   不建依赖**，所以「回灌」只能挂 Connections(onChanged)，不能靠绑定表达式。
 //
-// 文案照抄 Widgets 侧 AssetPolicyPanel.cpp:26-65（允许超期降级（关闭 = 严格模式）/
+// 文案沿用迁移前那一版（允许超期降级（关闭 = 严格模式）/
 // 挂起超时（分钟）/ 0 = 立即进入降级判定…），两个视图的验收按文案取值。
 import QtQuick
 import Shine 1.0
@@ -259,7 +259,7 @@ Ctl {
     // 步进区宽度：数字框 + 8 + 两个 .btn.sm + 4
     readonly property real stepperW: inputW + spSm + stepDown.width + spXs + stepUp.width
 
-    // —— 当前依赖等待的运行态（与 Widgets 侧 AssetPolicyPanel:129-140 同一口径）——
+    // —— 当前依赖等待的运行态（与迁移前的 Widgets 版同一口径）——
     Text {
         x: 0
         y: root.runtimeY

@@ -1,7 +1,7 @@
 #pragma once
 // ui/pages/assets/QmlAssetsPage —— 资产工作区的 QML 宿主（QML 迁移）
 //
-// 定位：**替代** AssetWorkspace（Widgets 版已退役）。对外接口刻意保持同名同义，
+// 定位：**替代** AssetWorkspace（Widgets 版已随迁移退役删除）。对外接口刻意保持同名同义，
 // 外壳 MainWindow 的接线基本不用改：
 //   * NavWidget() / NavHostBox() —— 实体树借给左栏（QQuickWidget 本身是 QWidget，
 //     SidePanel::AdoptNav 收的就是 QWidget*，所以左栏不必改）；
@@ -38,7 +38,7 @@ class QmlAssetsPage : public QWidget {
     explicit QmlAssetsPage(QWidget* parent = nullptr);
     ~QmlAssetsPage() override;
 
-    // —— 与 AssetWorkspace 同名同义（外壳 / 取证按这套调用）——
+    // —— 与迁移前的 AssetWorkspace 同名同义（外壳 / 取证按这套调用）——
     bool OpenBook(const std::filesystem::path& dbPath, const std::filesystem::path& projectDir,
                   QString* error = nullptr);
     void CloseBook() noexcept;

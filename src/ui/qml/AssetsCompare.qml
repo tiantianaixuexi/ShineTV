@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 //
 // 数据源：**C++ 桥的真值**（ui/pages/assets/AssetPageModel.h 的 compareKv /
 // diffRows / consistency.frames），取数逻辑在 ui/pages/assets/AssetVisualData.h
-// （与 Widgets 的 ConsistencyView 共用同一份，只读 visual_states /
+// （与已删除的 Widgets 版共用同一份 AssetVisualData.h，只读 visual_states /
 // character_status / shots / generated_images）。像素差异由 C++ 侧在 worker 上算。
 // 迁移前本文件整块是写死的「第1章↔第3章 / C1–C12 全过」设计稿 mock。
 //

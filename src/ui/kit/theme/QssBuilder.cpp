@@ -781,7 +781,7 @@ QGraphicsView { background-color: %26; border: none; }
   padding: 8px 2px; font-size: 12px; color: %10;
 }
 /* CSS 侧 `.dlist .drow:last-child { border-bottom: none }`（views.css:307-309）：
-   QSS 没有 :last-child 选择器，由构造方对末行清掉 shineKind="drow"（见 ConsistencyView）。 */
+   QSS 没有 :last-child 选择器，由构造方对末行清掉 shineKind="drow"（见资产页的派生链列表构造）。 */
 *[shineKind="derivelink"][fill="true"] { background-color: %13; }
 /* 轴线是 2px 细条，CSS 侧无对应圆角声明；保持方头（0），不做圆头 */
 *[shineKind="tlaxis"] { background-color: %7; border: none; border-radius: 0px; }

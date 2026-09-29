@@ -33,7 +33,7 @@ struct KindInfo {
     const char* scope;
 };
 
-// 与 AssetWorkspace 的 kAssetEntityKinds 同序同值（同一份词表，不新增真值）
+// 实体 kind 词表。kKinds 顺序 = 实体树分组顺序，不要在别处再写一份。
 constexpr std::array<KindInfo, 4> kKinds = {{
     {"person", "人物", "人物/生物"},
     {"location", "地点", "空间/势力"},
@@ -45,8 +45,8 @@ constexpr std::array<KindInfo, 4> kKinds = {{
     return message == "该实体尚无视觉资产";
 }
 
-// 状态词表与 tone：逐条照搬 AssetWorkspace.cpp 的 StatusLabel / StatusTone。
-// QML 只消费「中文标签 + tone 名」，不认识 PENDING/SHEET_READY 这些内部值。
+// 状态词表与 tone：内部值（PENDING / SHEET_READY…）到「中文标签 + tone 名」的
+// 唯一映射。QML 只消费后者，不认识内部值。
 [[nodiscard]] QString StatusLabel(const QString& status) {
     if (status == QStringLiteral("PENDING")) return QStringLiteral("待生成");
     if (status == QStringLiteral("PROMPTING") || status == QStringLiteral("GENERATING"))
@@ -167,7 +167,7 @@ constexpr std::array<KindInfo, 4> kKinds = {{
 }
 
 // 两张帧图的平均绝对差。**只在 worker 上调用** —— 解码 + 逐像素比较都是
-// 重活，放 UI 线程就是当初 H-2 那类卡顿。下采样到 64×64 与 ConsistencyView 同口径。
+// 重活，放 UI 线程就是当初 H-2 那类卡顿。下采样到 64×64（与历史口径一致）。
 [[nodiscard]] double MeanAbsoluteDifferenceOf(const QString& leftPath, const QString& rightPath) {
     constexpr int kSide = 64;
     const auto load = [](const QString& path) {
@@ -208,8 +208,7 @@ struct WorkerResult {
     bool degraded = false;
 };
 
-// 从 AssetWorkspace.cpp 原样搬来：这一段是资产管线的唯一实现，
-// Widgets 版删除后由本文件继续持有（不要在两处各写一份）。
+// 这一段是资产管线的唯一实现，不要在两处各写一份。
 [[nodiscard]] WorkerResult RunAssetInWorker(const std::filesystem::path& dbPath,
                                             novelcore::RowId assetId,
                                             std::optional<novelcore::AssetLayer> layer,
@@ -646,7 +645,7 @@ void AssetPageModel::RebuildVisualFacts() {
 
     ProjectConsistency(consistency);
     ProjectTimeline(timeline);
-    // 设定集事实行（口径与 Widgets 的 AssetDetailView 一致，全部来自真库行数）
+    // 设定集事实行（全部来自真库行数）
     const auto push_sheet = [this](const QString& key, const QString& value) {
         QVariantMap row;
         row.insert(QStringLiteral("key"), key);
@@ -866,8 +865,8 @@ void AssetPageModel::RebuildRefs() {
 }
 
 // —— ① 导出整版设定集 PNG ——
-// 真实现迁自 AssetDetailView::ExportSheet：收集就绪层 → SheetGrid 2×360×280
-// 合成 → 存盘。**解码 / 合成 / 写盘全部在 worker**（AGENTS.md：图片解码放
+// 真实现迁自已删除的 Widgets 侧：收集就绪层 → SheetGrid 2×360×280 合成 → 存盘。
+// **解码 / 合成 / 写盘全部在 worker**（AGENTS.md：图片解码放
 // worker，UI 线程不做同步 IO），结果经 async::PostToUi 回填 exportView_。
 void AssetPageModel::exportSheet(const QString& target) {
     if (exportBusy_) {
@@ -918,7 +917,7 @@ void AssetPageModel::exportSheet(const QString& target) {
     }
 
     // 解码 + 整版合成 + 写盘**一趟做完，全在 worker**（AGENTS.md：图片解码放
-    // worker，UI 线程不做同步 IO）。口径照搬 AssetDetailView：2 列 360×280。
+    // worker，UI 线程不做同步 IO）。口径沿用历史值：2 列 360×280。
     const QPointer<AssetPageModel> guard(this);
     async::RunOnWorker([guard, todo, path] {
         images::SheetGrid sheet(2, QSize(360, 280));
@@ -966,7 +965,7 @@ void AssetPageModel::exportSheet(const QString& target) {
 }
 
 // —— ② 参考库：导入 / 标记 / 绑定 / 删除 ——
-// 真实现迁自 RefLibraryView。导入是异步的（worker 解码 + 写回 refs.json），
+// 真实现迁自已删除的 Widgets 侧。导入是异步的（worker 解码 + 写回 refs.json），
 // 这里返回**提交数**，实际落库数看 refImages() / RefProbe()。
 int AssetPageModel::importReferences(const QStringList& paths) {
     if (refBusy_ || projectDir_.empty() || paths.isEmpty()) {
@@ -1259,8 +1258,7 @@ bool AssetPageModel::StartRun(std::optional<novelcore::AssetLayer> layer) {
         // ⚠️ 必须走 BeginRunChecking 而不是直接 FinishAssetRun：
         // worker 只回**最终**结果，「落盘校验」这一步发生在 UI 线程（下一条）。
         // 直接跳到 FinishAssetRun 会让 GENERATING → CHECKING 这一跳**永远不出现**，
-        // history 退化成 GENERATING>READY，页面上「正在校验」那一态也没了
-        // （AssetWorkspace 的两跳写法见其 StartAssetRun 的 PostToUi）。
+        // history 退化成 GENERATING>READY，页面上「正在校验」那一态也没了。
         async::PostToUi([guard, asset_id, run_id, result = std::move(result)]() mutable {
             if (!guard.isNull()) {
                 guard->BeginRunChecking(asset_id, run_id, QString::fromStdString(result.detail),
@@ -1288,8 +1286,8 @@ void AssetPageModel::BeginRunChecking(qint64 assetId, qint64 runId, QString deta
     }
     RebuildDerived();
 
-    // 「校验中」是给用户看的中间态，停 120ms 再收敛到终态 ——
-    // 与 AssetWorkspace 的两跳写法一致（少了这一跳，CHECKING 永远不可见）。
+    // 「校验中」是给用户看的中间态，停 120ms 再收敛到终态。
+    // 少了这一跳，CHECKING 相位永远不可见。
     QTimer::singleShot(120, this, [this, assetId, runId, finalPhase = std::move(finalPhase),
                                    worker_detail = std::move(worker_detail), degraded] {
         FinishAssetRun(assetId, runId, finalPhase, worker_detail, degraded);
@@ -1381,7 +1379,7 @@ QString AssetPageModel::StateProbe() const {
              state.detail.isEmpty() ? QStringLiteral("none") : state.detail);
 }
 
-// 详情探针。字段与 AssetDetailView::DetailProbe 同形，全部由 layersView_
+// 详情探针。字段口径由本函数定死（P05 的 S2 按它解析），全部由 layersView_
 // （= AssetVisualData.h 的 AssetCollectLayers 真值）算出。
 //
 // ⚠️ **没有 decoded 字段**：QML 侧用 QQuickImageLoader 异步加载，页面拿不到
@@ -1430,7 +1428,7 @@ QString AssetPageModel::DetailProbe() const {
                                                                 : QStringLiteral("0"));
 }
 
-// 策略探针。字段与 AssetPolicyPanel::PolicyProbe 同形（含 strict 与 timeoutMs），
+// 策略探针。含 strict 与 timeoutMs（P05 的 S4 按它解析），
 // 值全部来自真实的 policy_ 与运行态 —— 原来这里是硬编码 "policy=qml"，
 // 任何策略断言都只能对着桩跑出假绿。
 QString AssetPageModel::PolicyProbe() const {
@@ -1452,7 +1450,7 @@ QString AssetPageModel::PolicyProbe() const {
                                                                 : QStringLiteral("0"));
 }
 
-// 一致性探针。字段与 ConsistencyView::ConsistencyProbe 逐字对齐，
+// 一致性探针。字段口径由本函数定死（P05 的 S5 按它解析），
 // 数据来自 AssetVisualData.h 的 AssetCollectConsistency（唯一真值）。
 QString AssetPageModel::ConsistencyProbe() const {
     if (db_ == nullptr) {

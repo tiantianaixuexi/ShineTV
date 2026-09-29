@@ -1,5 +1,5 @@
 pragma ComponentBehavior: Bound
-// src/ui/qml/Assets.qml —— QML 版资产页（Widgets 版见 src/ui/pages/assets/AssetWorkspace.cpp）
+// src/ui/qml/Assets.qml —— QML 版资产页（Widgets 版已退役删除）
 //
 // 真值来源：webui/src/views/Assets.jsx（结构与内容）+ webui/src/styles/{views,ui,tokens,base}.css
 // （部件级几何与配色）。下面每个数值后面的注释是它在那份 css 里的行号。
@@ -27,7 +27,7 @@ pragma ComponentBehavior: Bound
 //
 // 页面私有的四件（AssetsSecHead / AssetsAssetCard / AssetsCompare / AssetsTimeline）
 // 之外又加了两件：AssetsRefLibrary（④ 参考库）与 AssetsPolicyPanel（⑤ 依赖策略），
-// 对应 Widgets 侧 RefLibraryView / AssetPolicyPanel —— 同样只做渲染与动作派发，
+// 对应已删除的 Widgets 版参考库 / 策略面板 —— 同样只做渲染与动作派发，
 // 取数与真值全在 C++ 桥上。
 //
 // 数据：真值全部来自 C++ 注入的 `Page`（ui/pages/assets/AssetPageModel.h），
@@ -48,7 +48,7 @@ Ctl {
     // 页面里 400 多行的渲染代码一行没动 —— 只有数据入口换成了桥。
     //
     // 三块真数据的取数在 ui/pages/assets/AssetVisualData.h（只读真库 + 文件系统
-    // 存在性），与 Widgets 的 AssetDetailView / ConsistencyView 共用同一份：
+    // 存在性），与已删除的 Widgets 版共用过同一份：
     //   设定集 / 派生链  Page.deriveChain（visual_artifacts + 产物落盘）
     //   一致性对比      Page.consistency / compareKv / diffRows
     //                    （visual_states / character_status / 镜头图像素差异）
@@ -242,8 +242,7 @@ Ctl {
     readonly property real tlSecH: vsecPadT + 26 + vsecGap + tlView.implicitHeight + vsecPadB
     readonly property real yTimeline: yCompare + cmpSecH
 
-    // ④ 项目参考库 / ⑤ 依赖策略：Widgets 版 RefLibraryView / AssetPolicyPanel
-    // 的 QML 对应件。高度由组件自己的 implicitHeight 推（见 cmpSecH / tlSecH），
+    // ④ 项目参考库 / ⑤ 依赖策略：AssetsRefLibrary / AssetsPolicyPanel。
     // 页面**不写内容高度常数** —— 写死高度是 PanelCard 头注第 2 条记的旧账。
     readonly property real refsSecH: vsecPadT + 26 + vsecGap + refView.implicitHeight + vsecPadB + 1
     readonly property real yRefs: yTimeline + tlSecH
@@ -303,7 +302,7 @@ Ctl {
                     text: "全部实体 " + root.visibleEntities.length + " 个 · 点击卡片进入详情"
                     color: ThemeBridge.colors["text.muted"]
                     font.family: ThemeBridge.fontFamily
-                    font.pixelSize: 12   // .vw-sub f12.5px → 取整 12（同 AssetWorkspace.cpp:308 的落地值）
+                    font.pixelSize: 12   // .vw-sub f12.5px → 取整 12（全局只写整像素，见 AGENTS.md 圆角与字号刻度）
                 }
 
                 // 类型筛选胶囊（带 .cnt 数量徽标，见 Chip.qml 头注）
@@ -386,7 +385,7 @@ Ctl {
             visible: !root.overview && root.hasCurrent
 
             // 类型筛选胶囊：设计稿把它们放在外壳左栏（Shell.jsx:538-544），
-            // Widgets 版放在页内头部（AssetWorkspace.cpp:314-332）——本页沿用页内
+            // 设计稿把工具条放在页内头部 —— 本页沿用页内
             // 位置，所以两种形态的顶部都有这一行 26px 的筛选条。
             Row {
                 id: detChips

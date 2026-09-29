@@ -4,7 +4,7 @@ pragma ComponentBehavior: Bound
 // 数据全部来自 C++ 注入的 `Page`（AssetPageModel）。本页**不持有任何 mock**：
 // entityGroups / kinds 都是 model 上的 Q_PROPERTY，随 changed() 重算。
 //
-// 定位：替代 Widgets 侧 AssetWorkspace 的 QTreeWidget 导航。结构照设计稿
+// 定位：资产页左栏实体树（原 QTreeWidget 导航已随 Widgets 版退役删除）。结构照设计稿
 // views.css:716 起的 .assets-shell 220px 侧栏：4 个 kind 分组，组头可点做过滤，
 // 组内是实体；点实体即选中并把资产网格过滤到该实体。
 //

@@ -96,7 +96,7 @@ widgets::RefreshOnThemeChange(this, [this] { setStyleSheet(PageQss()); });
 | 绕过 `kit` 直接用 `QTabWidget` | `pages/{Pipeline,VideoFlow,ImageFlow}Workspace.cpp` | 评审侧因此要用 `findChild<QTabWidget*>()` 反查 |
 | 状态点自绘（3 套写法 + 2 份色值映射） | `pages/shell/StatusBar.cpp`、`pages/novel/NovelWorkspace.cpp`、`pages/project/ProjectHubView.cpp` | 尚无 `kit::StatusDot` |
 | 空态手搓 `QLabel("暂无…")` 而非 `kit::EmptyState` | `pages/videoflow/ChainView.cpp`、`pages/pipeline/LedgerView.cpp`、`pages/imageflow/BindingView.cpp` 等 | `pages/storyboard/ContinuityView.cpp` 是正确用法样板 |
-| 确认框三种写法并存 | `pages/assets/RefLibraryView.cpp`、`pages/novel/InitChainView.cpp`（原生 `QMessageBox`）、`pages/project/ProjectWizardDialog.cpp`（自绘） | `kit::Surfaces` 无 Confirm 变体 |
+| 确认框三种写法并存 | `pages/novel/InitChainView.cpp`（原生 `QMessageBox`）、`pages/project/ProjectWizardDialog.cpp`（自绘） | `kit::Surfaces` 无 Confirm 变体。资产页那一处随 `RefLibraryView` 退役删除，QML 侧改用 Toast |
 | 中文相对时间格式化 | `pages/project/ProjectHubView.cpp` | 业务无关，可进 `ui/layout/QtLayout.h` |
 | 哈希短显示 `left(12)` | `pages/novel/DraftView.cpp` | 可加 `util::ShortHash()` |
 | `QString::fromStdString` 与 `fromUtf8` 两种 `Text()` 助手语义不同 | `pages/novel/AutoRunPanel.cpp`（fromUtf8，正确）、`pages/imageflow/ImageFlowWorkspace.cpp`（fromStdString） | 中文路径下后者有编码风险 |
@@ -134,12 +134,21 @@ transition）、`QPushButton` 挂子布局后必须覆写 `sizeHint`、`QPlainTe
 | 文件 | 职责 |
 |---|---|
 | `pages/assets/AssetPageModel.h` | C++→QML 数据桥。全部 `Q_PROPERTY` + `NOTIFY changed`（方法调用在 QML 依赖图里是空的，会永久缓存）。复合值用 `QVariantList` of `QVariantMap`，QML 侧直接是 JS 数组+对象。**空态 map 必须带全零值键**（见 qml-kit 坑位清单）。 |
-| `pages/assets/AssetVisualData.h` | 形象层 / 一致性 / 时间线三块的**只读取数**与数据契约。只查真库（`visual_artifacts` / `visual_states` / `character_status` / `shots` / `generated_images`）+ 文件系统存在性，**不造假数据**。与 `AssetDetailView` / `ConsistencyView` 共用同一份，避免两边漂移。**不解码像素** —— 帧图差异在 worker 上算。 |
+| `pages/assets/AssetVisualData.h` | 形象层 / 一致性 / 时间线 / 参考库四块的**只读取数**与数据契约。只查真库（`visual_artifacts` / `visual_states` / `character_status` / `shots` / `generated_images`）+ 文件系统存在性，**不造假数据**。**不解码像素** —— 帧图差异在 worker 上算。 |
+| `pages/assets/AssetPolicy.h` | 依赖策略的值类型（两个开关）。原先住在 QWidget 的 `AssetPolicyPanel.h`，随迁移退役删除后独立成无 Qt 依赖的头。 |
+| `qml/AssetsRefLibrary.qml` | 项目参考库面板（导入 / 标记 / 绑定 / 删除），数据取 `Page.refImages`。 |
+| `qml/AssetsPolicyPanel.qml` | 依赖策略面板，数据取 `Page.policy`，写回 `Page.setAllowDegrade` / `setSuspendMinutes`。 |
 
-⚠️ `AssetWorkspace` / `AssetDetailView` / `ConsistencyView` / `RefLibraryView` **仍在树里**
-（`P05Checks.cpp` 有 9 处 standalone 构造）。它们是导出整版 PNG、参考库导入/写回等
-真实能力的唯一实现，删之前必须先把这些能力接线到 QML。现状与缺口见
-[`90-reference/ui-design-parity-gaps.md`](../90-reference/ui-design-parity-gaps.md)。
+✅ **Widgets 版已全部删除**（2026-09-29）：`AssetWorkspace` / `AssetDetailView` /
+`ConsistencyView` / `RefLibraryView` / `AssetPolicyPanel` 共约 150 KB 连同
+`CMakeLists.txt` 条目一并移除，全仓无残留编译期引用。删除前先把这三块真实能力
+接到了 QML：导出整版设定集 PNG、参考库导入/标记/绑定/删除、依赖策略面板。
+残留的仅是注释里的历史沿革说明，不是路径引用。
+
+`P05Checks.cpp` 的 8 个场景也全部改到 `QmlAssetsPage` 上：S1–S6 真跑，
+S7/S8（全局图库三来源扫描 / 图片用量跳转）**显式记 NOT-COVERED** —— 全局图库
+至今未迁 QML，`GlobalGalleryProbe()` 固定返回 `gallery=unavailable`，
+照原样跑只会对着桩报假绿。跑场景：`scripts/run_p05.ps1`。
 
 ## FlowCanvas
 

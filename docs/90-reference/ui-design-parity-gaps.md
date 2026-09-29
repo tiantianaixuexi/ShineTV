@@ -22,8 +22,8 @@ source_of_truth:
   - src/ui/kit/qml/ThemeBridge.h
   - src/ui/kit/qml/QuickHost.cpp
   - src/ui/qml/Parity.qml
-  - src/ui/pages/assets/AssetDetailView.cpp
-  - src/ui/pages/assets/AssetWorkspace.h
+  - src/ui/pages/assets/AssetPageModel.cpp
+  - src/ui/pages/assets/AssetVisualData.h
   - src/ui/pages/novel/DraftView.cpp
   - src/ui/verify/review/P05Review.cpp
   - src/ui/verify/checks/P04ChapterChecks.cpp
@@ -161,7 +161,7 @@ Qt 侧的实际落地手段。
 | `@keyframes` 循环动画 | `.prog.run` 微光、`.dot.run` 脉冲、`.empty .glyph` 浮动 | 无 keyframes | **均已做**：`Spinner` / `StatusDot` / `ProgressBar` 微光 / `EmptyState` 的 `FloatGlyph`（4s ±6px）全部 QTimer 推进相位 + `paintEvent` 自绘；「减少动效」下退化为静态 |
 | `:focus-within` | `.search:focus-within` | 只认控件自身焦点 | **已做**：事件过滤把焦点转发到父框的 `focused` 属性（`SearchBox`） |
 | 每主题改字体族 | `[data-theme="inkwash"] --font-ui`（衬线） | `QssBuilder` 只按 `%N` 替换颜色 | **已做**：不进 `ColorToken`，另立 `kFontFamilies` 表 + 非颜色占位符 `$FONTFAMILY$`，见第〇节 |
-| CSS Grid 的 `minmax()` / `auto-fit` | `.asset-grid`、`.gal-grid` | QSS 不参与布局 | **已做**：`QGridLayout` 本身没有 auto-fit，改由宿主在宽度变化时回调重算列数 + `setColumnStretch` 复刻 `1fr`（`AssetWorkspace::ReflowAssets` / `WidgetGalleryView.cpp` 的 `GalGrid::ColumnsFor`）；`flex-wrap` 由 `layout/FlowLayout.h` 覆盖 |
+| CSS Grid 的 `minmax()` / `auto-fit` | `.asset-grid`、`.gal-grid` | QSS 不参与布局 | **已做**：`QGridLayout` 本身没有 auto-fit，改由宿主在宽度变化时回调重算列数 + `setColumnStretch` 复刻 `1fr`（QML 侧 `AutoGrid.qml` / `WidgetGalleryView.cpp` 的 `GalGrid::ColumnsFor`）；`flex-wrap` 由 `layout/FlowLayout.h` 覆盖 |
 
 
 ### 阴影（已实现，不要重复造）
@@ -281,7 +281,7 @@ child-over-parent 手动 `move()/resize()`，那是另一轮工作量。
 
 设计稿 `webui/src/views/Assets.jsx:85-105` 的事件轴（`.tl` 轴线 + `.ev` 事件点按
 `left: pct(ch) + '%'` 定位 + `.pin` 圆点 + `.lb` 标签，下方 `.tl-below` 是「绑定镜头」
-chip 行 + 「参考图」缩略图）已在 `AssetDetailView` 的 `RelTimeline` 里实现。
+chip 行 + 「参考图」缩略图）已在 QML 的 `AssetsTimeline.qml` 里实现。
 数据全部真实只读：`visual_states`（外观基线事件，最新一条为 `hot` 带「· 当前」→
 对应 `Assets.jsx:68`）、`chapters`（轴线刻度）、`shots.character_ids_json`（绑定镜头）、
 `generated_images`（参考图缩略 52×36）。
@@ -708,19 +708,25 @@ ShapePath {
 **已注册到取证页注册表**（`QmlPageReview.cpp` 的 `kPages`）：`Parity`（验证页）/ `Gallery` /
 `Assets` / `Storyboard` / `ImageFlow`。
 
-> ✅ **资产页已接进产品**（2026-09-29）。`MainWindow` 现在构造的是
-> `src/ui/pages/assets/QmlAssetsPage.h`（三个 `QuickHost`：内容 + 左栏导航 + 右栏检查器），
-> `AssetWorkspace` 已不在主程序运行路径。数据经
-> `src/ui/pages/assets/AssetPageModel.h`（C++→QML 桥）注入，形象层 / 一致性 / 时间线
-> 的取数收敛在 `src/ui/pages/assets/AssetVisualData.h`，只读真库
+> ✅ **资产页已完全 QML 化，Widgets 版已删除**（2026-09-29）。`MainWindow` 构造的是
+> `src/ui/pages/assets/QmlAssetsPage.h`（三个 `QuickHost`：内容 + 左栏导航 + 右栏检查器）。
+> 数据经 `src/ui/pages/assets/AssetPageModel.h`（C++→QML 桥）注入，形象层 / 一致性 /
+> 时间线 / 参考库的取数收敛在 `src/ui/pages/assets/AssetVisualData.h`，只读真库
 > （`visual_artifacts` / `visual_states` / `character_status` / `shots` /
 > `generated_images`）+ 文件系统存在性，**不再有 mock**。帧图像素差异在 worker 上算。
 >
-> ⚠️ **但 QWidget 版暂留未删**，因为它仍是若干真实能力的唯一实现：导出整版 PNG
-> （多图合成 + 写盘 + 文件对话框）、参考库导入 / 标记 / 绑定 / 删除、跨镜头像素差异
-> （QML 侧已接，但 Widgets 侧口径更全）、分层缩略预览。对应 QML 按钮
-> （导出整版 / 导入图片 / 绑定当前实体）按下时给**明确提示**，不是静默失败。
-> 另两块仍未迁：全局图库 `GalleryWorkspace`、策略面板 `AssetPolicyPanel`。
+> **Widgets 版五个类（`AssetWorkspace` / `AssetDetailView` / `ConsistencyView` /
+> `RefLibraryView` / `AssetPolicyPanel`，约 150 KB）已随迁移删除**。删除前先把三项
+> 真实能力接到了 QML：导出整版设定集 PNG（`Page.exportSheet`）、参考库
+> 导入/标记/绑定/删除（`Page.importReferences` / `setReferenceMarkers` /
+> `bindReferenceToEntity` / `removeReference`）、依赖策略面板
+> （`Page.setAllowDegrade` / `setSuspendMinutes`）。全仓无残留编译期引用。
+>
+> ⚠️ **全局图库仍未迁**（`src/ui/verify/gallery/GalleryWorkspace`）。因此
+> `QmlAssetsPage::GlobalGalleryProbe()` 固定返回 `gallery=unavailable`、
+> `SelectFirstGlobalGallery()` 固定 `false`、`ReferenceUsageLabels()` 恒空。
+> **P05 的 S7 / S8 已显式记 NOT-COVERED**（报告里单列一节、不计入 overall），
+> 而不是留着断言对着桩跑出假绿。
 >
 > 其余 4 页（Parity / Gallery / Storyboard / ImageFlow）**仍是离屏取证轨**，
 > `src/ui/pages/**` 里除资产页外零 QML 宿主。规划迁移时不要把本节读成「已经迁完了」。
@@ -758,6 +764,7 @@ Qt 仍然没有「抓别的窗口」的能力）。已在 `QT_QUICK_BACKEND=soft
 | `check-theme: PASS (5 themes parse)` | `tools/check-theme.ps1` | 原提示串写死「four themes」，判据也是 `Count -lt 4`，而目录里实际有 5 个 JSON。2026-09-30 已改为 `-lt 5` 且提示串取实际文件数 |
 | `font-size: 13.5px` 会渲染成 14px | QSS 全局 | 第〇节的取整规则：QSS 里只写整像素 |
 | `QLayout: Attempting to add QLayout "" to QWidget ""` ×2 | `SHINE_P04_REVIEW` 运行期 | 本轮观察到的 Qt 告警，**来源尚未定位**（只记录现象，不下结论）。重建式页面里对同一成员控件二次 `new QVBoxLayout(w)`（w 已有布局）会触发；`pages/novel/WorldBoardS3.cpp` 是本仓最密集的重布局点，且该文件本轮**未改动**。各处渲染图未见异常 |
+| **多张取证图逐字节相同（md5 一致）** | `verify/review/ReviewProbe.h` 的 `Grab()` | **已修（2026-09-29）**。QQuickWidget 的画面不在 Widgets 绘制链上：`repaint()` + `QWidget::grab()` 抓的是「上一次场景图渲染留下的那一帧」，两者无同步。换实体后抓出的图与换之前逐字节相同，manifest 照样记 `saved`、overall 照样 PASS。**已在 5054c7d 上复现**（不是某次改动引入的），当时 `assets-empty` / `assets-card-states` / `sheet-full` 三张同一个 md5，而 `assets-empty` 实际该是空态。修法：`Grab()` 走 `QuickHost::GrabBlocking`（`QQuickItem::grabToImage`）；宿主是普通 QWidget 容器时先把内部每个 QuickHost 的场景图推一帧再抓容器。**判据：截图之间内容有变化时 md5 必须不同，别只看 manifest 的 saved** |
 
 ---
 
