@@ -3,10 +3,13 @@
 // 面壳复用冻结的 Card.qml（bg-panel / line-subtle / r-md），这里只补三件
 // Card.qml 不提供的事：
 //
-// 1. **标题栏 .card-h**（ui.css:182-188，p12 16 + 底部发丝线）。
-//    Card.qml 的 body 是一条 margins 16 的 Column，它会接管**直接**子项的 y，
-//    所以标题栏画在 body 内部的那个填满 Item 里，靠 y: -4 退回 16 → 12；
-//    发丝线则由本组件自己锚在根上，才能横贯整卡（设计稿里它到卡片边缘）。
+// 1. **标题栏 .card-h**（ui.css:182-188：flex / align-items center / gap 8 /
+//    padding 12 16 / border-bottom 1）与**内容区 .card-b**（padding 16）。
+//    ⚠️ 这两套内边距不一样，所以本组件给 Card 传 `bodyPad: 0`，自己按设计稿排版。
+//    旧版让 Card 的 margins:16 兜着，标题栏实际内边距变成 16+12，要退回 12 就得写
+//    `y: -4`；发丝线同时写 `anchors.top` 和 `y:`，两者互斥、anchors 赢，线被画到卡片
+//    **最上沿**与边框重叠——出图里「标题下面那条水平框」就是这样消失的。
+//    图标与标题的横向关系交给共享 Flex 算，不再手摆 x/y。
 //
 // 2. **内容区高度由内容推导，不是页面声明的**。
 //    ⚠️ 旧版这里是 `property int contentH`，页面在 `cards` 数组里给 9 张卡各写死
@@ -33,9 +36,21 @@ Item {
     // 卡片正文。根对象需提供 implicitHeight。
     property Component body: null
 
-    // .card-h = 12(上) + 16(13px 行高取整) + 12(下) + 1(发丝线)
-    readonly property int headH: 41
-    readonly property int padB: ThemeBridge.spaces["4"]        // 16
+    // —— 盒模型（ui.css:182-195）——
+    //   .card-h  padding 12 16 + 内容行 16 + border-bottom 1  → headH = 12+16+12+1 = 41
+    //   .card-b  padding 16
+    // ⚠️ 所有位置都从这几个数推出来，**不再有 `y: -4` 这类补偿值**。旧版把 .card-h
+    //    画在 Card 那条 margins:16 的 body Column 里，于是标题栏实际内边距变成了
+    //    16+12，要退回 12 就得写 y:-4；发丝线更惨，它同时写了 `anchors.top` 和
+    //    `y: headH-1`，两者互斥、anchors 赢，线被画到**卡片最上沿**和边框叠在一起，
+    //    于是「标题下面那条水平框」在出图里根本看不见。现在 bodyPad: 0，两套内边距
+    //    各自按设计稿摆，没有一层压一层。
+    readonly property int headPadV: ThemeBridge.spaces["3"]      // 12
+    readonly property int headPadH: ThemeBridge.spaces["4"]      // 16
+    readonly property int headContentH: 16                        // 13.5px 字号的行盒取整
+    readonly property int ruleH: 1                                // border-bottom
+    readonly property int headH: headPadV + headContentH + headPadV + ruleH
+    readonly property int padB: ThemeBridge.spaces["4"]          // 16  (.card-b padding)
 
     // 正文实测高度。
     //
@@ -53,62 +68,66 @@ Item {
     readonly property int bodyH: Math.ceil(loader.childrenRect.height)
 
     implicitWidth: 320
-    implicitHeight: headH + bodyH + padB
+    implicitHeight: headH + padB + bodyH + padB
 
     Card {
         anchors.fill: parent
         hoverable: false
+        // 本组件自己按 .card-h / .card-b 排版，不要 Card 再套一层 16（见上面注释）
+        bodyPad: 0
 
-        // ⚠️ 卡片面壳只放这一个填满的 Item（Card.qml 的 body 是 Column，
-        //    直接子项的 y 由它接管；套一层 Item 后 y 由我们自己说了算）
         Item {
             id: slot
             width: parent.width
             height: parent.height
 
-            // —— 标题栏内容：绝对 y = 16(body 上边距) + (-4) = 12 ——
-            GalleryIcon {
-                id: headIcon
-                x: ThemeBridge.spaces["4"]
-                y: -4
-                width: 15
-                height: 15
-                visible: root.icon !== ""
-                name: root.icon
-                glyphColor: ThemeBridge.colors["accent.primary"]
-            }
-            Text {
-                x: headIcon.visible ? headIcon.x + 15 + ThemeBridge.spaces["2"]
-                                   : ThemeBridge.spaces["4"]
-                y: -4
-                height: 16
-                verticalAlignment: Text.AlignVCenter
-                text: root.title
-                color: ThemeBridge.colors["text.primary"]
-                font.family: ThemeBridge.fontFamily
-                // .card-title 13.5px → 就近取整 13（与 body 同号，设计稿也只靠 600 字重区分）
-                font.pixelSize: ThemeBridge.baseFontPx
-                font.weight: Font.DemiBold
+            // —— .card-h：display:flex / align-items:center / gap:8 / padding:12 16 ——
+            // 交给共享 Flex 排，图标与标题的相对位置由它算，不手摆坐标。
+            Flex {
+                id: head
+                x: root.headPadH
+                y: root.headPadV
+                width: parent.width - root.headPadH * 2
+                height: root.headContentH
+                gap: ThemeBridge.spaces["2"]          // .card-h gap 8
+                align: "center"                        // align-items: center
+
+                GalleryIcon {
+                    width: 15
+                    height: 15
+                    visible: root.icon !== ""
+                    name: root.icon
+                    glyphColor: ThemeBridge.colors["accent.primary"]
+                }
+                Text {
+                    text: root.title
+                    color: ThemeBridge.colors["text.primary"]
+                    font.family: ThemeBridge.fontFamily
+                    // .card-title 13.5px → 就近取整 13（与 body 同号，设计稿也只靠 600 字重区分）
+                    font.pixelSize: ThemeBridge.baseFontPx
+                    font.weight: Font.DemiBold
+                }
             }
 
-            // —— 内容区起点：绝对 y = 16 + 25 = 41 = headH ——
-            // ⚠️ 不写 height：高度由 root.bodyH（= childrenRect.height）驱动，
-            //    若这里也绑一次就会和子项高度构成环（见上方注释）。
+            // —— .card-h 的 border-bottom：横贯整卡（到卡片左右边缘）——
+            // ⚠️ 只用 anchors.left/right，**不要再写 y**：anchors 与显式 y 互斥，
+            //    同时写会让 y 被静默丢弃、线跑到卡片上沿（旧版就是这么把这条线弄丢的）。
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                y: root.headH - 1
+                height: root.ruleH
+                color: ThemeBridge.colors["line.subtle"]
+            }
+
+            // —— .card-b：padding 16 ——
             Loader {
                 id: loader
-                x: 0
-                y: root.headH - ThemeBridge.spaces["4"]
-                width: parent.width
+                x: root.padB
+                y: root.headH + root.padB
+                width: Math.max(0, parent.width - root.padB * 2)
                 sourceComponent: root.body
             }
         }
-    }
-
-    // .card-h 底部发丝线（横贯整卡，所以锚在根上而不是 body 里）
-    Rectangle {
-        anchors { top: parent.top; left: parent.left; right: parent.right }
-        y: root.headH - 1
-        height: 1
-        color: ThemeBridge.colors["line.subtle"]
     }
 }

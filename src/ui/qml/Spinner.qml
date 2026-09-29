@@ -39,10 +39,18 @@ Ctl {
     // —— 配色槽位：绑的是 **token 名**（不是颜色字面量），换主题自动跟着变 ——
     property string trackToken: "line.normal"     // .spin 的 border: 2px solid var(--line-normal)
     property string accentToken: "accent.primary" // .spin 的 border-top-color: var(--accent)
+    // 第三条合法路径（契约第 2 条）：直接给颜色。默认**透明 = 不启用**，启用后盖过
+    // 上面两个 token —— 供 `currentColor` 场景用（Button 的 loading 转圈，
+    // UI.jsx:11 写的是 `border: 2px solid currentColor`，颜色跟按钮字色走）。
+    // 取值要用 ThemeBridge.colors[...]，不要写颜色字面量。
+    property color tint: "transparent"
 
     // —— 尺寸档 —— 只有设计稿存在的两档，多的别加 ——
     property bool sm: false                       // .spin.sm：11px + 1.5px 边
-    readonly property real box: sm ? 11 : 14
+    // 唯一的例外口：Button 的 loading 转圈（UI.jsx:11 把 13 写死在行内样式里，
+    // 不属于 .spin 的两档）。0 = 跟随 sm，别在其他地方用。
+    property int sizePx: 0
+    readonly property real box: root.sizePx > 0 ? root.sizePx : (sm ? 11 : 14)
     readonly property real ring: sm ? 1.5 : 2
 
     // —— 动效槽位 —— @keyframes spin .7s linear infinite ——
@@ -76,9 +84,10 @@ Ctl {
         Shape {
             anchors.fill: parent
 
-            // 底圈：整圈 360°，--line-normal
+            // 底圈：整圈 360°，--line-normal（tint 启用时为 currentColor 的 30%）
             ShapePath {
-                strokeColor: ThemeBridge.colors[root.trackToken]
+                strokeColor: root.tint.a > 0 ? Qt.alpha(root.tint, 0.3)
+                                             : ThemeBridge.colors[root.trackToken]
                 strokeWidth: root.ring
                 capStyle: ShapePath.FlatCap
                 // ⚠️ 必须显式透明：PathAngleArc 是**开放**路径，ShapePath 会隐式闭合后填充，
@@ -95,9 +104,10 @@ Ctl {
                 }
             }
 
-            // 顶弧：12 点为中的 90°，--accent
+            // 顶弧：12 点为中的 90°，--accent（tint 启用时为 currentColor）
             ShapePath {
-                strokeColor: ThemeBridge.colors[root.accentToken]
+                strokeColor: root.tint.a > 0 ? root.tint
+                                             : ThemeBridge.colors[root.accentToken]
                 strokeWidth: root.ring
                 capStyle: ShapePath.FlatCap
                 fillColor: "transparent"

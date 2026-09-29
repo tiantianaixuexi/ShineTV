@@ -187,12 +187,11 @@ Ctl {
 
     // —— Card 1：Button 变体 4 × 尺寸 3 ——
     //
-    // ⚠️ 第一行的四个按钮仍然把图标包在按钮**外面**（Item 垫在 Flex 里，
-    //    图标贴按钮左侧 6px，ui.css `.btn .icon { width: 15px }`）。
-    //    共享 Button 确实有 `glyph` 槽，但那个槽画的是**字符**，而这里的
-    //    GalleryIcon 是逐条照抄 Icon.jsx 的 PathSvg 描边图标 —— 换 glyph 等于
-    //    把设计稿的 SVG 降级成一个字符。所以结构差异保留：图标落在 14px 内边距之外，
-    //    而不是 CSS 的 padding 里面。这是本页的已知取舍。
+    // ⚠️ 2026-09-29 重写。旧版第一行把 SVG 图标**摆在按钮外面**（Item 垫在 Flex 里、
+    //    图标贴按钮左侧 6px、x 手写 21），第四颗「危险」拿 secondary 顶，三档尺寸全是
+    //    30px。那是共享 Button 没有图标槽 / danger / lg 时的绕法，现在共享件补齐了三样，
+    //    页面直接用设计稿的形态：图标在按钮**内部**（.btn .icon 15 + gap 6），
+    //    四种 variant 各归各位，尺寸 sm / md / lg 三档。
     Component {
         id: cButton
         Column {
@@ -202,63 +201,49 @@ Ctl {
 
             Flex {
                 width: parent.width
-                Item {
-                    width: 15 + 6 + b1.width; height: 30
-                    GalleryIcon {
-                        y: Math.round((30 - 15) / 2)
-                        width: 15; height: 15; name: "play"
-                        glyphColor: ThemeBridge.colors["accent.primary.fg"]
+                gap: ThemeBridge.spaces["4"]      // .gal-row gap 10
+
+                Button {
+                    id: b1
+                    text: "主要"
+                    variant: "primary"
+                    iconSlot: Component {
+                        GalleryIcon { anchors.fill: parent; name: "play"; glyphColor: b1.fgColor }
                     }
-                    Button { id: b1; x: 21; text: "主要"; variant: "primary" }
                 }
-                Item {
-                    width: 15 + 6 + b2.width; height: 30
-                    GalleryIcon {
-                        y: Math.round((30 - 15) / 2)
-                        width: 15; height: 15; name: "layers"
-                        glyphColor: ThemeBridge.colors["text.primary"]
+                Button {
+                    id: b2
+                    text: "次要"
+                    variant: "secondary"
+                    iconSlot: Component {
+                        GalleryIcon { anchors.fill: parent; name: "layers"; glyphColor: b2.fgColor }
                     }
-                    Button { id: b2; x: 21; text: "次要"; variant: "secondary" }
                 }
-                Item {
-                    width: 15 + 6 + b3.width; height: 30
-                    GalleryIcon {
-                        y: Math.round((30 - 15) / 2)
-                        width: 15; height: 15; name: "eye"
-                        glyphColor: ThemeBridge.colors["text.primary"]
+                Button {
+                    id: b3
+                    text: "幽灵"
+                    variant: "ghost"
+                    iconSlot: Component {
+                        GalleryIcon { anchors.fill: parent; name: "eye"; glyphColor: b3.fgColor }
                     }
-                    Button { id: b3; x: 21; text: "幽灵"; variant: "ghost" }
                 }
-                Item {
-                    width: 15 + 6 + b4.width; height: 30
-                    GalleryIcon {
-                        y: Math.round((30 - 15) / 2)
-                        width: 15; height: 15; name: "alert"
-                        glyphColor: ThemeBridge.colors["text.primary"]
+                Button {
+                    id: b4
+                    text: "危险"
+                    variant: "danger"               // Gallery.jsx:39 / ui.css:77-85
+                    iconSlot: Component {
+                        GalleryIcon { anchors.fill: parent; name: "alert"; glyphColor: b4.fgColor }
                     }
-                    // 设计稿是 variant="danger"（ui.css:77-85）。共享 Button 的 variant
-                    // 只有 primary/secondary/ghost 三个槽（Button.qml 记着「不补第四套
-                    // 配色」），所以本页拿 secondary 顶 —— 是页面的取舍，不在共享件加。
-                    Button { id: b4; x: 21; text: "危险"; variant: "secondary" }
                 }
             }
-            // 第 2 行：设计稿这行**没有** icon（Gallery.jsx:41-47），只有 loading
-            // 那个按钮内嵌转圈（UI.jsx:11）。同样因为共享 Button 没有 loading
-            // 变体，转圈贴在按钮左侧。
+            // 第 2 行：Gallery.jsx:42-46 —— sm / md / lg 三档 + loading + disabled
             Flex {
                 width: parent.width
-                // ⚠️ 设计稿这三档是 sm / md / lg（Gallery.jsx:42-44），共享 Button 只有
-                //    sm 一档，所以三颗都是 30px 高 —— 尺寸档的缺口在本页，不在共享件。
-                Button { text: "小号"; variant: "primary" }
+                gap: ThemeBridge.spaces["4"]
+                Button { text: "小号"; variant: "primary"; sm: true }
                 Button { text: "中号"; variant: "primary" }
-                Button { text: "大号"; variant: "primary" }
-                Item {
-                    // 设计稿的 loading 转圈是 13×13（UI.jsx:11），共享 Spinner
-                    // 的自然尺寸是 14，这里按 14 排位。
-                    width: 14 + 6 + bl.width; height: 30
-                    Spinner { y: Math.round((30 - 14) / 2) }
-                    Button { id: bl; x: 20; text: "加载中"; variant: "primary" }
-                }
+                Button { text: "大号"; variant: "primary"; lg: true }
+                Button { text: "加载中"; variant: "primary"; loading: true }
                 Button { text: "禁用"; variant: "primary"; enabled: false }
             }
             Flex {
@@ -640,12 +625,13 @@ Ctl {
                 width: parent.width
                 justify: "center"
                 // Toast 四色（ui.css 的 .toast-ok/warn/err/info）在本仓是 Widgets 侧的
-                // QML toast，QML 页只摆四个按钮示意；variant 沿用旧页的
-                // false/true → secondary/primary 映射，语义不表示四色。
+                // QML toast，QML 页只摆四个按钮示意。variant 照 Gallery.jsx:170-173：
+                // secondary / primary / secondary / **danger**（旧版 Error 也是
+                // secondary，共享 Button 没有 danger 时的凑数，现在归位）。
                 Button { text: "Info"; variant: "secondary" }
                 Button { text: "Success"; variant: "primary" }
                 Button { text: "Warning"; variant: "secondary" }
-                Button { text: "Error"; variant: "secondary" }
+                Button { text: "Error"; variant: "danger" }
             }
             Text {
                 width: parent.width

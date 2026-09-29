@@ -23,6 +23,8 @@ last_verified: 2026-09-29
 | **共享件**（本文件管辖） | 无页面前缀：`Ctl` / `Card` / `Button` / `Tag` / `Seg` / `Dot` / `Chip` / `IconBtn` / `Art` / `Kv` / `Progress` / `Spinner` / `StageFlow` / `AutoGrid` / `Flex` | 只能依赖 `Ctl` 与 `ThemeBridge` |
 | **页私有件** | 页面前缀：`Gallery*` / `Assets*` / `Storyboard*` / `ImageFlow*` | 可以依赖共享件 |
 
+`Card.bodyPad` 默认 16（`.card-b` 的 padding）。**`.card-h` 的 12 16 与 `.card-b` 的 16 不一样**，调用方要自己搭「标题栏 + 发丝线 + 内容区」这种结构时传 `bodyPad: 0` 自己排，否则会在 Card 的 16 之上再叠一层 16，只能靠负 `y` 抵消。
+
 **判定标准只有一个：这份组件的第二个页面也用得上吗？** 用得上就是共享件，归 `src/ui/qml/<无前缀名>.qml`；用不上就是页私有件，带页面前缀。不要因为「现在只有一个页面在用」就把它塞进页私有件——那正是本文件要根除的重复来源。
 
 ## 为什么有这份契约
@@ -101,11 +103,34 @@ running: <条件> && !root.reduce
 
 ⚠️ **共享件名不得撞 Qt 内建类型。** `Grid.qml` 会被 `import QtQuick` 的内建 `Grid` 盖住，症状是 `Could not find property "minCell"`，而 qmllint **不提示「你写的类型不是你想的那个」**。所以叫 `AutoGrid.qml`。`Button.qml` 撞 `QtQuick.Controls.Button` 是同一类。`Flex` 安全：QtQuick 没有这个类型。
 
+### 9. 图标走槽位，不在页面里手摆
+
+设计稿的图标是内联 SVG（本仓是 `GalleryIcon` / `IconBtn` 那套 `PathSvg` 描边），`Button` / `IconBtn` 的字符位 `glyph` 只能画字符。所以共享件提供**图标槽**（`Button.iconSlot`，一个 `Component`），由共享件把它摆进 `.btn .icon` 定死的 15×15（sm 13×13）方盒里，跟着 `padding` 和 `gap` 一起算进 `implicitWidth`：
+
+```qml
+Button {
+    id: b
+    text: "主要"
+    variant: "primary"
+    iconSlot: Component {
+        GalleryIcon { anchors.fill: parent; name: "play"; glyphColor: b.fgColor }
+    }
+}
+```
+
+- 组件根**要显式 `anchors.fill: parent`**：`Loader.item` 没有 implicit 尺寸可依赖。
+- 页面需要 `pragma ComponentBehavior: Bound` 才能在外层 `Component` 里引用按钮的 id。
+- **不要**再在页面里用「Item 垫在按钮外面 + 手写 x」那套绕法：那样图标掉到按钮的背景和圆角之外，是设计稿里根本不存在的形态（`Gallery.qml` 2026-09-29 之前就是这么画的）。
+
 ## QML 层的已知接缝坑
 
 以下每条都是本仓实测出来的，**动手前先扫一眼**（更详细的版本在 `docs/90-reference/ui-design-parity-gaps.md`）：
 
 - 页面根对象必须是 `Item`，不能是 `Window`。
+- **anchors 与显式 `x` / `y` 互斥，谁写谁生效是静默的。** 实测踩过两回：
+  `.card-h` 的发丝线同时写了 `anchors.top` 和 `y: headH-1`，anchors 赢，线被画到卡片**最上沿**与边框重叠，出图里「标题下面那条水平框」直接消失；`anchors.fill` 与显式 `y` 同理会让布局错乱。要定位就用 `anchors.topMargin`，**不要**再叠一个 `y`。
+- **`transformOrigin: Item.Center` + `scale` 会把缩放支点放在项自己的中心**，渲染矩形整体向左上平移 `w/2×(k-1)` / `h/2×(k-1)`。凡是用「按左上角推的缩放 + 居中偏移」算 cover 缩放（`k = max(w/vw, h/vh)`、`offX = (w-vw·k)/2`）的组件，承载内容的内层 Item **必须取 `Item.TopLeft`**。2026-09-29 `Art.qml` 取了 `Center`，40×25 的项 scale 4.5 渲染在 `(-70,-43.75)-(110,68.75)` 而盒子在 `(0,0)-(180,112.5)`；640×400 的对比台因此只画出左上 400×250，右侧下侧整片露底色。
+  **注意别搞反**：hover 缩放那层要的是 `Center`（CSS `transform-origin: 50% 50%`），两层各管一件事，见 `Art.qml` 的注释。
 - 摆子项用 `AutoGrid` / `Flex`（见纪律第 8 条），不要手搓槽位计算，也不要拿 Qt 的 `Flow` / `Row` / `Grid` 去摆带 hover 位移的子项——会和子项自己写的 `y` 抢。
 - 共享件文件名撞 Qt 内建类型时，qmllint **不会**报「你用的不是我以为的那个」：`Grid.qml` 会被 `import QtQuick` 的内建 `Grid` 静默盖掉，症状只剩 `Could not find property "minCell"`。所以叫 `AutoGrid.qml`。
 - `anchors.fill` 与显式 `y` 互斥。

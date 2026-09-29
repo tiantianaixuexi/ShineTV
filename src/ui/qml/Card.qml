@@ -15,9 +15,13 @@ Ctl {
     id: root
 
     property bool hoverable: true
+    // .card-b 的 padding（ui.css:194）。**0 = 本组件不排版内容**，调用方自己按
+    // .card-h / .card-b 两套不同内边距（12 16 / 16）搭结构时把它关掉，
+    // 否则会在 Card 的 16 之上再叠一层 16，只能靠负 y 去抵消（那正是魔法数字的来源）。
+    property int bodyPad: 16
     default property alias content: body.data
 
-    implicitHeight: body.implicitHeight + 32   // .card-b padding 16 上下各一份
+    implicitHeight: body.implicitHeight + bodyPad * 2   // .card-b padding 16 上下各一份
     implicitWidth: 320
     radius: root.rMd                            // --r-md 10
     color: ThemeBridge.colors["bg.panel"]
@@ -40,7 +44,7 @@ Ctl {
     Column {
         id: body
         anchors.fill: parent
-        anchors.margins: 16
+        anchors.margins: root.bodyPad
         spacing: ThemeBridge.spaces["3"]   // 12px
     }
 

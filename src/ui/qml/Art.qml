@@ -22,9 +22,13 @@
 // 几何（viewBox 160×100 → cover 裁切）：
 //   preserveAspectRatio="xMidYMid slice" = 按 cover 缩放、居中、溢出裁掉，
 //   故缩放系数 k = max(盒宽/160, 盒高/100)，内容 Item 摆在 x = (盒宽-160k)/2、y = (盒高-100k)/2。
-//   ⚠️ hover 缩放的支点：CSS 是对 **svg 元素**（盒 = 100%×100% = 本组件盒）做 scale(1.07)，
-//      transform-origin 默认 50% 50%。因为 offX/offY 是居中量，缩放后 160×100 内容框的**视觉中心
-//      恰好落在本组件盒心上**，所以内层 Item 取 Item.Center 作支点就与 CSS 等价（不能取 TopLeft）。
+//   ⚠️ 两个 transformOrigin 各管一件事，别写反：
+//      · `frame`（装 160×100 内容的那层）取 **TopLeft** —— offX/offY 就是按「缩放绕
+//        左上角」推的，取 Center 会让整幅画向左上平移 80(k-1)/50(k-1)，不填满盒子。
+//      · `zoomBox`（hover 缩放那层）取 **Center** —— CSS 是对 svg 元素（盒 = 100%×100%
+//        = 本组件盒）做 scale(1.07)，transform-origin 默认 50% 50%。因为 frame 铺满后
+//        160×100 内容框的**视觉中心恰好落在本组件盒心**上，zoomBox 的中心 (80,50) 映射过去
+//        正是盒心，取 Center 才与 CSS 等价（这里取 TopLeft 会让缩放朝左上角跑）。
 //
 // 三份旧实现的绘制手法为什么统一成 Shapes/PathSvg：
 //   · ImageFlowArt 用 Canvas —— 真 Q 曲线没问题，但要 renderStrategy: Canvas.Immediate 才读得到
@@ -133,7 +137,15 @@ Ctl {
         y: root.offY
         width: 160
         height: 100
-        transformOrigin: Item.Center
+        // ⚠️ **必须是 TopLeft**，不能是 Center（2026-09-29 实测踩出来的）。
+        // offX/offY 是按「缩放绕左上角」推的：渲染矩形 = (offX, offY) 到
+        // (offX+160k, offY+100k)，正好是 cover 裁切并居中的那一块。
+        // 换成 Center，Qt 会把缩放支点放在本项中心 (80,50) 上，渲染矩形整体向左上
+        // 平移 80(k-1) / 50(k-1)。实测：40×25 的项 scale 4.5 渲��在
+        // (-70,-43.75)-(110,68.75)，而它的盒子在 (0,0)-(180,112.5)。
+        // 资产页对比台 640×400（k=4）因此只画出左上角 400×250，右侧和下侧整片
+        // 露出底色 —— 就是「Art 没居中 / 没填满」。
+        transformOrigin: Item.TopLeft
         scale: root.k
 
         // 未评审整块 .25 —— 挂在内容上（与 .art 的底色无关），过渡走 --dur-3 = durSlow
