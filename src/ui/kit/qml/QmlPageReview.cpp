@@ -1,4 +1,4 @@
-#include "ui/kit/qml/QmlPageReview.h"
+﻿#include "ui/kit/qml/QmlPageReview.h"
 
 #include "ui/kit/qml/QuickHost.h"
 #include "ui/kit/theme/Theme.h"
@@ -132,11 +132,33 @@ void ReportFailure(State* state, const std::string& page, const std::string& det
     std::fflush(nullptr);
 }
 
+// ⚠️⚠️ **宿主必须留到进程结束，绝不能在循环里逐页 delete。**
+// （这条注释的旧版本写的是「一页一宿主、拍完即弃」，**那是错的** ——
+//   那个写法恰恰就是崩溃路径本身：第 2 页照样要 new 第二个 QuickHost。）
+//
+// 实测（gdb 调用栈）：storyboard 拍完 → delete host → imageflow 建宿主 →
+// 在 QuickHost::Load 的 setSource（QuickHost.cpp:114）里 SIGSEGV，
+// 栈上 15 层全在 Qt6Qml 的类型实例化路径：
+//   #15 Qt6QuickWidgets → #14..#0 全是 Qt6Qml
+// 单页各自单独跑都是 exit 0，**只有同进程连拍第 2 页必崩**。
+// 改成把宿主存进 LiveHosts() 不析构后，5 页连拍 25 张图全部 saved、exit 0。
+//
+// 代价：5 个 QQuickWidget 顶窗同时活着（software 后端，约几百 MB）。
+// 本机 2304×1440 桌面下 5 × 1440×900 放得下，且 Run() 末尾是 std::_Exit(0)，
+// 本来也不会走析构 —— 内存不构成问题。
+//
+// 为什么必须留活：本文件的注册修复（见 QuickHost.cpp 构造函数的注释）
+// 保证了**每个新引擎**都能重新注册 ThemeBridge 类型，但销毁 QQuickWidget
+// 连带销毁其内部 QQmlEngine 后，新引擎的 QML 引擎在这台机器 + 这个
+// Qt 6.11.2 构建上会崩在类型实例化里，发生在我们能控制的代码之外。
+// 既然引擎一死必崩，就让引擎别死。
+std::vector<QuickHost*>& LiveHosts() {
+    static std::vector<QuickHost*> v;
+    return v;
+}
+
 void ShootPage(State* state, const PageEntry& page) {
     const QString res = QString::fromStdString(std::string{page.res});
-    // 每个页面一个宿主，串行拍完就析构。⚠️ 本机销毁后再建第二个 QQuickWidget
-    // 会在 setSource 里访问违例（0xC0000005，见 gaps 文档 五之二 ④），
-    // 所以**一页一宿主、拍完即弃**，不要试图复用或提前建好下一批。
     auto* host = new QuickHost();
     // 宿主按 N 倍尺寸建，QML 根 item 仍是逻辑尺寸（QuickHost 内部 setScale）。
     // N 按桌面算，见 SupersampleFor。
@@ -157,7 +179,7 @@ void ShootPage(State* state, const PageEntry& page) {
                           std::to_string(host->size().width()) + "x" +
                           std::to_string(host->size().height()) +
                           " (超采样倍率超过桌面尺寸，请调低 kSupersampleMax)");
-        delete host;
+        LiveHosts().push_back(host);
         return;
     }
 
@@ -171,7 +193,7 @@ void ShootPage(State* state, const PageEntry& page) {
             detail += " | " + e.toString().toUtf8().toStdString();
         }
         ReportFailure(state, std::string{page.name}, detail);
-        delete host;
+        LiveHosts().push_back(host);
         return;
     }
     // 400ms > 最长动效 320ms，让 Behavior 补间跑到终态再抓（否则抓到上一套主题的颜色）
@@ -209,7 +231,7 @@ void ShootPage(State* state, const PageEntry& page) {
             std::fflush(nullptr);
         }
     }
-    delete host;
+    LiveHosts().push_back(host);
 }
 
 void Run(State* state, std::string_view filter) {

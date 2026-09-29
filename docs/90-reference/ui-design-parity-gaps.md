@@ -492,13 +492,42 @@ TypeError: Property 'token' of object Shine/ThemeBridge is not a function
 （`Card`/`Tag`/`Button` 等独立编译的 `.qml`）拿不到；`QML_SINGLETON` 宏要求引擎自己
 构造单例，与"进程唯一实例 + 主动通知"冲突。
 
-### ④ 单例实例必须永不回收，且类型要按引擎重注册（两条缺一不可）
+### ④ 单例实例永不回收；类型按引擎重注册；**宿主本身也不能中途析构**（三条缺一不可）
 
 - `ThemeBridge::Instance()` 刻意 `new` 且**永不 delete**。QML 引擎析构时会清掉它持有的
   单例，函数内 static 会被提前析构，下一个引擎拿到已析构的对象 → `0xC0000374` 堆损坏。
 - 类型注册用 `qmlTypeId(...) == -1` 判重**逐引擎重注册**。`QQuickWidget` 自带内部
   `QQmlEngine`（无法注入），引擎一析构就注销其用到的 C++ 类型；不重注册，第 2 个引擎
   能 import 到 `Shine` 模块却查不到 `ThemeBridge` → `setSource` 里 `0xC0000005`。
+- **取证 harness 里绝不能逐页 `delete` 宿主**。这条是后补的实测结论，纠正了此前
+  记在代码注释里的错误判断。
+
+  > 此前写的是「一页一宿主、拍完即弃」并当作解法。**那是错的** —— 那个写法恰恰
+  > 就是崩溃路径本身：第 2 页照样要 `new` 第二个 `QuickHost`。
+  >
+  > 实测（`storyboard,imageflow` 连拍，gdb 调用栈）：storyboard 拍完 → `delete host`
+  > → imageflow 建宿主 → 崩在 `QuickHost::Load` 的 `setSource`（`QuickHost.cpp:114`），
+  > SIGSEGV，栈上 `#15` 是 `Qt6QuickWidgets`、`#14..#0` 全在 `Qt6Qml` 的类型实例化
+  > 路径里。**每一页单独跑都是 exit 0，只有同进程连拍第 2 页必崩。**
+  >
+  > 改为把宿主存进 `LiveHosts()` 活到进程结束（`Run()` 末尾本就是 `std::_Exit(0)`，
+  > 析构不会跑）后：5 页连拍 25 张图全部 saved、exit 0。代价是 5 个顶窗同时活着
+  > （software 后端几百 MB），本机放得下，不是问题。
+  >
+  > 既然引擎一死必崩、且崩在我们控制不了的 Qt 代码里，就让引擎别死。
+
+### ④·附 `Shape` 里不能用 `Repeater`
+
+`ShapePath` 派生自 `QQuickPath`（QObject），**不是 `QQuickItem`**。`Shape` 的默认属性
+`data` 只收 `ShapePath`，而 `Repeater` 的 delegate 必须是 Item —— 两者语义直接冲突，
+运行期报 `Delegate must be of Item type`，**一个 segment 也创建不出来**。
+
+qmllint 查不出来（`Shape` 能解析、`ShapePath` 也能解析，只有运行期组合才炸）。修法是
+把 N 段显式展开成 N 个字面量 `ShapePath`。已命中两处：`GalleryArtInk.qml`（14 层模糊）、
+`ImageFlowLink.qml`（12 段弦）。`Gallery` 那边还纠正了一个更隐蔽的错误：用 `M dx dy`
+前缀给路径做平移是**无效的** —— 单独的 `moveto` 只移动当前点，图形其实原地没动，
+7 层等于原地叠了 7 遍。
+
 
 ### ⑤ `layer.effect` / `MultiEffect` 在 software 场景图后端下会把 item 整个吞掉
 
