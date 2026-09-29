@@ -18,12 +18,16 @@ source_of_truth:
   - src/ui/kit/controls/Controls.h
   - src/ui/kit/controls/Inputs.h
   - src/ui/kit/controls/Surfaces.h
+  - src/ui/kit/theme/ToneMix.h
+  - src/ui/kit/qml/ThemeBridge.h
+  - src/ui/kit/qml/QuickHost.cpp
+  - src/ui/qml/Gallery/Gallery.qml
   - src/ui/pages/assets/AssetDetailView.cpp
   - src/ui/pages/assets/AssetWorkspace.h
   - src/ui/pages/novel/DraftView.cpp
   - src/ui/verify/review/P05Review.cpp
   - src/ui/verify/checks/P04ChapterChecks.cpp
-last_verified: 2026-09-29
+last_verified: 2026-09-30
 ---
 
 # 设计稿对不齐的地方：UI 缺口清单
@@ -439,6 +443,115 @@ setStyleSheet → StyleChange → 重刷 → setStyleSheet 的死循环，
 
 ---
 
+## 五之二、QML 接缝层（2026-09-30 架构层，已跑通端到端）
+
+QML 不是"换掉 Widgets"，而是**增量共存**：`QQuickWidget` 本身就是 QWidget，能直接
+放进既有 `QStackedLayout`/`QSplitter`。既有 Widgets 代码一行未改，QML 只在新页面引入。
+依赖方向 `shine_kit ← shine_qml`，`shine_kit` 仍是纯 Widgets、不含任何 QML 头。
+
+**这一节记的是实测踩出来的坑，不是设计意图。后面任何一页做 QML 迁移前先读完。**
+
+### ① QML 绑定只对「属性读」建立依赖 —— 值一律用 `Q_PROPERTY` 暴露
+
+写成 `Q_INVOKABLE ThemeBridge.token("bg.surface")` 时，QML 绑定在依赖图里是**空的**，
+求值一次后永久缓存，之后发多少 `themeChanged` 都不会重算。
+
+症状极具欺骗性：切 5 套主题都能出图，PNG 大小还各不相同（`float-y` 动画每帧相位不同），
+肉眼看文件大小会以为"生效了"；打开图才发现标题换了、**配色纹丝不动**。
+
+结论：`ThemeBridge` 的所有值都是 `Q_PROPERTY` + `NOTIFY themeChanged`
+（`colors` / `toneBg` / `toneEdge` / `radii` / `spaces` / `durations` / `fontFamily` …），
+**没有取值的 invokable 方法**。加新 token 时照此办理，别为"写起来顺手"加回方法。
+
+### ② 换肤事件源必须在 theme 层，不能挂在 `ThemeService` 上
+
+`ThemeService::Switch()` 只换 QSS 与 `QPalette`，**完全不知道 QML 存在**。
+最初的桥因此"注册成功、查值正常、切主题不动"。
+
+修法是在 `theme` 层开一个**函数指针观察者** `SetThemeChangedObserver(ThemeChangedFn)`，
+由 `SetCurrentTheme` / `ActivateCustom` / `RevertToBuiltin` 三处漏斗各自触发
+—— 注意是**三处**：只挂 `SetCurrentTheme` 会漏掉自定义主题
+（`id` 没变时它会 early-return，而 `RevertToBuiltin` 照样换了色）。
+
+用函数指针而不是 Qt signal：theme 层在 `shine_kit`，订阅方在 `shine_qml`，
+依赖方向不能反过来；函数指针让下层完全不需要知道上层的存在。
+
+### ③ `qmlRegisterSingletonType` 必须写显式模板实参
+
+`qqml.h` 里有**两个同名重载**。不写 `<ThemeBridge>` 时 `T` 推导不出来，带 `QJSValue`
+返回值的那个胜出，而它传给引擎的 `metaObject` 是 `nullptr`、`metaType` 是空 `QMetaType()`
+（`qqml.h:692-705`）。于是 QML 能解析到单例（不报 `ReferenceError`）却**拿不到任何成员**：
+
+```
+TypeError: Property 'token' of object Shine/ThemeBridge is not a function
+```
+
+必须写 `qmlRegisterSingletonType<ThemeBridge>(uri, 1, 0, name, factory)`。
+
+另外两条已排除、别走回头路：`setContextProperty` 只在根上下文可见，复合类型
+（`Card`/`Tag`/`Button` 等独立编译的 `.qml`）拿不到；`QML_SINGLETON` 宏要求引擎自己
+构造单例，与"进程唯一实例 + 主动通知"冲突。
+
+### ④ 单例实例必须永不回收，且类型要按引擎重注册（两条缺一不可）
+
+- `ThemeBridge::Instance()` 刻意 `new` 且**永不 delete**。QML 引擎析构时会清掉它持有的
+  单例，函数内 static 会被提前析构，下一个引擎拿到已析构的对象 → `0xC0000374` 堆损坏。
+- 类型注册用 `qmlTypeId(...) == -1` 判重**逐引擎重注册**。`QQuickWidget` 自带内部
+  `QQmlEngine`（无法注入），引擎一析构就注销其用到的 C++ 类型；不重注册，第 2 个引擎
+  能 import 到 `Shine` 模块却查不到 `ThemeBridge` → `setSource` 里 `0xC0000005`。
+
+### ⑤ `layer.effect` / `MultiEffect` 在 software 场景图后端下会把 item 整个吞掉
+
+不是"阴影没画出来"，是**控件本身不显示**（`Button` 的 `primary` 变体整排消失）。
+所以不能写死 `layer.enabled: true`，由 `QuickHost` 读 `quickWindow()->sceneGraphBackend()`
+探测后写进 `ThemeBridge::layerEffectsAvailable`，QML 侧据此短路。
+
+本机恒为 `software`（`QT_QUICK_BACKEND`，须在 `QApplication` 构造**前**设），所以离屏取证
+永远拿不到 `box-shadow`。这不影响链路结论：Widgets 侧的 `QGraphicsDropShadowEffect`
+在离屏下是好的，两条路径的差距只在真实带硬件后端的会话里才会显现。
+
+### ⑥ 抓图前必须让 `Behavior` 补间跑完
+
+`Behavior on color` 在主题切换后把新色**动画**过去（120/200/320ms），而
+`processEvents()` 只处理一瞬间的队列 —— 抓到的是动画起点，也就是**上一套主题的颜色**。
+
+症状同样隐蔽：色板（无 `Behavior`）是对的，控件底色/描边（带 `Behavior`）全是旧主题的，
+看起来像"桥只更新了一部分"。`QuickHost::Pump(settle_ms)` 的 `settle_ms` 必须 ≥ 最长动效，
+review 里用 400ms。
+
+### ⑦ QML 定位纪律（三条，都是 binding loop）
+
+1. `QQuickWidget` 的根对象必须是 **Item**，给 `Window` 只会得到
+   `QQuickWidget: invalid root object.`（`setSource` 是异步的，成功判据要等
+   `statusChanged` 落到 `Ready`/`Error`，不能加载完立刻读 `status()`）。
+2. 页面层**不套 `Flow`/`Row`/`Grid`**：定位器接管子项几何，与 hover 的
+   `translateY(-2px)` 抢 `y` → binding loop，卡片全叠在第一行。卡片一律显式 `x/y`。
+3. `Card` 的 `body` 是 `Column`（真实卡片要自动竖排），它会接管**直接**子项的 `y` ——
+   卡片内容要套一层填满的 `Item` 再在里面绝对定位。
+4. `anchors.fill` 与 `y` 互斥：抬升要挂在**外层 Item** 上，不能挂在被锚定的 Rectangle 上。
+
+### ⑧ 别重复声明 `enabled`
+
+`Button` 里写 `property bool enabled: true` 会覆盖 `Item` 内建属性并触发
+`Member enabled of the object Button_QMLTYPE_1 overrides a member of the base object`。
+直接用内建的：它顺带把整棵子树（含 `MouseArea`）一起禁用，正是 `.btn:disabled` 想要的。
+
+### 端到端取证现状
+
+`SHINE_QML_REVIEW=<目录>` 触发，5 套主题在一棵 QML 树上热切换各抓一张
+（**只建一个 `QuickHost`**：重建路径在本机是崩的，而热切换才是桥该被验证的行为）。
+
+像素级比对（深空主题，11 个采样点全中）：页面底 `bg.void`、卡片底 `bg.panel`、
+主按钮 `accent.primary`、Tag 的 12% 混色底与 35% 混色边、默认态 `fill.muted`、
+色板 8 个 token —— **全部与 `Themes/深空.json` 逐位一致**。
+证明 `JSON → ColorToken → ThemeBridge → QML 绑定 → 场景图 → grabToImage 像素` 整链成立，
+且 color-mix 与 QSS 共用 `ToneMix.h` 同一份实现。
+
+**本节未覆盖**：每个业务页面的 QML 迁移（尚未开始）；`backdrop-filter` 在 QML 侧同样
+无解（见第一节，它是唯一真边界）。
+
+---
+
 ## 六、验收体系自身的已知噪音
 
 不是 UI 问题，但会干扰读自检报告，一并记录：
@@ -449,7 +562,7 @@ setStyleSheet → StyleChange → 重刷 → setStyleSheet 的死循环，
 | `QString::arg: 1 argument(s) missing` | P05 fixture 搭建 | 既有噪音 |
 | `SHINE_P10_S8` / `SHINE_P10_S10` FAIL | `checks/P10Checks.cpp` | 断言 `dist/ShineTVStudio2/ShineTVStudio.exe` 存在，那是**打包产物**；本工作区无 `dist/`（`build/` 已 gitignore）。与 UI 无关 |
 | P04_S1–S4 报告格式不同 | `checks/P04WorldChecks.cpp` 等 | 用 `key=val PASS` 而非 `[PASS]`，按 `[PASS]` 正则统计会误显示为 0 项，**别误判成"没跑"** |
-| `check-theme: PASS (four themes parse)` | `tools/check-theme.ps1` | 提示串里的「four」是旧文案；判据是 `Count -lt 4`，现在目录里有 5 个 JSON，脚本仍然通过。**别照着提示串以为只有 4 套主题** |
+| `check-theme: PASS (5 themes parse)` | `tools/check-theme.ps1` | 原提示串写死「four themes」，判据也是 `Count -lt 4`，而目录里实际有 5 个 JSON。2026-09-30 已改为 `-lt 5` 且提示串取实际文件数 |
 | `font-size: 13.5px` 会渲染成 14px | QSS 全局 | 第〇节的取整规则：QSS 里只写整像素 |
 | `QLayout: Attempting to add QLayout "" to QWidget ""` ×2 | `SHINE_P04_REVIEW` 运行期 | 本轮观察到的 Qt 告警，**来源尚未定位**（只记录现象，不下结论）。重建式页面里对同一成员控件二次 `new QVBoxLayout(w)`（w 已有布局）会触发；`pages/novel/WorldBoardS3.cpp` 是本仓最密集的重布局点，且该文件本轮**未改动**。各处渲染图未见异常 |
 

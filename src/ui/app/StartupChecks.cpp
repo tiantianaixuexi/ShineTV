@@ -15,6 +15,7 @@
 #include "ui/kit/theme/QssBuilder.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/theme/ThemeService.h"
+#include "ui/kit/qml/QmlGalleryReview.h"
 #include "project/Project.h"
 #include "project/ProjectIndex.h"
 #include "project/ProjectTemplate.h"
@@ -144,6 +145,12 @@ std::optional<int> RunStartupChecks(QApplication& app) {
     if (const std::filesystem::path reviewDir = EnvironmentPath(L"SHINE_P10_REVIEW");
         !reviewDir.empty()) {
         shine::app::SaveP10Review(reviewDir);
+        return app.exec();
+    }
+    // QML 画廊取证（架构层验证）：5 套主题各一张，与 Widgets 画廊并排比对颜色一致性。
+    if (const std::filesystem::path reviewDir = EnvironmentPath(L"SHINE_QML_REVIEW");
+        !reviewDir.empty()) {
+        shine::qml::SaveQmlGalleryReview(reviewDir);
         return app.exec();
     }
     return std::nullopt;

@@ -33,6 +33,18 @@ inline constexpr std::array<ThemeId, 5> kAllThemes = {
 void SetCurrentTheme(ThemeId id) noexcept;
 [[nodiscard]] const ColorToken& Current();
 
+// —— 主题变更观察者（QML 桥用）——
+//
+// SetCurrentTheme / ActivateCustom / RevertToBuiltin 三处是换肤的全部漏斗，
+// 每次都会回调这里的函数指针。
+//
+// ⚠️ 为什么是**函数指针**而不是 Qt signal：本文件属于 shine_kit，而订阅方
+// （ui/kit/qml/ThemeBridge）在 shine_qml —— 依赖方向只能 shine_kit → shine_qml 的
+// 反向？不能。theme 层如果要发 signal 就得认识 QObject，而 QML 桥必须能被
+// 替换/裁掉。函数指针让下层完全不需要知道上层的存在。
+using ThemeChangedFn = void (*)();
+void SetThemeChangedObserver(ThemeChangedFn fn) noexcept;
+
 // —— 每主题字体族（webui tokens.css 的 --font-ui）——
 // ⚠️ 为什么字体**不进 ColorToken**：ColorToken 的字段顺序就是 QSS 的 %N 占位符顺序，
 // 也是 ColorTokenToJson/FromJson 的键序（两者必须逐位一致，插入即错位）。

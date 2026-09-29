@@ -39,7 +39,8 @@ last_verified: 2026-09-25
 | 图库/媒体 | `src/media/MediaLibrary.h` | `Gallery.h`, `ThumbnailService.h` |
 | 图片解码 | `src/media/decoders/IImageDecoder.h` | `PngDecoder.*`, `JpegDecoder.*`, `WebpDecoder.*` |
 | inpaint | `src/paint/PaintCanvas.h` | `PaintService.h`, `PngCodec.h` |
-| 主题/QSS | `src/ui/kit/theme/Token.h` | `Theme.cpp`, `QssBuilder.cpp`, `ThemeService.cpp` |
+| 主题/QSS | `src/ui/kit/theme/Token.h` | `Theme.cpp`, `QssBuilder.cpp`, `ThemeService.cpp`, `ToneMix.h` |
+| QML 接缝 | `src/ui/kit/qml/ThemeBridge.h` | `QuickHost.cpp`, `QmlGalleryReview.cpp`, `src/ui/qml/Gallery/*.qml` |
 | 通用控件 | `src/ui/kit/controls/`, `src/ui/kit/data/`, `src/ui/kit/images/` | `WidgetCommon.h` |\n| Qt 布局助手 | `src/ui/layout/QtLayout.h` | `widget/theme/CssColor.h` |
 | 流程画布 | `src/ui/kit/canvas/FlowCanvas.h` | `src/ui/pages/imageflow/`, `src/ui/pages/videoflow/` |
 | 设置/路径 | `src/core/Settings.h` | `Settings.cpp`, `src/util/Encoding.h` |

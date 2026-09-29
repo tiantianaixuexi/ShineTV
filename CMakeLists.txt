@@ -13,9 +13,19 @@ set(THIRD ${CMAKE_SOURCE_DIR}/third)
 
 # --- Qt 6（MSYS2 MinGW64 自带；与 GCC 16 同源，ABI 一致）---
 # UI 使用 Qt 6 Widgets；模块边界见 docs/00-overview/architecture.md。
+#
+# QML 分层（2026-09-29 架构层）：Quick/Qml 只给新页面用，既有 Widgets 全部保留。
+#   Widgets → QuickWidgets → Qml 逐层叠加，不反向依赖：
+#     shine_kit     仍是纯 Widgets 控件层（不引入任何 QML 头）
+#     shine_qml     新增：QQuickWidget 宿主 + 主题 token 的 QML 桥（只依赖 shine_kit）
+#     ShineTVStudio 前端同时链两层，页面按需二选一或嵌套
+#   QuickWidgets 必须显式列出：只写 Quick 拿不到 QQuickWidget 那个类。
 list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+#   QuickEffects 必须显式列出：QtQuick.Effects（MultiEffect = box-shadow / 阴影）
+#   是独立 QML 模块，不写它 QML 侧 import QtQuick.Effects 会整页加载失败。
+find_package(Qt6 REQUIRED COMPONENTS Widgets Quick QuickWidgets Qml QuickEffects)
 set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
 
 # --- libhv: HTTP + WebSocket client (static only, no server/examples) ---
 set(BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -465,10 +475,42 @@ add_library(shine_kit STATIC
 target_link_libraries(shine_kit PUBLIC shine_core Qt6::Widgets)
 
 # ============================================================================
+# shine_qml —— QML 接缝层（2026-09-29 架构层）
+#
+# 职责边界（刻意做得很窄，避免长成第二套 UI 框架）：
+#   * QuickHost：QQuickWidget 宿主 + 场景图抓图（harness 出图要走它）
+#   * ThemeBridge：把既有 ColorToken 投影给 QML，**零新增 token 真值**
+#   * 混色算法不在这里 —— 唯一实现在 kit/theme/ToneMix.h，与 QSS 共用
+#
+# 依赖方向：shine_kit ← shine_qml。shine_kit 保持纯 Widgets、不引任何 QML 头，
+# 这样既有 43K 行 Widgets 代码一行不用改，QML 只在新页面里增量引入。
+# ============================================================================
+add_library(shine_qml STATIC
+  src/ui/kit/qml/ThemeBridge.cpp
+  src/ui/kit/qml/QuickHost.cpp
+)
+target_link_libraries(shine_qml PUBLIC shine_kit Qt6::QuickWidgets Qt6::Qml Qt6::QuickEffects)
+# 头文件（ThemeBridge.h 的 QML_ELEMENT 宏）需要 moc 看到
+target_include_directories(shine_qml PUBLIC ${CMAKE_SOURCE_DIR}/src)
+
+# QML 页面资源：编译进 exe，避免运行时依赖磁盘上的 .qml（打包/评审都省事）
+qt_add_resources(shine_qml "shin_qml"
+  PREFIX "/qt/qml"
+  BASE   "${CMAKE_SOURCE_DIR}/src/ui/qml"
+  FILES
+    src/ui/qml/Gallery/Gallery.qml
+    src/ui/qml/Gallery/Ctl.qml
+    src/ui/qml/Gallery/Tag.qml
+    src/ui/qml/Gallery/Card.qml
+    src/ui/qml/Gallery/Button.qml
+)
+
+# ============================================================================
 # ShineTVStudio —— Qt Widgets 前端（P01-S6 空壳主窗口；P03 起为项目中心外壳）
 # ============================================================================
 add_executable(ShineTVStudio
   src/ui/app/main.cpp
+  src/ui/kit/qml/QmlGalleryReview.cpp
   src/ui/app/AppEntry.h
   src/ui/app/AppEntry.cpp
   src/ui/app/AppEnvironment.h
@@ -629,6 +671,7 @@ target_compile_options(ShineTVStudio PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-freflect
 target_link_libraries(ShineTVStudio PRIVATE
   shine_core
   shine_kit
+  shine_qml
   Qt6::Widgets
 )
 

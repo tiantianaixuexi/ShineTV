@@ -1,6 +1,7 @@
 #include "ui/kit/theme/QssBuilder.h"
 
 #include "ui/kit/theme/Theme.h"
+#include "ui/kit/theme/ToneMix.h"
 #include "util/File.h"
 
 #include <array>
@@ -55,61 +56,20 @@ std::string Trim(std::string s) {
     return s;
 }
 
-// ---- color-mix 的替身 --------------------------------------------------------
+// ---- color-mix 的派生态填充 ----------------------------------------------------
 //
-// 设计稿的 `.tag.ok`（ui.css:139）等一批规则用 color-mix 调 tone 底/边：
-//   color:            var(--ok)
-//   border-color:     color-mix(in srgb, var(--ok) 35%, transparent)
-//   background:       color-mix(in srgb, var(--ok) 12%, transparent)
-//
-// QSS 没有 color-mix，EmitColor 只会吐 #rrggbb / rgba(...)，而「某 token 按比例
-// 混到底色上」这件事写不进 %N 序列（%N 只能替换成一个字面色）。给 ColorToken
-// 追加字段同样不可行 —— 字段序就是 %N 序号、也就是 ColorTokenToJson 的键序，
-// 插入即整体错位（水墨字体的教训，见 Token.h 的说明）。
-//
-// 所以走第三条路：在 Build 阶段按当前主题现算，产出一组**按下标寻址的派生色**，
-// 模板里用非颜色占位符 $TONEBG$n$ / $TONEEDGE$n$（n = kToneMix 顺序），
-// 与 $FONTFAMILY$ 同一套替换机制、自检同样盯残留。
+// 混色算法**不在这里实现**：唯一实现在 ToneMix.h（QML 桥复用同一份）。
+// 若此处再写一份「看起来一样」的，QML 页面与 QSS 控件的同一个 tone 胶囊
+// 就会漂成两种颜色 —— 截图能看出来、极难定位。
 //
 // 底色基准取 bg.surface：color-mix 的第二色是 transparent，叠在「标签所在的容器」
 // 上；本仓既有约定（水墨主题把 line.*/fill.* 预合成到 bg.surface）也是拿
 // bg.surface 做基准，保持一致。
 
-struct Rgba {
-    int r;
-    int g;
-    int b;
-    int a;
-};
-
-Rgba Unpack(std::uint32_t v) {
-    return {static_cast<int>((v >> 24) & 0xFF), static_cast<int>((v >> 16) & 0xFF),
-            static_cast<int>((v >> 8) & 0xFF), static_cast<int>(v & 0xFF)};
-}
-
-std::uint32_t Pack(const Rgba& c) {
-    return (static_cast<std::uint32_t>(c.r) << 24) | (static_cast<std::uint32_t>(c.g) << 16) |
-           (static_cast<std::uint32_t>(c.b) << 8) | static_cast<std::uint32_t>(c.a);
-}
-
-// top 按 ratio 叠在 bottom 上（ratio=0.12 即 CSS 的「色 12%」）
-std::uint32_t MixOver(std::uint32_t top, std::uint32_t bottom, double ratio) {
-    const Rgba t = Unpack(top);
-    const Rgba b = Unpack(bottom);
-    const auto mix = [ratio](int x, int y) {
-        return static_cast<int>(std::lround(static_cast<double>(x) * ratio +
-                                            static_cast<double>(y) * (1.0 - ratio)));
-    };
-    Rgba out{mix(t.r, b.r), mix(t.g, b.g), mix(t.b, b.b), mix(t.a, b.a)};
-    return Pack(out);
-}
-
 // tone 顺序 = 模板里 $TONEBG$n$ / $TONEEDGE$n$ 的 n，**不可重排**。
 // 前六项对应 ui.css:139-144 的六个 tone 变体；pending 是本仓补的状态轴一员
 // （tokens.css 有 --pending），按同样的比例混，避免它退回实心底。
 constexpr std::array<std::size_t, 7> kToneMix = {13, 17, 18, 19, 20, 21, 23};
-constexpr double kToneBgRatio = 0.12;   // CSS: background 12%
-constexpr double kToneEdgeRatio = 0.35; // CSS: border-color 35%
 
 // 7 tone × (底, 边) 共 14 个派生态的字面值，顺序 = $TONEBG$n$ / $TONEEDGE$n$。
 // FillToneMixes 拿它填模板，SelfCheck 拿它放行色值扫描 —— 派生色同样可回溯
@@ -120,8 +80,8 @@ std::vector<std::string> ToneMixColors(const std::array<std::uint32_t, kColorTok
     const std::uint32_t base = values[1]; // bg.surface
     for (std::size_t i = 0; i < kToneMix.size(); ++i) {
         const std::uint32_t tone = values[kToneMix[i] - 1];
-        out.push_back(EmitColor(MixOver(tone, base, kToneBgRatio)));
-        out.push_back(EmitColor(MixOver(tone, base, kToneEdgeRatio)));
+        out.push_back(EmitColor(MixOver(tone, base, kToneBgMixRatio)));
+        out.push_back(EmitColor(MixOver(tone, base, kToneEdgeMixRatio)));
     }
     return out;
 }

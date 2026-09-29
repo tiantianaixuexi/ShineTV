@@ -67,6 +67,10 @@ ThemeId g_current = ThemeId::DeepSpace;
 std::vector<std::pair<std::string, ColorToken>> g_customs;
 long g_customActive = -1; // 下标；-1 = 当前用内置
 
+// 主题变更观察者（QML 桥注册）。函数指针而非 signal：theme 层在 shine_kit，
+// 桥在 shine_qml（更上层），依赖方向不能反过来。
+ThemeChangedFn g_theme_changed_observer = nullptr;
+
 [[nodiscard]] std::size_t IndexOf(ThemeId id) { return static_cast<std::size_t>(id); }
 
 [[nodiscard]] const ThemeMeta& MetaOf(ThemeId id) { return kThemes[IndexOf(id)]; }
@@ -147,7 +151,27 @@ bool LoadThemesFrom(const std::filesystem::path& dir) {
 
 const ColorToken& ThemeColorsOf(ThemeId id) { return g_themes[IndexOf(id)]; }
 ThemeId CurrentThemeId() noexcept { return g_current; }
-void SetCurrentTheme(ThemeId id) noexcept { g_current = id; }
+
+void SetThemeChangedObserver(ThemeChangedFn fn) noexcept { g_theme_changed_observer = fn; }
+
+namespace {
+// 换肤的所有漏斗都走这里，避免「只挂了 Switch、漏了 Preview / 自定义主题」。
+void FireThemeChanged() {
+    if (g_theme_changed_observer != nullptr) {
+        g_theme_changed_observer();
+    }
+}
+} // namespace
+
+void SetCurrentTheme(ThemeId id) noexcept {
+    if (g_current == id) {
+        return;
+    }
+    g_current = id;
+    // 通知下游（QML 桥）重算绑定。放在这里而不是 ThemeService::Switch：
+    // SetCurrentTheme 才是内置主题切换的唯一漏斗。
+    FireThemeChanged();
+}
 
 std::string_view ThemeFontFamilyOf(ThemeId id) { return kFontFamilies[IndexOf(id)]; }
 
@@ -343,6 +367,9 @@ bool ActivateCustom(const std::string& name) {
     for (std::size_t i = 0; i < g_customs.size(); ++i) {
         if (g_customs[i].first == name) {
             g_customActive = static_cast<long>(i);
+            // 换肤入口之一。SetCurrentTheme 不会为自定义主题触发（id 没变），
+            // 所以这里和 RevertToBuiltin 必须各自通知一次。
+            FireThemeChanged();
             return true;
         }
     }
@@ -356,6 +383,9 @@ std::string CurrentCustomName() {
                                : std::string{};
 }
 
-void RevertToBuiltin() { g_customActive = -1; }
+void RevertToBuiltin() {
+    g_customActive = -1;
+    FireThemeChanged();
+}
 
 } // namespace shine::theme

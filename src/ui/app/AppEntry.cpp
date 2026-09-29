@@ -3,6 +3,7 @@
 #include "ui/app/AcceptanceChecks.h"
 #include "ui/app/AppEnvironment.h"
 #include "ui/app/StartupChecks.h"
+#include "ui/kit/qml/QuickHost.h"
 #include "ui/pages/shell/MainWindow.h"
 #include "core/Async.h"
 #include "core/Log.h"
@@ -106,6 +107,13 @@ int RunApp(int argc, char** argv) {
     if (std::wstring_view(command_line).find(L"--novel-") != std::wstring_view::npos) {
         return shine::novel::RunNovelCli(command_line.c_str());
     }
+
+    // QML 场景图后端：必须在 QApplication 构造**之前**设 QT_QUICK_BACKEND。
+    // 本机无可交互桌面会话（窗口 IsWindowVisible=false、PrintWindow 纯黑），
+    // OpenGL/D3D 场景图起不来；software 后端是唯一能出图的路径
+    // （实测 grabWindow() 与 grabToImage() 均 PASS，见 QuickHost.h 约束 1）。
+    // ⚠️ 事后用 QQuickWindow::setSceneGraphBackend() 改无效 —— 引擎只在初始化时读一次。
+    shine::qml::ConfigureSceneGraphBackend();
 
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("ShineTV Studio"));
