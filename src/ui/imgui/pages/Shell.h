@@ -106,6 +106,11 @@ public:
     // 取证用：资产页 详情 / 总览 切换。分不清这两态就没法证明 kind chip 也筛了
     // **主区网格** —— 只在详情态截图的话，chip 有没有接上网格根本看不出来。
     void SetAssetsOverview(bool on) { assets_.setOverview(on); }
+    // 取证用：小说页的 8 个模式标签（0 章节 / 1 设定 / 2 初始化 / 3 流水线 / 4 评审 / …）。
+    // ⚠️ 以前 `mode_` 只能靠点标签切换，取证到不了 —— 于是「设定」与「流水线」两个
+    //    **有内容**的模式从来没被截过图，里面的缺陷也就没人看得见（`mode_ == 1`
+    //    那张反向矩形的卡片网格就是这么活下来的）。凡是有多态视图的地方，取证都要有入口。
+    void SetNovelMode(int mode) { novel_.setMode(mode); }
     // toast：设计稿的 notify(...)。以前 toastTimer_ 是死字段、DrawOverlays 是空函数。
     void Notify(std::string text, shine::theme::Tone tone = shine::theme::Tone::Idle);
     [[nodiscard]] kit::Rect workspaceRect() const { return workspace_; }

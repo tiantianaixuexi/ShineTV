@@ -23,6 +23,19 @@ void SetReduceMotion(bool on);
 void TickAnimation(float deltaSeconds);
 [[nodiscard]] float Now();
 
+// ---- 取证用：钉住动画时钟 ----
+//
+// 用途只有一个：让「像素变化的唯一变量」可以被指定。资产页与总控页有**永不静止**的
+// 指示器（Progress 微光、StatusDot 呼吸、Tag busyPulse），它们靠 `Now()` 驱动，
+// 于是同一状态下连拍两帧也不逐字节相同 —— 悬停探针分不清「hover 生效了」和
+// 「页面正好在闪」，实测 8 个探针里 4 个是这种假信号。
+//
+// 钉住之后帧与帧之间唯一变的是鼠标位置，A==B 才真的说明页面静止。
+// 这不会掩盖 hover 的过渡动画：本工程所有 hover 样式都是 `hit.hovered ? A : B`
+// 的**直接状态切换**，没有基于时间的插值（这是钉时钟能用的前提，改样式时别破坏）。
+void PinAnimation(float seconds);
+void UnpinAnimation();
+
 // 三角波 0..1，用于脉冲/呼吸。
 [[nodiscard]] float Pulse(float periodSeconds, float phase = 0.0f);
 
@@ -77,5 +90,23 @@ void DrawDotGrid(ImDrawList* draw, ImVec2 min, ImVec2 max, float cell, ImU32 dot
 [[nodiscard]] ImU32 ToneColor(theme::Tone tone);
 [[nodiscard]] ImU32 ToneBackground(theme::Tone tone);
 [[nodiscard]] ImU32 ToneBorder(theme::Tone tone);
+
+// ---- 反向矩形自检（2026-09-30 加）----
+//
+// `kit::Rect` 的四参构造是 (minX, minY, maxX, maxY)，而人写出来十有八九是
+// (x, y, w, h)。传错**不报编译错**，只是 max < min，于是
+// `DrawRoundRect` 与 `HitTestImpl` 的 `if (max <= min) return;` 把整个控件丢掉：
+// 不画、不可点，界面上留下一片空白，日志与 manifest 全绿。
+//
+// `tools/find-rect-wh-misuse.ps1` 靠「第 3 参像尺寸、第 4 参是裸字面量」的启发式找，
+// 必然漏。这里改成**运行时兜底**：每个绘制 / 命中入口都报一次，取证跑完 52 张
+// 覆盖全部 7 个工作区后若计数 > 0 就判 FAIL —— 漏网的实例会自己举手。
+//
+// 只记**严格反向**（max < min）。退化（max == min，如宽高为 0 的空 tag）是合法用法。
+void NoteInvertedRect(float minX, float minY, float maxX, float maxY, const char* where);
+[[nodiscard]] int InvertedRectCount();
+void ResetInvertedRectCount();
+// 最近一次反动的坐标，manifest 里原样打出来 —— 坐标通常就足以定位到是哪个面板。
+[[nodiscard]] const char* LastInvertedRect();
 
 } // namespace shine::kit

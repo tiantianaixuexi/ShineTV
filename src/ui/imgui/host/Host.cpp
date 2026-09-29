@@ -36,6 +36,25 @@ void PumpUi() {
     shine::gallery::Tick();
 }
 
+// Win32 消息泵。与 RunLoop 里那段**逐字同形**。
+//
+// ⚠️ 以前 PumpFrames 走不到这里：PumpUi 只 drain 队列、不泵消息，于是取证期间
+//    WM_MOUSEMOVE 永远不被派发，ImGui_ImplWin32_WndProcHandler 也就永远收不到它；
+//    而 ImGui_ImplWin32_UpdateMouseData 的补位分支要求**窗口是前台窗口**，后台
+//    取证作业下也不满足。结果 io.MousePos 一直停在初值 -FLT_MAX（ImGui 的
+//    「无鼠标」哨兵，且从不被逐帧重置）—— 整轮跑下来鼠标位置一次都没设置过。
+//    后果不是「取证不好看」，而是**任何交互态根本无法被验证**：hover、按下、
+//    焦点、tooltip 全部拍不出来，只能拍静息态。
+//    真实交互下 RunLoop 自己泵消息，所以鼠标是好的 —— 这不是应用的缺陷，是
+//    离屏泵帧不够「忠实」。补上这一段让 PumpFrames 与 RunLoop 行为一致。
+void PumpMessages() {
+    MSG message;
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+}
+
 // ImGui 后端用的是自己的 imgl3w 加载器，拿不到它的函数指针表；
 // src/gpu 需要的 6 个 GL 1.1 函数在这里按同样的「wglGetProcAddress 优先、
 // opengl32 导出兜底」解析一次交给它。两套入口互不干扰。
@@ -278,7 +297,8 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
         return;
     }
     for (int i = 0; i < frames; ++i) {
-        PumpUi();
+        PumpMessages();
+    PumpUi();
 
         // 客户区可能变（拖边框、还原最小化）。WGL 上下文不用重建，viewport 跟一下即可。
         RECT client{};

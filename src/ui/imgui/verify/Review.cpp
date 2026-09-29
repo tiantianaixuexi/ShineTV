@@ -1,12 +1,14 @@
 #include "ui/imgui/verify/Review.h"
 
 #include "core/Log.h"
+#include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/verify/Capture.h"
 #include "util/File.h"
 
 #include <chrono>
 #include <cstdio>
 #include <iomanip>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
@@ -23,10 +25,10 @@ using pages::Shell;
 // 3 帧足以让「本帧新建的图元」进 draw list，再多只是刷同样的内容。
 constexpr int kSettleFrames = 3;
 
-// 像素内容的 FNV-1a 64。用途不是密码学，是「同一工作区在 5 套主题下的图必须互不相同」
-// 这条判据 —— 主题没加载上时 5 张会**逐字节相同**，而只判「PNG 写出来了」的旧门禁
-// 会照样报 overall=PASS（实测：exe 放到没有 themes/ 的目录里跑，37 张只有 13 张唯一，
-// manifest 依旧 PASS）。这条判据把那种假绿变成 FAIL。
+    // 像素内容的 FNV-1a 64。用途不是密码学，是「同一工作区在 5 套主题下的图必须互不相同」
+    // 这条判据 —— 主题没加载上时 5 张会**逐字节相同**，而只判「PNG 写出来了」的旧门禁
+    // 会照样报 overall=PASS（实测：exe 放到没有 themes/ 的目录里跑，37 张只有 13 张唯一，
+    // manifest 依旧 PASS）。这条判据把那种假绿变成 FAIL。
 std::uint64_t HashPixels(const std::vector<std::uint8_t>& pixels) {
     std::uint64_t h = 1469598103934665603ull;
     for (const std::uint8_t b : pixels) {
@@ -34,6 +36,130 @@ std::uint64_t HashPixels(const std::vector<std::uint8_t>& pixels) {
         h *= 1099511628211ull;
     }
     return h;
+}
+// 悬停探针要打的目标 + **前置动作**。
+//
+// ⚠️ 前置动作必须显式写全。踩过的坑：资产网格那张卡探针一开始没切视图，
+//    上一条 `assets-leaf-selected` 已经把资产页留在**详情**态 —— 那张坐标上根本没卡片，
+//    探针报「hover 前后相同」，看上去像卡片 hover 链路断了。症状与真缺陷一模一样，
+//    判据本身没错，错在没把状态摆成它承诺的样子。
+struct HoverTarget {
+    const char* name;
+    int workspace;
+    float x;
+    float y;
+    // 资产页要不要先切回总览网格（详情态下主区没有卡片）。
+    bool assetsOverview = false;
+    // 资产 kind 筛选要不要先清空（筛掉了目标所在的那一类就只剩空态）。
+    bool clearKindFilter = false;
+};
+
+// 悬停探针：把鼠标放到 (x, y) 拍一张，**再把鼠标放到窗外拍一张只取哈希**，
+// 要求两者像素不同。对照那张不落盘（落盘会与已有静息态图逐字节撞上，把
+// 「受控图不许重样」那条判据变成噪声）。
+//
+// 为什么必须判「不同」而不是拍完就算：悬停**拍不出来**的失败模式至少三种
+// （控件没有 hover 样式 / 坐标算偏了点在空处 / 动画噪声恰好抵消），它们全都表现为
+// 「图在、manifest 记 saved、overall=PASS」。哈希相同把三种一起变成 FAIL。
+//
+// ⚠️ 鼠标位置是**在帧内注入**的（`onFrame` 里、`shell.DrawFrame` 之前），
+//    不是靠移真实光标。原因是取证跑在后台作业里：窗口不是前台窗口，
+//    `ImGui_ImplWin32_UpdateMouseData` 的 `is_app_focused` 补位分支整个跳过，
+//    WM_MOUSEMOVE 也不会送到 —— 实测 `io.MousePos` 始终停在初值 `-FLT_MAX`
+//    （ImGui 的「无鼠标」哨兵，且从不被逐帧重置）。
+//    `PumpFrames` 的顺序是 PumpMessages → NewFrame → onFrame → Render，
+//    所以在 onFrame 里写 `io.MousePos` 与后端投递对 `DrawFrame` 是**等价**的。
+//    本探针验的是**本工程的 hover 绘制**，不是 vendored ImGui 后端的消息接线
+//    （那是第三方代码，真实交互下由 RunLoop 泵消息保证）。
+bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
+                const HoverTarget& target, shine::theme::ThemeId theme,
+                std::vector<std::uint64_t>& drivenHashes,
+                std::vector<std::string>& drivenNames, int* hoverOk, int* hoverUnstable,
+                int* captured, int* failed) {
+    const std::string& name = target.name;
+    const float clientX = target.x;
+    const float clientY = target.y;
+    shell.SetTheme(theme);
+    shell.SetWorkspace(target.workspace);
+    // 前置动作：主题 / 工作区 / 视图 / 筛选，一个都不靠上一条探针的残留状态。
+    if (target.clearKindFilter) {
+        shell.SetKindFilter(std::string());
+    }
+    if (target.assetsOverview) {
+        shell.SetAssetsOverview(true);
+    }
+
+    // kNoMouse 是 ImGui 自己用的「无鼠标」哨兵。
+    constexpr float kNoMouse = -3.402823466e+38f;
+
+    // ⚠️ 三拍，不是两拍，而且顺序有讲究。
+    //
+    // A、B 都是「无鼠标」帧，C 是「鼠标在目标上」。**A 必须等于 B** 才说明这一帧
+    // 页面是静止的 —— `kit::TickAnimation(dt)` 每帧推进时间，资产页的 Progress 微光、
+    // StatusDot 的呼吸、Tag 的 busyPulse 都会让像素逐帧变。如果不先证明
+    // 静止就直接比 A 与 C，那「hover 有效果」和「页面正好在闪」根本分不开，
+    // 探针就是在测动画噪声。
+    //
+    // ⚠️ 整段探针期间**钉住动画时钟**（`kit::PinAnimation`）。不钉的话，那两个
+    //    永不静止的指示器会让 A 永远不等于 B，探针恒判 unstable —— 首轮实测
+    //    8 个探针里 4 个就是这么红的（assets 2 个 + overview 2 个），而 novel 上的
+    //    4 个因为恰好没有运行态指示器才过。钉住之后唯一变量就是鼠标位置。
+    //    前面 52 张静息态截图**不钉**，它们该看到的就是带动画的真实界面。
+    const float kPinnedTime = kit::Now();
+    kit::PinAnimation(kPinnedTime);
+    const auto frameWithMousePinned = [&shell, &host](float x, float y) {
+        host.PumpFrames(kSettleFrames, [&shell, x, y](float dt) {
+            ImGui::GetIO().MousePos = ImVec2(x, y);
+            shell.DrawFrame(dt);
+        });
+    };
+    struct Unpin {
+        ~Unpin() { kit::UnpinAnimation(); }
+    } unpin;
+
+    frameWithMousePinned(kNoMouse, kNoMouse);
+    const std::vector<std::uint8_t> restA = host.CaptureBackBuffer();
+    frameWithMousePinned(kNoMouse, kNoMouse);
+    const std::vector<std::uint8_t> restB = host.CaptureBackBuffer();
+    const std::uint64_t restHash = HashPixels(restA);
+
+    frameWithMousePinned(clientX, clientY);
+    const std::vector<std::uint8_t> pixels = host.CaptureBackBuffer();
+    const std::uint64_t hash = HashPixels(pixels);
+    RECT client{};
+    GetClientRect(host.window(), &client);
+    const auto width = static_cast<std::uint32_t>(client.right);
+    const auto height = static_cast<std::uint32_t>(client.bottom);
+    if (!GrabAndSave(pixels, width, height, dir, name)) {
+        // 计数必须在这里自己加，不能靠调用点用返回值 —— 早先返回值在调用点被丢掉，
+        // 于是悬停那 8 张图「存了、manifest 记 saved、failed 也不加」：
+        // `# shots:` 少报 8 张，编码失败则完全不可见。取证的数字要能对上盘上的文件数。
+        ++*failed;
+        return false;
+    }
+    ++*captured;
+    const bool stable = restHash == HashPixels(restB);
+    const bool changed = restHash != hash;
+    shine::log::Info("review: probe {} at ({:.0f},{:.0f}) rest-stable={} changed-vs-rest={}", name,
+                     clientX, clientY, stable ? 1 : 0, changed ? 1 : 0);
+    if (!stable) {
+        // 页面在动，这一拍测不出 hover 的因果。**记成不稳定并让整轮红掉** ——
+        // 放过去就等于「这个控件的 hover 链路没验过」却报 PASS，比误报红更坏：
+        // 门禁一旦学会放过自己的不确定，后面所有 PASS 都不可信。
+        // 修法通常是换坐标、或者给这一帧把动画时间钉住，不是改判据。
+        shine::log::Error("review: {} 静息两帧就不一致（页面在动），本探针结论不可用", name);
+        ++*hoverUnstable;
+    } else if (!changed) {
+        shine::log::Error(
+            "review: {} 页面静止、鼠标也到位了，悬停前后像素却**完全相同** —— "
+            "坐标点在了这个控件的热区之外（布局变了），或这个控件的 hover 链路是断的",
+            name);
+    } else {
+        ++*hoverOk;
+    }
+    drivenHashes.push_back(hash);
+    drivenNames.push_back(name);
+    return true;
 }
 
 // 一张图的完整动作：**显式**设主题 + 显式设工作区 → 推进 N 帧 → 抓后备缓冲 → 存 PNG。
@@ -181,6 +307,10 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     bool bookSnapshotConverged = false;
     // 资产快照也要显式等：kind 树的数据来自同一次 worker 读库，没落地就拍到空态。
     bool assetSnapshotConverged = false;
+    // 悬停探针：几个目标里几个真的产生了像素变化。
+    int hoverProbesPassed = -1;
+    // 本轮探针总数（targets 数组长度）。写死 4 的话加探针时会忘了改判据，判据跟着目标数走。
+    int kHoverProbeTotal = 4;
     // 受控图的像素哈希。第三/四段的每张都是**显式驱动**出来的（开工程 / 选页签 /
     // 选条目 / 开浮层），彼此应该两两不同 —— 出现重样就说明其中一张没拍到它承诺的状态。
     // ⚠️ 只对这批做重样判据，不对全树做：`ws-*`（当前主题）与 `theme-<base>-*`
@@ -357,6 +487,74 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
         grabDriven("side-jump-buttons", novelWs, base);
 
+        // 小说页的另外两个**有内容**的模式：设定（实体网格）与流水线（阶段表）。
+        // ⚠️ 这两张以前不存在。`mode_` 只能靠点标签切换，取证到不了，于是这两个模式
+        //    里的东西从来没被看过一眼 ——「设定」那张网格的卡片是**反向矩形**（整张
+        //    不画也不可点）就是这么活下来的：不是没人修，是没人拍到过。
+        //    「覆盖 7 个工作区」不等于「覆盖每个工作区的每个视图」，多态视图要逐个点名。
+        shell.SetNovelMode(1);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("novel-mode-world", novelWs, base);
+        shell.SetNovelMode(3);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("novel-mode-pipeline", novelWs, base);
+        shell.SetNovelMode(0);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+
+        // ---- 第六段：悬停态 + toast ----
+        //
+        // 前 52 张全是**静息态**。设计稿里几乎每个控件都定义了 `:hover`，而悬停恰恰是
+        // 最容易整条链路断掉的状态：win32 后端接没接上、HitTest 的 item 有没有占位、
+        // 控件有没有 hover 样式 —— 三者任何一个断了，界面都只是「鼠标划过去没反应」，
+        // 静息态截图**完全看不出来**。所以单独验，并且把「悬停前后必须像素不同」
+        // 做成硬判据。
+        // 坐标来自 design-spec §4 的定宽栅格（Rail 56 / SidePanel 240 / TopBar 46），
+        // 逐个对着上一段的截图核过。⚠️ 布局一改这里就会偏 —— 偏了的症状不是报错，
+        //    而是判据报「悬停前后相同」，属于会自己暴露的那种。
+        const HoverTarget targets[] = {
+            // 侧栏 2×2 里的「资产」
+            {"hover-jump-btn", novelWs, 123.0f, 135.0f},
+            // 左栏第 4 个开关
+            {"hover-rail-toggle", novelWs, 28.0f, 275.0f},
+            // kind 树里的实体叶子（侧栏，与主区视图无关）
+            {"hover-tree-node", assetsWs, 170.0f, 210.0f},
+            // 总览网格的一张卡 —— 必须显式切回总览并清空 kind 筛选，
+            // 否则上一条探针留在详情态/筛选态，这张坐标上压根没有卡片。
+            {"hover-asset-card", assetsWs, 420.0f, 200.0f, true, true},
+            // 底栏「校验报告」的一行
+            {"hover-dock-row", overview, 420.0f, 790.0f},
+            // 检查器「属性」段头
+            {"hover-inspector-head", novelWs, 1400.0f, 69.0f},
+            // 判别探针：同样这两个控件换到另一个工作区再试一次。
+            // 首轮实测 novel 上的 3 个全灭、assets/overview 上的 3 个全过，所以要分清
+            // 是「小说工作区整体没有 hover」还是「这几个控件本身没 hover 样式」。
+            {"hover-rail-toggle-overview", overview, 28.0f, 275.0f},
+            {"hover-dock-row-novel", novelWs, 420.0f, 790.0f},
+        };
+        int hoverOk = 0;
+        int hoverUnstable = 0;
+        for (const HoverTarget& target : targets) {
+            (void)ProbeHover(host, shell, outputDir, target, base, drivenHashes, drivenNames,
+                             &hoverOk, &hoverUnstable, &result.captured, &result.failed);
+        }
+        hoverProbesPassed = hoverOk;
+        const int hoverTotal = static_cast<int>(std::size(targets));
+        WriteManifest(manifest, std::string("hover-probes=") + std::to_string(hoverOk) + "/" +
+                                    std::to_string(hoverTotal) + " changed-vs-rest" +
+                                    (hoverUnstable > 0
+                                         ? "  unstable=" + std::to_string(hoverUnstable)
+                                         : std::string()));
+        kHoverProbeTotal = hoverTotal;
+
+        // toast：设计稿到处在用的 notify(...)。它只活 3.2s，所以必须**同一轮里**触发
+        // 紧跟着抓 —— 跨轮再拍早就过期了，拍到的会是「没有 toast」，而图名还叫 toast。
+        shell.Notify("分镜 · 上下文：第 1 章「雨夜里的第七封来信」", shine::theme::Tone::Ok);
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("toast-ok", overview, base);
+        shell.Notify("ComfyUI 未连接 · 取证期间不连真实服务", shine::theme::Tone::Warn);
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        grabDriven("toast-warn", overview, base);
+
         shell.SetProjectRoot(savedRoot, savedName);
         shell.SetDockTab(savedTab);
     }
@@ -393,20 +591,46 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         }
     }
 
+    // ---- 判据四：全程不得出现「反向矩形」----
+    //
+    // `kit::Rect` 的四参构造是 (minX,minY,maxX,maxY)，人写出来十有八九是 (x,y,w,h)。
+    // 传错不报编译错，只是 max < min，于是 DrawRoundRect / HitTestImpl 把控件整块丢掉：
+    // 不画、不可点，日志和 manifest 全绿。上面 52 张覆盖全部 7 个工作区 + 5 套主题，
+    // 跑完还有计数就说明有一个控件在某个工作区里是**隐形**的。
+    // 这个门禁比 tools\find-rect-wh-misuse.ps1 的启发式扫描强：扫描靠猜第 3/4 参像不像
+    // 尺寸，运行时兜底不猜 —— 谁真的传反了就自己举手。
+    const int inverted = kit::InvertedRectCount();
+    if (inverted > 0) {
+        shine::log::Error("review: {} 次反向矩形，最后一次 = {} —— 有控件被整块丢弃",
+                          inverted, kit::LastInvertedRect());
+    }
+    // 悬停探针全过才算数（-1 = 这一段根本没跑到，判它不通过而不是当它通过）。
+    if (hoverProbesPassed < kHoverProbeTotal) {
+        shine::log::Error("review: 悬停探针只过了 {}/{} —— 有控件的 hover 链路是断的，"
+                          "而静息态截图看不出来",
+                          hoverProbesPassed, kHoverProbeTotal);
+    }
+
     // ⚠️ overall 行必须存在且与退出码一致（脚本 :66 要求 PASS↔0 / FAIL↔1）。
     //    reportScanConverged / bookSnapshotConverged 也进判据：没拍成就是没拍成，
     //    不能因为「其它图都写出来了」就整轮报绿。
     const bool pass = result.failed == 0 && identicalPairs == 0 && drivenDuplicates == 0 &&
-                      reportScanConverged && bookSnapshotConverged && assetSnapshotConverged;
+                      reportScanConverged && bookSnapshotConverged && assetSnapshotConverged &&
+                      inverted == 0 && hoverProbesPassed == kHoverProbeTotal;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
                                 "  identical-theme-pairs: " + std::to_string(identicalPairs) +
                                 "  identical-driven-pairs: " + std::to_string(drivenDuplicates) +
+                                "  inverted-rects: " + std::to_string(inverted) +
+                                "  hover-probes: " + std::to_string(hoverProbesPassed) + "/" + std::to_string(kHoverProbeTotal) +
                                 "  report-scan: " + (reportScanConverged ? "converged" : "TIMEOUT") +
                                 "  book-snapshot: " +
                                 (bookSnapshotConverged ? "converged" : "TIMEOUT") +
                                 "  asset-snapshot: " +
                                 (assetSnapshotConverged ? "converged" : "TIMEOUT"));
+    if (inverted > 0) {
+        WriteManifest(manifest, std::string("last-inverted-rect=") + kit::LastInvertedRect());
+    }
     WriteManifest(manifest, std::string("overall=") + (pass ? "PASS" : "FAIL"));
     shine::log::Info("review done: {} saved, {} failed -> {}", result.captured, result.failed,
                      outputDir.string());

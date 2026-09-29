@@ -1165,8 +1165,20 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                 const BookAsset& a = s.assets[static_cast<std::size_t>(i)];
                 const int column = i % columns;
                 const int row = i / columns;
-                const Rect card{modeBody.min.x + (cardW + 14.0f) * static_cast<float>(column),
-                                modeBody.min.y + 40.0f + 84.0f * static_cast<float>(row), cardW, 76.0f};
+                // ⚠️ 第三处同型：宽高写进了 kit::Rect 的四参 (minX,minY,maxX,maxY) 构造。
+                //    max.x = cardW（~250）小于 min.x（~296）⇒ DrawShadowed 整块 return，
+                //    「设定集」网格的卡片**一张都没画、也点不到**，界面上只剩三行字浮在
+                //    背景上。前两处（资产总览网格 / 底栏页签条）都是裸 `Rect{...}`，
+                //    这处是**声明式 `Rect name{...}`** —— 旧的 find-rect-wh-misuse.ps1
+                //    只认裸式，正好漏掉它（本仓两种写法 67 / 97 处，漏的是更多的那种）。
+                //    扩展扫描覆盖面后由该工具报出来，不是肉眼翻出来的。宽高一律 RectAt。
+                //
+                // 不给这张卡加 hover：它**没有点击行为**（这里不选实体，实体选择与属性
+                // 在资产工作区那张网格上），给一个按不动的卡加悬停描边是假 affordance。
+                // 资产总览网格那张卡有 `clicked` 才配 hover。
+                const Rect card = RectAt(modeBody.min.x + (cardW + 14.0f) * static_cast<float>(column),
+                                         modeBody.min.y + 40.0f + 84.0f * static_cast<float>(row),
+                                         cardW, 76.0f);
                 DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
                 const std::string name = a.name.empty() ? std::string(kDash) : a.name;
                 DrawTextClipped(draw, FontBoldAt(13.0f), 13.0f,
@@ -1307,8 +1319,18 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
                                      body.min.y + (192.0f + 14.0f) * static_cast<float>(r), cardW,
                                      192.0f);
             const bool on = (i == selected_);
+            // ⚠️ 一次 HitTest 取齐 hovered + clicked。悬停描边是设计稿里 .card:hover
+            //    的一部分（与项目中心 DrawHubCard 同一条规则：hover 把 border 从
+            //    line-subtle 提到 accent-glow）。原来这里只有 `Clicked(card, ...)`，
+            //    整条卡 hover 链路是断的 —— 鼠标划过去一点反应都没有，而**静息态
+            //    截图完全看不出来**（hover 前后的差别本来就只在那一帧）。取证靠
+            //    「帧内注入 MousePos + 钉住动画时钟」才逼出来：坐标在热区内、
+            //    页面静止，两帧像素却逐字节相同。
+            const Hit hit = HitTest(card, "asset-card-" + std::to_string(i));
             DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
-                         on ? ColorAccent() : ColorLineSubtle(), 1.0f);
+                         on ? ColorAccent()
+                            : (hit.hovered ? ColorAccentGlow() : ColorLineSubtle()),
+                         1.0f);
             // ⚠️ 缩略图：真实设定图要经 gpu 纹理链路解码（出图页才接）。没有就显示
             //    "无产出图"，不拿 Art() 占位画冒充这个角色的设定图。
             const Rect thumb{card.min.x + 8.0f, card.min.y + 8.0f, card.max.x - 8.0f, card.min.y + 158.0f};
@@ -1323,7 +1345,7 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
             const std::string sub = row.hasAsset ? statusLabel : "无视觉资产";
             DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(card.min.x + 12.0f, card.min.y + 180.0f),
                             cardW - 24.0f, ColorTextMuted(), sub, true);
-            if (Clicked(card, "asset-card-" + std::to_string(i))) {
+            if (hit.clicked) {
                 selected_ = i;
             }
         }

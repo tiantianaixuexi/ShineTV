@@ -13,6 +13,12 @@ namespace {
 // 返回 hovered / active / clicked / doubleClicked。
 Hit HitTestImpl(Rect bounds, std::string_view id) {
     Hit hit;
+    // 命中测试同样吃「反向矩形」这一套：InvisibleButton 的尺寸取自
+    // width()/height()，反向时是负数，ItemAdd 出来的区域是反的 —— 不崩、不报，
+    // 但这个控件**点不中**。所以和 DrawRoundRect 共用同一个计数。
+    if (bounds.max.x < bounds.min.x || bounds.max.y < bounds.min.y) {
+        NoteInvertedRect(bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y, "HitTest");
+    }
     ImGui::SetCursorScreenPos(bounds.min);
     ImGui::InvisibleButton(std::string(id).c_str(), ImVec2(bounds.width(), bounds.height()));
     hit.hovered = ImGui::IsItemHovered();

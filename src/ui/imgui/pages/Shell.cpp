@@ -366,14 +366,17 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
     // 等于凭空多出一个设计稿没有的常亮态；只保留 hover（shell.css 的 .rail-btn:hover）。
     for (const Toggle& toggle : toggles) {
         const Rect item{area.min.x, y, area.max.x, y + 44.0f};
-        const bool hover = kit::Hovered(item, "rail-tg-" + std::string(toggle.icon));
-        if (hover) {
+        // ⚠️ 一帧里只 HitTest 一次。同一个 id 注册两个 InvisibleButton 会让 hover 整个
+        //    失效（实测：hover-jump-btn 与静息态逐像素零差异）。hovered / clicked 从
+        //    同一次命中测试里取。
+        const kit::Hit hit = kit::HitTest(item, "rail-tg-" + std::string(toggle.icon));
+        if (hit.hovered) {
             DrawRoundRect(draw, ImVec2(item.min.x + 6.0f, item.min.y), ImVec2(item.max.x - 6.0f, item.max.y),
                           10.0f, ColorFillHover());
         }
         DrawIconCentered(draw, toggle.icon, ImVec2(area.center().x, item.center().y), 19.0f,
-                         hover ? ColorText() : ColorTextMuted());
-        if (kit::Clicked(item, "rail-tg-" + std::string(toggle.icon))) {
+                         hit.hovered ? ColorText() : ColorTextMuted());
+        if (hit.clicked) {
             *toggle.state = !*toggle.state;
         }
         y += 44.0f;
@@ -566,9 +569,13 @@ void Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
         const float boxTop = top + (cellH + gap) * static_cast<float>(row);
         const Rect box{left, boxTop, left + cellW, boxTop + cellH};
         const std::string hitId = "jump-" + std::to_string(i);
-        const bool hovered = HitTest(box, hitId).hovered;
+        // ⚠️ 一帧里只能 HitTest 一次。以前这里先 `HitTest(...).hovered` 画完再
+        //    `Clicked(...)`，等于用**同一个 id** 注册了两个 InvisibleButton。实测后果：
+        //    悬停态压根不亮（`hover-jump-btn` 与静息态逐像素零差异），按钮只是
+        //    "点得到但看不出按下"。hovered / clicked 从同一次命中测试里取。
+        const kit::Hit hit = HitTest(box, hitId);
         DrawRoundRect(draw, box.min, box.max, 6.0f,
-                      hovered ? ColorOf(theme::CurrentDerived().jumpBtnBg) : ColorAccentDim(),
+                      hit.hovered ? ColorOf(theme::CurrentDerived().jumpBtnBg) : ColorAccentDim(),
                       ColorAccentGlow(), 1.0f);
 
         ImFont* font = FontBoldAt(12.0f);
@@ -583,7 +590,7 @@ void Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
         draw->AddText(font, 12.0f, ImVec2(left2 + iconSize + 4.0f, cy - 6.0f), ColorAccent(), label,
                       label + std::strlen(label));
 
-        if (Clicked(box, hitId)) {
+        if (hit.clicked) {
             // 设计稿就是 setWorkspace(ws) + notify(一句话)，**不带 tab、不带选中项**：
             // 章节上下文靠全局选中态自然带过去（Shell.jsx:619）。
             const BookSideView& book = BookSide();
@@ -917,13 +924,16 @@ void Shell::DrawInspector(Rect area, ImDrawList* draw) {
                  10.0f, ColorTextMuted());
         draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(header.min.x + 16.0f, header.min.y + 5.0f),
                       ColorText(), title, title + std::strlen(title));
-        if (HitTest(header, "inspector-head-" + std::to_string(s)).hovered) {
+        const std::string headId = "inspector-head-" + std::to_string(s);
+        // 同上：一帧里只 HitTest 一次，双注册会让 hover 失效。
+        const kit::Hit headHit = HitTest(header, headId);
+        if (headHit.hovered) {
             draw->AddRectFilled(header.min, header.max, ColorFillHover());
         }
         draw->AddLine(ImVec2(header.min.x, header.max.y), ImVec2(header.max.x, header.max.y),
                       ColorLineSubtle(), 1.0f);
         y += 26.0f;
-        if (Clicked(header, "inspector-head-" + std::to_string(s))) {
+        if (headHit.clicked) {
             sectionOpen_[s] = !open;
         }
         if (!sectionOpen_[s]) {

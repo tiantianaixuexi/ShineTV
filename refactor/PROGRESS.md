@@ -308,6 +308,19 @@ last_verified: 2026-09-30
 | 2026-09-30 | 小修 | `WorkspaceB.cpp` 去 BOM | 全树 37 个源文件里**只有它**带 UTF-8 BOM（HEAD 里本来就有，非本轮引入）。纯字节去掉 3 字节，diff 只有第 1 行 | ✅ |
 | 2026-09-30 | 验证 | 资产树 / 关联段 / 跳转按钮取证 | **52/52 saved · md5 52 张全唯一 · `identical-driven-pairs: 0` · `asset-snapshot: converged` · `relation=ok tags=4` · `overall=PASS`**；新增第五段 6 张（`assets-kind-tree` / `assets-leaf-selected` / `assets-kind-filtered` / `assets-grid-filtered` / `assets-grid-all` / `inspector-relations` / `side-jump-buttons`）。**四道门禁全过**：check-layers / check-theme / check-colors / check-i18n | ✅ |
 | 2026-09-30 | 已知小瑕疵 | ~~`WorkspaceB.cpp` 带 BOM~~ | 已于 2026-09-30 清除，见上方变更记录。 | ✅ |
+| 2026-09-30 | 门禁 | **判据四：运行时反向矩形计数** | `kit::Rect` 的四参是 (minX,minY,maxX,maxY)，写错不报编译错、只是 `max < min` ⇒ `DrawRoundRect` / `HitTestImpl` 整块丢弃控件（不画、不可点），日志与 manifest 全绿。`Draw.h` 加 `NoteInvertedRect` / `InvertedRectCount`，`DrawRoundRect` 的 early-return 与 `HitTestImpl` 同时挂钩（只记**严格**反向，退化 `max == min` 是合法用法）。比 `find-rect-wh-misuse.ps1` 的启发式强：扫描靠猜第 3/4 参像不像尺寸，运行时兜底不猜 —— 谁真传反了自己举手。52 张覆盖 7 工作区 × 5 主题实测 `inverted-rects: 0`，进 `overall` 判据 | ✅ |
+| 2026-09-30 | 门禁 | **第六段取证：悬停态 + toast** | 前 52 张全是静息态，而悬停是最容易整条链路断掉、**静息态截图完全看不出来**的状态。新增 8 个悬停探针 + 2 张 toast 抓图，`hover-probes` 进 `overall` 判据。取证里必须**帧内注入 `ImGui::GetIO().MousePos`**：后台作业里窗口不是前台，`ImGui_ImplWin32_UpdateMouseData` 的 `is_app_focused` 补位分支整个跳过，实测 `io.MousePos` 恒为初值 `-FLT_MAX`（ImGui 的「无鼠标」哨兵，从不被逐帧重置）。根因在宿主：`PumpFrames` 走 `PumpUi()` 而 `PumpUi` **不泵 Windows 消息**，已补 `PumpMessages()`（与 `RunLoop` 同形） | ✅ |
+| 2026-09-30 | 缺陷 | **`PumpFrames` 不泵 Windows 消息** | `Host::PumpUi()` 只有 `DrainUiQueue` + `gallery::Tick`，没有 `PeekMessageW`；`RunLoop` 自己有，所以真实交互下正常，只有后台/离屏路径裸奔。补 `Host::PumpMessages()`，`PumpFrames` 每帧 `PumpMessages(); PumpUi();` | ✅ |
+| 2026-09-30 | 验证 | 悬停态 + toast 取证（第一轮） | 54 张 / 8-8 悬停探针 / `overall=PASS` | ❌ 假绿，见下 |
+| 2026-09-30 | 门禁 | **悬停探针必须三拍，且整段钉住动画时钟** | 只拍「有鼠标 vs 无鼠标」两张时，资产页与总控页的**永不静止**指示器（Progress 微光 / StatusDot 呼吸 / Tag busyPulse）让「hover 生效」和「页面正好在闪」分不开 —— 首轮 8 个探针里 4 个是这种假信号（assets 2 + overview 2，novel 上的 4 个因为恰好没有运行态指示器才过）。改成三拍（无鼠标 A / 无鼠标 B / 目标 C），**A 必须等于 B** 才说明页面静止，否则记 unstable 并让整轮红掉。另加 `kit::PinAnimation` / `UnpinAnimation`：钉住 `g_now` 后帧间唯一变量就是鼠标位置（可用前提是本工程所有 hover 样式都是 `hit.hovered ? A : B` 的直接状态切换，没有基于时间的插值）。52 张静息态截图**不钉**，它们该看到的就是带动画的真实界面 | ✅ |
+| 2026-09-30 | 缺陷 | **资产总览网格的卡片整条 hover 链路缺失** | 三拍判据稳定后剩下的一条真缺陷：网格卡片只有 `Clicked(card, …)`，**没有任何 hover 绘制**，鼠标划过去一点反应都没有；同族的项目中心 `DrawHubCard` 一直有（`hit.hovered ? ColorAccentGlow() : ColorLineSubtle()`，即设计稿 `.card:hover`）。补一次 `HitTest` 取齐 `hovered`/`clicked` | ✅ |
+| 2026-09-30 | 取证纪律 | **悬停探针的前置动作也要显式写全** | 资产卡片探针没切视图时，上一条 `assets-leaf-selected` 已把资产页留在**详情**态 —— 那个坐标上根本没有卡片，判据报「悬停前后相同」，症状与真缺陷一模一样（差点把「探针没摆好状态」当成「卡片 hover 断了」去改产品）。`HoverTarget` 提为文件级结构并带 `assetsOverview` / `clearKindFilter` 两个前置开关 | ✅ |
+| 2026-09-30 | 门禁 | **悬停那 8 张不计入 `captured`/`failed`** | `ProbeHover` 自己存图、自己写 manifest 行，返回值在调用点被 `(void)` 丢开 ⇒ `# shots: 54` 而盘上其实 62 张，编码失败也不会进 `failed`。取证的数字必须和盘上的文件数对得上，改成直接传 `captured` / `failed` 指针进去 | ✅ |
+| 2026-09-30 | 工具 | **`find-rect-wh-misuse.ps1` 三处修正** | ① **会把自己的注释报出来**：源码里那些解释这个坑的注释（`// 这里原来写 Rect{x, y, 400.0f, 32.0f}`）被判成命中 —— 只跳字符串不够，**单趟扫描要让状态从 `Rect{` 落点就贯通**，内层跟不到「落点本身在注释里」这件事。② **只认裸 `Rect{`，不认声明式 `Rect name{`**：本仓两种写法 67 / 97 处，漏掉的恰是更主流的那种。③ 加 `-Root` 参数 + 一份含 3 真 3 假的临时样本做**自检**（改完扫描逻辑必须证明还抓得到真样本 —— 改完报 0 的扫描器和坏掉的没区别） | ✅ |
+| 2026-09-30 | 缺陷 | **第三处反向矩形：小说页「设定」网格整张不画** | 上一条工具扩覆盖面后立刻报出来的真缺陷：`const Rect card{x, y, cardW, 76.0f}`（**声明式**，所以上一轮的扫描器看不见）。`max.x = cardW(~250) < min.x(~296)` ⇒ `DrawShadowed` 整块 return，「设定集」的实体卡片**一张都没画、也点不到**，界面上只剩三行字浮在背景上 | ✅ |
+| 2026-09-30 | 取证覆盖 | **「覆盖 7 个工作区」不等于「覆盖每个工作区的每个视图」** | 小说页有 8 个模式标签（章节/设定/初始化/流水线/评审/模型/状态/自动），而 `mode_` 只能靠点标签切换、取证**根本到不了** —— 于是「设定」「流水线」两个**有内容**的模式从来没被截过图，上一条那个反向矩形就是这么活下来的：不是没人修，是没人拍到过。补 `Shell::SetNovelMode` 入口 + `novel-mode-world` / `novel-mode-pipeline` 两张图 | ✅ |
+| 2026-09-30 | 门禁 | **`ImGui::IsMouseHoveringRect` 在本工程导致 `0xC0000005`** | 退出码 `-1073741819`、fault offset `0x8b8597`。已改成手算比较，不依赖 ImGui 的窗口/命中查询 | ✅ |
+| 2026-09-30 | 验证 | 悬停态 + toast + 多模式覆盖取证（终轮） | **64/64 saved · 盘上 64 张 md5 全唯一 · manifest saved 行数 = PNG 数 = `# shots` · `identical-driven-pairs: 0` · `inverted-rects: 0` · `hover-probes: 8/8` · `unstable=0` · `overall=PASS`**；**四道门禁全过**（check-layers / check-theme / check-colors / check-i18n）；Rect 扫描器：真实树 0 命中、自检 3 命中 | ✅ |
 
 ---
 
@@ -322,6 +335,8 @@ last_verified: 2026-09-30
 | 章节×阶段双轴甘特 | `pipeline::Ledger` | `LedgerEntry` 只有 `{stage, input_hash, output_path, degradation}`，`Flush` 写出的 `_manifest.json` 里也没有章节字段 —— **章节维度在数据层根本不存在**，不是 UI 少画了一根轴。补它要改 `Ledger`。 |
 | 侧栏树 / 检查器的**卷层级** | `shine_core` | `NovelGraph` 只有 `UpsertVolume`，**没有 `ListVolumes`**（`src/novel/NovelGraph.h` 全文确认）。卷标题与卷序取不到，设计稿的「书 / 卷 / 章」三层因此只能画两层。 |
 | 侧栏树 / 检查器主体 | 页面层 | **已实现**：`WorkspacePages.h` 开 `BookSide()` 只读视图（`BookSideView` 纯数据拷贝，`ApplyBook` 落地时重建），侧栏画「章 → 镜」树、点选换章换镜，检查器「属性」给九行真实字段。镜码 `ShotCode()` 三处共用一份实现。资产工作区的 kind 筛选树、节点「快捷跳转」、检查器「关联」段（伏笔 / 场 / 镜）也已于 2026-09-30 接上真数据。**仍缺**：镜与镜之间的关联（哪一对连续性不过）—— `ContinuityIssue` 没有 shot id，要归因必须改 `src/novel/`。 |
+
+| 小说页「设定」模式的实体卡**不可点** | 页面层 | 2026-09-30 修好了这张卡**整张不画**的反向矩形（见验证记录），但它仍然只是只读展示：实体选择与属性在**资产工作区**那张网格上，两边没打通。设计稿里 `Assets.jsx` 的「设定集」是实体**详情页**里的一段，不是卡片网格，所以没有可直接对齐的交互定义 —— 要做点选-联动得先定「点了之后右栏显示实体属性还是仍显示章节属性」，属产品决策，本轮不猜。 |
 
 另有一条**已接受降级**：`Derived::gateBg` / `checkRowBg` 当年按纯 alpha 算，
 与设计稿的实色差一个底。字段按「只加不减」冻结，要 1:1 请用新增的

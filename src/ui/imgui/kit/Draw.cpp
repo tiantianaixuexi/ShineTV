@@ -1,8 +1,11 @@
 #include "ui/imgui/kit/Draw.h"
 
+#include "core/Log.h"
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 namespace shine::kit {
@@ -10,6 +13,8 @@ namespace {
 
 bool g_reduceMotion = false;
 float g_now = 0.0f;
+// 取证用：钉住时钟后 TickAnimation 不再推进（见 PinAnimation）。
+bool g_animationPinned = false;
 
 // 混合两个**已打包的 ImU32**。字节序必须用 ImGui 自己的位移宏：
 // 默认（未定义 IMGUI_USE_BGRA_PACKED_COLOR）下 R 在**最低**字节、alpha 在最高字节。
@@ -130,8 +135,18 @@ bool ReduceMotion() { return g_reduceMotion; }
 void TickAnimation(float deltaSeconds) {
     // 减少动效只压缩**过渡时长**，不冻结时间轴：脉冲/进度仍要走完，
     // 否则「运行中」的呼吸感全没了，验收截图会看起来像卡住。
+    if (g_animationPinned) {
+        return;
+    }
     g_now += deltaSeconds;
 }
+
+void PinAnimation(float seconds) {
+    g_animationPinned = true;
+    g_now = seconds;
+}
+
+void UnpinAnimation() { g_animationPinned = false; }
 
 float Now() { return g_now; }
 
@@ -162,9 +177,41 @@ int AutoFillCols(float available, float minColumn, float gap) {
     return AutoGridCols(available, minColumn, gap);
 }
 
+namespace {
+// 反向矩形自检的**唯一一份**状态。三个对外函数共用它 —— 早先各写一个函数内
+// static，结果 count 和 last 互不相干，Reset 也是空壳，等于没记。
+struct InvertedRectState {
+    int count = 0;
+    char last[128] = {};
+};
+InvertedRectState& InvertedState() {
+    static InvertedRectState state;
+    return state;
+}
+} // namespace
+
+void NoteInvertedRect(float minX, float minY, float maxX, float maxY, const char* where) {
+    InvertedRectState& state = InvertedState();
+    ++state.count;
+    std::snprintf(state.last, sizeof(state.last), "%s min=(%.0f,%.0f) max=(%.0f,%.0f)", where,
+                  minX, minY, maxX, maxY);
+    // 只报前 8 次：同一个控件每帧都会触发一次，不限量的话日志会被刷爆，
+    // 真正的「唯一一处」反而被埋掉。判据用的是计数，不是条数。
+    if (state.count <= 8) {
+        shine::log::Error("kit: 反向矩形 —— {} 会被整块丢弃（画不出、也点不到）", state.last);
+    }
+}
+int InvertedRectCount() { return InvertedState().count; }
+void ResetInvertedRectCount() { InvertedState() = InvertedRectState{}; }
+const char* LastInvertedRect() { return InvertedState().last; }
+
 void DrawRoundRect(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 fill,
                    ImU32 border, float borderWidth, bool topHighlight) {
     if (max.x <= min.x || max.y <= min.y) {
+        // 严格反向才是 bug；退化（max == min，宽高为 0 的空控件）是合法用法。
+        if (max.x < min.x || max.y < min.y) {
+            NoteInvertedRect(min.x, min.y, max.x, max.y, "DrawRoundRect");
+        }
         return;
     }
     const float radius = std::max(0.0f, std::min(rounding, 0.5f * (max.x - min.x)));
