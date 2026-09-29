@@ -81,6 +81,15 @@ novel-*-preview.html
 *.bak
 *~
 
+# 取证产物（out/ 下的**输入**在版本控制里，输出不进）
+#
+# out/_fixture_{schema,data,seed}.sql + out/_{make_fixture,run_review}.ps1 是提交的 ——
+# 它们定义了**验证条件**：novel.db fixture 的内容就是那 78 张截图的前提，不提交
+# 别人无法复现同一组取证。重建后的库与每一轮的截图都是产物。
+/out/_fixture/
+/out/review-*/
+/out/*.stdout.txt
+
 # MiMo / 本地会话
 .mimocode/node_modules/
 .mimocode/*.log
