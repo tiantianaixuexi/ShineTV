@@ -295,6 +295,12 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
         }
         ImGui::Render();
 
+        // ⚠️ 必须先关掉剪裁测试再清屏。
+        // ImGui 的 GL3 后端每个 draw call 都会 glEnable(GL_SCISSOR_TEST) + glScissor(该
+        // 元素的 clip rect)，帧结束时它保持开启。直接 glClear 只会清掉**最后一个 clip
+        // 矩形**内的像素，其余全是上一帧的残留 —— 表现为布局切换后上一屏的碎片
+        // 混在新内容里（实测在组件画廊的进度条上表现为彩色细条纹）。
+        glDisable(GL_SCISSOR_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
