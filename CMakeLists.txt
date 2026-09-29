@@ -494,15 +494,18 @@ target_link_libraries(shine_qml PUBLIC shine_kit Qt6::QuickWidgets Qt6::Qml Qt6:
 target_include_directories(shine_qml PUBLIC ${CMAKE_SOURCE_DIR}/src)
 
 # QML 页面资源：编译进 exe，避免运行时依赖磁盘上的 .qml（打包/评审都省事）
+#
+# ⚠️ 用 GLOB + CONFIGURE_DEPENDS，不逐个列 FILES：页面是并行子 Agent 各自新建的，
+# 写死列表会让「某页还没提交」直接把**整个配置**卡成硬错误 —— 一个页面文件缺失
+# 就编不出主程序。CONFIGURE_DEPENDS 让 CMake 在每次构建时重新扫，新增文件自动入包。
+file(GLOB SHINE_QML_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/ui/qml/*.qml")
+if(NOT SHINE_QML_FILES)
+  message(FATAL_ERROR "src/ui/qml 下没有任何 .qml —— QML 接缝层被误删？")
+endif()
 qt_add_resources(shine_qml "shin_qml"
   PREFIX "/qt/qml"
   BASE   "${CMAKE_SOURCE_DIR}/src/ui/qml"
-  FILES
-    src/ui/qml/Gallery/Gallery.qml
-    src/ui/qml/Gallery/Ctl.qml
-    src/ui/qml/Gallery/Tag.qml
-    src/ui/qml/Gallery/Card.qml
-    src/ui/qml/Gallery/Button.qml
+  FILES  ${SHINE_QML_FILES}
 )
 
 # ============================================================================
@@ -510,7 +513,7 @@ qt_add_resources(shine_qml "shin_qml"
 # ============================================================================
 add_executable(ShineTVStudio
   src/ui/app/main.cpp
-  src/ui/kit/qml/QmlGalleryReview.cpp
+  src/ui/kit/qml/QmlPageReview.cpp
   src/ui/app/AppEntry.h
   src/ui/app/AppEntry.cpp
   src/ui/app/AppEnvironment.h

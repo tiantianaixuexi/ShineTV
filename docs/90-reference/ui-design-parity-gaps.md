@@ -21,7 +21,7 @@ source_of_truth:
   - src/ui/kit/theme/ToneMix.h
   - src/ui/kit/qml/ThemeBridge.h
   - src/ui/kit/qml/QuickHost.cpp
-  - src/ui/qml/Gallery/Gallery.qml
+  - src/ui/qml/Parity.qml
   - src/ui/pages/assets/AssetDetailView.cpp
   - src/ui/pages/assets/AssetWorkspace.h
   - src/ui/pages/novel/DraftView.cpp
@@ -538,8 +538,15 @@ review 里用 400ms。
 
 ### 端到端取证现状
 
-`SHINE_QML_REVIEW=<目录>` 触发，5 套主题在一棵 QML 树上热切换各抓一张
-（**只建一个 `QuickHost`**：重建路径在本机是崩的，而热切换才是桥该被验证的行为）。
+`SHINE_QML_REVIEW=<目录>` 触发，`SHINE_QML_PAGES=<页名,页名>` 可只拍指定页
+（页面注册表在 `QmlPageReview.cpp` 的 `kPages`，**共享层**，页面作者只提供
+「页名 + 资源路径 + 画布尺寸」三项数据）。每页一个 `QQuickWidget`，5 套主题在
+**同一棵 QML 树上热切换**各抓一张（**不重建宿主**：重建路径在本机是崩的，
+而热切换才是桥该被验证的行为）。
+
+⚠️ 注册表里的 w/h 是**harness 视口**，不是设计稿常量 —— webui 是响应式 flex，
+根本没有"整页画布宽"这个数。**对齐判据是部件级几何（逐条对 CSS 的 px 值），
+不是整页像素 diff。**
 
 像素级比对（深空主题，11 个采样点全中）：页面底 `bg.void`、卡片底 `bg.panel`、
 主按钮 `accent.primary`、Tag 的 12% 混色底与 35% 混色边、默认态 `fill.muted`、
@@ -547,8 +554,13 @@ review 里用 400ms。
 证明 `JSON → ColorToken → ThemeBridge → QML 绑定 → 场景图 → grabToImage 像素` 整链成立，
 且 color-mix 与 QSS 共用 `ToneMix.h` 同一份实现。
 
-**本节未覆盖**：每个业务页面的 QML 迁移（尚未开始）；`backdrop-filter` 在 QML 侧同样
-无解（见第一节，它是唯一真边界）。
+**单文件静态自检**：`qmllint --bare -I C:/msys64/mingw64/share/qt6/qml <file>`。
+`Shine`（C++ 单例）没有 qmltypes，故 `Failed to import Shine` 及其连带的
+`Unqualified access` 是**预期噪音**；除此之外必须零告警。
+
+**本节未覆盖**：各业务页面的 QML 迁移（页面由并行子 Agent 各自拥有，
+共享层不在其改动范围内）；`backdrop-filter` 在 QML 侧同样无解
+（见第一节，它是唯一真边界）。
 
 ---
 

@@ -15,7 +15,7 @@
 #include "ui/kit/theme/QssBuilder.h"
 #include "ui/kit/theme/Theme.h"
 #include "ui/kit/theme/ThemeService.h"
-#include "ui/kit/qml/QmlGalleryReview.h"
+#include "ui/kit/qml/QmlPageReview.h"
 #include "project/Project.h"
 #include "project/ProjectIndex.h"
 #include "project/ProjectTemplate.h"
@@ -147,10 +147,14 @@ std::optional<int> RunStartupChecks(QApplication& app) {
         shine::app::SaveP10Review(reviewDir);
         return app.exec();
     }
-    // QML 画廊取证（架构层验证）：5 套主题各一张，与 Widgets 画廊并排比对颜色一致性。
+    // QML 页面取证：每个已注册页面 × 5 套主题各一张，与 Widgets 画廊并排比对颜色一致性。
+    // SHINE_QML_PAGES 可选（逗号分隔的页名过滤），缺省拍全部 —— 页面迁移时用它只拍自己那一页。
     if (const std::filesystem::path reviewDir = EnvironmentPath(L"SHINE_QML_REVIEW");
         !reviewDir.empty()) {
-        shine::qml::SaveQmlGalleryReview(reviewDir);
+        const QByteArray filter = qgetenv("SHINE_QML_PAGES");
+        shine::qml::SaveQmlPageReview(reviewDir, std::string_view{filter.constData(),
+                                                                 static_cast<std::size_t>(
+                                                                     filter.size())});
         return app.exec();
     }
     return std::nullopt;
