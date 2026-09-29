@@ -600,21 +600,64 @@ Qt Quick 的 `Rectangle` 圆角走 `QSGRoundedRectNode`，是用**固定细分�
 
 ### ⑨ 单文件静态自检
 
-`qmllint --bare -I C:/msys64/mingw64/share/qt6/qml <file>`。
+`qmllint -I C:/msys64/mingw64/share/qt6/qml <file>`（**不要加 `--bare`**）。
 `Shine`（C++ 单例）没有 qmltypes，故 `Failed to import Shine` 及其连带的
 `Unqualified access` 是**预期噪音**；除此之外必须零告警。
+
+`--bare` 解析不到 QtQuick 的真实类型，**属性类型 / 枚举检查基本失效**：
+`font.pixelSize: 10.5`（`int` 属性收小数）、`orientation: 120`（枚举赋裸数值）、
+属性名大写开头这三类，它一个都查不出来。全量跑**非** `--bare`。
 
 这个自检在写 QML 时非常值钱，实测当场抓到两类真错误：
 `PathQuad` 根本没有 `x2`/`y2`（那是 `PathArc` 的命名，它是 `x`/`y` + `controlX`/`controlY`）；
 内联组件里不写 `id:` 的话，组件名会被解析成**类型**而不是实例（`Member "r" not found on type "Item"`）。
+
+### ⑩ `ShapePath` 的默认描边是**不透明白色、宽度 1**
+
+只写 `fillColor` 不写描边，形状仍然会被描一道白边。`ArtInk` 用 7 片极低 alpha
+（`Qt.alpha(ink, 0.08/7)` ≈ 0.011）叠出模糊近似，每片各留一道 1px 白边，
+七层叠加后山脊处 alpha 冲到 **172** —— 暗主题下就是 6~7 道亮白弧线，
+而 SVG 的 `feGaussianBlur` 永远不会有硬边轮廓。
+
+用 `qml.exe` + offscreen 平台搭独立复现、**读 PNG 的 alpha 通道**量出来的：
+单片不透明填充峰值 87（0.08 的填充不可能产生），一旦 `strokeColor: "transparent"`
+（或 `strokeWidth: 0`）就掉回设计值 21。**与填充权重无关** —— 改分片数、换钟形权重
+一律无效。纯填充形状一律显式写 `strokeColor: "transparent"`。
+
+### ⑪ 绑定求值期间不能写自己依赖的属性
+
+```qml
+readonly property real keyW: {                        // 依赖图含 probe.width
+    for (…) w = Math.max(w, measure(rows[i][0]))
+}
+function measure(s) { probe.text = s; return probe.width }   // 先写后读
+```
+
+写 `probe.text` 让 `probe.width` 变脏，紧接着又读 `probe.width` → Qt 报
+`Binding loop detected for property "keyW"`。这跟 probe 是不是 `Item` 无关 ——
+把隐藏 `Text` 换成 `TextMetrics`（不是 Item、不进 item 树）**并不能修好**，
+只是换了个报错位置。修法是**让 `keyW` 根本不是绑定**：改成普通 `property`
+加显式重算（`Component.onCompleted` / `onRowsChanged` / 主题变更各触发一次；
+主题那条还要延后一拍，让字体绑定先落定再量）。
+
+### ⑫ 调用方属性名与组件声明名不一致时 QML **不报错**
+
+`Gallery.qml` 写 `states: [...]`，而 `GalleryStageFlow` 声明的是 `stageStates` ——
+因为 `states` 撞上了 **`Item` 内建的 `states` 成员**（`QQuickItem` 有
+`states`/`transitions`），赋值被静默吞掉，状态数组整条丢失，6 个阶段节点
+全渲染成 `todo`，而**全程零错误零告警**。
+
+这类错 `qmllint` 结构上查不出来。判据：**凡是"看起来该有状态变化却没变化"，
+先查调用方传的属性名和组件声明的是不是同一个**。加属性时避开 Qt 基类成员名
+（`state`/`states`/`transitions`/`font`/`layer`/`transform`/`children`/`type`）。
 
 ### 端到端取证现状
 
 `SHINE_QML_REVIEW=<目录>` 触发，`SHINE_QML_PAGES=<页名,页名>` 可只拍指定页
 （页面注册表在 `QmlPageReview.cpp` 的 `kPages`，**共享层**，页面作者只提供
 「页名 + 资源路径 + 画布尺寸」三项数据）。每页一个 `QQuickWidget`，5 套主题在
-**同一棵 QML 树上热切换**各抓一张（**不重建宿主**：重建路径在本机是崩的，
-而热切换才是桥该被验证的行为）。
+**同一棵 QML 树上热切换**各抓一张（热切换才是桥该被验证的行为）。
+页与页之间的宿主**只新建、不析构**（见 ④ 第三条：析构后再建第二个宿主必崩）。
 
 ⚠️ 注册表里的 w/h 是**harness 视口**，不是设计稿常量 —— webui 是响应式 flex，
 根本没有"整页画布宽"这个数。**对齐判据是部件级几何（逐条对 CSS 的 px 值），
@@ -625,6 +668,11 @@ Qt Quick 的 `Rectangle` 圆角走 `QSGRoundedRectNode`，是用**固定细分�
 色板 8 个 token —— **全部与 `Themes/深空.json` 逐位一致**。
 证明 `JSON → ColorToken → ThemeBridge → QML 绑定 → 场景图 → grabToImage 像素` 整链成立，
 且 color-mix 与 QSS 共用 `ToneMix.h` 同一份实现。
+
+**已迁移页面**：`Parity`（验证页）/ `Gallery` / `Assets` / `Storyboard` / `ImageFlow`，
+均在 `kPages` 注册。取证判据：5 套主题全部 saved、**stderr 零 QML 错误**、
+四道门禁 PASS。页面层缺陷的定位靠**裁图目视**（见 ⑩⑪⑫ 三条：这三类错
+运行时和静态检查都不报错，只有看图才发现）。
 
 **单文件静态自检**：`qmllint --bare -I C:/msys64/mingw64/share/qt6/qml <file>`。
 `Shine`（C++ 单例）没有 qmltypes，故 `Failed to import Shine` 及其连带的
