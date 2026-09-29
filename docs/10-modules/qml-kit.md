@@ -6,6 +6,8 @@ scope: ui
 source_of_truth:
   - src/ui/qml/Ctl.qml
   - src/ui/qml/Spinner.qml
+  - src/ui/qml/AutoGrid.qml
+  - src/ui/qml/Flex.qml
   - src/ui/kit/qml/ThemeBridge.h
   - src/ui/kit/qml/QuickHost.cpp
   - src/ui/qml/CMakeLists.txt
@@ -18,7 +20,7 @@ last_verified: 2026-09-29
 
 | 类别 | 命名 | 依赖 |
 |---|---|---|
-| **共享件**（本文件管辖） | 无页面前缀：`Ctl` / `Card` / `Button` / `Tag` / `Seg` / `Dot` / `Chip` / `IconBtn` / `Art` / `Kv` / `Progress` / `Spinner` / `StageFlow` | 只能依赖 `Ctl` 与 `ThemeBridge` |
+| **共享件**（本文件管辖） | 无页面前缀：`Ctl` / `Card` / `Button` / `Tag` / `Seg` / `Dot` / `Chip` / `IconBtn` / `Art` / `Kv` / `Progress` / `Spinner` / `StageFlow` / `AutoGrid` / `Flex` | 只能依赖 `Ctl` 与 `ThemeBridge` |
 | **页私有件** | 页面前缀：`Gallery*` / `Assets*` / `Storyboard*` / `ImageFlow*` | 可以依赖共享件 |
 
 **判定标准只有一个：这份组件的第二个页面也用得上吗？** 用得上就是共享件，归 `src/ui/qml/<无前缀名>.qml`；用不上就是页私有件，带页面前缀。不要因为「现在只有一个页面在用」就把它塞进页私有件——那正是本文件要根除的重复来源。
@@ -66,6 +68,8 @@ property color dotColor: ThemeBridge.colors["status.idle"]
 
 用 `implicitWidth` / `implicitHeight`，让调用方拿 `anchors` 摆放。尺寸常量只能来自设计稿（`webui/src/styles/*.css` + `webui/src/views/*.jsx`），**不许凭印象填**。半像素按仓库既有规则就近取整（`11.5→11`、`12.5→12`、`10.5→10`），并在注释里写明原值与档位。
 
+**页面层不写任何高度常数。** 卡片 / 列表项 / 表格行的高度必须由正文内容的 `implicitHeight` 推导，不许在页面里维护一张「每张卡多高」的表。Gallery 页曾经给 9 张卡各写死一个 `ch`（112/76/147/234/206/162/154/174/244），内容一改就跟对不上——实测溢出压住下一行标题，中间一道黑带，比写少了留一块死白。**猜出来的高度常数是这类 bug 的唯一来源**，共享组件换版后只会更多。
+
 ### 6. 动效全部读 `reduce`
 
 ```qml
@@ -79,12 +83,31 @@ running: <条件> && !root.reduce
 
 `Spinner.qml` 是参考实现：文件头写清设计稿的 CSS 原文与行号、几何怎么从 CSS 盒模型推出来的、踩过什么坑。**共享件的头部注释要能让另一个人不打开设计稿就复核**。页面私有件可以简写，但涉及色值/几何的偏离必须写明「设计稿是 X，这里是 Y，因为 Z」。
 
+### 8. 布局一律用 `AutoGrid` / `Flex`，不手搓
+
+| 设计稿 | 用哪个 | 关键属性 |
+|---|---|---|
+| `grid-template-columns: repeat(auto-fit, minmax(N,1fr))` | `AutoGrid` | `minCell` / `maxColumns` / `gap`；子项宽度读 `cellW`，**不要自己算** |
+| `display: flex; flex-wrap: wrap` | `Flex` | `gap` / `align`(start\|center\|stretch) / `justify`(start\|center\|end) |
+
+行高一律自适应：栅格行高由 Qt `Grid` 原生取该行最高者（= CSS `align-items: start`），横排高度由 `Flex` 排版结果决定。**两者都不需要调用方声明高度。**
+
+共同约束（`AutoGrid.qml` / `Flex.qml` 都只接管子项的**位置**）：
+
+- 子项里**不要**写 `y:`，也**不要**再挂 `anchors.verticalCenter` —— 会打出 binding loop。
+- 有 hover 位移（`translateY`）的 item **不要直接当子项**，套一层不绑 `y` 的 `Item`。
+- `Column` 会接管直接子项的 `y`，子项里同样不要再写 `y:`。
+- `Flex` 刻意不继承 Qt 的 `Flow`：Qt `Flow` 只有 `spacing`，没有 justify / align，换行时行内子项不居中。
+
+⚠️ **共享件名不得撞 Qt 内建类型。** `Grid.qml` 会被 `import QtQuick` 的内建 `Grid` 盖住，症状是 `Could not find property "minCell"`，而 qmllint **不提示「你写的类型不是你想的那个」**。所以叫 `AutoGrid.qml`。`Button.qml` 撞 `QtQuick.Controls.Button` 是同一类。`Flex` 安全：QtQuick 没有这个类型。
+
 ## QML 层的已知接缝坑
 
 以下每条都是本仓实测出来的，**动手前先扫一眼**（更详细的版本在 `docs/90-reference/ui-design-parity-gaps.md`）：
 
 - 页面根对象必须是 `Item`，不能是 `Window`。
-- 页面层不要套 `Flow` / `Row` / `Grid` 去摆带 hover 位移的子项——会和子项自己写的 `y` 抢。
+- 摆子项用 `AutoGrid` / `Flex`（见纪律第 8 条），不要手搓槽位计算，也不要拿 Qt 的 `Flow` / `Row` / `Grid` 去摆带 hover 位移的子项——会和子项自己写的 `y` 抢。
+- 共享件文件名撞 Qt 内建类型时，qmllint **不会**报「你用的不是我以为的那个」：`Grid.qml` 会被 `import QtQuick` 的内建 `Grid` 静默盖掉，症状只剩 `Could not find property "minCell"`。所以叫 `AutoGrid.qml`。
 - `anchors.fill` 与显式 `y` 互斥。
 - `ShapePath` 的默认描边是「不透明白色、宽 1」：纯填充要显式 `strokeColor: "transparent"` 或 `strokeWidth: 0`；开放路径（`PathAngleArc`）必须显式 `fillColor: "transparent"`，否则会在圆心糊出色块。
 - `ShapePath` 不能做 `Repeater` 的 delegate（`ShapePath` 派生自 `QObject` 不是 `QQuickItem`），N 段要显式展开。
@@ -93,6 +116,8 @@ running: <条件> && !root.reduce
 - `onWidthChanged` / `onHeightChanged` 的**单表达式体**会被 QQml 当成属性赋值；用块体 `onPaintKeyChanged: { requestPaint() }` 或合并成一个 `paintKey` 字符串。
 - Canvas 读 `ThemeBridge` 时用 `renderStrategy: Canvas.Immediate`（Cooperative 会把它挪到渲染线程）。
 - `PathAngleArc` 的角度：0° 在 3 点钟方向，y 轴向下，**正角度在屏幕上顺时针**（90°=6 点，180°=9 点，270°=12 点）。要画顶部一段写 `startAngle: -135; sweepAngle: 90`。
+- `Loader.item` 的静态类型是 `QObject`，直接读 `implicitHeight` 会被 qmllint 报 `missing-property`；显式声明成 `Item` 又变成 `incompatible-type`。量正文高度用 `loader.childrenRect.height`（`GalleryCard.qml` 是参考实现）。
+- 上面那条的另一半：被 `Loader` 加载的正文，**根对象必须自写 `height: implicitHeight`**。不写的话 Loader 会接管高度，和外面读 `childrenRect` 的那层形成绑定环（`Binding loop detected`）。
 
 ## 资源打包
 
@@ -100,7 +125,7 @@ running: <条件> && !root.reduce
 
 ## 已淘汰的页私有件（2026-09-29）
 
-本轮收掉 26 份重复实现，文件已删除。共享件的头部注释里仍会提到这些名字 —— 那是**历史来源**（记录每份旧实现贡献了什么、哪里写错了），不是活路径。想知道某个名字对应什么，看下表：
+三次提交（`369065c` / `a5c37fd` / `0471d2d`）合计收掉 26 份重复实现，文件已删除。共享件的头部注释里仍会提到这些名字 —— 那是**历史来源**（记录每份旧实现贡献了什么、哪里写错了），不是活路径。想知道某个名字对应什么，看下表：
 
 | 已删除 | 收进 |
 |---|---|
@@ -115,8 +140,9 @@ running: <条件> && !root.reduce
 | `GalleryProgress.qml` / `ImageFlowProg.qml` | `Progress.qml` |
 | `AssetsChip.qml` / `StoryboardChip.qml` | `Chip.qml` |
 | `GalleryStageFlow.qml` / `StoryboardStage.qml` | `StageFlow.qml` + `StageNode.qml` |
+| `GalleryFlow.qml` | `Flex.qml`（并补上 `align` / `justify`，末行可居中） |
 
-`src/ui/qml` 的文件数从 58 降到 41。
+`src/ui/qml` 的 `.qml` 文件数：去重前 **59**（`369065c^`）→ 去重后 **43**（`0471d2d`）→ 加进 `AutoGrid` / `Flex`、删掉 `GalleryFlow` 后 **44**。用 `git ls-tree -r --name-only <rev> -- src/ui/qml` 复核。
 
 
 ## 自检
