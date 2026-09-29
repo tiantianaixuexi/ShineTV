@@ -505,6 +505,55 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     out.vStage[7] = outcome.error.empty();  // V8 跑出报告才算数；error 非空 = 没跑成
 }
 
+// P4 外壳（Shell 侧栏树 / 检查器）读的那份**只读视图**。BookState 住在这个匿名
+// 命名空间里，外面够不着 —— 所以不把 BookState 暴露出去，而是每次快照落地时重建
+// 一份纯数据拷贝：外壳不持有数据、也不做 IO。函数内 static（照 Book() 的写法）
+// 持有，getter 返回引用，所以外壳每帧读它没有拷贝成本。
+BookSideView& BookSideCache() {
+    static BookSideView view;
+    return view;
+}
+
+// 从刚落地的快照重建视图。
+// ⚠️ 只能读**合并后**的 s：ApplyBook 里 `s = std::move(next)` 之后 next 已经被搬空，
+//    这时候再遍历 next.chapters 只会拿到空列表（症状：侧栏树永远只有一行空态）。
+//    s 这时是最终态：selectedChapter 是 worker 按 wantChapter 定的、selectedShot 已夹回
+//    新快照的范围、loading 已置 false。
+void RebuildBookSide(const BookState& s) {
+    BookSideView& v = BookSideCache();
+    v = BookSideView{};  // 先清空：换工程 / 库打不开时不能把上一本的章挂在新工程上
+    v.bound = s.bound;
+    v.loading = s.loading;
+    v.error = s.error;
+    v.selectedChapter = s.selectedChapter;
+    v.selectedShot = s.selectedShot;
+    v.chapters.reserve(s.chapters.size());
+    for (const BookChapter& c : s.chapters) {
+        BookChapterView row;
+        row.ord = c.ord;
+        row.title = c.title;
+        row.status = c.status;
+        row.words = c.words;
+        v.chapters.push_back(std::move(row));
+    }
+    // ⚠️ 只有**当前选中章**的镜（shots 与 BookState.shots 同口径），不是全书。
+    v.shots.reserve(s.shots.size());
+    for (const BookShot& shot : s.shots) {
+        BookShotView row;
+        row.ord = shot.ord;
+        row.sceneOrd = shot.sceneOrd;
+        row.action = shot.action;
+        row.expression = shot.expression;
+        row.mood = shot.mood;
+        row.dialogue = shot.dialogue;
+        row.narration = shot.narration;
+        row.durationNote = shot.durationNote;
+        row.canonStatus = shot.canonStatus;
+        row.durationSec = shot.durationSec;  // <=0 = timeline_json 里没有，别当成 0 秒
+        v.shots.push_back(std::move(row));
+    }
+}
+
 // 把 worker 产出的快照并进状态。selectedChapter 由 worker 按 wantChapter 定好，
 // 这里只把选中的镜头夹回新快照的范围。
 void ApplyBook(BookState& s, BookState&& next) {
@@ -512,11 +561,20 @@ void ApplyBook(BookState& s, BookState&& next) {
     s = std::move(next);
     s.selectedShot = keepShot >= 0 && keepShot < static_cast<int>(s.shots.size()) ? keepShot : 0;
     s.loading = false;
+    // ApplyBook 跑在 UI 线程（worker 结果经 async::PostToUi 回投后才调它），
+    // 所以在这里重建外壳视图是安全的 —— worker 不会同时碰这个缓存。
+    RebuildBookSide(s);
 }
 
 void RequestBookReload() {
     BookState& s = Book();
     s.loading = true;
+    // ⚠️ 这里也要重建视图：`loading` 是在**派发之前**就翻成 true 的，而视图只在
+    //    ApplyBook（落地时）与 BindBook（换工程时）重建 —— 不补这一下，视图里的
+    //    loading 永远是上一轮的 false。症状：调用方「等 !loading」立刻成立、一帧都不等，
+    //    然后把上一章的画面当成新章拍下来（实测：side-tree-empty-chapter 与 side-tree
+    //    几乎逐字节相同）。此处只更新标志位，不动已经取好的章 / 镜。
+    RebuildBookSide(s);
     const std::uint64_t gen = ++g_bookGen;
     const std::filesystem::path root = s.root;
     const int wantChapter = s.selectedChapter;
@@ -539,6 +597,9 @@ void BindBook(std::filesystem::path root) {
         return;  // 同一个工程不重复开库
     }
     s = BookState{};
+    RebuildBookSide(s);  // ⚠️ 换工程：必须立刻把外壳视图一起清空，
+                         //    否则这一轮还没回投的窗口里，侧栏会把上一本的章
+                         //    挂在新工程名下（症状：切了书树还是旧章节）。
     if (root.empty()) {
         return;  // 未打开工程 → 空态
     }
@@ -575,6 +636,49 @@ void BindNovelProject(std::filesystem::path root) { BindBook(std::move(root)); }
 void BindAssetsProject(std::filesystem::path root) { BindBook(std::move(root)); }
 void BindStoryboardProject(std::filesystem::path root) { BindBook(std::move(root)); }
 
+// ---- P4 外壳（Shell 侧栏树 / 检查器）要的那份只读视图 ----
+// ⚠️ 这三个也必须在匿名命名空间**之外**（与上面三个 Bind 同一批），
+//    否则 Shell 在 SetProjectRoot 里链接不到它们。
+// 只读视图。UI 线程读，不做任何 IO；没绑工程时返回的是一份全 0 / 空列表的默认视图。
+const BookSideView& BookSide() { return BookSideCache(); }
+
+// 侧栏点击 → 改选中项。越界直接什么都不做。
+// ⚠️ 不能"夹回去接着用"：越界只可能是过期点击或旧工程的下标，拿一个猜出来的下标
+//    去 RequestBookReload() 会白发一轮 worker 任务，还会把 selectedChapter 改成
+//    另一章的镜 —— 所以先判界、后夹范围，最后写。
+void SelectBookChapter(int index) {
+    BookState& s = Book();
+    if (s.chapters.empty()) {
+        return;  // 没章 = 没东西可切，也不发 worker
+    }
+    const int last = static_cast<int>(s.chapters.size()) - 1;
+    if (index < 0 || index > last) {
+        return;
+    }
+    s.selectedChapter = std::clamp(index, 0, last);
+    s.selectedShot = 0;  // 换章了：旧镜下标在新章里没意义，归 0 等 worker 回投
+    RebuildBookSide(s);  // 选中项立刻生效；RequestBookReload 内部还会再重建一次（带 loading=true）
+    RequestBookReload();  // 取的是新选中章的场 / 镜（LoadBook 按 wantChapter 定章）
+}
+
+// 选镜只改下标，**不重取** —— 镜列表已经在内存里，重取会白跑一轮 sqlite。
+void SelectBookShot(int index) {
+    BookState& s = Book();
+    if (s.shots.empty()) {
+        return;
+    }
+    const int last = static_cast<int>(s.shots.size()) - 1;
+    if (index < 0 || index > last) {
+        return;
+    }
+    s.selectedShot = std::clamp(index, 0, last);
+    // ⚠️ 必须重建视图。故事板页直接读 BookState（永远新鲜），侧栏与检查器读的是
+    //    缓存视图 —— 不补这一下，点了 S002 之后故事板换面了、侧栏高亮和检查器属性
+    //    还钉在 S001 上。而且这种不一致**不会**被"两张图 md5 不同"抓到：
+    //    故事板那半边确实变了，两张图必然不同。只能靠人看图发现。
+    RebuildBookSide(s);
+}
+
 // ================================================================ P5.4 分镜
 //
 // 全部字段来自 novel.db：章/场/镜（NovelGraph::ListChapters/ListScenes +
@@ -596,7 +700,7 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
         subtitle = "已落库镜头 " + std::to_string(s.shots.size()) + " 个 · " + s.dbPath;
     }
     if (shot != nullptr) {
-        title = "镜 " + std::to_string(shot->ord) + " · " +
+        title = ShotCode(shot->ord) + " · " +
                 (shot->action.empty() ? std::string(kDash) : shot->action);
     }
     Rect right;
@@ -769,7 +873,8 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
         const Rect thumb{card.min.x + 6.0f, card.min.y + 6.0f, card.max.x - 6.0f, card.min.y + 66.0f};
         DrawRoundRect(draw, thumb.min, thumb.max, 6.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
         DrawIconCentered(draw, "image", thumb.center(), 20.0f, ColorTextMuted());
-        const std::string code = "镜 " + std::to_string(row.ord);
+        // 镜码与侧栏树 / 检查器共用 WorkspacePages.h 的 ShotCode —— 同一个镜三处同名。
+        const std::string code = ShotCode(row.ord);
         draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(card.min.x + 8.0f, card.min.y + 70.0f),
                       ColorAccent(), code.data(), code.data() + code.size());
         // 时长条：按真实 durationSec / 本章最长。没有 duration 就画一条灰槽，不画 60%。
@@ -787,6 +892,9 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
         }
         if (Clicked(card, "sb-tl-" + std::to_string(i))) {
             s.selectedShot = i;
+            // 点故事板时间轴的镜卡片同样要通知只读视图，否则侧栏高亮与检查器属性
+            // 停在上一镜（这条是用户真会走的路径，比取证走的 SelectBookShot 更常见）。
+            RebuildBookSide(s);
         }
         x += 104.0f;
     }

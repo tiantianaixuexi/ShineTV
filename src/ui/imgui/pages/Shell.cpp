@@ -393,6 +393,73 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
 }
 
 // ---------------------------------------------------------------- P4.4 侧栏
+// ---------------------------------------------------------------- P4.5 侧栏
+namespace {
+
+// 侧栏树的「可见节点扁平序号」（先序）↔ (章下标, 镜下标) 的互转。
+// kit::Tree 只认一个 int，且只画**展开**节点的子节点 —— 所以两处都按同一套先序走，
+// 收起节点的子树不占序号。镜下标 = -1 表示命中的是章节点。
+int FlatTreeIndex(const std::vector<TreeNode>& nodes, int chapter, int shot) {
+    int i = 0;
+    for (std::size_t c = 0; c < nodes.size(); ++c) {
+        const int at = i++;
+        if (static_cast<int>(c) == chapter) {
+            if (shot < 0) {
+                return at;
+            }
+            if (nodes[c].expanded) {
+                return at + 1 + shot;
+            }
+            return at;
+        }
+        if (nodes[c].expanded) {
+            i += static_cast<int>(nodes[c].children.size());
+        }
+    }
+    return -1;
+}
+
+void ResolveTreeIndex(const std::vector<TreeNode>& nodes, int index, int& chapterOut,
+                      int& shotOut) {
+    int i = 0;
+    for (std::size_t c = 0; c < nodes.size(); ++c) {
+        if (i++ == index) {
+            chapterOut = static_cast<int>(c);
+            shotOut = -1;
+            return;
+        }
+        if (!nodes[c].expanded) {
+            continue;
+        }
+        for (std::size_t k = 0; k < nodes[c].children.size(); ++k) {
+            if (i++ == index) {
+                chapterOut = static_cast<int>(c);
+                shotOut = static_cast<int>(k);
+                return;
+            }
+        }
+    }
+    chapterOut = -1;
+    shotOut = -1;
+}
+
+// 镜码 S001 —— 实现与注释都在 WorkspacePages.h（Shell / 故事板 / 检查器共用一份）。
+using pages::ShotCode;
+
+// 库里是空串时给「—」，不留空白格（KeyValues 的值列空着看不出是"没值"还是"漏了"）。
+std::string OrDash(const std::string& value) { return value.empty() ? "—" : value; }
+
+// 设计稿的侧栏树只挂在小说 / 分镜 / 出图 / 出片上（Shell.jsx 的 NovelSideTree 与
+// ShotSideTree）；总控是 KPI 面板，资产是 kind 筛选树（下一轮）。
+bool WorkspaceHasShotTree(int workspace) {
+    return workspace == static_cast<int>(Workspace::Novel) ||
+           workspace == static_cast<int>(Workspace::Storyboard) ||
+           workspace == static_cast<int>(Workspace::ImageFlow) ||
+           workspace == static_cast<int>(Workspace::VideoFlow);
+}
+
+} // namespace
+
 void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
     DrawRoundRect(draw, area.min, area.max, 0.0f, ColorSurface());
     draw->AddLine(ImVec2(area.max.x - 0.5f, area.min.y), ImVec2(area.max.x - 0.5f, area.max.y),
@@ -406,13 +473,7 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
         ToggleSidePanel();
     }
 
-    // 树：按工作区换内容
-    // ⚠️ 这一段原先是**写死的章节名**（"第 1 章 · 雨夜" / "S001–S012" …），
-    //    跟打开的工程、novel.db 里的真实章节毫无关系 —— 换个项目还是这一串。
-    //    真实的树由内容区的工作区持有（各页自己知道库里有哪些章节 / 镜头 / 资产），
-    //    这里没有数据源时给诚实空态，不拿假章节名冒充项目结构。
     const float x = area.min.x + 10.0f;
-    const float w = area.width() - 30.0f;
     float y = area.min.y + 10.0f;
     const std::string root = layout_.projectName.empty() ? "项目" : layout_.projectName;
     draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(x + 14.0f, y), ColorTextMuted(), root.data(),
@@ -427,9 +488,82 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
     if (layout_.projectRoot.empty()) {
         Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "未打开项目",
               "从顶栏项目胶囊回项目中心新建或打开，这里会列出真实的章节 / 镜头 / 资产");
+        return;
+    }
+    if (!WorkspaceHasShotTree(layout_.workspace)) {
+        Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "此工作区没有侧栏树",
+              "总控是 KPI 面板；资产工作区的 kind 筛选树还没接（下轮）");
+        return;
+    }
+
+    const BookSideView& book = BookSide();
+    if (!book.bound) {
+        Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "结构尚未载入",
+              "切到小说 / 分镜任一页会读取 novel.db 里的真实章节");
+        return;
+    }
+    if (book.loading) {
+        Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "正在读取 novel.db",
+              "库打开后会在这里列出章节与镜头");
+        return;
+    }
+    if (!book.error.empty()) {
+        Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "读取失败", book.error);
+        return;
+    }
+    if (book.chapters.empty()) {
+        Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "这本小说还没有章",
+              "跑一次 T1–T17 之后这里才有章节与镜头");
+        return;
+    }
+
+    // ⚠️ 设计稿的 NovelSideTree 是「书 / 卷 / 章」三层（Shell.jsx:583-662）。卷这一层要
+    //    novelcore::NovelGraph::ListVolumes()，而它**不存在**（只有 UpsertVolume）——
+    //    补它要动 shine_core。所以这里画「书 / 章」两层，卷层级在进度文档里记为缺口。
+    //
+    //    镜只挂在**当前选中章**下面：场/镜是对选中章取的，没选过的章没有镜数据，
+    //    画一排空节点等于骗人。
+    const bool withShots = layout_.workspace != static_cast<int>(Workspace::Novel);
+    std::vector<TreeNode> nodes;
+    nodes.reserve(book.chapters.size());
+    for (std::size_t i = 0; i < book.chapters.size(); ++i) {
+        const BookChapterView& chapter = book.chapters[i];
+        TreeNode node;
+        node.label = "第 " + std::to_string(chapter.ord) + " 章" +
+                     (chapter.title.empty() ? "" : " · " + chapter.title);
+        node.icon = "book";
+        node.trailing = OrDash(chapter.status);
+        node.expanded = withShots && static_cast<int>(i) == book.selectedChapter;
+        node.hasChildren = node.expanded;
+        if (node.expanded) {
+            for (const BookShotView& shot : book.shots) {
+                TreeNode leaf;
+                leaf.label = ShotCode(shot.ord) + (shot.action.empty() ? "" : " · " + shot.action);
+                leaf.icon = "clapper";
+                node.children.push_back(std::move(leaf));
+            }
+        }
+        nodes.push_back(std::move(node));
+    }
+
+    const int wanted = withShots ? FlatTreeIndex(nodes, book.selectedChapter, book.selectedShot)
+                                 : FlatTreeIndex(nodes, book.selectedChapter, -1);
+    int picked = wanted;
+    const Rect treeArea{x, y, area.max.x - 20.0f, area.max.y - 10.0f};
+    Tree(draw, treeArea, nodes, picked, "side-tree");
+    if (picked == wanted) {
+        return;  // 没点中
+    }
+    int chapterIndex = -1;
+    int shotIndex = -1;
+    ResolveTreeIndex(nodes, picked, chapterIndex, shotIndex);
+    if (chapterIndex < 0) {
+        return;
+    }
+    if (shotIndex < 0) {
+        SelectBookChapter(chapterIndex);
     } else {
-        Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "结构由内容区提供",
-              WorkspaceTarget(layout_.workspace));
+        SelectBookShot(shotIndex);  // 只改下标，不重取（同一章的镜已经在快照里）
     }
 }
 
@@ -461,19 +595,60 @@ void Shell::DrawInspector(Rect area, ImDrawList* draw) {
         if (section.open) {
             // ⚠️ 这里原先写死 {代码:S012, 动作:转身, 时长:6.0s, 情绪:克制} —— 一组
             //    编出来的镜头属性，在任何工程、任何项目下都长这样，点了也不跟着选中项变。
-            //    真值在页面层（各工作区自己知道选中了哪个章节/镜头/资产），
-            //    拿不到就给诚实空态，不拿假数据占位。
             if (std::strcmp(section.title, "属性") == 0) {
-                if (layout_.projectRoot.empty()) {
-                    Empty(draw, Rect{x, y, x + w, y + 76.0f}, "target", "未打开工程",
-                          "打开工程并选中一个条目后，这里显示它的真实属性");
+                // 现在读侧栏那份只读快照：选中了镜就给镜的字段，只选了章就给章的字段，
+                // 两者都没有才给空态。空串一律显示「—」，不靠留白表示"没值"。
+                const BookSideView& book = BookSide();
+                const bool hasShot = !book.shots.empty() && book.selectedShot >= 0 &&
+                                     book.selectedShot < static_cast<int>(book.shots.size());
+                const bool hasChapter = book.selectedChapter >= 0 &&
+                                        book.selectedChapter <
+                                            static_cast<int>(book.chapters.size());
+                if (!book.bound || (!hasShot && !hasChapter)) {
+                    Empty(draw, Rect{x, y, x + w, y + 76.0f}, "target",
+                          layout_.projectRoot.empty() ? "未打开工程" : "未选中条目",
+                          layout_.projectRoot.empty()
+                              ? "打开工程并选中一个条目后，这里显示它的真实属性"
+                              : "在左侧侧栏树里选中章节 / 镜头后，这里显示它的真实属性");
+                    y += 84.0f;
+                } else if (hasShot) {
+                    const BookShotView& shot =
+                        book.shots[static_cast<std::size_t>(book.selectedShot)];
+                    std::string duration = shot.durationNote;
+                    if (duration.empty() && shot.durationSec > 0.0) {
+                        // ⚠️ 保留一位小数，和故事板页的 `%.1fs` 同口径。
+                        //    这里原来取整成 "5s"，同一个镜在两个面板上是两个时长。
+                        char buf[32];
+                        std::snprintf(buf, sizeof(buf), "%.1fs", shot.durationSec);
+                        duration = buf;
+                    }
+                    KeyValues(draw, Rect{x, y, x + w, y + 176.0f},
+                              {{"镜码", ShotCode(shot.ord)},
+                               {"场", "第 " + std::to_string(shot.sceneOrd) + " 场"},
+                               {"动作", OrDash(shot.action)},
+                               {"表情", OrDash(shot.expression)},
+                               {"情绪", OrDash(shot.mood)},
+                               {"时长", OrDash(duration)},
+                               {"台词", OrDash(shot.dialogue)},
+                               {"旁白", OrDash(shot.narration)},
+                               {"连贯性", OrDash(shot.canonStatus)}});
+                    y += 184.0f;
                 } else {
-                    Empty(draw, Rect{x, y, x + w, y + 76.0f}, "target", "未选中条目",
-                          "在内容区选中章节 / 镜头 / 资产后，这里显示它的真实属性");
+                    const BookChapterView& chapter =
+                        book.chapters[static_cast<std::size_t>(book.selectedChapter)];
+                    KeyValues(draw, Rect{x, y, x + w, y + 84.0f},
+                              {{"章序", "第 " + std::to_string(chapter.ord) + " 章"},
+                               {"标题", OrDash(chapter.title)},
+                               {"状态", OrDash(chapter.status)},
+                               {"字数", chapter.words > 0 ? std::to_string(chapter.words) : "—"}});
+                    y += 92.0f;
                 }
-                y += 84.0f;
             } else if (std::strcmp(section.title, "预览") == 0) {
                 Art(draw, Rect{x, y, x + w, y + 110.0f}, 5, true);
+                // 上面那块是设计稿自带的示意插画（Art()），不是这个工程的出图结果。
+                // 不写这句，读者会以为它是该镜的真实渲染。
+                DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(x, y + 96.0f), w, ColorTextMuted(),
+                                "示意插画 · 非本工程出图结果");
                 y += 118.0f;
             }
         }

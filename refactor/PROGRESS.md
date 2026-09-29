@@ -287,6 +287,13 @@ last_verified: 2026-09-30
 | 2026-09-30 | 缺陷 | **命令面板列表溢出面板外** | 16 条目 + 3 组标题 = 546px，输入框下面只有 358px，且无裁剪无滚动 —— 末尾几行画到面板外压在工作区上。补 `PushClipRect` + 选中跟随滚动 + 滚动条 | ✅ |
 | 2026-09-30 | 缺陷 | **「3 秒节流」是死计时器** | 产物页与报告页的 `*RefreshAt_` 只被赋 `0.0f`，`aged` 恒为假 —— 除了换工程再没有第二个触发点，跑完阶段后页面会一直停在旧内容。改成真时点 | ✅ |
 | 2026-09-30 | 验证 | 浮层与报告页取证 | **42/42 saved · md5 42 张全唯一 · `identical-theme-pairs: 0` · `report-scan: converged` · `overall=PASS`**；`report-scan` 结论进 manifest 且进 overall 判据 | ✅ |
+| 2026-09-30 | 缺口 5 | **侧栏树 + 检查器接真数据** | `WorkspacePages.h` 开 `BookSide()` 只读视图（外壳不持有数据也不做 IO）。侧栏「章 → 镜」树、点选换章换镜；检查器「属性」给镜的九行真实字段或章的四行。取不到的空串一律显示「—」 | ✅ |
+| 2026-09-30 | 缺陷 | **只读视图在选中项变化时不重建** | `RebuildBookSide` 只在落地 / 换工程时跑，故事板页直接读 `BookState`（新鲜）而侧栏与检查器读缓存 —— 点了 S002，故事板换面了、侧栏高亮和检查器还钉在 S001。`SelectBookShot` / 选章 / 点故事板镜卡片三条路径都补上重建 | ✅ |
+| 2026-09-30 | 缺陷 | **`loading` 标志在派发瞬间就翻，视图却没跟上** | 视图里的 `loading` 永远停在上一轮的 false ⇒ 调用方「等 !loading」立刻成立、一帧都不等。上一轮就因此把上一章的画面当成新章拍下来（`side-tree` 与 `side-tree-empty-chapter` 逐字节相同） | ✅ |
+| 2026-09-30 | 门禁 | **加判据三：受控图不许重样** | 第三/四段的图都是显式驱动出来的，彼此重样就说明有一张没拍到它承诺的状态。只对这批做判据 —— `ws-*` 与 `theme-<base>-*` 拍的是同一工作区同一主题，只因累积界面状态不同才没撞上，拿它们互比就成了碰运气 | ✅ |
+| 2026-09-30 | 一致性 | 镜码与时长两处口径不一 | 侧栏 `S001` / 故事板 `镜 #1`、检查器 `5s` / 故事板 `4.5s` —— 同一个镜三个名字、同一时长两个值。镜码提成 `WorkspacePages.h` 的 `ShotCode()` 三处共用，时长统一 `%.1fs` | ✅ |
+| 2026-09-30 | 验证 | 侧栏 / 检查器取证 | **45/45 saved · md5 45 张全唯一 · `identical-driven-pairs: 0` · `chapter-switch: converged` · `overall=PASS`**；fixture 是一份 76 张表的 `novel.db`（DDL 从 `NovelDb.cpp` 程序化抽取，见 `out/_fixture_schema.sql`） | ✅ |
+| 2026-09-30 | 已知小瑕疵 | `WorkspaceB.cpp` 带 BOM | 全树 37 个源文件里**只有它**带 UTF-8 BOM，且 HEAD 里本来就有（非本轮引入）。能编译，与「无 BOM」的说法不符；清掉会产生整文件 diff，留作独立任务 | ⚠️ |
 
 ---
 
@@ -299,8 +306,8 @@ last_verified: 2026-09-30
 | 阶段执行体是桩 | `shine_core` | 没有「替前端跑一个 T 阶段」的服务接口。Runner 的**记账**（预算 / `work/*.json` / 账本）是真的，阶段**本体**不是。补它要动 `shine_core`，超出「重构期不改业务层」的边界。 |
 | S1–S12 停止规则表 | `pipeline/StopPolicy` | 只判 5 组，且没有可枚举的规则表（同 `src/ui/pages/pipeline/StopReportView.h` 的旧结论）。页面当前显示 S1–S8，是**实有的 5 组 + 3 条 LLM 判据**，不补齐就不该声称是 S1–S12。 |
 | 章节×阶段双轴甘特 | `pipeline::Ledger` | `LedgerEntry` 只有 `{stage, input_hash, output_path, degradation}`，`Flush` 写出的 `_manifest.json` 里也没有章节字段 —— **章节维度在数据层根本不存在**，不是 UI 少画了一根轴。补它要改 `Ledger`。 |
-| 侧栏树 / 检查器的**卷层级** | `shine_core` | `NovelGraph` 只有 `UpsertVolume`，**没有 `ListVolumes`**（`src/novel/NovelGraph.h` 全文确认）。卷标题与卷序取不到。 |
-| 侧栏树 / 检查器主体 | 页面层 | **可直接实现，不越界**：`ListChapters` / `ListScenes` / `ListShotsByChapter` / `ListSceneCast` 全是现成只读查询；`BookState` 已有 `chapters` 与 `shots`，只差把 `SceneRow` 存进快照。镜属性 13 字段已在手，实体属性可走 `GetPersona` / `GetLatestCharacterStatus` / `GetRelations` / `ListKnowledge` / `ListArcs`。唯一硬缺口是上一行的卷层级。 |
+| 侧栏树 / 检查器的**卷层级** | `shine_core` | `NovelGraph` 只有 `UpsertVolume`，**没有 `ListVolumes`**（`src/novel/NovelGraph.h` 全文确认）。卷标题与卷序取不到，设计稿的「书 / 卷 / 章」三层因此只能画两层。 |
+| 侧栏树 / 检查器主体 | 页面层 | **已实现**：`WorkspacePages.h` 开 `BookSide()` 只读视图（`BookSideView` 纯数据拷贝，`ApplyBook` 落地时重建），侧栏画「章 → 镜」树、点选换章换镜，检查器「属性」给九行真实字段。镜码 `ShotCode()` 三处共用一份实现。仍缺：资产工作区的 kind 筛选树、节点的「快捷跳转」按钮、关联段（伏笔 / 场景 / 镜）。 |
 
 另有一条**已接受降级**：`Derived::gateBg` / `checkRowBg` 当年按纯 alpha 算，
 与设计稿的实色差一个底。字段按「只加不减」冻结，要 1:1 请用新增的

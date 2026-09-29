@@ -178,6 +178,19 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     //    少任何一步，拍到的就是「未打开工程」或「尚无校验报告」空态 ——
     //    图名和内容对不上，而 manifest 照样记 saved。
     bool reportScanConverged = false;
+    bool bookSnapshotConverged = false;
+    // 受控图的像素哈希。第三/四段的每张都是**显式驱动**出来的（开工程 / 选页签 /
+    // 选条目 / 开浮层），彼此应该两两不同 —— 出现重样就说明其中一张没拍到它承诺的状态。
+    // ⚠️ 只对这批做重样判据，不对全树做：`ws-*`（当前主题）与 `theme-<base>-*`
+    //    拍的是同一个工作区同一套主题，只因累积的界面状态不同才没有撞上 ——
+    //    拿它们互相比较，判据就成了碰运气。
+    std::vector<std::uint64_t> drivenHashes;
+    std::vector<std::string> drivenNames;
+    const auto grabDriven = [&](const std::string& name, int workspace,
+                                shine::theme::ThemeId theme) {
+        drivenHashes.push_back(grab(name, workspace, theme));
+        drivenNames.push_back(name);
+    };
     const std::filesystem::path fixture = outputDir / "_review_reports_project";
     if (!SeedReportFixture(fixture)) {
         shine::log::Error("review: 报告 fixture 写不出来，校验报告三张取证跳过");
@@ -203,13 +216,13 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                                     " after " + std::to_string(waited) + " frames");
 
         const int overview = static_cast<int>(pages::Workspace::Overview);
-        grab("dock-reports", overview, base);
+        grabDriven("dock-reports", overview, base);
         // 两个模态状态拍的是**不同内容**（一份有未过项、一份有未核对项），
         // 于是它们既不该与列表图相同，也不该彼此相同。
         shell.SetReportDetail(1);
-        grab("report-modal", overview, base);
+        grabDriven("report-modal", overview, base);
         shell.SetReportDetail(2);
-        grab("report-modal-unverified", overview, base);
+        grabDriven("report-modal-unverified", overview, base);
         // ⚠️ 必须**先**关掉报告模态再拍下面两个：同一 foreground draw list 上
         //    浮层的 z 序由 DrawFrame 里的调用顺序决定，报告模态画在设置模态**之后**，
         //    两个同时开着时后画的会盖住先画的 —— 拍出来两张图会一模一样。
@@ -218,11 +231,60 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         // 另外两个浮层同样要验：它们与页面分别画在不同 draw list 上，z 序错了不崩不报，
         // 只是被工作区内容盖住。上一轮就是靠这两张才发现「模态只剩一条表头带」。
         shell.SetSettingsOpen(true);
-        grab("overlay-settings", overview, base);
+        grabDriven("overlay-settings", overview, base);
         shell.SetSettingsOpen(false);
         shell.SetCommandPaletteOpen(true);
-        grab("overlay-palette", overview, base);
+        grabDriven("overlay-palette", overview, base);
         shell.SetCommandPaletteOpen(false);
+
+        // ---- 第四段：侧栏树 + 检查器 ----
+        //
+        // ⚠️ 拍这两张必须**真的打开带 novel.db 的工程**并等 worker 读完。侧栏与检查器
+        //    读的是 pages::BookSide() 那份只读快照（由 ApplyBook 在 UI 线程重建），
+        //    没绑上就只会拍到诚实空态。快照是异步的 —— 显式等到 chapters 非空为止，
+        //    等待结论写进 manifest。
+        const int storyboard = static_cast<int>(pages::Workspace::Storyboard);
+        shell.SetWorkspace(storyboard);
+        int bookWaited = 0;
+        while ((pages::BookSide().loading || pages::BookSide().chapters.size() < 2) &&
+               bookWaited < kReportWaitFrameCap) {
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            ++bookWaited;
+        }
+        const bool bookReady = !pages::BookSide().loading && pages::BookSide().chapters.size() >= 2;
+        // ⚠️ 这一行别漏：漏了的话 manifest 头部会写 book-snapshot: TIMEOUT 而正文写
+        //    converged，overall 直接 FAIL —— 自己跟自己打架，比缺判据更难查。
+        bookSnapshotConverged = bookReady;
+        WriteManifest(manifest, std::string("book-snapshot=") + (bookReady ? "converged" : "TIMEOUT") +
+                                    " chapters=" + std::to_string(pages::BookSide().chapters.size()) +
+                                    " shots=" + std::to_string(pages::BookSide().shots.size()) +
+                                    " after " + std::to_string(bookWaited) + " frames");
+        grabDriven("side-tree", storyboard, base);
+
+        // 选中第 2 镜再拍一张：证明检查器属性**跟着选中项变**，不是静态占位。
+        pages::SelectBookShot(1);
+        grabDriven("inspector-shot", storyboard, base);
+        // 换到第 3 章（库里刻意留空，没取过它的镜）→ 侧栏只剩章节点。
+        // ⚠️ 等待条件必须**同时**满足 !loading 且 selectedChapter 真的换过去了。
+        //    只等 !loading 是不够的：loading 标志是派发瞬间翻的，而视图那时还没落地，
+        //    一个字不改就成立 → 一帧都不等 → 拍出来的还是上一章。
+        pages::SelectBookChapter(2);
+        bookWaited = 0;
+        while ((pages::BookSide().loading || pages::BookSide().selectedChapter != 2) &&
+               bookWaited < kReportWaitFrameCap) {
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            ++bookWaited;
+        }
+        const bool switched = !pages::BookSide().loading && pages::BookSide().selectedChapter == 2;
+        WriteManifest(manifest, std::string("chapter-switch=") +
+                                    (switched ? "converged" : "TIMEOUT") + " after " +
+                                    std::to_string(bookWaited) + " frames shots=" +
+                                    std::to_string(pages::BookSide().shots.size()));
+        bookSnapshotConverged = bookSnapshotConverged && switched;
+        grabDriven("side-tree-empty-chapter", storyboard, base);
+        pages::SelectBookChapter(0);
         shell.SetProjectRoot(savedRoot, savedName);
         shell.SetDockTab(savedTab);
     }
@@ -244,14 +306,33 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         }
     }
 
+    // ---- 判据三：受控图之间不许出现逐字节相同的两张 ----
+    // 症状是「图在、manifest 记 saved、overall=PASS，但内容是上一张」—— 不报错、
+    // 肉眼也未必立刻看出来。上一轮 side-tree 与 side-tree-empty-chapter 就是这么撞的。
+    int drivenDuplicates = 0;
+    for (std::size_t i = 0; i < drivenHashes.size(); ++i) {
+        for (std::size_t j = i + 1; j < drivenHashes.size(); ++j) {
+            if (drivenHashes[i] != 0 && drivenHashes[i] == drivenHashes[j]) {
+                ++drivenDuplicates;
+                shine::log::Error("review: {} and {} produced BYTE-IDENTICAL pixels — "
+                                  "至少有一张没拍到它承诺的状态",
+                                  drivenNames[i], drivenNames[j]);
+            }
+        }
+    }
+
     // ⚠️ overall 行必须存在且与退出码一致（脚本 :66 要求 PASS↔0 / FAIL↔1）。
-    //    reportScanConverged 也进判据：报告三张没拍成就是没拍成，不能因为
-    //    「37 张都写出来了」就整轮报绿。
-    const bool pass = result.failed == 0 && identicalPairs == 0 && reportScanConverged;
+    //    reportScanConverged / bookSnapshotConverged 也进判据：没拍成就是没拍成，
+    //    不能因为「其它图都写出来了」就整轮报绿。
+    const bool pass = result.failed == 0 && identicalPairs == 0 && drivenDuplicates == 0 &&
+                      reportScanConverged && bookSnapshotConverged;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
                                 "  identical-theme-pairs: " + std::to_string(identicalPairs) +
-                                "  report-scan: " + (reportScanConverged ? "converged" : "TIMEOUT"));
+                                "  identical-driven-pairs: " + std::to_string(drivenDuplicates) +
+                                "  report-scan: " + (reportScanConverged ? "converged" : "TIMEOUT") +
+                                "  book-snapshot: " +
+                                (bookSnapshotConverged ? "converged" : "TIMEOUT"));
     WriteManifest(manifest, std::string("overall=") + (pass ? "PASS" : "FAIL"));
     shine::log::Info("review done: {} saved, {} failed -> {}", result.captured, result.failed,
                      outputDir.string());
