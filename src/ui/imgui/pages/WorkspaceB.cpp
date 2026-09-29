@@ -3,6 +3,7 @@
 #include "comfy/ComfySession.h"
 #include "core/Async.h"
 #include "core/Log.h"
+#include "core/Settings.h"
 #include "db/sqlite/SqliteDb.h"
 #include "novel/NovelContinuity.h"
 #include "novel/NovelGraph.h"
@@ -209,6 +210,35 @@ std::vector<FlowLink> MakeVideoFlowLinks() {
     return links;
 }
 
+// 建图时的**数据指纹**：只要这几个量有一个变了，节点副行 / 状态就可能不一样，图就该重建。
+//
+// ⚠️ 不重建的后果不是「图不刷新」这么轻：novel.db 快照是 `async::RunOnWorker` +
+//    `PostToUi` **异步**回投的，而 `BuildGraph()` 原来只在 `flowNodes_.empty()` 时跑一次
+//    —— 也就是工程刚打开、快照还在 worker 上跑的那一刻。于是节点图被**永久**冻结在
+//    「— / 本章 0 镜 / 还没有实体出图」，哪怕数据两秒后就到了。
+//    这正是「假数据」的另一种形态：不是编的，是**永远停在最空的那一刻**。
+//
+// ⚠️ 重建会重跑 FlowLayoutNodes ⇒ 布局归位、用户拖过的节点位置丢失。所以指纹里
+//    **不放**缩放 / 选中 / 画布尺寸 —— 只有真正影响节点内容的那几项。
+std::uint64_t FlowDataKey() {
+    const BookSideView& book = BookSide();
+    std::uint64_t h = 1469598103934665603ull;  // FNV-1a 64
+    const auto mix = [&h](std::uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= (v >> (i * 8)) & 0xFFull;
+            h *= 1099511628211ull;
+        }
+    };
+    mix(book.bound ? 1u : 0u);
+    mix(book.loading ? 1u : 0u);
+    mix(static_cast<std::uint64_t>(book.selectedChapter));
+    mix(static_cast<std::uint64_t>(book.chapters.size()));
+    mix(static_cast<std::uint64_t>(book.shots.size()));
+    mix(static_cast<std::uint64_t>(ReadyAssetCount(book)));
+    mix(ComfyHasRunning() ? 1u : 0u);
+    return h;
+}
+
 } // namespace
 
 // 首次进入时建图并适应视图；之后由 FlowCanvas 维护坐标与缩放。
@@ -225,6 +255,7 @@ void ImageFlowPage::BuildGraph() {
     FlowLayoutNodes(flowNodes_, flowView_);
     flowSelected_ = 5; // 默认选中运行中的节点，对齐 webui 的初始 sel
     g_imageFlowNeedsFit = true;
+    flowDataKey_ = FlowDataKey();
 }
 
 void VideoFlowPage::BuildGraph() {
@@ -233,6 +264,7 @@ void VideoFlowPage::BuildGraph() {
     FlowLayoutNodes(flowNodes_, flowView_);
     flowSelected_ = 3;
     g_videoFlowNeedsFit = true;
+    flowDataKey_ = FlowDataKey();
 }
 
 // ================================================================ 三页共用的 novel.db 真实数据源
@@ -1602,7 +1634,8 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
     const float panelW = 348.0f;
     const float canvasRight = area.max.x - panelW - 32.0f;
     const Rect canvas{area.min, ImVec2(std::max(canvasRight, area.min.x + 200.0f), area.max.y)};
-    if (flowNodes_.empty()) {
+    // 数据指纹变了就重建 —— 快照是异步回投的，只判 empty 会把图冻在最空的那一刻。
+    if (flowNodes_.empty() || flowDataKey_ != FlowDataKey()) {
         BuildGraph();
     }
     if (g_imageFlowNeedsFit) {
@@ -1673,23 +1706,48 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
 
     const Rect body{panel.min.x + 16.0f, panel.min.y + 94.0f, panel.max.x - 16.0f, panel.max.y - 56.0f};
     if (panelTab_ == 0) {
-        const char* from[] = {"S012 · 转身", "prompt_v3"};
-        const char* to[] = {"Comfy / ksampler", "workflow.json"};
-        float y = body.min.y;
-        for (int i = 0; i < 2; ++i) {
-            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x, y), ColorTextSecondary(), from[i],
-                          from[i] + std::strlen(from[i]));
-            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x + 180.0f, y), ColorTextMuted(), "→",
-                          "→" + 3);
-            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x + 210.0f, y), ColorText(), to[i],
-                          to[i] + std::strlen(to[i]));
-            y += 24.0f;
+        // ---- 绑定：Comfy 节点绑定的真状态 ----
+        //
+        // ⚠️ 早先这里是两行**编出来的**绑定关系：
+        //   `{"S012 · 转身", "prompt_v3"} → {"Comfy / ksampler", "workflow.json"}`
+        // 镜号、文件名全是设计稿的 mock，而且末尾那句 `缺少 KSampler.seed` 是一个
+        // **具体的断言** —— 它声称某个参数字段缺失，而这与打开的是哪本书无关。
+        //
+        // 真值源：Comfy 会话连没连上（`ComfySession::LastError()`）+ 队列里有没有
+        // 任务。连都没连的时候显示什么都能算成「绑定失败」，所以**先说连接状态**，
+        // 有连接才列队列里的真实任务；两样都没有就写明为什么没有。
+        const comfy::ComfySession& session = comfy::ComfySession::Instance();
+        const bool configured = !Settings().comfyBaseUrl.empty();
+        const std::vector<comfy::QueueModel::Row> rows = session.Queue().Snapshot();
+        if (!configured) {
+            Empty(draw, body, "link", "Comfy 未配置",
+                  "设置里填 Comfy 地址后这里才有绑定信息。绑定关系来自 Comfy 会话，"
+                  "本地编不出来。");
+        } else if (!session.LastError().empty()) {
+            Empty(draw, body, "link", "Comfy 未连接", session.LastError());
+        } else if (rows.empty()) {
+            Empty(draw, body, "link", "队列里没有任务",
+                  "Comfy 已连接，但队列是空的。绑定关系是提交时建立的，"
+                  "这里不编 KSampler / workflow 的对应关系。");
+        } else {
+            float y = body.min.y;
+            for (const comfy::QueueModel::Row& row : rows) {
+                if (y + 24.0f > body.max.y) {
+                    break;
+                }
+                const std::string label = row.label.empty() ? row.promptId : row.label;
+                DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x, y), 170.0f,
+                                ColorTextSecondary(), label, true);
+                draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x + 180.0f, y), ColorTextMuted(),
+                              "→", "→" + 3);
+                DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x + 210.0f, y),
+                                body.width() - 210.0f, ColorText(), row.state == comfy::TaskState::Running
+                                                                        ? "运行中"
+                                                                        : "排队中",
+                                true);
+                y += 24.0f;
+            }
         }
-        const char* warn = "缺少 KSampler.seed";
-        DrawRoundRect(draw, ImVec2(body.min.x, y + 8.0f), ImVec2(body.max.x, y + 44.0f), 6.0f,
-                      ColorOf(theme::CurrentDerived().dangerBg));
-        draw->AddText(FontAt(12.0f), 12.0f, ImVec2(body.min.x + 10.0f, y + 18.0f),
-                      ColorOf(theme::Current().statusDanger), warn, warn + std::strlen(warn));
     } else if (panelTab_ == 1) {
         // ---- 批量出图：候选镜来自**本章真实镜表**，提交动作不接线 ----
         //
@@ -1860,7 +1918,8 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
     const float panelW = 348.0f;
     const float canvasRight = area.max.x - panelW - 32.0f;
     const Rect canvas{area.min, ImVec2(std::max(canvasRight, area.min.x + 200.0f), area.max.y)};
-    if (flowNodes_.empty()) {
+    // 同出图页：数据指纹变了就重建。
+    if (flowNodes_.empty() || flowDataKey_ != FlowDataKey()) {
         BuildGraph();
     }
     if (g_videoFlowNeedsFit) {

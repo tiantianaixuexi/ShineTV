@@ -9,6 +9,7 @@
 #include "ui/imgui/kit/Widgets.h"
 #include "ui/imgui/theme/Theme.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -224,7 +225,10 @@ public:
     void setFolded(bool on) { folded_ = on; }
 
 private:
-    // 首帧建图（节点定义照 webui mock）；之后坐标/缩放由 FlowCanvas 维护。
+    // 建图 + 重新布局。**不是**只在首帧调一次 —— 节点副行与状态现在读真数据
+    // （当前章、镜数、已出图实体数、Comfy 队列），而 novel.db 快照是**异步**回投的：
+    // 首帧建图时它多半还是空的，于是节点会永久停在「— / 本章 0 镜」。
+    // 触发条件见 Draw 里的数据指纹比较。
     void BuildGraph();
 
     int panelTab_ = 0;
@@ -233,6 +237,8 @@ private:
     std::vector<kit::FlowLink> flowLinks_;
     kit::FlowView flowView_;
     int flowSelected_ = -1;
+    // 建图时的数据指纹。变了就重建图 —— 否则真数据永远上不了屏。
+    std::uint64_t flowDataKey_ = 0;
 };
 
 // ---- P5.6 出片（videoflow）----
@@ -250,6 +256,7 @@ private:
     std::vector<kit::FlowLink> flowLinks_;
     kit::FlowView flowView_;
     int flowSelected_ = -1;
+    std::uint64_t flowDataKey_ = 0;
 };
 
 // ---- P4.11 项目中心（全屏，不套外壳）----

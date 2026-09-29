@@ -4,6 +4,7 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "core/Settings.h"
+#include "pipeline/StageMachine.h"
 #include "ui/imgui/host/AppEnvironment.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Scroll.h"
@@ -42,6 +43,25 @@ constexpr float kCrumbHeight = 34.0f;
 // 命令面板的组标题高与行高（内容总高靠这两个累加，滚动跟随选中行也靠它）。
 constexpr float kPaletteGroupH = 22.0f;
 constexpr float kPaletteRowH = 30.0f;
+
+// T 链的阶段数 —— 状态栏那个「T{n}/N」的分母。
+//
+// ⚠️ 早先是硬编码字面量 `"/17"`（Shell.cpp:1288）。**不能**改成 AllStages().size()：
+//    那是 **28**（T1–T17 + V0–V11），而状态栏报的是**文本链**的进度，分母得是
+//    chain == "text" 的条数 —— 与总控页 `OverviewState().chain` 同一口径（那边
+//    同样只取 text 链 17 个）。写死 17 则是「哪天业务层加了 T18 就悄悄对不上」。
+int TextStageCount() {
+    static const int count = [] {
+        int n = 0;
+        for (const pipeline::StageDefinition& def : pipeline::AllStages()) {
+            if (def.chain == "text") {
+                ++n;
+            }
+        }
+        return n;
+    }();
+    return count;
+}
 
 // layout.dat 的 magic 与 Qt 侧一致（P1.5 的契约）
 constexpr char kLayoutMagic[16] = {'s', 'h', 'i', 'n', 'e', 't', 'v', '-', 'l', 'a', 'y', 'o',
@@ -1357,12 +1377,15 @@ void Shell::DrawStatusBar(Rect area, ImDrawList* draw) {
                                   std::string(theme::ThemeDisplayName(theme::CurrentThemeId()));
     const float themeW =
         FontAt(11.5f)->CalcTextSizeA(11.5f, 1e9f, 0.0f, themeName.data(), themeName.data() + themeName.size()).x;
-    const char* version = "v0.2.0";
+    // 版本号取 CMake 的 `SHINE_VERSION`（CMakeLists 里 shine_core 的 PUBLIC 编译定义）。
+    // 早先这里是写死的 `const char* version = "v0.2.0"` —— 改版本时不会跟着动，
+    // 界面上会一直显示一个与实际构建版本无关的号。
+    const std::string version = std::string("v") + SHINE_VERSION;
     const float versionW =
-        FontAt(11.5f)->CalcTextSizeA(11.5f, 1e9f, 0.0f, version, version + std::strlen(version)).x;
+        FontAt(11.5f)->CalcTextSizeA(11.5f, 1e9f, 0.0f, version.data(), version.data() + version.size()).x;
     float rightX = area.max.x - 10.0f - versionW - 16.0f;
-    draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX + 8.0f, cy - 5.75f), ColorTextMuted(), version,
-                  version + std::strlen(version));
+    draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX + 8.0f, cy - 5.75f), ColorTextMuted(),
+                  version.data(), version.data() + version.size());
     rightX -= themeW + 16.0f;
     draw->AddText(FontAt(11.5f), 11.5f, ImVec2(rightX + 8.0f, cy - 5.75f), ColorTextSecondary(),
                   themeName.data(), themeName.data() + themeName.size());
@@ -1376,8 +1399,8 @@ void Shell::DrawStatusBar(Rect area, ImDrawList* draw) {
     std::string progress;
     ImU32 progressColor = ColorTextSecondary();
     if (runActive_) {
-        progress = "T" + std::to_string(runStageIndex_ + 1) + "/17 · " +
-                   std::to_string(runPercent_) + "%";
+        progress = "T" + std::to_string(runStageIndex_ + 1) + "/" +
+                   std::to_string(TextStageCount()) + " · " + std::to_string(runPercent_) + "%";
     } else if (runFinished_) {
         progress = "已完成";
     } else if (!pages::OverviewPipelineWired()) {
