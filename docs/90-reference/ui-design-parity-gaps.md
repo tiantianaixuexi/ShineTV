@@ -817,6 +817,58 @@ Qt 仍然没有「抓别的窗口」的能力）。已在 `QT_QUICK_BACKEND=soft
 | `QLayout: Attempting to add QLayout "" to QWidget ""` ×2 | `SHINE_P04_REVIEW` 运行期 | 本轮观察到的 Qt 告警，**来源尚未定位**（只记录现象，不下结论）。重建式页面里对同一成员控件二次 `new QVBoxLayout(w)`（w 已有布局）会触发；`pages/novel/WorldBoardS3.cpp` 是本仓最密集的重布局点，且该文件本轮**未改动**。各处渲染图未见异常 |
 | **多张取证图逐字节相同（md5 一致）** | `verify/review/ReviewProbe.h` 的 `Grab()` | **已修（2026-09-29）**。QQuickWidget 的画面不在 Widgets 绘制链上：`repaint()` + `QWidget::grab()` 抓的是「上一次场景图渲染留下的那一帧」，两者无同步。换实体后抓出的图与换之前逐字节相同，manifest 照样记 `saved`、overall 照样 PASS。**已在 5054c7d 上复现**（不是某次改动引入的），当时 `assets-empty` / `assets-card-states` / `sheet-full` 三张同一个 md5，而 `assets-empty` 实际该是空态。修法：`Grab()` 走 `QuickHost::GrabBlocking`（`QQuickItem::grabToImage`）；宿主是普通 QWidget 容器时先把内部每个 QuickHost 的场景图推一帧再抓容器。**判据：截图之间内容有变化时 md5 必须不同，别只看 manifest 的 saved** |
 
+## 六之二、剩余 QML 迁移与 harness 已暴露的缺陷（2026-09-29 实测）
+
+### webui → QML：六个工作区里只有「视觉资产」迁完
+
+`webui/src/` 是设计真值。产品里 `MainWindow::MakeDocPage` 仍构造 6 个 QWidget 工作区。
+
+| webui 源 | 产品现状 | 体量 |
+|---|---|---|
+| `views/Assets.jsx` | ✅ `QmlAssetsPage` | — |
+| `views/Novel.jsx` | ❌ `NovelWorkspace` | **535 KB**（最大） |
+| `views/Storyboard.jsx` | ❌ `StoryboardWorkspace` | 104 KB |
+| `views/ProjectHub.jsx` | ❌ `src/ui/pages/project` | 88 KB |
+| `views/ImageFlow.jsx` | ❌ `ImageFlowWorkspace` | 73 KB |
+| `views/Overview.jsx` | ❌ `PipelineWorkspace` | 68 KB |
+| `views/VideoFlow.jsx` | ❌ `VideoFlowWorkspace` | 47 KB |
+| `shell/Shell.jsx`（44 KB） | ❌ `MainWindow` + 六个外壳控件 | — |
+| `views/Gallery.jsx` | ⚠️ webui 里 `hidden: true`；QML 版 `Gallery.qml` 只在取证轨，产品无入口 | — |
+
+⚠️ **一个容易看错的点**：`Storyboard.qml`(48 KB) 与 `ImageFlow.qml`(53 KB) 看着像已做完，
+但 `QmlPageReview.cpp` 的 `kPages` 给它们的 `needs_page_model` 是 **false**，两个文件里
+`Page.` 引用数都是 **0** —— 纯 mock 渲染，只在离屏取证轨上，**产品走的仍是 QWidget**。
+规划迁移时别把它们算成已完成。
+
+**建议顺序**（体量小 → 依赖多）：`VideoFlow`(47K) → `ImageFlow`(73K) → `Overview`(68K)
+→ `ProjectHub`(88K) → `Storyboard`(104K) → `Novel`(535K) → `Shell`(44K)。
+每页一轮，遵守「没接完就不要删；宁可留 QWidget 版并显式记 NOT-COVERED，也不要留死按钮」。
+
+### harness 第一次说真话之后暴露的三个既有缺陷
+
+2026-09-29 把退出码接到判据上（见 `40-operations/verification.md`）之后，八份评审里
+两份立刻变红 —— 都是**既有缺陷**，不是本轮引入的：
+
+| 现象 | 位置 | 说明 |
+|---|---|---|
+| `theme-dark.png == theme-light.png` | `P03Review.cpp` | 切了 `ThemeService::Switch(DeepSpace)` / `Switch(PaperInk)` 两次，两张图**逐字节相同**。主题要么没走到取帧时点，要么 QSS 改动没让画面重绘 |
+| `wait-checked` 超时 | `P06Review.cpp` | `checked=1` 需要 `ContinuityView::has_result_`，而 `SelectScene(1)` **不触发**连续性检查。旧代码只 `qWarning` 一句就继续拍，于是拍到 `checked=0` 的帧并记成 `saved` |
+| 三张画布图逐字节相同 | `P07Review.cpp` | `ImageFlowWorkspace::LoadMock()` 内部已 `SelectNode("4")`，而 `FlowCanvas::SelectNode` 是幂等的；`flow-canvas-normal` / `flow-node-states` / `flow-wiring` 三张**结构上就是同一帧** |
+
+三处都**不是**判据写错，是「图名承诺的状态」与「实际拍到的帧」对不上。
+修法：先让状态真的变，再重排抓图顺序；实在拍不出两态，就把那张图从 `expected`
+拿掉并用 `notCovered` 显式记账 —— **不允许悄悄少一张**。
+
+### 两处「断言造型的死代码」
+
+grep 看着像断言、实际永远不成立的：
+
+- `P09Review.cpp` 三处 `findChild<QTabWidget*>()` —— `PipelineWorkspace` 里**根本没有
+  QTabWidget**（gantt / ledger / stop 三个视图并排放在同一个 grid 里），那三行永远
+  不执行，后两张图拍的是同一个 tab 却记 `saved`。
+- `AssetPageModel::GalleryProbe()` 曾报 `sources=3; virtual=1` 两个**常量**，
+  与实际图库状态无关，断言读它等于对着桩跑。
+
 ---
 
 ## 七、怎么用这份文件
