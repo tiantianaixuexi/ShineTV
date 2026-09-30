@@ -13,6 +13,7 @@
 #include "project/Project.h"
 #include "project/ProjectIndex.h"
 #include "project/ProjectTemplate.h"
+#include "ui/imgui/kit/Scroll.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
 #include "util/Strings.h"
@@ -1264,29 +1265,46 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
                           ColorTextSecondary(), label, label + std::strlen(label));
             cy += 22.0f;
         }
-        for (const novelcore::ContinuityIssue& issue : s.continuity.issues) {
-            if (cy + 22.0f > continuityBody.max.y) {
-                break;  // 超出卡片就不画了（不裁剪内容，只是不画）
+        // ⚠️ 下面两个循环原来都是 `if (cy + 22.0f > continuityBody.max.y) { break; }`。
+        //    卡片高度是按**视口**定的固定槽位，画不下就**静默丢掉**后面的 issue 与 note ——
+        //    用户看到的是「就这么多」，界面上没有任何提示说还有第 N+1 条。列表被截断且不
+        //    提示 = 界面在骗人（V8 的 issue / notes 都没有条数上限，数据一多必然复现）。
+        //
+        //    改成：列表本体自己滚（ScrollRegion），画**全部**。卡片标题、汇总行、
+        //    「无不一致」结论留在滚动区**外面** —— 滚的只有下面这些行。
+        if (!s.continuity.issues.empty() || !s.continuity.notes.empty()) {
+            ScrollRegion issueScroll("novel-continuity-issues",
+                                     Rect{continuityBody.min.x, cy, continuityBody.max.x,
+                                          continuityBody.max.y});
+            if (issueScroll) {
+                // ⚠️ 内容必须画在 child **自己的** draw list 上：BeginChild 的裁剪矩形
+                //    只写进它自己那条 list，画到外层 list 上裁剪**完全无效**（内容会盖住
+                //    上层而不是消失）。见 Scroll.h。
+                ImDrawList* ldraw = issueScroll.drawList();
+                const Rect inner = issueScroll.content();
+                float ly = inner.min.y;
+                for (const novelcore::ContinuityIssue& issue : s.continuity.issues) {
+                    const theme::Tone tone =
+                        issue.severity == "high" ? theme::Tone::Danger : theme::Tone::Warn;
+                    StatusDot(ldraw, ImVec2(inner.min.x + 4.0f, ly + 6.0f), tone, false);
+                    // 镜对换成镜码（`镜 #128→#131：` → `镜 S004 → S005：`）：这条 issue 说的
+                    // 就是「这两镜之间」出了什么事，写库主键的话没人对得上号。解析不出来就
+                    // 原样显示 detail —— 见 ShotPairToCodes 的注释。
+                    const std::string label = issue.code + " " + ShotPairToCodes(issue.detail, s.shots);
+                    DrawTextClipped(ldraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x + 16.0f, ly),
+                                    inner.width() - 16.0f, ColorTextSecondary(), label, true);
+                    ly += 22.0f;
+                }
+                // unverified 的原因也照实列（它不是失败，但必须看得见）。
+                for (const std::string& note : s.continuity.notes) {
+                    DrawTextClipped(ldraw, FontAt(11.5f), 11.5f, ImVec2(inner.min.x, ly),
+                                    inner.width(), ColorTextMuted(), note, true);
+                    ly += 20.0f;
+                }
+                // ⚠️ 不调这一行等于没修：自绘内容全程不给 ImGui 提交 item，ContentSize
+                //    恒为 0 ⇒ ScrollMaxY 恒为 0 ⇒ 滚轮怎么转都停在原地（本仓已踩过两次）。
+                issueScroll.setContentHeight(ly - inner.min.y);
             }
-            const theme::Tone tone = issue.severity == "high" ? theme::Tone::Danger : theme::Tone::Warn;
-            StatusDot(draw, ImVec2(continuityBody.min.x + 4.0f, cy + 6.0f), tone, false);
-            // 镜对换成镜码（`镜 #128→#131：` → `镜 S004 → S005：`）：这条 issue 说的
-            // 就是「这两镜之间」出了什么事，写库主键的话没人对得上号。解析不出来就
-            // 原样显示 detail —— 见 ShotPairToCodes 的注释。
-            const std::string label = issue.code + " " + ShotPairToCodes(issue.detail, s.shots);
-            DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                            ImVec2(continuityBody.min.x + 16.0f, cy),
-                            continuityBody.width() - 16.0f, ColorTextSecondary(), label, true);
-            cy += 22.0f;
-        }
-        // unverified 的原因也照实列（它不是失败，但必须看得见）。
-        for (const std::string& note : s.continuity.notes) {
-            if (cy + 22.0f > continuityBody.max.y) {
-                break;
-            }
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(continuityBody.min.x, cy),
-                            continuityBody.width(), ColorTextMuted(), note, true);
-            cy += 20.0f;
         }
     }
 
@@ -1906,22 +1924,30 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
                   "Comfy 已连接，但队列是空的。绑定关系是提交时建立的，"
                   "这里不编 KSampler / workflow 的对应关系。");
         } else {
-            float y = body.min.y;
-            for (const comfy::QueueModel::Row& row : rows) {
-                if (y + 24.0f > body.max.y) {
-                    break;
+            // ⚠️ 原来这里是 `if (y + 24.0f > body.max.y) { break; }`：队列有多少行就只画
+            //    看得下的那几行，剩下的**无声消失**，界面上看不出还有第 N+1 个任务 ——
+            //    列表被截断且不提示 = 界面在骗人（队列一忙、面板一矮就复现）。
+            //    改成画**全部**行；面板自己就是视口，超出由 ScrollRegion 滚。
+            ScrollRegion bindScroll("img-bind-queue", body);
+            if (bindScroll) {
+                // ⚠️ 内容画在 child 自己的 list 上，裁剪才有效（见 Scroll.h）。
+                ImDrawList* bdraw = bindScroll.drawList();
+                const Rect inner = bindScroll.content();
+                float y = inner.min.y;
+                for (const comfy::QueueModel::Row& row : rows) {
+                    const std::string label = row.label.empty() ? row.promptId : row.label;
+                    DrawTextClipped(bdraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x, y), 170.0f,
+                                    ColorTextSecondary(), label, true);
+                    bdraw->AddText(FontAt(12.5f), 12.5f, ImVec2(inner.min.x + 180.0f, y),
+                                   ColorTextMuted(), "→", "→" + 3);
+                    DrawTextClipped(bdraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x + 210.0f, y),
+                                    inner.width() - 210.0f, ColorText(),
+                                    row.state == comfy::TaskState::Running ? "运行中" : "排队中",
+                                    true);
+                    y += 24.0f;
                 }
-                const std::string label = row.label.empty() ? row.promptId : row.label;
-                DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x, y), 170.0f,
-                                ColorTextSecondary(), label, true);
-                draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x + 180.0f, y), ColorTextMuted(),
-                              "→", "→" + 3);
-                DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x + 210.0f, y),
-                                body.width() - 210.0f, ColorText(), row.state == comfy::TaskState::Running
-                                                                        ? "运行中"
-                                                                        : "排队中",
-                                true);
-                y += 24.0f;
+                // 不调这一行等于没修：不报内容高，ImGui 侧 ContentSize 恒为 0 ⇒ 滚不动。
+                bindScroll.setContentHeight(y - inner.min.y);
             }
         }
     } else if (panelTab_ == 1) {
@@ -1955,22 +1981,33 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
             draw->AddText(FontAt(12.0f), 12.0f, ImVec2(body.min.x + 10.0f, body.min.y + 34.0f),
                           ColorOf(theme::Current().statusWarn), noSubmit,
                           noSubmit + std::strlen(noSubmit));
-            float y = body.min.y + 70.0f;
-            for (const BookShotView& shot : bs.shots) {
-                if (y + 26.0f > body.max.y) {
-                    break;
+            // ⚠️ 原来这里是 `if (y + 26.0f > body.max.y) { break; }` —— 一章几十个镜时只画
+            //    看得下的一半，候选镜**无声消失**，界面上看不出「本章还有 N 个候选」。
+            //    列表被截断且不提示 = 界面在骗人。改成画**全部**候选。
+            //    「本章 N 个镜」说明与「批量提交未接」的警告条留在滚动区**外面**。
+            ScrollRegion candScroll("img-batch-candidates",
+                                    Rect{body.min.x, body.min.y + 70.0f, body.max.x, body.max.y});
+            if (candScroll) {
+                // ⚠️ 内容画在 child 自己的 list 上，裁剪才有效（见 Scroll.h）。
+                ImDrawList* cdraw = candScroll.drawList();
+                const Rect inner = candScroll.content();
+                float y = inner.min.y;
+                for (const BookShotView& shot : bs.shots) {
+                    const std::string code = ShotCode(shot.ord);
+                    cdraw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(inner.min.x, y), ColorAccent(),
+                                   code.data(), code.data() + code.size());
+                    const std::string action = shot.action.empty() ? std::string(kDash) : shot.action;
+                    DrawTextClipped(cdraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x + 52.0f, y),
+                                    inner.width() - 180.0f, ColorText(), action, true);
+                    const std::string canon =
+                        shot.canonStatus.empty() ? std::string(kDash) : shot.canonStatus;
+                    const float tagW = TagWidth(canon, false, true);
+                    Tag(cdraw, RectAt(inner.max.x - tagW, y - 1.0f, tagW, 20.0f), canon,
+                        theme::Tone::Idle, false, true);
+                    y += 26.0f;
                 }
-                const std::string code = ShotCode(shot.ord);
-                draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(body.min.x, y), ColorAccent(), code.data(),
-                              code.data() + code.size());
-                const std::string action = shot.action.empty() ? std::string(kDash) : shot.action;
-                DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x + 52.0f, y),
-                                body.width() - 180.0f, ColorText(), action, true);
-                const std::string canon = shot.canonStatus.empty() ? std::string(kDash) : shot.canonStatus;
-                const float tagW = TagWidth(canon, false, true);
-                Tag(draw, RectAt(body.max.x - tagW, y - 1.0f, tagW, 20.0f), canon, theme::Tone::Idle,
-                    false, true);
-                y += 26.0f;
+                // 不调这一行等于没修：不报内容高，ImGui 侧 ContentSize 恒为 0 ⇒ 滚不动。
+                candScroll.setContentHeight(y - inner.min.y);
             }
         }
     } else if (panelTab_ == 2) {
@@ -1991,33 +2028,44 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
         // 插画 150 高之后留够落笔空间：Art 的实际下沿比 rect 略高一点，早先 +162 的
         // 间距会让第一行名字压在插画下沿上（截图里能直接看出来）。
         const float listTop = body.min.y + 180.0f;
-        bool any = false;
-        int row = 0;  // 只数**列出来的**行 —— 用全量下标算 y 会在跳过的实体处留空洞
+        // 先把「真的列得出来」的实体收齐：有资产才进清单，否则空态才说得清。
+        std::vector<const BookAssetView*> listed;
         for (const BookAssetView& asset : rv.assets) {
-            if (!asset.hasAsset) {
-                continue;
+            if (asset.hasAsset) {
+                listed.push_back(&asset);
             }
-            any = true;
-            const float rowY = listTop + static_cast<float>(row) * 24.0f;
-            if (rowY + 22.0f > body.max.y) {
-                break;
-            }
-            ++row;
-            const std::string name = asset.name.empty() ? std::string(kDash) : asset.name;
-            const std::string status =
-                asset.statusLabel.empty() ? std::string(kDash) : asset.statusLabel;
-            DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x, rowY),
-                            body.width() - 120.0f, ColorText(), name, true);
-            const float tagW = TagWidth(status, false, true);
-            Tag(draw, RectAt(body.max.x - tagW, rowY - 1.0f, tagW, 20.0f), status,
-                asset.tone, false, true);
         }
-        if (!any) {
+        if (listed.empty()) {
             Empty(draw, Rect{body.min.x, listTop, body.max.x, body.max.y}, "target",
                   "没有可评审的出图", rv.bound
                                      ? "这一类实体还没有视觉资产。先在资产工作区出图，再回来评审。"
                                      : "还没打开工程。评审清单来自 entities × visual_assets。");
         } else {
+            // ⚠️ 原来这里是 `if (rowY + 22.0f > body.max.y) { break; }` —— 清单比面板高时
+            //    多出来的资产**无声消失**，界面上看不出「还有 N 项没列」：列表被截断且不
+            //    提示 = 界面在骗人。改成画**全部**，行本体自己滚；插画与页脚留在区外。
+            ScrollRegion reviewScroll("img-review-assets",
+                                      Rect{body.min.x, listTop, body.max.x, body.max.y});
+            if (reviewScroll) {
+                // ⚠️ 内容画在 child 自己的 list 上，裁剪才有效（见 Scroll.h）。
+                ImDrawList* rdraw = reviewScroll.drawList();
+                const Rect inner = reviewScroll.content();
+                // y 依次累加（不再用全量下标 × 24）：跳过的实体不会在中间留空洞。
+                float ly = inner.min.y;
+                for (const BookAssetView* asset : listed) {
+                    const std::string name = asset->name.empty() ? std::string(kDash) : asset->name;
+                    const std::string status =
+                        asset->statusLabel.empty() ? std::string(kDash) : asset->statusLabel;
+                    DrawTextClipped(rdraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x, ly),
+                                    inner.width() - 120.0f, ColorText(), name, true);
+                    const float tagW = TagWidth(status, false, true);
+                    Tag(rdraw, RectAt(inner.max.x - tagW, ly - 1.0f, tagW, 20.0f), status,
+                        asset->tone, false, true);
+                    ly += 24.0f;
+                }
+                // 不调这一行等于没修：不报内容高，ImGui 侧 ContentSize 恒为 0 ⇒ 滚不动。
+                reviewScroll.setContentHeight(ly - inner.min.y);
+            }
             DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.max.y - 16.0f),
                             body.width(), ColorTextMuted(),
                             "逐项评分（构图/光线/服饰/色彩）没有只读投影，这里只列生产状态。", true);
@@ -2036,41 +2084,51 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
         const BookSideView& rv = BookSide();
         Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 150.0f}, 6, true);
         const float listTop = body.min.y + 180.0f;
-        bool any = false;
-        int row = 0;
+        std::vector<const BookAssetView*> listed;
         for (const BookAssetView& asset : rv.assets) {
-            if (!asset.hasAsset) {
-                continue;
+            if (asset.hasAsset) {
+                listed.push_back(&asset);
             }
-            const float rowY = listTop + 24.0f * static_cast<float>(row);
-            if (rowY + 22.0f > body.max.y) {
-                break;
-            }
-            ++row;
-            any = true;
-            const std::string name = asset.name.empty() ? std::string(kDash) : asset.name;
-            const std::string status =
-                asset.statusLabel.empty() ? std::string(kDash) : asset.statusLabel;
-            DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(body.min.x, rowY),
-                            body.width() - 200.0f, ColorText(), name, true);
-            // 层数完成度是真的（layers / layersDone 来自 visual_assets 的分层表）。
-            const std::string layers =
-                asset.layers > 0
-                    ? ("分层 " + std::to_string(asset.layersDone) + "/" + std::to_string(asset.layers))
-                    : std::string(kDash);
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.max.x - 190.0f, rowY + 3.0f),
-                            90.0f, ColorTextMuted(), layers, true);
-            const std::string flag = asset.degraded ? "已降级" : "完整";
-            const float fw = TagWidth(flag, false, true);
-            Tag(draw, RectAt(body.max.x - fw, rowY - 1.0f, fw, 20.0f), flag,
-                asset.degraded ? theme::Tone::Warn : theme::Tone::Ok, false, true);
         }
-        if (!any) {
+        if (listed.empty()) {
             Empty(draw, Rect{body.min.x, listTop, body.max.x, body.max.y}, "check",
                   "这一类实体还没有出图结果",
                   rv.bound ? "visual_assets 里还没有任何已产出的图像。业务层也没有出图结果的"
                              "只读投影，所以这里不列参数。"
                            : "还没打开工程。");
+        } else {
+            // ⚠️ 原来这里是 `if (rowY + 22.0f > body.max.y) { break; }` —— 出图一多，
+            //    后面的结果行**无声消失**，界面上看不出「还有 N 张没列」：列表被截断且不
+            //    提示 = 界面在骗人。改成画**全部**，行本体自己滚；插画留在滚动区外。
+            ScrollRegion resultScroll("img-result-assets",
+                                      Rect{body.min.x, listTop, body.max.x, body.max.y});
+            if (resultScroll) {
+                // ⚠️ 内容画在 child 自己的 list 上，裁剪才有效（见 Scroll.h）。
+                ImDrawList* gdraw = resultScroll.drawList();
+                const Rect inner = resultScroll.content();
+                float ly = inner.min.y;
+                for (const BookAssetView* asset : listed) {
+                    const std::string name = asset->name.empty() ? std::string(kDash) : asset->name;
+                    const std::string status =
+                        asset->statusLabel.empty() ? std::string(kDash) : asset->statusLabel;
+                    DrawTextClipped(gdraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x, ly),
+                                    inner.width() - 200.0f, ColorText(), name, true);
+                    // 层数完成度是真的（layers / layersDone 来自 visual_assets 的分层表）。
+                    const std::string layers =
+                        asset->layers > 0 ? ("分层 " + std::to_string(asset->layersDone) + "/" +
+                                             std::to_string(asset->layers))
+                                          : std::string(kDash);
+                    DrawTextClipped(gdraw, FontAt(11.5f), 11.5f, ImVec2(inner.max.x - 190.0f, ly + 3.0f),
+                                    90.0f, ColorTextMuted(), layers, true);
+                    const std::string flag = asset->degraded ? "已降级" : "完整";
+                    const float fw = TagWidth(flag, false, true);
+                    Tag(gdraw, RectAt(inner.max.x - fw, ly - 1.0f, fw, 20.0f), flag,
+                        asset->degraded ? theme::Tone::Warn : theme::Tone::Ok, false, true);
+                    ly += 24.0f;
+                }
+                // 不调这一行等于没修：不报内容高，ImGui 侧 ContentSize 恒为 0 ⇒ 滚不动。
+                resultScroll.setContentHeight(ly - inner.min.y);
+            }
         }
     }
 
@@ -2143,24 +2201,35 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
                   cv.bound ? "首尾帧链是**相邻两镜**之间的关系，至少要两个镜才画得出来。"
                            : "镜列表来自 novel.db 的 shots 表。");
         } else {
-            float y = body.min.y;
-            const std::size_t pairs = cv.shots.size() - 1;
-            for (std::size_t i = 0; i < pairs; ++i) {
-                if (y + 26.0f > body.max.y) {
-                    break;
+            // ⚠️ 原来这里是 `if (y + 26.0f > body.max.y) { break; }` —— 一章的镜一多，
+            //    后面的帧链对**无声消失**，界面上看不出「本章还有 N 对相邻镜没列」：
+            //    列表被截断且不提示 = 界面在骗人。改成画**全部**对。
+            //    底部那句说明留在滚动区**外面**（区高留出 24，不让它压住页脚）。
+            ScrollRegion chainScroll("vf-frame-chain",
+                                     Rect{body.min.x, body.min.y, body.max.x, body.max.y - 24.0f});
+            if (chainScroll) {
+                // ⚠️ 内容画在 child 自己的 list 上，裁剪才有效（见 Scroll.h）。
+                ImDrawList* chdraw = chainScroll.drawList();
+                const Rect inner = chainScroll.content();
+                const std::size_t pairs = cv.shots.size() - 1;
+                float y = inner.min.y;
+                for (std::size_t i = 0; i < pairs; ++i) {
+                    const BookShotView& from = cv.shots[i];
+                    const BookShotView& to = cv.shots[i + 1];
+                    const std::string label =
+                        ShotCode(from.ord) + " → " + ShotCode(to.ord);
+                    chdraw->AddText(FontAt(12.5f), 12.5f, ImVec2(inner.min.x, y),
+                                    ColorTextSecondary(), label.data(), label.data() + label.size());
+                    // 右侧标签显示**后一个镜**自己的设定状态 —— 真字段，不臆断链路通断。
+                    const std::string canon =
+                        to.canonStatus.empty() ? std::string(kDash) : to.canonStatus;
+                    const float tw = TagWidth(canon, false, false);
+                    Tag(chdraw, RectAt(inner.max.x - tw, y - 3.0f, tw, 20.0f), canon,
+                        theme::Tone::Idle, false, false);
+                    y += 26.0f;
                 }
-                const BookShotView& from = cv.shots[i];
-                const BookShotView& to = cv.shots[i + 1];
-                const std::string label =
-                    ShotCode(from.ord) + " → " + ShotCode(to.ord);
-                draw->AddText(FontAt(12.5f), 12.5f, ImVec2(body.min.x, y), ColorTextSecondary(),
-                              label.data(), label.data() + label.size());
-                // 右侧标签显示**后一个镜**自己的设定状态 —— 真字段，不臆断链路通断。
-                const std::string canon = to.canonStatus.empty() ? std::string(kDash) : to.canonStatus;
-                const float tw = TagWidth(canon, false, false);
-                Tag(draw, RectAt(body.max.x - tw, y - 3.0f, tw, 20.0f), canon, theme::Tone::Idle, false,
-                    false);
-                y += 26.0f;
+                // 不调这一行等于没修：不报内容高，ImGui 侧 ContentSize 恒为 0 ⇒ 滚不动。
+                chainScroll.setContentHeight(y - inner.min.y);
             }
             DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.max.y - 16.0f),
                             body.width(), ColorTextMuted(),
@@ -2184,20 +2253,29 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
             Empty(draw, body, "film", "队列里没有视频任务",
                   "视频任务来自 ComfyUI 队列。取真实数据源：comfy::ComfySession::Queue()。");
         } else {
-            float y = body.min.y;
-            for (const comfy::QueueModel::Row& row : rows) {
-                if (y + 26.0f > body.max.y) {
-                    break;
+            // ⚠️ 原来这里是 `if (y + 26.0f > body.max.y) { break; }` —— 队列里的任务
+            //    一多，后面的**无声消失**，界面上看不出还有第 N+1 个在排队：列表被截断
+            //    且不提示 = 界面在骗人。改成画**全部**行。
+            ScrollRegion queueScroll("vf-video-queue", body);
+            if (queueScroll) {
+                // ⚠️ 内容画在 child 自己的 list 上，裁剪才有效（见 Scroll.h）。
+                ImDrawList* qdraw = queueScroll.drawList();
+                const Rect inner = queueScroll.content();
+                float y = inner.min.y;
+                for (const comfy::QueueModel::Row& row : rows) {
+                    const bool running = row.state == comfy::TaskState::Running;
+                    const bool failed = row.state == comfy::TaskState::Failed;
+                    const std::string code = row.label.empty() ? row.promptId : row.label;
+                    DrawTextClipped(qdraw, MonoAt(12.0f), 12.0f, ImVec2(inner.min.x, y), 160.0f,
+                                    failed ? ColorOf(theme::Current().statusDanger)
+                                           : ColorTextSecondary(),
+                                    code, true);
+                    Progress(qdraw, RectAt(inner.min.x + 170.0f, y + 2.0f, inner.width() - 210.0f, 6.0f),
+                             row.progress * 100.0f, running, true);
+                    y += 26.0f;
                 }
-                const bool running = row.state == comfy::TaskState::Running;
-                const bool failed = row.state == comfy::TaskState::Failed;
-                const std::string code = row.label.empty() ? row.promptId : row.label;
-                DrawTextClipped(draw, MonoAt(12.0f), 12.0f, ImVec2(body.min.x, y), 160.0f,
-                                failed ? ColorOf(theme::Current().statusDanger) : ColorTextSecondary(),
-                                code, true);
-                Progress(draw, RectAt(body.min.x + 170.0f, y + 2.0f, body.width() - 210.0f, 6.0f),
-                         row.progress * 100.0f, running, true);
-                y += 26.0f;
+                // 不调这一行等于没修：不报内容高，ImGui 侧 ContentSize 恒为 0 ⇒ 滚不动。
+                queueScroll.setContentHeight(y - inner.min.y);
             }
         }
     } else {

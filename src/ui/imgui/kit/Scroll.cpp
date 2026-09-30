@@ -69,16 +69,23 @@ ScrollRegion::ScrollRegion(std::string_view id, Rect bounds, bool borders, bool 
     ImGui::SetCursorScreenPos(bounds.min);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ColorPanel());
     ImGui::PushStyleColor(ImGuiCol_Border, ColorLineSubtle());
+    // ⚠️ **不设** `ImGuiWindowFlags_NoScrollbar`。
+    //    原来一直关着它，于是「还有更多」没有任何视觉提示 —— 内容虽然能滚了（内容
+    //    高度已经上报），用户看不出来下面还有东西。ImGui 自己会在
+    //    `ScrollMax > 0` 时才显示竖条，所以不用手动判「要不要画」。
+    //    直接用它自带的（自带点击拖拽与 hover/active 态），**不要自己手搓滑块** ——
+    //    手搓一版没有拖拽的滑块，等于给用户一个看得见摸不着的假控件。
+    //    颜色走主题，不用默认灰。
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ColorLineStrong());
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ColorAccent());
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ColorAccent());
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
     ImGuiChildFlags childFlags = borders ? ImGuiChildFlags_Borders : ImGuiChildFlags_None;
-    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-                                   ImGuiWindowFlags_NoBackground;
-    // NoScrollWithMouse 关掉是为了让滚轮交给外层区域处理；这里反其道而行：
-    // 页面内容需要滚轮，所以不关。
-    windowFlags &= ~ImGuiWindowFlags_NoScrollWithMouse;
+    // 滚轮要留给本区域（页面内容需要它），所以 NoScrollWithMouse 关掉。
+    ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoBackground;
     if (horizontalScroll) {
-        windowFlags &= ~ImGuiWindowFlags_NoScrollbar;
         windowFlags |= ImGuiWindowFlags_HorizontalScrollbar;
     }
 
@@ -153,7 +160,7 @@ ScrollRegion::~ScrollRegion() {
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    ImGui::PopStyleColor(6);
 }
 
 void ScrollRegion::scrollToBottom() {
