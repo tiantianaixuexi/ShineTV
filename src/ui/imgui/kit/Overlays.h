@@ -48,6 +48,11 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
 //
 // ⚠️ 与 Modal 一样：面板画在**当前 draw list** 上，调用方必须在一帧的**最后**
 // 画它（外壳 onFrame 收尾处），否则会被后面画的内容盖住。
+//
+// ⚠️ 遮罩**只画不注册命中**：注册全屏 InvisibleButton 会先拿到 HoveredId，
+// 模态里每一个按钮就永远点不动（ImGui 先注册者独占）。「点外面关闭」由调用方
+// 用返回的 `frame` 手算点击是否落在面板外 —— 既不抢 HoveredId，也避开本工程
+// 会 0xC0000005 的 `ImGui::IsMouseHoveringRect`。
 struct ModalFrame {
     Rect frame;   // 整个面板（含头与脚）
     Rect header;  // .modal-h：14/18 内边距 + 1px 下边
@@ -56,7 +61,7 @@ struct ModalFrame {
 };
 ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
                           std::string_view icon, float width, float height,
-                          int footerButtons = 0, std::string_view id = "kit-modal-frame");
+                          int footerButtons = 0);
 
 // ---- Drawer（ui.css:647-686）----
 // 右侧 390 宽通栏抽屉：bg-overlay + 1px 左边线 + shadow-2；

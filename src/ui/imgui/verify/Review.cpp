@@ -14,6 +14,7 @@
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -71,8 +72,10 @@ struct HoverTarget {
     int novelMode = -1;
 };
 
-// 热区扫描：沿一条竖线（或网格）把鼠标挨个挪过去，打出每格命中了哪个
-// 控件。用途只有一个 —— **把「探针坐标」从猜的变成量出来的**。
+// 热区扫描：沿一片网格把鼠标挨个挪过去，收集出现过的**全部**控件 id。
+// 用途有两个：
+//   1. 探针报「点空了」时把坐标**量**出来，而不是猜；
+//   2. 判断「某个浮层里的控件到底能不能收到鼠标」—— 见下面项目中心那条判据。
 //
 // 为什么需要它：`hit=0` 这一个信号至少对应三种原因（注入没到位 / 视口塌了 /
 // 坐标落在热区外），而第三种是**布局一改就全失效**的：坐标是照着某个
@@ -80,13 +83,16 @@ struct HoverTarget {
 // 「现在这个控件在哪」—— 于是要么去改本来正确的产品代码，要么凭感觉挪
 // 两个数字再跑一轮 300 秒。扫描一次把这个信息补齐。
 //
-// ⚠️ 只扫**命中 id**，不判 hover 像素变化：它的产物是坐标，不是通过/失败。
-void ScanHotspots(Host& host, Shell& shell, float x0, float y0, float x1, float y1,
-                  float step) {
+// ⚠️ 返回的是**集合**：全屏遮罩若注册成热区，会在每一格都命中并盖住所有真
+//    控件 —— 只看「某一点命中了什么」看不出来，看「整片里出现过哪些 id」
+//    才看得出来（那时集合里只有遮罩，没有被盖住的那些）。
+std::set<std::string> ScanHotspots(Host& host, Shell& shell, float x0, float y0, float x1,
+                                    float y1, float step, bool verbose = true) {
     struct Unpin {
         ~Unpin() { kit::UnpinAnimation(); }
     } unpin;
     kit::PinAnimation(kit::Now());
+    std::set<std::string> found;
     for (float y = y0; y <= y1; y += step) {
         for (float x = x0; x <= x1; x += step) {
             host.SetFrameMouseOverride(x, y);
@@ -94,12 +100,17 @@ void ScanHotspots(Host& host, Shell& shell, float x0, float y0, float x1, float 
             host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
             host.ClearFrameMouseOverride();
             if (kit::HoveredItemCount() > 0) {
-                shine::log::Info("scan: ({:.0f},{:.0f}) -> {} x{}", x, y, kit::LastHoveredItem(),
-                                 kit::HoveredItemCount());
+                const char* id = kit::LastHoveredItem();
+                found.insert(id != nullptr ? id : "(null)");
+                if (verbose) {
+                    shine::log::Info("scan: ({:.0f},{:.0f}) -> {} x{}", x, y, id,
+                                     kit::HoveredItemCount());
+                }
             }
         }
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
     }
+    return found;
 }
 
 // 悬停探针：把鼠标放到 (x, y) 拍一张，**再把鼠标放到窗外拍一张只取哈希**，
@@ -1222,6 +1233,118 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                 host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
             }
         }
+        // ---- 项目中心对话框：控件必须收得到鼠标（2026-09-30 补）----
+        //
+        // 补这条的直接原因：把项目中心那三个对话框从页面层私有外壳换成
+        // `kit::ModalFrameRect` 时，我先让遮罩走了 `kit::Scrim`（注册全屏
+        // InvisibleButton）。项目中心**没有**因此坏掉 —— 它的对话框是最后画的，
+        // 遮罩排在按钮**之后**，「先注册者独占」时按钮照样拿到 HoveredId。
+        // 而报告模态**会**坏（外壳先画、按钮后画）。**两种顺序结论相反。**
+        //
+        // 所以这条判据**不是**遮罩顺序的检测器（那是 `duplicate-hits` 的活：
+        // 实测把遮罩改回注册，duplicate-hits 从 0 变 6232，而这条仍然 5/5）。
+        // 它验的是另一件事，而且这件也值得验：
+        //   **对话框能被打开，且打开之后里面的控件收得到鼠标。**
+        // 它当场抓到了一个真 bug：点「打开项目」的那一下点击，在同一帧里
+        // `IsMouseClicked()` 仍为真、鼠标仍在工具条上（对话框之外），于是我
+        // 加的「点面板外关闭」把刚开的对话框**当场关掉** —— 症状是「闪一下就
+        // 没了」。修法是 `HubState::dismissArmed`（见 WorkspaceB）。
+        // 那个 bug 编译过、截图正常、打开之前一切正常，**只有真点一下才看得见**。
+        //
+        // 判据方式：**两步**，都是布局无关的。
+        //   第 1 步：全屏扫一遍，找出 `hub-open`（工具条上「打开项目」）的坐标
+        //            （**量**出来，不猜 —— 猜出来的坐标在布局一改就静默失效）。
+        //   第 2 步：先确认 `hubDialogOpen()` 为真（前置条件！），再全屏扫一遍，
+        //            断言集合里至少有一个 `hub-` id。
+        {
+            bool hubOk = false;
+            std::string why;
+            const int wsBefore = shell.workspace();
+            shell.ToggleProjectHub();
+            host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+            if (!shell.projectHubOpen()) {
+                why = "项目中心开不起来（ToggleProjectHub 之后 projectHubOpen() 仍是 false）";
+            } else {
+                const ImVec2 d = ImGui::GetIO().DisplaySize;
+                // 第 1 步：全屏扫，找 hub-open 的坐标（不猜）。
+                bool foundOpen = false;
+                ImVec2 openAt{0.0f, 0.0f};
+                for (float y = 0.0f; y <= d.y && !foundOpen; y += 12.0f) {
+                    for (float x = 0.0f; x <= d.x; x += 12.0f) {
+                        host.SetFrameMouseOverride(x, y);
+                        kit::ResetHoveredItemCount();
+                        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                        host.ClearFrameMouseOverride();
+                        const char* id = kit::LastHoveredItem();
+                        if (kit::HoveredItemCount() > 0 && id != nullptr &&
+                            std::string(id) == "hub-open") {
+                            openAt = ImVec2(x, y);
+                            foundOpen = true;
+                            break;
+                        }
+                    }
+                }
+                if (!foundOpen) {
+                    why = "全屏扫不到工具条上的「打开项目」按钮（hub-open）";
+                } else {
+                    // 第 2 步：点开对话框，再扫一遍。
+                    host.SetFrameMouseOverride(openAt.x, openAt.y);
+                    host.SetFrameMouseButtonOverride(true);
+                    host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                    host.SetFrameMouseButtonOverride(false);
+                    host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                    host.ClearFrameMouseButtonOverride();
+                    host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+
+                    // ⚠️ **前置条件**：对话框必须真的开着。少了这一步，判据会在
+                    // 「压根没开」的状态下去扫一片**没有遮罩**的界面，照常扫到
+                    // `hub-*`，于是报通过 —— 而它本该抓的缺陷（遮罩抢走
+                    // HoveredId）恰恰只在「开着」时才发生。
+                    // 判据自检时我正是这么被骗的：把遮罩改回抢热区，它仍然 5/5。
+                    if (!shell.hubDialogOpen()) {
+                        why = "点了「打开项目」但对话框没开（hubDialogOpen() 仍是 false）——"
+                              "判据前置不成立，这次扫描量的不是遮罩那条路径";
+                    } else {
+                        const std::set<std::string> ids = ScanHotspots(
+                            host, shell, 0.0f, 0.0f, d.x, d.y, 16.0f, /*verbose=*/false);
+                        int hubIds = 0;
+                        std::string all;
+                        for (const std::string& id : ids) {
+                            if (id.rfind("hub-", 0) == 0) {
+                                ++hubIds;
+                            }
+                            all += all.empty() ? "" : ", ";
+                            all += id;
+                        }
+                        if (hubIds > 0) {
+                            hubOk = true;
+                        } else {
+                            why = "对话框开着，但整屏扫到的热区里一个 hub-* 都没有 —— 扫到 [" +
+                                  (all.empty() ? std::string("(空)") : all) +
+                                  "]。遮罩/别的控件抢走了 HoveredId（ImGui 先注册者独占）";
+                        }
+                    }
+                }
+            }
+            ++kOverlayClickTotal;
+            if (hubOk) {
+                ++overlayClicksPassed;
+            } else {
+                shine::log::Error("review: 项目中心按钮判据失败：{}", why);
+            }
+            // 复位：按语义显式复位（不是「再按一次」—— 那是 toggle 才成立的写法）。
+            if (shell.projectHubOpen()) {
+                shell.ToggleProjectHub();
+                host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            }
+            if (shell.workspace() != wsBefore) {
+                shell.SetWorkspace(wsBefore);
+            }
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        }
+        // ⚠️ manifest 行**必须写在两条浮层判据都跑完之后**：早先写在项目中心那条
+        //    之前，于是它报 4/4 而 kOverlayClickTotal 已经是 5 —— 判据自己报的
+        //    分母与实际条数不一致，读者会以为 5 条里过了 4 条。
         WriteManifest(manifest, std::string("overlay-clicks=") +
                                     std::to_string(overlayClicksPassed) + "/" +
                                     std::to_string(kOverlayClickTotal));

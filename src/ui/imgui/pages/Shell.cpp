@@ -2318,10 +2318,15 @@ void Shell::DrawFrame(float dt) {
     // 进项目中心时顶栏/导航/侧栏/检查器/底栏/状态栏全部让位，只留它自己。
     if (hubOpen_) {
         DrawProjectHubScreen(RectAt(0, 0, W, H), draw);
+        // 每帧（无条件）同步「中心里对话框开着」这个读数。只在开着时写的话，
+        // 探针会读到上一帧的残留，把「已经关了」误读成「还开着」。
+        hubDialogOpen_ = pages::HubDialogOpen();
         ImGui::End();
         kit::DrawDebugWindows(debug_);
         return;
     }
+    // 中心关着时也要清：否则探针在中心关闭后仍会读到「上一个对话框开着」。
+    hubDialogOpen_ = false;
 
     const float dockH = layout_.dockVisible ? static_cast<float>(layout_.dockHeight) : 0.0f;
     const float sideW = layout_.sidePanelVisible ? static_cast<float>(layout_.sidePanelWidth) : 0.0f;
@@ -2901,10 +2906,26 @@ void Shell::DrawReportModal() {
     // 设计稿内联 width 640 / height min(74vh,660)（Shell.jsx:272）—— 尺寸原样保留。
     const float w = 640.0f;
     const float h = std::min(660.0f, display.y * 0.74f);
-    const Rect bounds{(display.x - w) * 0.5f, (display.y - h) * 0.5f, (display.x + w) * 0.5f,
-                      (display.y + h) * 0.5f};
-    DrawRoundRect(draw, ImVec2(0.0f, 0.0f), ImVec2(display.x, display.y), 0.0f, ColorScrim());
-    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
+    const float headerH = 46.0f;
+    const float footerH = 12.0f * 2.0f + ButtonHeight(ButtonSize::Medium) + 1.0f;
+    // 外壳走 kit::ModalFrameRect：遮罩 / 圆角 / 投影 / 头 / 体 / 脚 全部由 kit 画。
+    // 原来这里是页面层第五份私有的模态外壳 —— 前四份在 WorkspaceB（上一轮收掉），
+    // 而 `kit::Modal` 本体因为一直没有调用点，一直是零调用。
+    //
+    // ⚠️ **这一处是「遮罩绝不能注册热区」的高危位置**：外壳先画、下面那些
+    //    「导出 / ×」按钮后画，所以若遮罩注册成全屏 InvisibleButton，它会
+    //    **先**拿到 HoveredId ⇒ 这一模态里每一个按钮都永远点不动，而外观全都
+    //    画得好好的。项目中心的对话框不会中招（它最后画，遮罩排在按钮之后）——
+    //    两种顺序结论相反，靠读代码判断极易搞反。kit::ModalFrameRect 里遮罩
+    //    只画不注册，`kit::DuplicateHitCount` 兜底。
+    //
+    // 头高：kit 的 `.modal-h` 是 14/18 padding + 18 行高 = 47，而设计稿这一处
+    // 写的是 46（行高由头右侧那两个按钮决定）。所以**不传标题**（头高 0），
+    // 整行头由页面层自己画 —— 传了标题会多出一行 47 的头，与下面这行 46 的
+    // 头叠在一起。
+    const kit::ModalFrame mf = kit::ModalFrameRect(
+        draw, RectAt(0.0f, 0.0f, display.x, display.y), {}, {}, w, h, /*footerButtons=*/2);
+    const Rect bounds = mf.frame;
     // 点遮罩关闭。⚠️ 这里**不能**用 kit::HitTest：全屏遮罩若先注册成 InvisibleButton，
     // 它会先拿到 HoveredId，模态里所有按钮（同一帧、位置落在遮罩内）永远 hovered=false。
     // 改成手算点在不在面板内：既不注册 item（所以不抢 HoveredId），
@@ -2913,9 +2934,6 @@ void Shell::DrawReportModal() {
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !bounds.contains(ImGui::GetIO().MousePos)) {
         reportDetail_ = -1;
     }
-
-    const float headerH = 46.0f;
-    const float footerH = 12.0f * 2.0f + ButtonHeight(ButtonSize::Medium) + 1.0f;
 
     // ---- .modal-h（ui.css:955-965）：padding 14/18 + gap 10 + 1px 下边 ----
     // ⚠️ 标题里的规则组写作 "C1-C12"（ASCII 连字符）而不是设计稿的 en dash：

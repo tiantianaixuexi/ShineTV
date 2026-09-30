@@ -298,5 +298,12 @@ private:
 
 // ---- P4.11 项目中心（全屏，不套外壳）----
 void DrawProjectHub(kit::Rect area, ImDrawList* draw);
+// 项目中心里三个对话框（新建向导 / 打开 / 确认）**有没有开着**。
+//
+// 给浮层按钮判据当**前置条件**用：判据要验「对话框里的按钮收得到鼠标」，
+// 就必须先确认对话框真的开着。少了这一步，判据会在「压根没开」的状态下去扫
+// 一片没有遮罩的界面，照常扫到按钮 id，于是报通过 —— 而它本该抓的缺陷
+// （遮罩抢走 HoveredId）正是在「开着」时才发生的。
+[[nodiscard]] bool HubDialogOpen();
 
 } // namespace shine::pages

@@ -1,6 +1,7 @@
 #include "ui/imgui/kit/Overlays.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace shine::kit {
 
@@ -68,11 +69,39 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
 // --------------------------------------------------------------- ModalFrame
 ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
                           std::string_view icon, float width, float height,
-                          int footerButtons, std::string_view id) {
-    // 遮罩 + 面板：与 Modal() 同一套（scrim / r-lg14 / line-normal / shadow-2）。
-    // ⚠️ 遮罩**注册命中**（点它 = 关闭），这是 Modal 的既定行为；页面层旧的
-    //    私有副本只画了遮罩不注册，于是「点外面关不掉」—— 那不是设计。
-    Scrim(draw, screen, std::string(id) + "#scrim");
+                          int footerButtons) {
+    // 遮罩：**只画，不注册命中**。
+    //
+    // ⚠️ 这里绝不能用 `kit::Scrim`（它是 HitTest，会注册一个全屏 InvisibleButton）。
+    //    ImGui 同窗口内先注册者独占 HoveredId（imgui.cpp:5161）⇒ 遮罩先注册，
+    //    模态里**每一个**按钮（同一帧、位置落在遮罩内）就永远 hovered=false /
+    //    clicked=false —— 而遮罩和按钮的**外观都画得好好的**，编译过、截图正常、
+    //    manifest 记 saved，只有按钮按不动。
+    //    项目中心那三个对话框原来用页面层私有外壳，遮罩恰好不注册，所以它们的
+    //    按钮一直是好的；接到本函数时若顺手用 Scrim，就把这个「好」弄坏了。
+    //
+    //    「点遮罩关闭」由调用方**手算**：拿到返回的 frame，判断点击是否落在
+    //    面板之外。这样既不抢 HoveredId，也避开了 `ImGui::IsMouseHoveringRect`
+    //    （在**本工程**会 0xC0000005，见 refactor/PROGRESS.md 的记录）。
+    // 遮罩：**只画，不注册命中**。
+    //
+    // ⚠️ 这里绝不能用 `kit::Scrim`（它是 HitTest，会注册一个全屏 InvisibleButton）。
+    //    注册全屏热区会与面板内每一个控件的热区**重叠**，而 ImGui 同窗口内
+    //    先注册者独占 HoveredId（imgui.cpp:5161）—— 于是**谁先注册谁活**：
+    //      · 外壳先画、按钮后画的浮层（报告模态：ModalFrameRect 在前，
+    //        「导出 / ×」按钮在后）⇒ 遮罩抢走 HoveredId，按钮全部按不动；
+    //      · 对话框最后画的（项目中心：卡片与工具条在前，ModalFrameRect 在后）
+    //        ⇒ 遮罩自己拿不到 HoveredId，按钮仍然可点，但**重叠是真的**。
+    //    两种都错，且「哪种」取决于绘制顺序 —— 靠读代码判断顺序极易搞反
+    //    （我第一版就以为项目中心也会中招，结果它不会）。
+    //
+    //    正确做法只有一条：**遮罩不参与命中**。「点外面关闭」由调用方拿返回的
+    //    frame **手算**点击是否落在面板外 —— 既不抢 HoveredId，也避开了本工程
+    //    会 0xC0000005 的 `ImGui::IsMouseHoveringRect`。
+    //
+    //    判据：`kit::DuplicateHitCount`（进 overall）。把这一行换成 Scrim 实测
+    //    duplicate-hits 从 0 变 6232 —— 这条兜底就是为它准备的。
+    draw->AddRectFilled(screen.min, screen.max, ColorScrim());
     const float w = width > 0.0f ? width : std::min(560.0f, screen.width() - 48.0f);
     const float h = height > 0.0f ? height : std::min(640.0f, screen.height() - 64.0f);
     const Rect frame = RectAt(screen.center().x - w * 0.5f, screen.center().y - h * 0.5f, w, h);

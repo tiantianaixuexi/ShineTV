@@ -183,9 +183,17 @@ public:
     // 进项目中心时整个外壳让位，Esc 或再点一次退出。
     void ToggleProjectHub();
     [[nodiscard]] bool projectHubOpen() const { return hubOpen_; }
+    // 项目中心里三个对话框有没有开着。转发给页面层的读数（WorkspaceB 持有
+    // HubState，外壳不持有）—— 与 projectHubOpen 配套：一个是「中心开着」，
+    // 一个是「中心里的对话框开着」。
+    [[nodiscard]] bool hubDialogOpen() const { return hubDialogOpen_; }
     // 取证用：直接开关项目中心。快捷键判据里 Ctrl+N / Ctrl+O 会打开它，
     // 跑完必须复位，否则后续取证都在全屏的项目中心里跑。
     void SetHubOpen(bool open) { hubOpen_ = open; }
+    // 页面层每帧写入的「中心里对话框开着」读数。存一份而不是每次转发，
+    // 是为了探针能在**两次 PumpFrames 之间**读到它（转发会在没进
+    // DrawProjectHubScreen 的帧上读到上一帧的残留值）。
+    bool hubDialogOpen_ = false;
 
     // 打开/新建项目后登记工程根：顶栏胶囊、总控页、后续各工作区都从这里取。
     // root 为空表示「未打开项目」——总控页会显示真实空态，不编数字。

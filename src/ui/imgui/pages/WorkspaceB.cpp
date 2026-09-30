@@ -2526,6 +2526,10 @@ struct HubState {
     std::string idea;
     bool openDlg = false;
     bool confirm = false;
+    // 「点面板外关闭」这一下点击**是否算数**。只在本帧之前对话框就已经开着时
+    // 才为真 —— 见 DrawProjectHub 里的说明（不加这道闸门，弹窗会被打开它的那
+    // 一下点击立刻关掉）。
+    bool dismissArmed = false;
     std::string confirmTitle;
     std::string confirmBody;
     std::string confirmOk = "确定";
@@ -2533,6 +2537,19 @@ struct HubState {
     std::string status;
     bool statusError = false;
 };
+
+namespace {
+// 三个对话框（向导 / 打开 / 确认）**有没有开着**的读数。
+//
+// ⚠️ 这个变量在一个**很长的**匿名 ns 里（HubCard / HubState 那一整段，到
+//    DrawProjectHub 之前才关），所以 `HubDialogOpen()` 的**定义不能**写在它
+//    旁边 —— 那样它也是内部链接，Shell.cpp 调它会得到
+//    `undefined reference`，而**编译那一轮是过的**（只报链接错），很容易被
+//    当成别的问题。定义放在文件末尾（`} // namespace` 之后）。
+//
+// 理由（为什么需要这个读数）见 WorkspacePages.h 的声明处。
+bool g_hubDialogOpen = false;
+} // namespace
 
 HubState& Hub() {
     static HubState state;
@@ -2768,10 +2785,21 @@ struct ModalBox {
 //
 // 标题**由 kit 画**（这是 ModalFrameRect 的主路径）；页面层只在头部右侧补
 // 自己的东西（向导那一步的 Steps 条），那才是页面层该管的部分。
+// `dismiss` 出参：点遮罩（面板外）时置 true，由调用方关掉自己的状态。
+// 为什么是出参而不是在函数里直接改 hub：三个对话框关的是**三个不同的字段**
+// （wizard / openDlg / confirm），让外壳去认它们等于把状态所有权搅在一起。
 ModalBox DrawModal(ImDrawList* draw, Rect area, std::string_view title, std::string_view icon,
-                   float width, float height, int footerButtons = 2) {
-    const kit::ModalFrame mf = kit::ModalFrameRect(draw, area, title, icon, width, height,
-                                                   footerButtons, "hub-modal");
+                   float width, float height, bool* dismiss, int footerButtons = 2) {
+    const kit::ModalFrame mf =
+        kit::ModalFrameRect(draw, area, title, icon, width, height, footerButtons);
+    // 点遮罩关闭：遮罩**不注册命中**（见 Overlays.cpp 的说明 —— 注册会抢
+    // HoveredId，模态里每个按钮就永远点不动），所以在这里手算「点击是否落在
+    // 面板外」。这与报告模态同一做法，两处共用的是同一份 kit 外壳。
+    // ⚠️ 同样不能用 ImGui::IsMouseHoveringRect —— 在**本工程**它会 0xC0000005。
+    if (dismiss != nullptr && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !mf.frame.contains(ImGui::GetIO().MousePos)) {
+        *dismiss = true;
+    }
     ModalBox box;
     box.frame = mf.frame;
     box.header = mf.header;
@@ -2941,7 +2969,14 @@ bool DrawHubCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect boun
 // 新建项目向导：模板 / 命名 / 创意 / 确认。数据源 = AllTemplates / PreviewTree / Create。
 void DrawHubWizard(HubState& hub, Rect area, ImDrawList* draw) {
     static const std::vector<std::string> stepNames{"模板", "命名", "创意", "确认"};
-    const ModalBox box = DrawModal(draw, area, "新建项目", "sparkles", 600.0f, 420.0f);
+    bool dismissWizard = false;
+    // dismissArmed 为假（= 本帧才被打开）时传 nullptr：这一下打开它的点击
+    // 不能顺手把它关掉。理由见 DrawProjectHub 里 dismissArmed 的说明。
+    const ModalBox box = DrawModal(draw, area, "新建项目", "sparkles", 600.0f, 420.0f,
+                                   hub.dismissArmed ? &dismissWizard : nullptr);
+    if (dismissWizard) {
+        hub.wizard = false;
+    }
     const float stepsW = StepsWidth(stepNames);
     Steps(draw, RectAt(box.header.max.x - 20.0f - stepsW, box.header.center().y - 10.0f, stepsW, 20.0f),
           stepNames, hub.step);
@@ -3145,7 +3180,12 @@ void DrawHubWizard(HubState& hub, Rect area, ImDrawList* draw) {
 
 // 「打开…」对话框：列最近项目，点了就 Open。
 void DrawHubOpenDialog(HubState& hub, Rect area, ImDrawList* draw) {
-    const ModalBox box = DrawModal(draw, area, "打开项目", "folder", 520.0f, 440.0f);
+    bool dismissOpen = false;
+    const ModalBox box = DrawModal(draw, area, "打开项目", "folder", 520.0f, 440.0f,
+                                   hub.dismissArmed ? &dismissOpen : nullptr);
+    if (dismissOpen) {
+        hub.openDlg = false;
+    }
     // 右上角标出列表的真实来源（索引文件所在目录）
     const std::string indexDir = util::PathToUtf8(project::DefaultIndexFile().parent_path());
     const float indexW = LabelWidth(FontAt(11.5f), 11.5f, indexDir.c_str());
@@ -3252,6 +3292,20 @@ void DrawHubOpenDialog(HubState& hub, Rect area, ImDrawList* draw) {
 // 全屏，不套外壳。居中列 max-w 1080，底两层径向渐变 + 240px 高 ArtInk 带。
 void DrawProjectHub(Rect area, ImDrawList* draw) {
     HubState& hub = Hub();
+    // 帧首快照：这一帧**开始时**有没有对话框开着。两个用途。
+    //
+    // ⚠️ `dismissArmed` 是必须的，不是保险：点工具条上「打开项目」的那一下点击，
+    //    在**同一帧**里 `hub.openDlg` 才被置 true、对话框才被画出来，而
+    //    `ImGui::IsMouseClicked()` 在那一帧**仍然是真**、鼠标仍然停在工具条上
+    //    （对话框矩形之外）⇒ 「点面板外关闭」当场把刚开的对话框关掉。
+    //    症状是「点『打开项目』→ 闪一下就没了」：编译过、截图正常、打开之前
+    //    一切正常，**只有真的点一下才看得见**。是浮层按钮判据抓到的。
+    //
+    // 读数也用这个帧首值：它回答的是「这一帧开始时对话框开着吗」，而不是
+    // 「这一帧处理完还开着吗」—— 后者会把「刚开又关」报成「一直开着」。
+    const bool wasOpen = hub.wizard || hub.openDlg || hub.confirm;
+    g_hubDialogOpen = wasOpen;
+    hub.dismissArmed = wasOpen;
     if (!hub.loaded) {
         if (util::Trim(hub.dir).empty()) {
             // 位置默认给当前工作目录：ValidateSpec 要求父目录真实存在，
@@ -3431,7 +3485,12 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
         }
     }
     if (hub.confirm) {
-        const ModalBox box = DrawModal(draw, area, hub.confirmTitle, "info", 460.0f, 210.0f);
+        bool dismissConfirm = false;
+        const ModalBox box = DrawModal(draw, area, hub.confirmTitle, "info", 460.0f, 210.0f,
+                                       hub.dismissArmed ? &dismissConfirm : nullptr);
+        if (dismissConfirm) {
+            hub.confirm = false;
+        }
         DrawTextClipped(draw, FontAt(12.5f), 12.5f,
                         ImVec2(box.body.min.x + 18.0f, box.body.min.y + 18.0f),
                         box.body.width() - 36.0f, ColorTextSecondary(), hub.confirmBody, true);
@@ -3457,5 +3516,7 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
         DrawHubOpenDialog(hub, area, draw);
     }
 }
+
+bool HubDialogOpen() { return g_hubDialogOpen; }
 
 } // namespace shine::pages
