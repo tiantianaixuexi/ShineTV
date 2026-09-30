@@ -31,17 +31,25 @@ namespace shine::imguiverify {
 // 两边各写一个文件的话，脚本只读到一个，判据就只覆盖一半。
 inline constexpr const char* kManifestName = "shots-manifest.txt";
 
-// 后备缓冲是 BGRA，PNG 要 RGBA —— 这里做通道交换。
+// 把一帧像素编码成 PNG。**输入是 RGBA8**（左上角原点），**不做通道交换**。
+//
+// ⚠️ 这两个形参原先叫 `bgraPixels`，注释还写着「后备缓冲是 BGRA，PNG 要 RGBA ——
+//    这里做通道交换」。**那两句话都是错的**，而 `.cpp` 里的注释一直是对的：
+//    「输入已经是 RGBA8，直接编码 —— 不要再交换通道。这层交换在 D3D11 时代写死过一次，
+//     于是每张证据图的 R 和 B 都对调……差点被当成主题映射错了去改主题。」
+//    名字没跟着改，于是下一个人照着名字写代码就会踩 —— 实测踩过：
+//    `CountColorPixels` 按 BGRA 读偏移 2，恒数到 0，而 0 恰好也是「图没上屏」的读数，
+//    一次就伪装成了产品缺陷。
 // 返回 false = 像素尺寸为 0 或编码失败。
-bool SavePng(const std::vector<std::uint8_t>& bgraPixels, std::uint32_t width,
+bool SavePng(const std::vector<std::uint8_t>& rgbaPixels, std::uint32_t width,
              std::uint32_t height, const std::filesystem::path& path);
 
 // 写一行 manifest（追加）。返回写入的字节数。
 void WriteManifest(const std::filesystem::path& manifest, std::string_view line);
 
 // 抓一张图的完整动作：抓像素 → 存盘 → 写 manifest 行。
-// 返回 true = saved。
-bool GrabAndSave(const std::vector<std::uint8_t>& bgraPixels, std::uint32_t width,
+// 返回 true = saved。像素序同上：**RGBA8**。
+bool GrabAndSave(const std::vector<std::uint8_t>& rgbaPixels, std::uint32_t width,
                  std::uint32_t height, const std::filesystem::path& dir, std::string_view name);
 
 } // namespace shine::imguiverify

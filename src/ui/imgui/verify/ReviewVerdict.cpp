@@ -101,11 +101,20 @@ void FinishVerdict(Session& session) {
                           kReportWaitFrameCap, kit::RequestedImageCount(),
                           kit::PendingImageCount());
     }
+    // sheetImagesRecovered 是「纹理被淘汰后会自己回来」那条约束的判据。它挡的正是
+    // 最难自查的一类缺陷：只在 `State==NotLoaded` 时才请求（我第一版就是这样），
+    // 于是纹理被 LRU 淘汰后**永远不再出现** —— 不报错、不崩、静息截图照样 saved。
+    if (!session.sheetImagesRecovered) {
+        shine::log::Error("review: 清空 GPU 纹理缓存之后真设定图**没有回来** —— "
+                          "`kit/Image.h` 的约束 1（`RequestImage` 每帧都要调）被写坏了："
+                          "「图片闪过一次就没了」，而不报任何错。查 RequestImage 有没有"
+                          "被写成「只在 State==NotLoaded 时请求」，别改判据");
+    }
     const bool pass = result.failed == 0 && !result.scrollFailed && identicalPairs == 0 &&
                       drivenDuplicates == 0 && session.reportScanConverged &&
                       session.bookSnapshotConverged && session.assetSnapshotConverged &&
-                      session.artifactsConverged && session.sheetImagesSettled && inverted == 0 &&
-                      duplicateHits == 0 &&
+                      session.artifactsConverged && session.sheetImagesSettled &&
+                      session.sheetImagesRecovered && inverted == 0 && duplicateHits == 0 &&
                       session.hoverProbesPassed == session.hoverProbeTotal &&
                       session.shortcutsPassed == session.shortcutTotal &&
                       session.overlayClicksPassed == session.overlayClickTotal;

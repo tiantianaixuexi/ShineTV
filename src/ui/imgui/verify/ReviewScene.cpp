@@ -1,7 +1,8 @@
 #include "ui/imgui/verify/ReviewScene.h"
 
 #include "core/Log.h"
-#include "ui/imgui/kit/Image.h" // PendingImageCount：等真设定图异步落地
+#include "gpu/GpuTextureCache.h" // TextureCache().Clear()：淘汰试验（验约束 1 的自愈）
+#include "ui/imgui/kit/Image.h"  // PendingImageCount：等真设定图异步落地
 #include "ui/imgui/kit/Scroll.h"
 #include "ui/imgui/verify/Capture.h"
 #include "ui/imgui/verify/ReviewFixture.h"
@@ -319,8 +320,10 @@ void RunControlledStates(Session& session) {
         session.GrabDriven("assets-grid-filtered", kWsAssets, base);
         shell.SetKindFilter({});
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
-        // 这一帧起，网格里带设定图的那些格子会**第一次**发出图片请求。
-        session.GrabDriven("assets-grid-all", kWsAssets, base);
+        // 这一帧起，网格里带设定图的那些格子会**第一次**发出图片请求。抓图时顺便数出
+        // 「真图在屏上」的像素数 —— 它既是这一族的证据，也是下面淘汰试验的对照。
+        const int sheetPixels = session.GrabCountColor("assets-grid-all", kWsAssets, base,
+                                                       kSheetColorA, /*registerDriven=*/true);
         // ---- 真设定图链的判据（第三段异步链，前两段是报告扫描与 novel.db）----
         //
         // `GrabDriven` → `Shoot` 内部**已经把异步上屏等落地了**（那是唯一入口，
@@ -338,7 +341,34 @@ void RunControlledStates(Session& session) {
         WriteManifest(manifest, std::string("sheet-images=") +
                                     (session.sheetImagesSettled ? "settled" : "TIMEOUT") +
                                     " requested=" + std::to_string(imgRequested) +
-                                    " pending=" + std::to_string(imgPending));
+                                    " pending=" + std::to_string(imgPending) +
+                                    " pixels=" + std::to_string(sheetPixels));
+
+        // ---- 「纹理被淘汰后会自己回来」这条约束的判据（`kit/Image.h` 约束 1）----
+        //
+        // 头文件第 1 条要求**每帧无条件 `Request`**，理由就写在约束里：「被 LRU 淘汰
+        // 或设备丢失后会重新上屏。只调一次的话，纹理一旦被淘汰这张图就**永远不再出现**
+        // （状态还是 Ready，但 `Texture()` 返回空句柄）」。
+        //
+        // 这条必须自己有判据 —— 它一旦被写坏，症状是**「图闪过一次就没了」**：
+        // 不报错、不崩、静息截图上也只在淘汰之后才看得出来。
+        //
+        // 这里**直接在 GPU 侧清空纹理缓存**（等价于内存压力下的 LRU 淘汰），
+        // 而**不动服务侧的条目状态** —— 那正是「`State == Ready` 而 `Texture()` 空句柄」
+        // 这个形态。（服务侧的 `OnDeviceLost` 会把 `Ready` 改回 `NotLoaded`，那条路
+        // 靠 `State` 判断也能自愈，所以**不能**拿它来测这条约束。）
+        // 下一帧 `RequestImage` 无条件 `Request` ⇒ 从 CPU 缩略图缓存重传 ⇒ 图必须回来。
+        //
+        // 判据取「淘汰前后**相等**」而不是含糊的「大于 0」：同一轮、同一个页面状态，
+        // 差一个像素都说明这条链没有完整恢复。
+        gpu::TextureCache().Clear();
+        const int recoveredPixels = session.GrabCountColor(
+            "assets-grid-after-evict", kWsAssets, base, kSheetColorA, /*registerDriven=*/false);
+        session.sheetImagesRecovered = (sheetPixels > 0 && recoveredPixels == sheetPixels);
+        WriteManifest(manifest, std::string("sheet-recover=") +
+                                    (session.sheetImagesRecovered ? "ok" : "LOST") + " pixels=" +
+                                    std::to_string(recoveredPixels) + " before=" +
+                                    std::to_string(sheetPixels));
         shell.SetAssetsOverview(false);
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 

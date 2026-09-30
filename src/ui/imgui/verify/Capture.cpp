@@ -53,13 +53,13 @@ void WriteManifest(const std::filesystem::path& manifest, std::string_view line)
     out << line << '\n';
 }
 
-bool GrabAndSave(const std::vector<std::uint8_t>& bgraPixels, std::uint32_t width,
+bool GrabAndSave(const std::vector<std::uint8_t>& rgbaPixels, std::uint32_t width,
                  std::uint32_t height, const std::filesystem::path& dir, std::string_view name) {
     const std::filesystem::path file = dir / (std::string(name) + ".png");
     // ⚠️ 与 Review.cpp 的 kManifestName 共用同一个名字：这里是唯一写每张图
     //    结果的地方，名字若与 Review 里的不一致，两边会各写一个文件。
     const std::filesystem::path manifest = dir / kManifestName;
-    if (!SavePng(bgraPixels, width, height, file)) {
+    if (!SavePng(rgbaPixels, width, height, file)) {
         WriteManifest(manifest, std::string(name) + " 0 FAILED");
         return false;
     }

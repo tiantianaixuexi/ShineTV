@@ -29,10 +29,24 @@ constexpr int kSettleFrames = 3;
 // 像素内容的 FNV-1a 64。详见 ReviewVerdict.cpp 里两条判据对它的用法。
 std::uint64_t HashPixels(const std::vector<std::uint8_t>& pixels);
 
+// 数出某个**纯色**在缓冲区里出现了多少像素。`rgb` 是 `0xRRGGBB`。
+//
+// ⚠️ 缓冲是 **RGBA**（`host.CaptureBackBuffer()` 的原样；`Capture.cpp` 里那句
+//    「输入已经是 RGBA8，直接编码 —— 不要再交换通道」是权威），`R` 在偏移 0。
+//    这里第一版按 `Capture.h` 的形参名当成 BGRA、读偏移 2 ⇒ **恒数到 0**，
+//    而 0 恰好也是「图没上屏」的读数 —— 它伪装成了产品缺陷，白查了一轮。
+//    那个误导人的形参名已订正（`bgraPixels` → `rgbaPixels`）。
+//
+// 这个函数存在的原因：这套截图**跨轮不可复现**（同一二进制连跑两轮，80 张里 48 张字节不同），
+// 所以「真图上屏了没有」「纹理被淘汰后有没有自己回来」这类问题只能靠数色值来判，
+// 不能靠比两张图。
+std::uint32_t CountColorPixels(const std::vector<std::uint8_t>& pixels, std::uint32_t rgb);
+
 // 一张图的完整动作：显式设主题 + 显式设工作区 → 推进 kSettleFrames 帧 →
 // 读后备缓冲 → 存 PNG。hashOut 回传像素内容哈希（可传 nullptr）。
+// pixelsOut 回传同一块缓冲的副本，供 `CountColorPixels` 用（可传 nullptr）。
 bool Shoot(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::path& dir,
            std::string_view name, int workspace, shine::theme::ThemeId theme,
-           std::uint64_t* hashOut);
+           std::uint64_t* hashOut, std::vector<std::uint8_t>* pixelsOut = nullptr);
 
 } // namespace shine::imguiverify::detail

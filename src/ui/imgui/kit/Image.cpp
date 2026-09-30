@@ -24,9 +24,12 @@ constexpr std::uint32_t kTargetPx = 512;
 // ⚠️ 号段：见头文件约束 3。
 constexpr std::uint64_t kUiImageBit = 1ull << 62;
 
-// 已请求过的路径（key → UTF-8 路径）。**只用于诊断**（日志里能看出是哪个文件），
-// 不参与「要不要再调 Request」的判断 —— 那个判断只看服务侧的 State，
-// 否则 `Thumbs().Reset()`（图库换目录时会调）之后就再也不会重新请求了。
+// key → UTF-8 路径的登记表（谁请求过什么）。用途只有两个：
+//   · 诊断：日志/取证里能说出「这个 key 是哪个文件」；
+//   · 取证的计数：`PendingImageCount()` / `RequestedImageCount()` 靠它遍历。
+// ⚠️ 它**不参与**「要不要再调 `Request`」的判断 —— 现在是**每帧无条件调**（见
+//    `RequestImage` 里那段）。早先这里挂着一个「只在 State==NotLoaded 时请求」的
+//    gate，那是错的：它让被淘汰的纹理永远回不来。
 std::unordered_map<std::uint64_t, std::string>& RequestedPaths() {
     static std::unordered_map<std::uint64_t, std::string> paths;
     return paths;
@@ -53,14 +56,25 @@ int PendingImageCount() {
     int pending = 0;
     for (const auto& [key, path] : RequestedPaths()) {
         switch (gallery::Thumbs().State(key)) {
+        case gallery::LoadState::Ready:
+            // ⚠️ `Ready` **不等于**「画得出来」：`Texture()` 一律走 GPU 的 LRU 缓存，
+            //    纹理被淘汰 / 设备丢失之后它返回**空句柄**，而服务侧的 State 仍是 Ready。
+            //    那一刻界面上画的是占位画 ⇒ 它也是「还没落地」。
+            //
+            //    这条判据早先漏了它（`Ready` 无条件算落地），于是「纹理没了但状态是 Ready」
+            //    会被判成 settled，而截图上什么都没有 —— 正是本轮那个
+            //    「只在 State==NotLoaded 时才 Request」缺陷的形态：判据说绿、图上是空的。
+            if (!gallery::Thumbs().Texture(key)) {
+                ++pending;
+            }
+            break;
+        case gallery::LoadState::Failed:
+            break; // 解不出来也是落地（诚实空态），不能让它把等待一直拖到超时
         case gallery::LoadState::NotLoaded:
         case gallery::LoadState::Queued:
         case gallery::LoadState::Loading:
             ++pending;
             break;
-        case gallery::LoadState::Ready:
-        case gallery::LoadState::Failed:
-            break; // 落地了（成功或失败都算 —— 见头文件）
         }
     }
     return pending;
@@ -75,17 +89,28 @@ ImageSlot RequestImage(const std::filesystem::path& path) {
     slot.key = ImageKey(path);
 
     using gallery::LoadState;
-    // **只在服务侧不认识它时才请求**。这一条同时解决两件事：
-    //   · 首次请求（State == NotLoaded）；
-    //   · `Thumbs().Reset()` 之后（图库换目录 / 换尺寸档）—— 服务侧把它忘了，
-    //     State 又回到 NotLoaded，于是这里会**自动重新请求**，界面自愈。
-    // 反过来（每帧无条件 Request）会撞上约束 1 里说的那个陷阱吗？不会 ——
-    // Request 是幂等的。但这里仍按 State 判，因为它顺带给出了"服务侧知道不知道"，
-    // 比一个本地 bool 更抗 Reset。
-    if (gallery::Thumbs().State(slot.key) == LoadState::NotLoaded) {
-        RequestedPaths().try_emplace(slot.key, util::PathToUtf8(path));
-        gallery::Thumbs().Request(slot.key, path, kTargetPx, gallery::ThumbPriority::Normal);
-    }
+    // 登记 key → 路径（诊断与取证计数用；只登记一次，不参与任何判断）。
+    RequestedPaths().try_emplace(slot.key, util::PathToUtf8(path));
+
+    // ⚠️⚠️ **每帧无条件 `Request`** —— 这是头文件里第 1 条约束，不是可选优化。
+    //
+    // 早先这里挂着一个 gate：`if (State == NotLoaded) Request(...)`，理由写的是
+    // 「顺带给出服务侧知道不知道，比一个本地 bool 更抗 Reset」。**那段理由是错的**，
+    // 而且它与紧邻的注释自相矛盾 —— 下面查纹理那段写着「下一帧的 Request 会把 GPU 侧
+    // 重新补上（这就是约束 1 要每帧调的原因）」，可这个 gate 让下一帧**根本不会调**：
+    //
+    //   · 纹理被 GPU LRU 淘汰（或设备丢失）后，服务侧的 State 仍是 `Ready`；
+    //   · gate 于是永远不请求 ⇒ GPU 侧永远补不回来 ⇒ `Texture()` 一直空句柄；
+    //   · 界面表现为**「图闪过一次就没了」**，而且不报任何错、判据也照样绿
+    //     （因为「Ready 算落地」那半边判据当时也缺纹理检查，已一并修）。
+    //
+    // 无条件调是**幂等且廉价**的，`Request` 的 `Ready` 分支就是为它写的
+    // （ThumbnailService.cpp）：GPU 侧还在 → 一次哈希查找直接返回；不在 → 从 CPU
+    // 缩略图缓存重传；CPU 也没有 → 重新解码。还白拿一个好处：**命中会刷新 GPU LRU
+    // 的 tick**，于是「正在上屏的图」不会被「早已滚走的图」挤掉。
+    // `Thumbs().Reset()`（图库换目录 / 换尺寸档）之后也照样自愈 —— 服务侧忘了，
+    // 下一次调用就当首次请求处理。
+    gallery::Thumbs().Request(slot.key, path, kTargetPx, gallery::ThumbPriority::Normal);
 
     switch (gallery::Thumbs().State(slot.key)) {
     case LoadState::Failed:

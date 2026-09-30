@@ -92,9 +92,13 @@ bool SeedReportFixture(const std::filesystem::path& root) {
         std::uint8_t g;
         std::uint8_t b;
     };
+    // 颜色从 ReviewFixture.h 的常量来（取真的像素判据按同一份值数）——
+    // 这里再写一遍字面量就多了一个「两处要对上」的同步点。
     const SheetSeed sheets[] = {
-        {"assets/linwan_base.png", 0xFF, 0x2D, 0x55},
-        {"assets/zhouyi_base.png", 0x7C, 0xFF, 0x00},
+        {"assets/linwan_base.png", static_cast<std::uint8_t>(kSheetColorA >> 16),
+         static_cast<std::uint8_t>(kSheetColorA >> 8), static_cast<std::uint8_t>(kSheetColorA)},
+        {"assets/zhouyi_base.png", static_cast<std::uint8_t>(kSheetColorB >> 16),
+         static_cast<std::uint8_t>(kSheetColorB >> 8), static_cast<std::uint8_t>(kSheetColorB)},
     };
     for (const SheetSeed& sheet : sheets) {
         constexpr std::uint32_t kSide = 64;

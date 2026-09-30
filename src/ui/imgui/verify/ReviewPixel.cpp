@@ -24,13 +24,30 @@ std::uint64_t HashPixels(const std::vector<std::uint8_t>& pixels) {
     return h;
 }
 
+std::uint32_t CountColorPixels(const std::vector<std::uint8_t>& pixels, std::uint32_t rgb) {
+    // **RGBA** 序，R 在偏移 0。判据是 `Capture.cpp` 里那句「输入已经是 RGBA8，直接编码
+    // —— 不要再交换通道」，而不是 `Capture.h` 的形参名（那个名字是 D3D11 时代的遗留，
+    // 已一并订正）。第一版按名字当成 BGRA、读偏移 2 ⇒ 恒数到 0，
+    // 而 0 恰好也是「图没上屏」的读数 —— 它伪装成了产品缺陷。
+    const std::uint8_t wantR = static_cast<std::uint8_t>((rgb >> 16) & 0xFFu);
+    const std::uint8_t wantG = static_cast<std::uint8_t>((rgb >> 8) & 0xFFu);
+    const std::uint8_t wantB = static_cast<std::uint8_t>(rgb & 0xFFu);
+    std::uint32_t count = 0;
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
+        if (pixels[i] == wantR && pixels[i + 1] == wantG && pixels[i + 2] == wantB) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 // 一张图的完整动作：**显式**设主题 + 显式设工作区 → 推进 N 帧 → 抓后备缓冲 → 存 PNG。
 // 纪律：前置动作写全，不依赖"默认状态恰好是我要的"（phases.md P6 第 3 条）。
 // 返回 false = 没抓到有效像素或编码失败，计入 manifest 的 FAILED。
 // 第三个出参回传像素内容哈希，供「主题真的切了没有」判据用。
 bool Shoot(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::path& dir,
            std::string_view name, int workspace, shine::theme::ThemeId theme,
-           std::uint64_t* hashOut) {
+           std::uint64_t* hashOut, std::vector<std::uint8_t>* pixelsOut) {
     shell.SetTheme(theme);
     shell.SetWorkspace(workspace);
     host.PumpFrames(kSettleFrames, [&shell](float dt) { shell.DrawFrame(dt); });
@@ -60,6 +77,9 @@ bool Shoot(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::pat
     const auto width = static_cast<std::uint32_t>(client.right);
     const auto height = static_cast<std::uint32_t>(client.bottom);
     const std::vector<std::uint8_t> pixels = host.CaptureBackBuffer();
+    if (pixelsOut != nullptr) {
+        *pixelsOut = pixels; // 供 CountColorPixels（数色值，见头文件）
+    }
 
     if (GrabAndSave(pixels, width, height, dir, name)) {
         if (hashOut != nullptr) {

@@ -103,6 +103,16 @@ powershell -File out\_run_review.ps1 -OutDir "$PWD\build\shots" -Theme deepspace
 **数某个具体颜色的像素**（`out\_colorcount.ps1`）是这一族唯一可靠的取证手段：截图跨轮不可复现
 （80 张里 48 张会变），而**数某个色值免疫**。真设定图在 fixture 里是两张纯色 PNG
 （`#FF2D55` / `#7CFF00`，刻意选在五套主题调色板之外），上没上屏一数便知。
+⚠️ 缓冲是 **RGBA**（`R` 在偏移 0）—— 权威是 `Capture.cpp` 里那句「已经是 RGBA8，不要再交换通道」，
+**不是**形参名（它曾叫 `bgraPixels`，已订正）。按名字当成 BGRA 会恒数到 0，而 0 恰好也是
+「图没上屏」的读数 ⇒ 一次就伪装成产品缺陷。
+
+**真图这一族有两条判据都进 `overall`**（都在 `ReviewScene.cpp` 写、`ReviewVerdict.cpp` 判）：
+
+| 判据 | 成立条件 | 它挡的是 |
+|---|---|---|
+| `sheet-images=settled` | `requested>0 && pending==0` | 抓图太早（图还在 worker 手里）**与**「调用点压根没请求过」—— 后者单独看 `pending==0` 时与前者同形 |
+| `sheet-recover=ok` | 清空 GPU 纹理缓存后真图像素数**与清空前相等** | `kit/Image.h` 约束 1 被写坏（只在 `State==NotLoaded` 时请求）⇒ **「图闪过一次就没了」**，不报错、静息截图照样 saved |
 
 ## 门禁与扫描器
 

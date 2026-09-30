@@ -132,6 +132,26 @@ overall=PASS          （manifest 的 overall ↔ 退出码一致：PASS↔0）
 |---|---|---|
 | 1 | **`gallery::RegisterBuiltinDecoders()` 全仓无人调用** | 它自己的头文件（`media/ImageLoader.h:33`）写着「启动时调用一次（幂等）」，而应用从来没调。于是解码器登记表是空的，`ImageLoader::Load` 对**每一个文件**都返回 `DecodeError::Unsupported` —— 界面上是「不支持的图片格式」。**那句错话误导性极强：不是某个格式不支持，是整条图片链压根没接通。** 没被发现的原因：设计稿里的「图」全是 `kit::Art` 程序化占位（`kit/Views.h:18-19` 明说「不需要任何图片资源」），界面侧从来没有请求过任何文件 ⇒ 这张空表谁也没撞上。已修：`AppEntry.cpp` 在 `gallery::Init()` 之前注册 |
 | 2 | **fixture 里的 `output/*.png` 是文本桩**（后缀 `.png`、内容 `"not-a-real-png-fixture"`），而 `visual_assets.sheet_rel_path` 指向的两张图**根本不存在** | 于是「界面能不能显示真实设定图」这条链在取证里**从来没有输入** —— 它报红还是报绿，都跟链子通没通无关。已修：fixture 用工程自带的 `paint::EncodePng` 造两张**纯色真 PNG**（`#FF2D55` / `#7CFF00`，刻意选在五套主题调色板之外），取证的像素计数可直接判 |
+| 3 | **`RequestImage` 里写成了「只在 `State == NotLoaded` 时才 `Request`」** | 头文件第 1 条约束**明写着要每帧无条件调**，并写清了违反它的后果（「纹理一旦被淘汰这张图就**永远不再出现**」）；`.cpp` 里紧邻的另一段注释也写着「下一帧的 `Request` 会把 GPU 侧重新补上」—— 而那个 gate 让下一帧**根本不会调**。**头文件、相邻注释、代码三方互相矛盾，而我信了那个 gate 自己编的理由**（「比一个本地 bool 更抗 Reset」）。后果：纹理被 GPU LRU 淘汰 / 设备丢失后，`State` 仍是 `Ready` 而 `Texture()` 空句柄 ⇒ 界面**「图闪过一次就没了」**，不报错、不崩、静息截图照样 saved。已修：去掉 gate，每帧无条件 `Request`（幂等：GPU 还在就一次哈希查找；不在就从 CPU 缩略图缓存重传；再不在才重新解码。还白拿「命中刷新 GPU LRU」） |
+
+**缺陷 3 的判据与反证**（`sheet-recover`，进 `overall`）：
+
+```
+修好之后：  sheet-images=settled requested=2 pending=0 pixels=33848
+            sheet-recover=ok pixels=33848 before=33848          overall=PASS
+把 gate 装回去（反证）：sheet-recover=LOST pixels=0 before=33848  overall=FAIL
+```
+
+判据的做法是**直接在 GPU 侧清空纹理缓存**（等价于内存压力下的 LRU 淘汰），而**不动服务侧的
+条目状态** —— 那正是「`State == Ready` 而 `Texture()` 空句柄」的形态；然后数 fixture 那两张纯色
+图的像素数，取「**淘汰前后相等**」而不是含糊的「大于 0」。反证那组数字把缺陷形态说得很清楚：
+**图一开始在屏上（33848），擦掉纹理之后再也不回来（0）。**
+
+⚠️ 服务侧的 `OnDeviceLost()`（它会把 `Ready` 改回 `NotLoaded`）**不能**用来测这条约束 ——
+那条路径靠 `State` 判断也能自愈，测它等于测了个假。差别就在「动不动状态」。
+
+⚠️ 这一族只能用**像素计数**验，不能比两张图：截图跨轮不可复现（同一二进制连跑两轮，
+80 张里 48 张字节不同）。
 
 **接线后的效果与它自己的判据**（`assets-grid-all` 单张图，逐像素计数）：
 
@@ -162,6 +182,17 @@ manifest: sheet-images=settled requested=2 pending=0 after 2 frames
 
 ⚠️ **详情页原来是单列**：KV 铺满 640px，而左列那块「基线图」**整块没画** ——
 它是这一页最大的一张图。两列都要一起改（网格的列宽决定图的宽度）。
+
+#### 顺带订正一个**已经骗过人**的过期名字（`Capture.h`）
+
+`SavePng` / `GrabAndSave` 的形参叫 `bgraPixels`，注释写「后备缓冲是 BGRA，PNG 要 RGBA ——
+这里做通道交换」；而 `Capture.cpp` 里那句一直是对的：**「输入已经是 RGBA8，直接编码 ——
+不要再交换通道」**（并记着 D3D11 时代真交换过一次，每张证据图 R/B 对调、「偏暖发黄」，
+差点被当成主题映射错了去改主题）。名字没跟着改。
+
+后果是实测踩到的：`CountColorPixels` 按 BGRA 读偏移 2 ⇒ **恒数到 0**，
+而 0 恰好也是「图没上屏」的读数 ⇒ **一次就伪装成了产品缺陷**，白查一轮。
+已订正形参名与注释。**教训：形参名也是文档，改名要跟着改。**
 
 **仍未接的图片位点**（四处，几何都已就位、只差把路径接上）：
 分镜 `.tthumb`、出图结果面板、出片胶片格、查看器大图 / 联系表、总控「最近产物」缩略图。

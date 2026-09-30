@@ -123,6 +123,13 @@ struct Session {
     //    初值 false = 「这一段没跑到」，与其余几族同一条规矩。
     bool sheetImagesSettled = false;
 
+    // 「纹理被淘汰后会自己回来」有没有被验到（见 `kit/Image.h` 的第 1 条约束）。
+    //
+    // 同样**必须进 overall**：这条约束一旦被写坏，症状是「图闪过一次就没了」——
+    // 不报错、不崩、截图上也只在淘汰之后才看得出来。判据取「清空 GPU 纹理缓存之后
+    // 真图颜色还在不在」，读数来自**像素计数**（截图跨轮不可复现，不能比图）。
+    bool sheetImagesRecovered = false;
+
     // 浮层点击探针的结果。**必须与 hover / shortcuts 同级**：它的效果不在像素上，
     // 只打日志而 overall 仍 PASS 就是假绿（见 ReviewVerdict.cpp 的 overall 那行）。
     int overlayClicksPassed = 0;
@@ -144,6 +151,30 @@ struct Session {
     void GrabDriven(const std::string& name, int workspace, shine::theme::ThemeId theme) {
         drivenHashes.push_back(Grab(name, workspace, theme));
         drivenNames.push_back(name);
+    }
+
+    // 抓一张图并数出某个纯色有多少像素（`rgb` = 0xRRGGBB）。
+    //
+    // `registerDriven` 决定要不要把它登记进「受控图不许逐字节相同」那张表：
+    //   * **true** —— 这是一个本该与别的受控状态不同的独立状态（如 `assets-grid-all`）；
+    //   * **false** —— 这个探针拍的是**与前面某张相同的状态**（如淘汰试验那张，
+    //     它就是要和淘汰前一样）。登记进去等于给判据布置一个「两张图本来就该一样」的
+    //     陷阱，而截图本身不可复现 ⇒ 有时真会逐字节相同 ⇒ 间歇性 FAIL。
+    //     它要验的东西与「图与图之间是否不同」无关，用**像素计数**验。
+    int GrabCountColor(const std::string& name, int workspace, shine::theme::ThemeId theme,
+                       std::uint32_t rgb, bool registerDriven) {
+        std::vector<std::uint8_t> pixels;
+        std::uint64_t hash = 0;
+        if (Shoot(host, shell, outputDir, name, workspace, theme, &hash, &pixels)) {
+            result.captured++;
+        } else {
+            result.failed++;
+        }
+        if (registerDriven) {
+            drivenHashes.push_back(hash);
+            drivenNames.push_back(name);
+        }
+        return static_cast<int>(CountColorPixels(pixels, rgb));
     }
 };
 
