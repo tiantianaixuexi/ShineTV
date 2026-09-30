@@ -23,7 +23,8 @@ last_verified: 2026-09-30
 ## 目标
 
 `E:\c++\ShineTV` 的前端已是 **Dear ImGui（OpenGL 3.3 / WGL）**，
-它是 `webui/`（React + CSS 设计稿）的 **1:1 复刻**。当前任务 = 把复刻里**还不准的地方改准**。
+它是 `webui/`（React + CSS 设计稿）的 **1:1 复刻**。当前任务 = 把复刻里**还不准的地方改准**，
+以及把**设计稿里有、实现里还没有**的块补上。
 
 `webui/` **只做效果、不管功能** —— 功能以 `src/` 的 `shine_core` 为准。
 
@@ -34,7 +35,7 @@ last_verified: 2026-09-30
 | `AGENTS.md` | 协作规则、构建、门禁、地雷 —— **必读** |
 | `refactor/README.md` | 分层 + **文件地图：要改什么 → 改哪个文件** |
 | `refactor/design-spec.md` | 1:1 判据：几何/字号、31×5 色表、图标、外壳尺寸、22 组件、逐页布局、降级清单、验收方法 |
-| `refactor/PROGRESS.md` | **施工清单就在 §「视觉 1:1 符合性审计」**；另有跨轮硬事实与已修缺陷 |
+| `refactor/PROGRESS.md` | **施工清单在 §「视觉 1:1 符合性审计」**；另有跨轮硬事实与已修缺陷 |
 
 ## 执行契约
 
@@ -50,23 +51,108 @@ last_verified: 2026-09-30
 
 - **不改 `shine_core`**（`src/core util net db llm comfy gpu media flow visual novel paint mcp project pipeline`）。
   宿主只需要接 `gpu::AttachDevice(GlApi)` 这一处注入。
+  ⚠️ 「分镜缩略图」那条缺口**只能在业务层补**（见下「仍未做」），别在 UI 侧编文件名约定去凑。
 - **颜色只能从 `theme/` 来**。调用点写 `ImVec4(...)` / `IM_COL32(...)` 字面量会被 `check-colors.ps1` 拦。
-  「不画」用 `kit::ColorTransparent()`。
+  「不画」用 `kit::ColorTransparent()`。纹理染色的恒等值用 `IM_COL32_WHITE`（不是主题色，别换成 `ColorText()`）。
 - 构建目录单写，**不要并发 `cmake --build`**（撞 exe 锁）。
 - 改了 C++ 之后按 `AGENTS.md` 的顺序验证：门禁 → `Build.bat` → 实际启动 → 抓图。
 
-## 已知地雷（详见 `AGENTS.md` §地雷 与 `PROGRESS.md` §跨轮硬事实）
+---
+
+## 当前进度（截至 2026-09-30，第七轮）
+
+主干（51/51 步）早完成。最近三轮做的是**产品缺口**，每一轮都以 `overall=PASS` 收尾：
+
+| 轮次 | 做了什么 |
+|---|---|
+| 第五轮 | **R8 界面侧接上真实图片**：新增 `kit/Image.{h,cpp}`（路径 → 纹理 → 画进矩形，走已有的 `gallery::ThumbnailService`）。接线时挖出两个真缺陷：`RegisterBuiltinDecoders()` **全仓零调用**（⇒ 每个文件都报「不支持的图片格式」）、fixture 里那几个 `.png` 是文本桩。已接：资产网格卡缩略图、详情页左列基线图（顺带补齐**整块缺失的两列网格**） |
+| 第六轮 | **数据面铺开**（`out/_fixture_seed.sql`）：17 实体 / 13 种 kind / 12 章 / 3 卷 / 19 镜 / 8-8 种资产状态 / 10 条 `visual_artifacts` 行（原来 **0 行**）/ 12 张真 PNG + 坏文件 + 缺文件 + 中文文件名。`_make_fixture.ps1` 的硬门禁加了**枚举覆盖度** |
+| 第七轮 | **侧栏树可滚**（`Tree` 改成报**完整内容高度**；两棵树套 `ScrollRegion`；提成 `Shell::OverlayBlocksMouse()`）、**V0 派生链**（逐层真图 + 层状态点，`visual_artifacts` 一路投影到视图层） |
+
+当前实测（可复现）：
+
+```
+# shots: 82  failed: 0  scroll-failed: 0  identical-theme-pairs: 0  identical-driven-pairs: 0
+  inverted-rects: 0  duplicate-hits: 0  hover-probes: 11/11  shortcuts: 7/7  overlay-clicks: 7/7
+  report-scan/book-snapshot/asset-snapshot/artifact-snapshot 全 converged
+  sheet-images=settled requested=7 pending=0 pixels=33848
+  sheet-recover=ok pixels=33848 before=33848          ← 纹理被清空后会自己回来
+  asset-tree-scroll 可滚 自报内容高=840.0 可视高=428.0 上限=412.0
+overall=PASS ↔ 退出码 0；四门禁全绿
+```
+
+## 下一步：查看着器（viewer）—— 模型层齐全，UI 层为零
+
+**一次能收掉四项**：派生链节点的「查看该层大图」、详情页的「查看大图」按钮、
+查看器大图本身、以及「导出整版」的联系表（设计稿 `type:'sheet'` 的网格）。
+
+已经有的是**模型层**（别重写）：
+
+- `src/media/Viewer.h`：`State{id, open, loading, zoom, panX, panY, index, total, imgW, imgH, name, loadGen}`、
+  `Open/Close/IsOpen/Get/Tick`、`Step(dir)`（跳过 Failed）、`Fit()`、`ActualPixels(fitScale)`、
+  `OnWheel(...)`、`OnDrag(dx,dy)`、`ClampPan(...)`、`FullTexture(id)`（异步原图 + 只留 4 张）、
+  `FullCacheCount/FullLoads/DiscardedLoads`（**验收：连切不应无界上涨**）。
+- `gallery::OpenViewer(id) / CloseViewer() / ViewerOpen() / ViewerImageId()`，且
+  `gallery::Tick()`（`Host::PumpUi()` 每帧调）**已经**驱动 `viewer::Tick()`。
+
+**没有的是 UI**：`app/media/GalleryView.cpp` 已随 Qt 前端一起删除（`search_file` 找不到），
+`src/ui/**` 里对 `gallery::viewer::*` 与 `OpenViewer` **零调用**（只有 `kit/Image.cpp` 一句注释提到它）。
+
+⚠️ 动手前必须先定两个设计决策（都写进源码注释）：
+
+1. **原图从哪来**：`viewer::FullTexture` 收的是 **`ImageId`**（图库扫描出来的 id），
+   而界面侧 `kit::Image` 的 key 是**路径哈希**（`kUiImageBit | FNV(path)`）——
+   资产设定图 / 派生链那些**工程内文件**不在图库 Model 里，拿不到 `ImageId`。
+   两条路：① 把路径注册进图库 Model；② 给 `kit::Image` 加**第二档尺寸**
+   （**另取一个号段位**，例如 bit 61，`RequestImageFull(path)`）。
+   ⚠️ **不能**复用同一个 key 换尺寸：服务侧按 `ImageId` 存 `targetSize`，换档会
+   `Erase` + **重新解码**，两个调用点用不同尺寸请求同一文件会**每帧重解码**（`kit/Image.h` 约束 2）。
+2. **它是浮层** ⇒ 必须进 `OverlayBlocksMouse()`、`chromeInteractive_` 闸门，
+   并给 `overlay-clicks` 那组探针**加一个**（那是唯一能发现「浮层里按钮点不动」的判据 ——
+   静息截图零覆盖）。遮罩**只画不注册**会让点击落到下层（地雷表里有）。
+
+设计稿出处：`webui/src/views/Assets.jsx` 的 `setViewer({name, type:'image'|'sheet', seed, meta, gallery})`
+（image 见 150-202、sheet 见 177-181/195-198；画廊左右切换、`meta` 说明行）。
+
+## 仍未做（堵点都在**数据层**，不是 UI 层）
+
+- **分镜 `.tthumb`** 要「**这一镜**的图」，而：`generated_images` 有 `rel_path` 但只连到
+  **`scene_id`（没有 `shot_id`）**；`visual_artifacts` **没有 `shot_ord` 列**；
+  `stage_artifacts` 有 `shot_ord` ✓ 但图路径只可能在 `payload_json` 里，而**全仓没有代码
+  解析过其中任何图路径字段**（`NovelVisual.cpp` 只当不透明字符串存取）。
+  ⇒「第 3 镜的图」在数据层**确定不出来**。出图结果面板 / 出片胶片格同族。
+  **要做得先在业务层补一条「镜 → 产物图」的只读投影**（新增列，或一条按 shot 的关联查询，
+  并在文档里定下 `payload_json` 的那个键）。
+- 主题层 #3（`line.*`/`fill.*` 的 alpha 摊平）、页面层若干细则：见 `PROGRESS.md` 的审计表，
+  每条都标了归因在哪一层。
+
+---
+
+## 地雷（详见 `AGENTS.md` §地雷 与 `PROGRESS.md` 的跨轮硬事实）
 
 - `kit::Rect` 四参是 `(minX,minY,maxX,maxY)`，**不是** `(x,y,w,h)`；写错不报编译错，
   控件整块不画也不可点。宽高式用 `kit::RectAt()`。
-- 同一帧同一矩形只能 `HitTest` 一次（先注册者独占 `HoveredId`）；浮层遮罩**只画不注册**
-  （`kit::ScrimPaint`），否则面板里的控件点不动，且哪一处坏取决于绘制顺序。
-- `ImGui::IsMouseHoveringRect` 在本工程会 `0xC0000005`，用 `Rect::contains(io.MousePos)`。
-- `kit::ScrollRegion` 不调 `setContentHeight()` 就是**滚不动**。
-- 取证注入必须早于 `NewFrame`（`Host::SetFrame*Override`）。
+- 同一帧同一矩形只能 `HitTest` 一次（先注册者独占 `HoveredId`）。⚠️ 这条判据（`duplicate-hits`）
+  **只在同一个 draw list 内比** —— 跨窗口/跨 draw list 的重叠抢不走 hover
+  （`ItemHoverable` → `IsClippedEx`），把合法滚动内容算进去会假红。
+- `kit::ScrollRegion` 不调 `setContentHeight()` 就是**滚不动**；它内部是 `BeginChild`，
+  **每个 child 都要按 `OverlayBlocksMouse()` 退出命中测试**，否则根窗口里的浮层按钮点不动。
+- ⚠️ **`RequestImage` 必须每帧无条件调**（服务侧的 `Request` 幂等；只在 `State==NotLoaded`
+  时调 ⇒ 纹理被 LRU 淘汰后**图永远不再出现**，「图闪过一次就没了」，且不报错）。
+- ⚠️ **截图不可跨轮逐字节比对**：同一二进制连跑两轮，80 张里 48 张字节不同（时钟/动画/日志）。
+  能用的是**同轮内的重样判据**，以及**数某个纯色的像素数**（`out\_colorcount.ps1`）——
+  而抓到的缓冲是 **RGBA**（`R` 在偏移 0），权威是 `Capture.cpp` 里那句
+  「已经是 RGBA8，不要再交换通道」，**不是**形参名。
+- ⚠️ **判据要打在那个「必然会触发」的对象上**：侧栏有**两棵**树，小说树放得下、
+  资产树必然溢出 —— 打在小说树上会报假红；给它拍「滚到底」那张图更会与未滚那张逐字节相同。
+- 取证抓图会**自动等异步图落地**（`Shoot` 里，唯一入口）—— 别在每个调用点各补一个等待。
 - **像素差不作判据**（跨进程约 2000px、跨构建约 40000px 噪声）。
-- 两处必须接受的降级：`backdrop-filter` 毛玻璃、`box-shadow`。不要为它们死磕像素。
+- `ImGui::IsMouseHoveringRect` 在本工程会 `0xC0000005`，用 `Rect::contains(io.MousePos)`。
+- 取证注入必须早于 `NewFrame`（`Host::SetFrame*Override`）。
+- 两处必须接受的降级：`backdrop-filter` 毛玻璃、`box-shadow`；另加一条：本版 ImGui 没有
+  push clip path ⇒ 铺满矩形的过程画（`Art` / 真图）**裁不掉圆角**。
 - ⚠️ `webui/` **不在版本控制里**；核对 CSS 原式前先确认它还在本机。
+  ⚠️ **JSX 内联样式会覆盖 CSS**，两处都要看（`.dnode` 宽 92 不是 108、`.dthumb` 高 50 不是 64）。
 
 ## 开工第一件事
 
@@ -79,5 +165,12 @@ out\_make_fixture.ps1                                # 取证判据的成立条�
 powershell -File out\_run_review.ps1 -OutDir "$PWD\build\shots" -Theme deepspace
 ```
 
-**先量基线，再动手。** 上一轮的「PASS / 9-11 探针 / 几张图」到底是多少，
-只有自己跑出来才算数 —— 文档里的数字会过期，而**缺 fixture 与产品退化在日志上长得一样**。
+**先量基线，再动手。** 上一轮的「PASS / 11-11 探针 / 几张图」到底是多少，
+只有自己跑出来才算数 —— 文档里的数字会过期，而**缺 fixture、跑了旧产物、与产品退化
+在日志上长得一样**。
+
+⚠️ 改 fixture 的规矩：`out\_fixture_{schema,data}.sql` 是 **UTF-8 留档，不要动**
+（PowerShell 的 `Set-Content/Out-File` 会按系统 ANSI 码页重编码，中文静默变乱码且脚本照跑成功）——
+改动一律**追加**到 `out\_fixture_seed.sql`，新行用 **100+ id 号段**，
+并同步 `_make_fixture.ps1` 的硬门禁（行数 + **枚举覆盖度**）。
+**枚举没铺满 = 对应分支永远没人验**，而整轮照样 PASS。
