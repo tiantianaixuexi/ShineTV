@@ -1288,7 +1288,7 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         // 它当场抓到了一个真 bug：点「打开项目」的那一下点击，在同一帧里
         // `IsMouseClicked()` 仍为真、鼠标仍在工具条上（对话框之外），于是我
         // 加的「点面板外关闭」把刚开的对话框**当场关掉** —— 症状是「闪一下就
-        // 没了」。修法是 `HubState::dismissArmed`（见 WorkspaceB）。
+        // 没了」。修法是 `HubState::dismissArmed`（见 ProjectHub.cpp）。
         // 那个 bug 编译过、截图正常、打开之前一切正常，**只有真点一下才看得见**。
         //
         // 判据方式：**两步**，都是布局无关的。
@@ -1582,8 +1582,12 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         WriteManifest(manifest, std::string("last-inverted-rect=") + kit::LastInvertedRect());
     }
     WriteManifest(manifest, std::string("overall=") + (pass ? "PASS" : "FAIL"));
-    shine::log::Info("review done: {} saved, {} failed -> {}", result.captured, result.failed,
-                     outputDir.string());
+    // 判据的结论**原样**交给调用方：退出码由它决定，不许调用方拿 captured / failed
+    // 自己二次推算（那正是上面 Review.h 里记的假绿）。日志也带上 verdict，
+    // 免得只看 "[imgui-review] shots=79 failed=0" 就以为这轮绿了。
+    result.pass = pass;
+    shine::log::Info("review done: {} saved, {} failed, overall={} -> {}", result.captured,
+                     result.failed, (pass ? "PASS" : "FAIL"), outputDir.string());
     return result;
 }
 

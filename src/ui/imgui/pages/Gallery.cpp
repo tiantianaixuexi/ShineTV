@@ -147,7 +147,7 @@ void Card_SegmentedTabs(ImDrawList* draw, Rect area) {
     // 存回时**先拷成 std::string 再赋值**（不是 `segValue = segPicked`）：没点击时
     // `Segmented` 返回的就是传进去的 value 本身，返回的 string_view 会**指向
     // segValue 自己**，直接赋值等于自引用赋值。走临时对象这一步是本仓库既有口径
-    // （WorkspaceB.cpp 的 `std::to_string(panelTab_)` → `picked` → 存回）。
+    // （Page_ImageFlow.cpp 的 `std::to_string(panelTab_)` → `picked` → 存回）。
     static std::string segValue = "a";
     static std::string tabValue = "1";
     const std::vector<SegmentOption> options{{"a", "详情"}, {"b", "总览"}};

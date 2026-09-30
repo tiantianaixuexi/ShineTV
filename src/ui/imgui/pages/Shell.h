@@ -189,7 +189,7 @@ public:
     // 进项目中心时整个外壳让位，Esc 或再点一次退出。
     void ToggleProjectHub();
     [[nodiscard]] bool projectHubOpen() const { return hubOpen_; }
-    // 项目中心里三个对话框有没有开着。转发给页面层的读数（WorkspaceB 持有
+    // 项目中心里三个对话框有没有开着。转发给页面层的读数（ProjectHub.cpp 持有
     // HubState，外壳不持有）—— 与 projectHubOpen 配套：一个是「中心开着」，
     // 一个是「中心里的对话框开着」。
     [[nodiscard]] bool hubDialogOpen() const { return hubDialogOpen_; }
@@ -263,7 +263,7 @@ private:
     void DrawThemeMenu(ImVec2 anchor, ImDrawList* draw);
     // 「设置 · 三步开工」模态：读 AppSettings 真值，不造假配置。
     void DrawSettingsModal();
-    // 项目中心整屏（WorkspaceB 的 DrawProjectHub）。
+    // 项目中心整屏（ProjectHub.cpp 的 DrawProjectHub）。
     void DrawProjectHubScreen(kit::Rect area, ImDrawList* draw);
     // 底栏「产物」页：扫 <project>/output，IO 放 worker，回投后按路径判定要不要重扫。
     void RequestArtifactScan();

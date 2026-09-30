@@ -79,13 +79,13 @@ void ResetPageContentHeight();
 //
 // 三个页面共用同一份 **novel.db 快照**：开库 + 查询全在 worker 线程
 // （`async::RunOnWorker`），结果经 `async::PostToUi` 回投 UI 线程；UI 线程只读
-// 那份快照，不做任何 IO。见 WorkspaceB.cpp 的 `Book()` / `BookState`。
+// 那份快照，不做任何 IO。见 BookData.h 的 `Book()` / `BookState`。
 //
 // 绑上以后这三页的每一个数字 / 每一条列表项都来自业务层
 // （novelcore::NovelGraph / NovelVisual / RunContinuityChecks）；
 // 没绑、或 db 打不开、或表是空的 —— 页面显示**诚实的空态**，不补占位数字。
 //
-// ⚠️ 这三个函数必须定义在匿名命名空间**之外**（在 WorkspaceB.cpp），
+// ⚠️ 这三个函数必须定义在匿名命名空间**之外**（在 BookData.cpp），
 //    否则 Shell 链接不到。Shell 在 SetProjectRoot 里与 BindOverviewProject 一起调。
 void BindNovelProject(std::filesystem::path root);
 void BindAssetsProject(std::filesystem::path root);
@@ -141,7 +141,7 @@ struct BookAssetView {
     bool degraded = false;       // 任一产物走过降级
     // 色调与中文标签都由 AssetTone() 从 assetStatus 映射，**在重建时算好存进来**。
     // 不让消费者各自映射一遍：侧栏的状态点、检查器的状态行、资产页的 Tag 三处要同一份，
-    // 而 AssetTone() 在 WorkspaceB.cpp 的匿名命名空间里，Shell 够不着。
+    // 而 AssetTone() 定义在 BookData.cpp 的匿名命名空间里，Shell 够不着。
     theme::Tone tone = theme::Tone::Idle;
     std::string statusLabel;
 };
@@ -213,7 +213,7 @@ void SelectBookAsset(int index);
 
 // entities.kind / visual_assets.kind → 中文分类名。侧栏树的分组标签、chip 文案、
 // 资产页的「类别」行**共用这一份**。库表里没有的中文映射按表外原样回显，不编名字。
-// 实现见 WorkspaceB.cpp（与该文件里已有的 KindLabel 是同一份，不是第二份）。
+// 实现见 BookData.cpp（与该文件里已有的 KindLabel 是同一份，不是第二份）。
 [[nodiscard]] std::string AssetKindLabel(const std::string& kind);
 
 // ---- P5.2 小说（novel）—— 最大的一页：8 模式标签 + 8 套视图 ----

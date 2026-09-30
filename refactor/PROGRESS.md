@@ -395,6 +395,11 @@ last_verified: 2026-09-30
 | 2026-09-30 | 验证 | 投影落地（终轮，r88） | **80/80 saved · 盘上 80 张 md5 全唯一 · `scroll-failed: 0` · `identical-driven-pairs: 0` · `inverted-rects: 0` · `hover-probes: 11/11` · `shortcuts: 7/7` · `overlay-clicks: 4/4` · 四个 snapshot converged · `overall=PASS`**；四道门禁全过；`check-colors -SelfTest` 11/11、`check-layers -SelfTest` 6/6、`find-silent-truncation -SelfTest` 6/6、`find-draw-arg-order -SelfTest` 10/10；三个扫描器真实树 0（截断剩 1 处带理由豁免）。<br>**不靠 diff、靠读像素证明投影真的在**：设置模态左缘在 x=520，往左 40px 的剖面从 `(8,12,18)` 单调渐暗到 `(5,8,11)`，正是 Overlay 档 `0 12px 40px rgba(0,0,0,.45)` 的形状；资产卡 hover 的卡片下缘之后有 ~18px 的衰减带，与 `--shadow-1` 两层（blur 2 + blur 16）吻合；**未 hover 的卡旁边完全干净** —— 对应 `.card` 基线无 box-shadow。修前 → 修后的像素差：`overlay-settings` 180 → **69853**，`theme-paperink-image` 0 → **308739**。<br>⚠️ **一次未复现的失败，如实记**：r85 在第 47 张图（`overlay-palette`）之后窗口塌成 0×0，`capture: bad frame 0x0`，剩下 36 张全 FAILED、`overall=FAIL`，且崩溃前有几帧报出 `DrawRoundRect min=(20,0) max=(-20,420)` 这类 x 翻转的反向矩形。r86 / r87 / r88 连续三轮同参数**均未复现**，无残留进程。**原因未定论**，不写成「已修复」 | ⚠️ |
 | 2026-09-30 | 过程事故 | **字节归位脚本把 `0A 0D` 写进了源码** | 修 `Overlays.cpp` 的行尾时，归位器写成「先 append 原字节、再补 CR」—— 产出 `0A 0D` 而不是 `0D 0A`，把 137 处行尾全写坏了，git 随即把该文件判成二进制（`w/-text`）。这就是「输出缓冲与输入游标必须独立推进」那条：**统一形态的损坏好救**，回退到 HEAD 再重打那 3 处改动即可。第二次写归位器时先在 4 份合成样本上自检（LF 串 / CRLF 串 / 混合 / 已损坏的 LF CR，四种都要归到 CRLF 且内容不变）才允许它碰真实文件 —— 上一版就是没验证就上手 | ✅ |
 | 2026-09-30 | 归因纠正 | 「投影偏淡是因为 alpha 被乘了两次」**不完整** | 真实有两个独立成因，第二个即使修好第一个也仍然不对。① **乘了两次**：主题 JSON 的 `shadow.1` 存的已经是 CSS 那一层的 alpha（深空 0x4D ≈ 0.30 对应 CSS 0.3），再乘表里的 `layer.alpha` 就只剩 45%。② **环画成互不重叠的窄圈**（每层只覆盖 `[g_i, g_{i+1}]`、各带一份 alpha）：各环不累加，边缘处可见 alpha 反而只有 `w_0/Σw ≈ 1/3.2 = 31%`。正确形态是第 i 环**铺满 `[本体边, g_i]`、只带增量 `alpha·(w_i − w_{i+1})`**，由外向内叠，任意距离 d 处累计正好是 `w_{i(d)}·alpha`。② 与 ① 无关，只修 ① 得到的仍然是错的 | ✅ |
+| 2026-09-30 | 门禁缺陷 | **取证退出码用错了量：判据红、进程却退 0** | `AppEntry.cpp` 写的是 `std::_Exit(result.failed == 0 ? 0 : 1)`，而 `failed` 只数「图片没写出来」。判据红（hover 探针没过 / 快照 TIMEOUT）时 79 张图照样全部 `saved`，`failed` 是 **0** ⇒ manifest 写 `overall=FAIL`、进程退 **0**。<br>**这轮是它自己咬人**：拆 `WorkspaceB.cpp` 之前拿退出码当「这轮绿了吗」，读到 0 就准备往下走 —— 是 manifest 的 `overall=FAIL` 与退出码互相矛盾才暴露的。`Review.cpp:1550` 的注释写着「overall 行必须存在且与退出码一致」，**断言在，实现没跟上**。<br>修法：`ReviewResult` 加 `bool pass`，`RunReview` 把 `pass` 写进去，调用方只读 `result.pass` —— 判据的结论**原样**传出去，不许调用方拿 `captured`/`failed` 二次推算。修后同一份代码退出码为 **1**。`run_reviews.ps1` 本来能靠 agree=False 抓到，但它只能报「不一致」，分不清是判据红还是判据自身坏了 | ✅ |
+| 2026-09-30 | 重构 | **`Shell.cpp` → `Shell.cpp` + `Shell_Reports.cpp`** | 校验报告那一摊（解析 `v08_continuity.json`、`BuildCheckRows`、报告页与报告模态、`SeverityTone`/`ReportTone`/`ReportSummary`）整段 539 行搬进独立 TU。切在**功能边界**上而不是按行数对半砍：搬走之后剩下的 `Shell.cpp` 里「外壳本体」更完整，而报告那一摊本来就只被外壳的底栏页签与模态调用 | ✅ |
+| 2026-09-30 | 重构 | **`WorkspaceB.cpp` 3522 行 → 11 个模块** | 这是全树最大的一个「上帝文件」：六个工作区的页面实现 + novel.db 快照 + 项目中心 + 三套状态词表 + 页面运行时通道全在一个 .cpp 里，共用逻辑住在顶部匿名命名空间，谁也够不着谁。按**三个真实边界**切，不按行数对半砍：<br>① **线程边界**（最硬的一条）—— `BookQuery.cpp` 是 worker 侧开库查询、只往 `BookState` 里填；`BookData.cpp` 是 UI 侧快照持有 / 视图重建 / 绑定选中。分错就会出现「UI 线程里开着库」这种明令禁止的形状。<br>② **页面边界** —— `Page_Novel` / `Page_Assets` / `Page_Storyboard` / `Page_ImageFlow` / `Page_VideoFlow` / `ProjectHub` 一个一页，公共 API 全在 `WorkspacePages.h` 不变，Shell 零改动。<br>③ **共用件边界** —— `PageCommon.h`（版式常量 + `LabelWidth` + `ViewportBottom` + 页面↔外壳运行时通道）与 `FlowGraph.h`（出图/出片共用的节点图内容）。`FlowGraph` 只导出三样（`FlowDataKey` / `ComfyRunningForBadge` / 两个 fit 标志），`Make*FlowNodes` 留在 .cpp 内部 —— 导出节点表就等于允许第二处定义它。<br>**顺带删掉一处死代码**：`StageStateFromStatus()`（原 94–104 行）全树零调用。<br>**顺带修掉两句被拆分作废的注释**：`Page_ImageFlow.cpp` 里「真值源：**同文件**的 Comfy 队列读数」已经不同文件了，改成指名 `FlowGraph.cpp`。注释里的断言与实现脱节时，先怀疑注释。 | ✅ |
+| 2026-09-30 | 验证 | 拆分的行为等值证明（**含对照实验 + 一条工具纪律**） | 构建 `exit=0`；七道门禁全 `exit=0`（check-layers / check-colors / check-theme / check-i18n / find-silent-truncation / find-draw-arg-order / find-rect-wh-misuse）。取证：manifest 的 **`# shots:` 指标行在拆分前后逐字节相同**（`79 saved / 0 failed`、`hover-probes 9/11`、`shortcuts 7/7`、`overlay-clicks 7/7`、`duplicate-hits 0`、`inverted-rects 0`、`identical-driven-pairs 0`），`overall=FAIL` 成因不变（`book-snapshot` / `asset-snapshot` TIMEOUT，fixture 缺口，与本轮无关）。<br>**像素这一层不能当下划线的证据 —— 量的结果是这个 harness 本身不可复现**：同一个二进制连跑两轮，79 张里只有 **14~15** 张 md5 相同（rv20 是唯一一次离群，与其余每一轮都只共享 14 张）。差异是**同一个共享元素**上的 175px / 34×10 小块（x=1336..1369, y=213..222），裁出来读是**一个字形描边的亚像素抗锯齿**差异，肉眼不可分。⇒ **md5 逐张比对在跨运行场景下不是可用信号**。<br>仍然成立的是：拆分后各轮与拆分前那轮（rv16）的共享数（74/75/72/75）与**拆分后各轮彼此之间**的共享数（74/72/73/74/75）**同一量级**，没有任何一轮显示回归。另有 5 张（`dock-artifacts` / `hover-artifact-row` / `overlay-settings` / `overview-vstages` / `toast-warn`）**每轮都不同** —— 裁出来读是界面里印着的**输出目录名**（`build\rv16\_review_reports_pn…` vs `rv17`），与 2026-09-30 那次「投影差 180px 其实是模态里印着的工程路径」同型。<br>⚠️ **本轮自己踩了两次工具坑，都记下来**：① 写像素比对脚本时用 `W` / `Sl` 当函数名 —— 它们是 `Set-Location` 的**内置别名**，PowerShell 会优先解析别名，报的却是「位置参数无法找到」，与真实原因毫无关系。② 归一化变量名用了 `$A` / `$a`、`$X` / `$x`，**PowerShell 变量名大小写不敏感**，大写赋值把路径变量覆盖了。更严重的是第三版脚本**对 79 张全部报 0 差异**——而同一对目录我手工量过确有 28px 差异：**一个恒报 0 的判据和一个坏掉的判据长得一模一样**。判据必须先在**已知有差异**的样本上证明会红（拿 rv17 vs rv18 跑一遍，报出 88 字节差异才算数），再去读它的 0。 | ✅ |
+
 
 ---
 
@@ -432,7 +437,10 @@ last_verified: 2026-09-30
 | 7 | `[data-theme="inkwash"]` 下 `.brand .mark` / `.hub-logo` 被 `tokens.css:206` 的 `box-shadow: none` 覆盖 | 页面层 | 水墨主题下这两个 logo 应当**没有**投影，ImGui 侧未按主题特判 |
 | 9 | `.tl-card` 宽 96→128、圆角 8→10；项目中心卡片名 `FontBoldAt(17.0f)`→14.5px | 页面层 | 同上 |
 
-**未接投影档位、且需要先补 `HitTest` 的两处**（不是漏接，是顺序问题）：`pages/WorkspaceA.cpp:36` 总览 KPI 卡（`.card.kpi.hoverable` → hover 该走 Card 档，但 `KpiCard` 整个没有命中测试）、`pages/WorkspaceB.cpp:3024` 向导确认卡（`.card.glow` → hover 该走 Accent 档，同理无 `HitTest`；且它是只读汇总卡，hover 反馈价值低，建议只补 `HitTest` 不接档）。**`pages/WorkspaceB.cpp:1571` 在设计稿里找不到对应元素**（设计稿该页是表格而非卡片栅格），代码注释自称抄「资产总览网格」，其真实原型是 `Assets.jsx:151`。按纪律不硬套档位，注释里的原型出处待订正。
+**未接投影档位、且需要先补 `HitTest` 的两处**（不是漏接，是顺序问题）：`pages/WorkspaceA.cpp:36` 总览 KPI 卡（`.card.kpi.hoverable` → hover 该走 Card 档，但 `KpiCard` 整个没有命中测试）、`pages/ProjectHub.cpp` 的向导确认卡（`.card.glow` → hover 该走 Accent 档，同理无 `HitTest`；且它是只读汇总卡，hover 反馈价值低，建议只补 `HitTest` 不接档）。**`pages/Page_Assets.cpp:70` 的总览网格卡在设计稿里找不到对应元素**（设计稿该页是表格而非卡片栅格），代码注释自称抄「资产总览网格」，其真实原型是 `Assets.jsx:151`。按纪律不硬套档位，注释里的原型出处待订正。
+
+> 这三处的行号原本指向 `WorkspaceB.cpp` / `WorkspaceA.cpp` 的旧坐标；`WorkspaceB.cpp` 已于 2026-09-30 拆成 11 个模块（见上方变更记录），行号已按新文件重指。**`ProjectHub.cpp` 的向导确认卡没有给行号** —— 拆分后它的位置会随任何一次编辑漂移，而这里要记的是「它还没接 `HitTest`」这个事实，不是某一行。
+
 
 ---
 
@@ -473,7 +481,7 @@ last_verified: 2026-09-30
 | `kit/Widgets.cpp` `Tree()` | `-7.5f` / `-7.0f` | 高 1.0~1.25px | 两侧栏在用 |
 | `kit/Overlays.cpp` `Modal`/`Drawer` 标题 | `top + 14.0f` | 高 2.0~2.5px | **潜伏缺陷**：`Modal`/`Drawer`/`Toast`/`Menu`/`DataTable` 全树零调用 |
 | `kit/Widgets.cpp` `DataTable()` | 表头 / 单元格写死 `+7`~`+9` | 高 1.5~2.75px | 同样零调用 |
-| `pages/WorkspaceB.cpp` | 模式页签 / 章选择 chip / 最近项目计数 ×2 | 高 1.0~1.75px | |
+| `pages/Page_Novel.cpp` `Page_Storyboard.cpp` `ProjectHub.cpp` | 模式页签 / 章选择 chip / 最近项目计数 ×2 | 高 1.0~1.75px | 原 `WorkspaceB.cpp`，2026-09-30 拆分后重指 |
 | `pages/WorkspaceA.cpp` | 甘特行标 | 高 0.75px | |
 | `pages/Shell.cpp` 检查器段头 | 高度 24→39.2、文字改 `CenterTextY`、分隔线移到整段底部、箭头 10→11、颜色→`text-secondary`、hover 去掉底色 | — | 见上 |
 
@@ -481,7 +489,10 @@ last_verified: 2026-09-30
 
 用户要求「小组件请封装，不要重复写」。这一轮**归因修正了**：原表把 8 处全记成同一族「列表行」，那是错的 —— 按实际几何只有 **4 处**是列表行，另 4 处是另一种东西，强行合并只会造第二份假抽象。
 
-> ⚠️ 这张表的第一版把第 1 项写成「5 处」、把 WorkspaceA 产物算进 `ListRow`。**实际代码是 4 `ListRow` / 3 `ListCard`**（`Shell.cpp` 队列 / palette / 产物 / 报告 四处 `ListRow`；`WorkspaceA.cpp` 产物 + `WorkspaceB.cpp` 向导模板 / 打开列表 三处 `ListCard`）。总数 7 对，分法错。起因是迁移时把 WorkspaceA 那一处从 `ListRow` 改成了 `ListCard`（它要投影档 + accent 描边环，`ListRow` 给不了），但表格没跟着改。**数字以调用点为准，不以当时的打算为准。**
+> ⚠️ 这张表的第一版把第 1 项写成「5 处」、把 WorkspaceA 产物算进 `ListRow`。**实际代码是 4 `ListRow` / 3 `ListCard`**（`Shell.cpp` 队列 / palette / 产物 / 报告 四处 `ListRow`；`WorkspaceA.cpp` 产物 + `ProjectHub.cpp` 向导模板 / 打开列表 三处 `ListCard`）。总数 7 对，分法错。起因是迁移时把 WorkspaceA 那一处从 `ListRow` 改成了 `ListCard`（它要投影档 + accent 描边环，`ListRow` 给不了），但表格没跟着改。**数字以调用点为准，不以当时的打算为准。**
+>
+> ⚠️ 同理，「`WorkspaceB.cpp` 向导模板 / 打开列表」是**拆分前**的坐标：2026-09-30 `WorkspaceB.cpp` 拆成 11 个模块后，向导与打开列表都在 `ProjectHub.cpp`，WorkspaceA 那一处仍在 `WorkspaceA.cpp`。计数 4/3 未变（以调用点为准，与文件拆分无关）。
+
 
 | # | 重复模式 | 实际重复处 | 处置 |
 |---|---|---|---|

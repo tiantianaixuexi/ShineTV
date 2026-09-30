@@ -162,15 +162,19 @@ int RunApp(int argc, char** argv) {
     if (const std::filesystem::path review_dir = EnvPath("SHINE_IMGUI_REVIEW");
         !review_dir.empty()) {
         const auto result = shine::imguiverify::RunReview(host, shell, review_dir);
-        std::printf("[imgui-review] shots=%d failed=%d dir=%s\n", result.captured, result.failed,
-                    review_dir.string().c_str());
+        std::printf("[imgui-review] shots=%d failed=%d overall=%s dir=%s\n", result.captured,
+                    result.failed, (result.pass ? "PASS" : "FAIL"), review_dir.string().c_str());
         // ⚠️ 退出码必须与 scripts/run_reviews.ps1:66 的约定一致：PASS↔0 / FAIL↔1。
         //    早先这里 FAIL 返 2，脚本判成 "agree=False" —— 失败也报不一致，
         //    绿灯和红灯都失去意义。
+        //
+        // ⚠️⚠️ 判据是 `result.pass`，**不是** `result.failed == 0`：failed 只数「图片
+        //    没写出来」。判据红（hover 探针没过 / 快照 TIMEOUT）时图片照样全部 saved，
+        //    failed 是 0 —— 用它推退出码就是 manifest 写 FAIL、进程退 0 的假绿。
         host.Shutdown();
         shine::async::Shutdown();
         shine::log::Shutdown();
-        std::_Exit(result.failed == 0 ? 0 : 1);
+        std::_Exit(result.pass ? 0 : 1);
     }
 
     host.RunLoop([&shell](float dt) { shell.DrawFrame(dt); });

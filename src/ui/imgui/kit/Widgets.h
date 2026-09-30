@@ -36,7 +36,7 @@ struct Rect {
     // ⚠️ 四参是 **(minX, minY, maxX, maxY)**，不是 (x, y, w, h)。写宽高请用 RectAt()。
     //    写错的**不报编译错**，只是 max < min，DrawRoundRect 的 `max.x <= min.x` 会直接
     //    return —— 控件整个不画、也点不到，界面上是一片空白，看不出是哪儿错了。
-    //    已确认踩过的实例：WorkspaceB.cpp 资产总览网格的 card / thumb、Shell.cpp 底栏
+    //    已确认踩过的实例：Page_Assets.cpp 资产总览网格的 card / thumb、Shell.cpp 底栏
     //    页签条（2026-09-30 修）。全树扫描见 tools\find-rect-wh-misuse.ps1。
     Rect(float x0, float y0, float x1, float y1) : min(x0, y0), max(x1, y1) {}
     [[nodiscard]] float width() const { return max.x - min.x; }
@@ -340,7 +340,7 @@ struct ListCardSpec {
 };
 // 返回本帧的 Hit。footer 回调可选：给了就在卡的右半部画自定义内容
 // （如「打开」按钮），**由本函数在整卡命中之后调用** —— ImGui 是先注册者独占
-// HoveredId，顺序反了按钮永远点不动（WorkspaceB 打开列表踩过）。
+// HoveredId，顺序反了按钮永远点不动（ProjectHub.cpp 的打开列表踩过）。
 Hit ListCard(ImDrawList* draw, Rect bounds, const ListCardSpec& spec,
              const std::function<void(ImDrawList*, Rect)>& footer = {});
 [[nodiscard]] float ListCardHeight(const ListCardSpec& spec, float paddingY = 14.0f);

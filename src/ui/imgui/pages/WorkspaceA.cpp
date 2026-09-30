@@ -1006,9 +1006,9 @@ void DrawOverview(Rect area, ImDrawList* draw) {
 
 // ================================================================ P5.2 小说 / P5.3 资产
 //
-// 这两页的实现已**搬到 WorkspaceB.cpp**：它们要读 novel.db，而开库 / 查询 /
+// 这两页的实现已**搬到 Page_Novel.cpp / Page_Assets.cpp**：它们要读 novel.db，而开库 / 查询 /
 // worker 回投那一整套（BookState）都在 B 的匿名命名空间里。两页的真数据实现见
-// WorkspaceB.cpp 的 NovelPage::Draw / AssetsPage::Draw —— 旧版这里的实现每个数字
+// Page_Novel.cpp 的 NovelPage::Draw / Page_Assets.cpp 的 AssetsPage::Draw —— 旧版这里的实现每个数字
 // 都是写死的（"第 3 章 · 雨夜"、字数 2180、差异 0.2418、12 张假资产卡）。
 
 } // namespace shine::pages
