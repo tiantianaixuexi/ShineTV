@@ -881,6 +881,83 @@ void BindBook(std::filesystem::path root) {
     RequestBookReload();
 }
 
+// 三页共用的**可视底**（绝对屏幕 y）。
+//
+// Shell 每帧把真实可视高度写进 WorkspaceViewportHeight()，而它给页面的布局区是
+// **写死的 2400px** —— 那是「内容超出视口仍能被滚到」的上限，不是可视高度。页面
+// 拿 2400 当视口，就会把「常驻可见」的底部元素钉到 y≈2280（时间轴、阶段表脚注），
+// 要滚到最底才看得着，而上面全是空白。
+//
+// 返回 area.max.y = Shell 尚未写入这一帧（单跑页面 / 早于第一帧），调用方据此
+// 退回旧行为 —— 逐页迁移，不要求外壳先到齐。
+float ViewportBottom(Rect area) {
+    const float viewportH = pages::WorkspaceViewportHeight();
+    return viewportH > 0.0f ? std::min(area.max.y, area.min.y + viewportH) : area.max.y;
+}
+
+// 把 ContinuityIssue::detail 里的镜对从**库主键**换成镜码：`镜 #128→#131：…` →
+// `镜 S004 → S005：…`。
+//
+// ⚠️ refactor/PROGRESS.md 曾把「镜与镜的关联接不上」记成「ContinuityIssue 没有
+//    shot id，要归因必须改 src/novel/」—— **那个归因是错的**。镜对就写在 detail
+//    里（NovelContinuity.cpp 的 C1/C3/C8/C10/C12 五处，格式 `镜 #{}→#{}：…`），
+//    缺的只是「id → 镜码」这一步显示侧映射，shine_core 一个字都不用改。
+//
+// 为什么查内存快照而不是 `GetShot(id)`：detail 里的 id 来自**本章**的镜，而本章的
+// 镜已经随 `ListShotsByChapter` 一起进了 BookState::shots（id + ord 都在）。
+// 为一次纯显示映射重开库查询，是把 IO 搬回 UI 线程 —— 缓存里有的东西不去取。
+//
+// ⚠️ 解析必须**防御性**：detail 是中文文本约定，不是结构化字段。业务层改措辞
+//    （换箭头、去掉 #、改措辞）都该表现为「解析不出来 → 原样显示 detail」，
+//    而不是崩、也不是编一个镜对出来。id 在本章镜头表里查不到也一样：那是数据
+//    对不上，如实回退比画一个假的 S00x 诚实。
+std::string ShotPairToCodes(const std::string& detail, const std::vector<BookShot>& shots) {
+    auto readId = [&detail](std::size_t from, std::size_t& end) -> RowId {
+        if (from >= detail.size() || detail[from] < '0' || detail[from] > '9') {
+            return 0;
+        }
+        RowId id = 0;
+        std::size_t i = from;
+        while (i < detail.size() && detail[i] >= '0' && detail[i] <= '9') {
+            id = id * 10 + (detail[i] - '0');
+            ++i;
+        }
+        end = i;
+        return id;
+    };
+    // 只认**前两个** `#数字`：C3 的文案里第三个 `#` 是角色 id，不是镜。
+    const std::size_t hashA = detail.find('#');
+    if (hashA == std::string::npos) {
+        return detail;
+    }
+    std::size_t endA = 0;
+    const RowId idA = readId(hashA + 1, endA);
+    const std::size_t hashB = idA > 0 ? detail.find('#', endA) : std::string::npos;
+    if (hashB == std::string::npos) {
+        return detail;
+    }
+    std::size_t endB = 0;
+    const RowId idB = readId(hashB + 1, endB);
+    if (idB <= 0) {
+        return detail;
+    }
+    const auto codeOf = [&shots](RowId id) -> const BookShot* {
+        for (const BookShot& row : shots) {
+            if (row.id == id) {
+                return &row;
+            }
+        }
+        return nullptr;
+    };
+    const BookShot* a = codeOf(idA);
+    const BookShot* b = codeOf(idB);
+    if (a == nullptr || b == nullptr) {
+        return detail;  // 本章镜头表里没有这两个 id → 原样显示，不编镜码
+    }
+    return detail.substr(0, hashA) + ShotCode(a->ord) + " → " + ShotCode(b->ord) +
+           detail.substr(endB);
+}
+
 // 三页共用的**空态**：没绑工程 / 在读 / 库打不开 / 库里没数据，分四种说法。
 // 不在这里编任何数字 —— 分清「还没加载」「加载失败」「确实没有」三件事。
 void BookEmpty(Rect body, ImDrawList* draw, const char* icon, const char* hint) {
@@ -920,6 +997,10 @@ float& WorkspaceViewportHeightSlot() {
     static float height = 0.0f;
     return height;
 }
+float& PageContentHeightSlot() {
+    static float height = 0.0f;
+    return height;
+}
 } // namespace
 
 void SetWorkspaceToast(std::function<void(std::string)> sink) { ToastSink() = std::move(sink); }
@@ -927,6 +1008,10 @@ void SetWorkspaceToast(std::function<void(std::string)> sink) { ToastSink() = st
 void SetWorkspaceViewportHeight(float height) { WorkspaceViewportHeightSlot() = height; }
 
 float WorkspaceViewportHeight() { return WorkspaceViewportHeightSlot(); }
+
+void SetPageContentHeight(float height) { PageContentHeightSlot() = std::max(0.0f, height); }
+float PageContentHeight() { return PageContentHeightSlot(); }
+void ResetPageContentHeight() { PageContentHeightSlot() = 0.0f; }
 
 void WorkspaceToast(std::string message) {
     if (auto& sink = ToastSink(); sink) {
@@ -1076,6 +1161,9 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     // 空态闸门：没绑 / 读失败 / 正在读 / 库里没章 —— BookEmpty 内部按这四种分别措辞。
     if (!s.bound || !s.error.empty() || s.chapters.empty()) {
         BookEmpty(content, draw, "clapper", "这本小说还没有章。跑一次 T1–T17 后这里才有分镜。");
+        // 空态也要自报：只画一个居中图标 + 两行字，报 2400 会让工作区多出只能滚到
+        // 空白的滚动范围。ViewportBottom 已经是绝对 y，不要再加 area.min.y。
+        pages::SetPageContentHeight(ViewportBottom(area) - area.min.y + kGap);
         return;
     }
 
@@ -1089,10 +1177,20 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
 
     // .shots-wrap = minmax(0,1.2fr) / minmax(0,1fr) gap16
     const float detailTop = content.min.y + 46.0f;
-    const float timelineTop = content.max.y - 118.0f;
+    // 时间轴是**常驻可见**元素（横向镜条 + 时长），所以钉**视口**底，不钉布局区底。
+    // 原来 `content.max.y - 118` 取的是 2400 布局区的底（≈2282），于是时间轴要滚到
+    // 最底才看得着，上面两张 detail / continuity 卡被撑到约 2200px 高却只画十几行。
+    //
+    // ⚠️ 视口很矮时（< 约 200px）`timelineTop - kGap` 会落到 detailTop 之上，两张卡
+    //    的 max.y < min.y 变成反向矩形 —— DrawShadowed / Card 会整块 return（内容
+    //    静默消失）。给一个下限，宁可让时间轴压住卡片，也不产出反向矩形。
+    const float contentBottom = ViewportBottom(area);
+    const float timelineTop =
+        std::max(contentBottom - 118.0f, std::min(content.min.y + 120.0f, contentBottom));
     const float detailW = (content.width() - kGap) * 1.2f / 2.2f;
-    const Rect detail{content.min.x, detailTop, content.min.x + detailW, timelineTop - kGap};
-    const Rect continuity{detail.max.x + kGap, detailTop, content.max.x, timelineTop - kGap};
+    const float detailBottom = std::max(timelineTop - kGap, detailTop);
+    const Rect detail{content.min.x, detailTop, content.min.x + detailW, detailBottom};
+    const Rect continuity{detail.max.x + kGap, detailTop, content.max.x, detailBottom};
 
     // ---- 镜头详情 ----
     Rect detailBody = Card(draw, detail, "镜头详情", "target", false, false);
@@ -1172,7 +1270,10 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
             }
             const theme::Tone tone = issue.severity == "high" ? theme::Tone::Danger : theme::Tone::Warn;
             StatusDot(draw, ImVec2(continuityBody.min.x + 4.0f, cy + 6.0f), tone, false);
-            const std::string label = issue.code + " " + issue.detail;
+            // 镜对换成镜码（`镜 #128→#131：` → `镜 S004 → S005：`）：这条 issue 说的
+            // 就是「这两镜之间」出了什么事，写库主键的话没人对得上号。解析不出来就
+            // 原样显示 detail —— 见 ShotPairToCodes 的注释。
+            const std::string label = issue.code + " " + ShotPairToCodes(issue.detail, s.shots);
             DrawTextClipped(draw, FontAt(12.5f), 12.5f,
                             ImVec2(continuityBody.min.x + 16.0f, cy),
                             continuityBody.width() - 16.0f, ColorTextSecondary(), label, true);
@@ -1190,8 +1291,12 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     }
 
     // ---- 故事板时间线：真实镜头卡 ----
-    const Rect timeline{content.min.x, timelineTop, content.max.x, content.max.y};
+    const Rect timeline{content.min.x, timelineTop, content.max.x, contentBottom};
     DrawShadowed(draw, timeline.min, timeline.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
+    // 本页最深就是这条时间轴（两张卡的下边界是 timelineTop - kGap，更浅）。
+    // 自报它的高度，工作区的滚动范围从此跟着视口走 —— 不再是「滚到 2400 才看得见
+    // 时间轴、而那 1400px 里什么都没有」（与总控页同一处治理，注释见那里）。
+    pages::SetPageContentHeight(contentBottom - area.min.y + kGap);
     if (s.shots.empty()) {
         DrawTextClipped(draw, FontAt(12.5f), 12.5f,
                         ImVec2(timeline.min.x + 14.0f, timeline.min.y + 14.0f), timeline.width() - 28.0f,
@@ -1327,6 +1432,11 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
 
     const Rect modeBody{body.min.x, body.min.y + 34.0f, body.max.x, body.max.y};
 
+    // 本页**实际画到**的最底（绝对屏幕 y），末尾自报给外壳当滚动区高度。
+    // 起点取 modeBody 的顶：空态分支只画一个居中的图标 + 两行字，不该把 2400 的
+    // 布局区高原样报回去（那会让工作区多出上千 px 只能滚到空白）。
+    float usedBottom = modeBody.min.y;
+
     if (mode_ == 0) {
         // ---- 章节 ----
         const BookChapter* chapter = s.chapter();
@@ -1363,12 +1473,16 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                 y += 60.0f;
             }
             // .draft：14px / 行高 1.9 / max-w 720。正文是 chapters.body 原文。
+            // 折行高度由 DrawTextClipped 的返回值给出（它自己按 maxWidth 折行并返回
+            // 实际占高），不另算一份行数 —— 两份算法迟早对不上。
             if (chapter->body.empty()) {
-                Empty(draw, Rect{modeBody.min.x, y, modeBody.min.x + 720.0f, modeBody.max.y}, "text",
+                Empty(draw, Rect{modeBody.min.x, y, modeBody.min.x + 720.0f, y + 220.0f}, "text",
                       "本章尚无正文", "T11（正文写作）落库后 chapters.body 才有内容。");
+                usedBottom = std::max(usedBottom, y + 220.0f);
             } else {
-                DrawTextClipped(draw, FontAt(14.0f), 14.0f, ImVec2(modeBody.min.x, y), 720.0f,
-                                ColorText(), chapter->body, true);
+                const float bodyH = DrawTextClipped(draw, FontAt(14.0f), 14.0f, ImVec2(modeBody.min.x, y),
+                                                    720.0f, ColorText(), chapter->body, true);
+                usedBottom = std::max(usedBottom, y + bodyH);
             }
         }
     } else if (mode_ == 1) {
@@ -1389,21 +1503,34 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                 const BookAsset& a = s.assets[static_cast<std::size_t>(i)];
                 const int column = i % columns;
                 const int row = i / columns;
-                // ⚠️ 第三处同型：宽高写进了 kit::Rect 的四参 (minX,minY,maxX,maxY) 构造。
-                //    max.x = cardW（~250）小于 min.x（~296）⇒ DrawShadowed 整块 return，
-                //    「设定集」网格的卡片**一张都没画、也点不到**，界面上只剩三行字浮在
-                //    背景上。前两处（资产总览网格 / 底栏页签条）都是裸 `Rect{...}`，
-                //    这处是**声明式 `Rect name{...}`** —— 旧的 find-rect-wh-misuse.ps1
-                //    只认裸式，正好漏掉它（本仓两种写法 67 / 97 处，漏的是更多的那种）。
-                //    扩展扫描覆盖面后由该工具报出来，不是肉眼翻出来的。宽高一律 RectAt。
-                //
-                // 不给这张卡加 hover：它**没有点击行为**（这里不选实体，实体选择与属性
-                // 在资产工作区那张网格上），给一个按不动的卡加悬停描边是假 affordance。
-                // 资产总览网格那张卡有 `clicked` 才配 hover。
+                // ⚠️ 这里**曾经**是本仓第三处「宽高写进 kit::Rect 四参」的同型 bug：
+                //    四参是 (minX,minY,maxX,maxY)，写 (x,y,w,h) 时 max.x = cardW(~250)
+                //    < min.x(~296) ⇒ DrawShadowed 整块 return，卡片一张都没画、也点不到。
+                //    那个 bug **已修**（下面就是 RectAt），注释留着是因为前两处同型
+                //    （资产总览网格 / 底栏页签条）证明它会复发，而当初的
+                //    find-rect-wh-misuse.ps1 只认裸 `Rect{...}`、漏掉了本处这种声明式
+                //    `Rect name{...}`。写宽高一律 RectAt。
                 const Rect card = RectAt(modeBody.min.x + (cardW + 14.0f) * static_cast<float>(column),
                                          modeBody.min.y + 40.0f + 84.0f * static_cast<float>(row),
                                          cardW, 76.0f);
-                DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
+                // 选中态与资产总览网格 / 侧栏树 / 检查器**共用** BookState::selectedAsset：
+                // 写入口只有 SelectBookAsset 一条（它会顺带 RebuildBookSide，侧栏高亮
+                // 跟着走）。另存一份 `on` 局部选中态就是第 N 个「点这边亮那边」。
+                const bool on = (i == s.selectedAsset);
+                // ⚠️ 一次 HitTest 取齐 hovered + clicked，**不要** Hovered(idA) 再
+                //    Clicked(idB)：同一矩形上叠两个 InvisibleButton 时后者永远
+                //    clicked=false（本仓踩过），症状是「卡画得出来、怎么点都不动」。
+                //    描边规则照抄资产总览网格那张卡（.card:hover 把边框提到 accent-glow），
+                //    不另发明一套选中样式。
+                const Hit hit = HitTest(card, "novel-asset-" + std::to_string(i));
+                DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
+                             on ? ColorAccent()
+                                : (hit.hovered ? ColorAccentGlow() : ColorLineSubtle()),
+                             1.0f);
+                if (hit.clicked) {
+                    SelectBookAsset(i);
+                }
+                usedBottom = std::max(usedBottom, card.max.y);
                 const std::string name = a.name.empty() ? std::string(kDash) : a.name;
                 DrawTextClipped(draw, FontBoldAt(13.0f), 13.0f,
                                 ImVec2(card.min.x + 12.0f, card.min.y + 10.0f), cardW - 24.0f,
@@ -1432,13 +1559,21 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                       nodes);
             // ⚠️ 阶段**运行态**归总控页的 Runner（它持有 pipeline::Runner 与账本）。
             //    本页不复制一份进度 —— 所以全部 Todo，并在下面说明去哪看真状态。
-            StageList(draw, Rect{modeBody.min.x, modeBody.min.y + 48.0f, modeBody.max.x,
-                                 modeBody.max.y - 24.0f},
-                      nodes, "artifacts/");
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                            ImVec2(modeBody.min.x, modeBody.max.y - 18.0f), modeBody.width(),
+            //
+            //    阶段表是**正文流**：有多长就多长，不再撑满 2400 的布局区。原来写死
+            //    `modeBody.max.y - 24`，于是 T1–T17 只有十来行、框却有 2200px 高，
+            //    脚注被顶到 y2382 —— 要滚到最底才看得见，而上面全是空白。行高 34
+            //    与 StageList 内部一致（Views.cpp 的 rowH），多给 8px 收尾。
+            const float listTop = modeBody.min.y + 48.0f;
+            const float listH = 34.0f * static_cast<float>(nodes.size()) + 8.0f;
+            StageList(draw, Rect{modeBody.min.x, listTop, modeBody.max.x, listTop + listH}, nodes,
+                      "artifacts/");
+            // 脚注紧跟表底（不再是 `max.y - 18` 的锚点）。
+            const float footY = listTop + listH + 8.0f;
+            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(modeBody.min.x, footY), modeBody.width(),
                             ColorTextMuted(),
                             "这里只列阶段定义；真实运行进度与账本在「总控」页的 Runner 上。", true);
+            usedBottom = std::max(usedBottom, footY + 18.0f);
         }
     } else {
         // ---- 其余 5 个模式：业务层还没有对应的**只读投影**接口 ----
@@ -1453,6 +1588,18 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
         }
         Empty(draw, modeBody, "sparkles", "尚未接入业务层", missing);
     }
+
+    // ---- 自报本页真实内容高度 ----
+    //
+    // Shell 给的布局区是写死的 2400px，页面若按它铺内容，工作区就会多出上千 px
+    // 只能滚到空白的滚动范围（与总控页同一个问题，见 WorkspaceA.cpp 末尾的同名
+    // 调用）。这里报「实际画到的最底 + 一个 kGap 的余量」。
+    //
+    // ⚠️ 取 `max(实际底, 视口底)`：右栏的面板底与分隔线是按 `inspector.max.y`
+    //    （= 布局区底）画满的，只报正文底会在内容短的那几个模式下让右栏**悬空**，
+    //    下面露出一条没画的面板底。视口底是下限，不是「撑高」——
+    //    2400 那种把空盒子撑出来的做法正是这一行要根治的。
+    pages::SetPageContentHeight(std::max(usedBottom, ViewportBottom(area)) - area.min.y + kGap);
 
     // ---- 右栏：当前章的真实属性 ----
     DrawRoundRect(draw, inspector.min, inspector.max, 0.0f, ColorSurface());
@@ -2998,6 +3145,28 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
             OpenHubCard(hub, hub.cards[static_cast<std::size_t>(
                                  hub.shown[static_cast<std::size_t>(openIndex)])]);
         }
+    }
+
+    // ---- 自报栅格实际高度（Shell 的 `hub-scroll` 靠它才能滚）----
+    //
+    // ⚠️ 不报的话项目卡超过一屏就被裁掉**且滚不到**（1080 高窗口约 6 张，第 7 张
+    //    起够不着）。上一轮 Shell 那侧写的是 `setContentHeight(region.content().height())`
+    //    —— 上报值恰好等于视口高，等于上报了 0 行，ScrollMaxY 恒为 0。**看着加了、
+    //    实际等于没加**。Shell 侧现在有一次性哨兵会把这个报出来。
+    // 高度按栅格公式算（行数 = ceil(条目数/列数)），与上面画卡用的是同一套列宽算法。
+    {
+        float usedBottom;
+        if (hub.shown.empty()) {
+            usedBottom = grid.min.y + 260.0f;
+        } else {
+            constexpr float kHubCardH = 250.0f;
+            const int cols = std::max(1, AutoFillCols(grid.width(), 240.0f, 14.0f));
+            const int rowCount =
+                (static_cast<int>(hub.shown.size()) + cols - 1) / cols; // 向上取整
+            usedBottom = grid.min.y + (kHubCardH + 14.0f) * static_cast<float>(rowCount) - 14.0f;
+        }
+        // 与列首/计数行保持一致的下边界，向上多留 8px 收尾。
+        pages::SetPageContentHeight(usedBottom - area.min.y + 8.0f);
     }
 
     // ---- 弹窗：确认 > 向导 > 打开项目 ----

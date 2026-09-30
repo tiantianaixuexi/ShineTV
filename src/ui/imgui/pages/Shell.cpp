@@ -1250,47 +1250,60 @@ void Shell::DrawDock(Rect area, ImDrawList* draw) {
 void Shell::DrawDockQueue(Rect body, ImDrawList* draw) {
     const std::vector<comfy::QueueModel::Row> rows =
         comfy::ComfySession::Instance().Queue().Snapshot();
-    float y = body.min.y;
-    for (const comfy::QueueModel::Row& row : rows) {
-        if (y + 30.0f > body.max.y) {
-            break;
+    // ⚠️ 画**全部**条目，超出由 ScrollRegion 滚 —— 原来这里是
+    //    `if (y + 30.0f > body.max.y) break;`，队列有 50 个任务时只画前 6 个，
+    //    剩下的**无声消失**，界面上看不出还有 44 个。列表被截断且不提示 = 界面在骗人。
+    //    `tools\find-silent-truncation.ps1` 扫的就是这一族写法（全树 10 处）。
+    //
+    // 队列顺序是 Comfy 那边定的（运行中在前），所以从**顶部**开始画、不做尾部窗口。
+    constexpr float kQueueRowH = 32.0f;
+    constexpr float kQueueFootH = 18.0f;
+    kit::ScrollRegion list("dock-queue-list", body);
+    if (list) {
+        // 内容必须画在 child **自己的** draw list 上：BeginChild 的裁剪矩形只写进
+        // 它自己那条 list（见 Scroll.h 的说明）。
+        ImDrawList* ldraw = list.drawList();
+        const Rect inner = list.content();
+        float y = inner.min.y;
+        for (const comfy::QueueModel::Row& row : rows) {
+            const bool running = row.state == comfy::TaskState::Running;
+            const bool failed = row.state == comfy::TaskState::Failed;
+            const Rect line{inner.min.x, y, inner.max.x, y + 30.0f};
+            if (HitTest(line, "dock-q-" + row.promptId).hovered) {
+                DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
+            }
+            StatusDot(ldraw, ImVec2(line.min.x + 4.0f, line.center().y),
+                      failed ? theme::Tone::Danger : (running ? theme::Tone::Busy : theme::Tone::Idle),
+                      running);
+            DrawTextClipped(ldraw, FontAt(12.0f), 12.0f, ImVec2(line.min.x + 16.0f, y + 3.0f), 220.0f,
+                            ColorTextSecondary(),
+                            row.label.empty() ? row.promptId : row.label);
+            // 细进度 + 百分比：走 QueueModel 的真实 progress，不是写死的 42。
+            const float pct = row.progress * 100.0f;
+            Progress(ldraw, Rect{line.min.x + 248.0f, y + 12.0f, line.min.x + 408.0f, y + 16.0f}, pct,
+                     running, true);
+            if (row.progressMax > 0) {
+                const std::string p = std::to_string(row.progressValue) + "/" +
+                                      std::to_string(row.progressMax) + " · " +
+                                      std::to_string(static_cast<int>(pct)) + "%";
+                DrawTextClipped(ldraw, MonoAt(10.5f), 10.5f,
+                                ImVec2(line.min.x + 416.0f, y + 4.0f), 180.0f, ColorTextMuted(), p);
+            }
+            const Rect tagBox = RectAt(line.max.x - TagWidth("", true, false) - 6.0f, y + 6.0f,
+                                       TagWidth("", true, false), TagHeight(true));
+            Tag(ldraw, tagBox, failed ? "失败" : (running ? "运行中" : "排队"),
+                failed ? theme::Tone::Danger : (running ? theme::Tone::Busy : theme::Tone::Idle), true);
+            y += kQueueRowH;
         }
-        const bool running = row.state == comfy::TaskState::Running;
-        const bool failed = row.state == comfy::TaskState::Failed;
-        const Rect line{body.min.x, y, body.max.x, y + 30.0f};
-        if (HitTest(line, "dock-q-" + row.promptId).hovered) {
-            DrawRoundRect(draw, line.min, line.max, 6.0f, ColorFillHover());
-        }
-        StatusDot(draw, ImVec2(line.min.x + 4.0f, line.center().y),
-                  failed ? theme::Tone::Danger : (running ? theme::Tone::Busy : theme::Tone::Idle),
-                  running);
-        DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(line.min.x + 16.0f, y + 3.0f), 220.0f,
-                        ColorTextSecondary(),
-                        row.label.empty() ? row.promptId : row.label);
-        // 细进度 + 百分比：走 QueueModel 的真实 progress，不是写死的 42。
-        const float pct = row.progress * 100.0f;
-        Progress(draw, Rect{line.min.x + 248.0f, y + 12.0f, line.min.x + 408.0f, y + 16.0f}, pct,
-                 running, true);
-        if (row.progressMax > 0) {
-            const std::string p = std::to_string(row.progressValue) + "/" +
-                                  std::to_string(row.progressMax) + " · " +
-                                  std::to_string(static_cast<int>(pct)) + "%";
-            DrawTextClipped(draw, MonoAt(10.5f), 10.5f,
-                            ImVec2(line.min.x + 416.0f, y + 4.0f), 180.0f, ColorTextMuted(), p);
-        }
-        const Rect tagBox = RectAt(line.max.x - TagWidth("", true, false) - 6.0f, y + 6.0f,
-                                   TagWidth("", true, false), TagHeight(true));
-        Tag(draw, tagBox, failed ? "失败" : (running ? "运行中" : "排队"),
-            failed ? theme::Tone::Danger : (running ? theme::Tone::Busy : theme::Tone::Idle), true);
-        y += 32.0f;
+        ImFont* f = FontAt(10.5f);
+        const std::string foot =
+            rows.empty()
+                ? "队列为空 · Comfy 未提交任务（或未连接）"
+                : "共 " + std::to_string(rows.size()) + " 个任务 · 队列由出图 / 出片 / 小说生成共享";
+        DrawTextClipped(ldraw, f, 10.5f, ImVec2(inner.min.x, y + 2.0f), inner.width(),
+                        ColorTextMuted(), foot);
+        list.setContentHeight(y + kQueueFootH - inner.min.y);
     }
-
-    ImFont* f = FontAt(10.5f);
-    const std::string foot = rows.empty()
-                                 ? "队列为空 · Comfy 未提交任务（或未连接）"
-                                 : "队列由出图 / 出片 / 小说生成共享";
-    draw->AddText(f, 10.5f, ImVec2(body.min.x, y + 4.0f), ColorTextMuted(), foot.data(),
-                  foot.data() + foot.size());
 }
 
 // ---------------------------------------------------------------- P4.6b 日志
@@ -1302,14 +1315,22 @@ void Shell::DrawDockLogs(Rect body, ImDrawList* draw) {
               "terminal", "暂无日志", "启动流水线或打开产物后，这里会实时滚动");
         return;
     }
-    // 最新的在下面（webui 勾到底），行高 18，超出按行数裁。
-    const int maxRows = std::max(1, static_cast<int>((body.height() - 4.0f) / 18.0f));
-    const int first = std::max(0, static_cast<int>(logLines_.size()) - maxRows);
+    // 最新的在下面（webui 勾到底），行高 18，按行数裁。
+    //
+    // ⚠️ 这里**保留**尾部窗口（不改成滚动）：日志是「跟随最新」的流，每来一行就
+    //    把用户拽到底部会和「往上翻看历史」打架（真做跟随还要判断用户是否已在底部，
+    //    那是另一件事）。但**必须写明裁了多少** —— 原来只有一句注释，界面上看不出
+    //    更早的行存在过，那和队列那边一样属于「静默截断」。
+    // scan:allow-silent-truncation 日志流按设计只保留最近 N 行，界面上已写明总行数
+    constexpr float kLogRowH = 18.0f;
+    const int maxRows = std::max(1, static_cast<int>((body.height() - 22.0f) / kLogRowH));
+    const int total = static_cast<int>(logLines_.size());
+    const int first = std::max(0, total - maxRows);
     float y = body.min.y;
-    for (int i = first; i < static_cast<int>(logLines_.size()); ++i) {
+    for (int i = first; i < total; ++i) {
         draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(body.min.x, y), ColorTextSecondary(),
                       logLines_[static_cast<std::size_t>(i)].c_str(), nullptr);
-        y += 18.0f;
+        y += kLogRowH;
     }
     if (runActive_) {
         // 运行中在末尾留一个闪烁光标块（Shell.jsx:236 的 log-caret）。
@@ -1318,6 +1339,12 @@ void Shell::DrawDockLogs(Rect body, ImDrawList* draw) {
             DrawRoundRect(draw, ImVec2(body.min.x, y + 3.0f), ImVec2(body.min.x + 7.0f, y + 15.0f),
                           1.0f, ColorAccent());
         }
+    }
+    if (total > maxRows) {
+        DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(body.min.x, body.max.y - 14.0f),
+                        body.width(), ColorTextMuted(),
+                        "共 " + std::to_string(total) + " 行 · 这里只显示最近 " +
+                            std::to_string(maxRows) + " 行");
     }
 }
 
@@ -2210,6 +2237,9 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     // 页面要自建视口（侧栏 / 面板 / 列）时必须知道**真正能看见多少**，
     // 而不是下面那个 2400 的布局区高。见 WorkspacePages.h 的说明。
     pages::SetWorkspaceViewportHeight(origin.height());
+    // 每帧清一次：上一页面自报的内容高**不能**被这一页继承（否则切工作区后滚动
+    // 范围会停在上一页的值上）。没自报的页面这一帧读到 0，退回 2400。
+    pages::ResetPageContentHeight();
 
     switch (layout_.workspace) {
     case 0: DrawOverview(view, draw); break;
@@ -2221,10 +2251,14 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     default: gallery_.Draw(view, draw); break;
     }
     // ⚠️ 这行是整个外壳**唯一**让工作区能滚的地方，缺了它滚轮怎么转都停在原地。
-    //    页面是纯自绘的，全程没给 ImGui 提交过 item，`view` 的 2400 只是个局部变量，
-    //    ImGui 不知道，于是 ContentSize=0 → ScrollMaxY=0 → 视口以下的内容被裁掉
-    //    且**无法到达**（实测：分镜页 5 个镜头里第 3 个起就够不着）。
-    region.setContentHeight(view.height());
+    //    页面是纯自绘的，全程没给 ImGui 提交过 item，高度必须显式报上去。
+    //
+    //    高度优先用页面**自报的真实内容高**（`SetPageContentHeight`），没有自报的
+    //    页面退回 2400 的布局区。2400 是「够用」不是「刚好」：页面若按它铺卡片就会
+    //    铺出巨型空盒子（实测总控页「账本」卡 1750px 高、只有 6 行），并让工作区
+    //    多出上千 px 只能滚到空白的滚动范围。
+    const float reported = pages::PageContentHeight();
+    region.setContentHeight(reported > 0.0f ? reported : view.height());
 }
 
 // ---------------------------------------------------------------- P4.6c 产物
@@ -2998,9 +3032,27 @@ void Shell::DrawProjectHubScreen(Rect area, ImDrawList* draw) {
     if (!region) {
         return;
     }
+    // 内容高度由 DrawProjectHub **自报**（`SetPageContentHeight`）—— 只有它知道栅格
+    // 排了几行、每行多高。
+    //
+    // ⚠️ 这里**不能**回退成「上报视口高」。上一版写的正是
+    //    `setContentHeight(region.content().height())` —— 上报值恰好等于视口高 ⇒
+    //    ScrollMaxY 恒为 0 ⇒ 项目超过一屏就被裁掉且滚不到（1080 高窗口约 6 张，
+    //    第 7 张起够不着）。**看着加了、实际等于没加**，是「改了但没生效」最典型的形态：
+    //    编译器不报错、像素看不出来，只有真去滚才发现。
+    pages::ResetPageContentHeight();
     DrawProjectHub(region.content(), ImGui::GetWindowDrawList());
-    // 同上：自绘内容不会自己告诉 ImGui 有多高，不报就永远滚不动。
-    region.setContentHeight(region.content().height());
+    const float hubContentH = pages::PageContentHeight();
+    if (hubContentH <= 0.0f) {
+        // 只报一次。真没上报时这属于覆盖洞（项目卡够不着），静默返回等于把它藏起来。
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            shine::log::Error("hub-scroll: DrawProjectHub 没上报内容高度 —— "
+                              "项目卡超过一屏就滚不到（ScrollMaxY 恒为 0）");
+        }
+    }
+    region.setContentHeight(hubContentH);
 }
 
 } // namespace shine::pages

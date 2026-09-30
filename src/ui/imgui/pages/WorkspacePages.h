@@ -60,6 +60,21 @@ void SetWorkspaceViewportHeight(float height);
 // 尚未被 Shell 写入时返回 0 —— 页面据此退回「布局区就是视口」的旧行为。
 float WorkspaceViewportHeight();
 
+// ---- 页面**真实内容高度**（页面写、Shell 每帧读一次）----
+//
+// `Shell::DrawWorkspace` 给页面的布局区是写死的 2400px（满幅画布页除外），好让
+// 「内容超出视口仍能被滚到」。但 2400 只是**上限**，不是页面的真实高度：页面若按
+// 它铺内容，卡片就会被撑成巨型空盒子（实测总控页「账本」卡 1750px 高、只有 6 行，
+// 顺带多出约 1450px 的无效滚动）。
+//
+// 页面画完把自己**实际用到的高度**写进来，Shell 就用它替代 2400 作为滚动区高度。
+// 没写的页面（返回 0）退回 2400，行为不变 —— 这样可以逐页迁移，不是一次性大改。
+void SetPageContentHeight(float height);
+// 上一帧某页面自报的内容高度；0 = 没报。
+float PageContentHeight();
+// Shell 每帧在分发页面前清一次，避免上一页的残留值被这一页继承。
+void ResetPageContentHeight();
+
 // ---- 小说 / 资产 / 分镜：绑定"当前工程根"（照 BindOverviewProject 的模式）----
 //
 // 三个页面共用同一份 **novel.db 快照**：开库 + 查询全在 worker 线程

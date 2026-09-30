@@ -513,6 +513,48 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         kit::ScrollRegion::RequestScrollTop("ov-right");
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
+        // ---- 工作区主滚动区（workspace-scroll）也要验 ----
+        //
+        // ⚠️ 上一轮只验了 `ov-right`，而**工作区才是主滚动区** —— 修好 `setContentHeight`
+        //    之后它才第一次真的能滚，却没有任何探针。一个没人验的滚动区等于没有。
+        //    这条还顺带把「页面自报内容高度」顶替 2400 这件事验了：期望上限变小 ⇒
+        //    滚动范围跟着内容走，而不是那 1700px 的空盒子。
+        kit::ScrollRegion::RequestScrollTop("ov-right");
+        kit::ScrollRegion::RequestScrollTop("workspace-scroll");
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        kit::ScrollRegion::RequestScrollBottom("workspace-scroll");
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        const kit::ScrollRegion::ScrollApplied ws = kit::ScrollRegion::LastApplied();
+        if (ws.id != "workspace-scroll") {
+            shine::log::Error(
+                "review: workspace-scroll 的滚动请求从没被核销（id=\"{}\"）—— 工作区滚不动，"
+                "任何超出视口的内容都够不着", ws.id);
+            result.scrollFailed = true;
+        } else if (ws.maxScrollY <= 0.0f) {
+            shine::log::Error(
+                "review: workspace-scroll 期望滚动上限=0（自报内容高={:.1f} / 可视高={:.1f}）"
+                " —— 页面没上报内容高度（退回 2400 兜底）或内容确实没超出",
+                ws.contentHeight, ws.viewHeight);
+            result.scrollFailed = true;
+        } else if (!ws.ok) {
+            shine::log::Error(
+                "review: workspace-scroll 滚到底失败：scrollY={:.1f} / 期望上限={:.1f}"
+                "（ImGui 侧={:.1f}）", ws.scrollY, ws.maxScrollY, ws.imGuiMaxScrollY);
+            result.scrollFailed = true;
+        } else if (ws.imGuiMaxScrollY < ws.maxScrollY - 1.0f) {
+            shine::log::Error(
+                "review: workspace-scroll 内容高度没报给 ImGui（期望上限={:.1f} / ImGui 侧={:.1f}）"
+                " —— 滚轮无法滚动", ws.maxScrollY, ws.imGuiMaxScrollY);
+            result.scrollFailed = true;
+        } else {
+            shine::log::Info("review: workspace-scroll 可滚 自报内容高={:.1f} 可视高={:.1f} 上限={:.1f}",
+                             ws.contentHeight, ws.viewHeight, ws.maxScrollY);
+        }
+        grabDriven("overview-scrolled", overview, base);
+        kit::ScrollRegion::RequestScrollTop("workspace-scroll");
+        kit::ScrollRegion::RequestScrollTop("ov-right");
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+
         // 两个模态状态拍的是**不同内容**（一份有未过项、一份有未核对项），
         // 于是它们既不该与列表图相同，也不该彼此相同。
         shell.SetReportDetail(1);

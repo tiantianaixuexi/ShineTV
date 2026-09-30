@@ -9,6 +9,7 @@
 #include "pipeline/Runner.h"
 #include "pipeline/StageMachine.h"
 #include "pipeline/StopPolicy.h"
+#include "novel/NovelRunLoop.h"
 #include "ui/imgui/kit/Scroll.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
@@ -527,13 +528,12 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     // 旧版是 `(i*3)%8` 的假跨度 + 只有"在/不在跨度"两态。现在三态都来自真实状态：
     // 账本里有 → done(ok)，正在跑 → run(accent)，被规则卡住 → stop(danger)，其余 todo。
     constexpr int kGanttCols = 8;
-    // 卡高 = 卡头 44 + 列头 20 + 行 22×N + 脚注 16 + 卡脚 16。窄窗口先砍行数。
-    const float ledgerMinH = 130.0f;
-    int ganttRows = std::min(totalStages, kGanttCols);
-    while (ganttRows > 1 &&
-           96.0f + 22.0f * static_cast<float>(ganttRows) > left.height() - kGap - ledgerMinH) {
-        --ganttRows;
-    }
+    // 行数只受**列数**限制（8 等分桶是设计稿定的），不再有「窄窗口先砍行数」：
+    // 那个循环拿 `left.height() - kGap - ledgerMinH` 当预算，而 `left` 的下边界
+    // 来自 Shell 的 2400 布局区，预算恒大于卡高 ⇒ 循环**永远不触发**，是死代码；
+    // 它记的还是「甘特与账本挤在同一列固定高度里」那个已经被拆掉的布局。
+    // 现在账本卡按内容定高、内容超出由工作区滚动（真能滚了），行数无需为它让位。
+    const int ganttRows = std::min(totalStages, kGanttCols);
     const Rect gantt{left.min.x, left.min.y, left.max.x,
                      left.min.y + 96.0f + 22.0f * static_cast<float>(ganttRows)};
     Rect ganttBody = Card(draw, gantt, "全书甘特 · 阶段链", "grid", false, false);
@@ -590,7 +590,23 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     }
 
     // ---- 账本：input_hash 直接用 Ledger 记下来的值（不再拼 "T1-a91f2c"）----
-    const Rect ledger{left.min.x, gantt.max.y + kGap, left.max.x, left.max.y};
+    //
+    // ⚠️ 卡高按**内容**算，不再拉到 `left.max.y`（= Shell 给的 2400 布局区底）。
+    //    拉满的后果实测是一张 **1750px 高、只有 6 行**的卡：6 行数据浮在顶上，
+    //    下面 1450px 全是空背景，顺带让工作区多出约 1450px 的无效滚动 —— 滚到底
+    //    只能看到一片空盒子。**卡高跟着内容走，需要滚动交给工作区**（现在它真能滚了）。
+    const int ledgerTotal = static_cast<int>(s.entries.size());
+    constexpr int kLedgerMaxRows = 14;
+    const int ledgerShown = std::min(ledgerTotal, kLedgerMaxRows);
+    // 卡高 = 头 44 + 列头 18 + 行 22×N + 脚注 14 + 汇总行 16 + 卡脚 16
+    const float ledgerBodyH =
+        s.entries.empty()
+            ? 24.0f
+            : 18.0f + 22.0f * static_cast<float>(ledgerShown) +
+                  (ledgerTotal > ledgerShown ? 14.0f : 0.0f) + 16.0f;
+    const float ledgerH = 44.0f + ledgerBodyH + 16.0f;
+    const float ledgerTop = gantt.max.y + kGap;
+    const Rect ledger{left.min.x, ledgerTop, left.max.x, ledgerTop + ledgerH};
     Rect ledgerBody = Card(draw, ledger, "账本 · 成本 / 调用 / 降级", "list", false, false);
     if (s.entries.empty()) {
         DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(ledgerBody.min.x, ledgerBody.min.y),
@@ -610,10 +626,10 @@ void DrawOverview(Rect area, ImDrawList* draw) {
                           text + std::strlen(text));
         }
         const float rowH = 22.0f;
-        const int maxRows =
-            std::max(1, static_cast<int>((ledgerBody.height() - 34.0f) / rowH));
-        const int shown = std::min(static_cast<int>(s.entries.size()), maxRows);
-        const int first = static_cast<int>(s.entries.size()) - shown;
+        // 「显示最后 N 条」是按**行数上限**定的，不再按「可用高度」反推 ——
+        // 可用高度依赖那张被撑到 2400 的卡，是循环论证。
+        const int shown = ledgerShown;
+        const int first = ledgerTotal - shown;
         float ly = ledgerBody.min.y + 18.0f;
         for (int i = first; i < static_cast<int>(s.entries.size()); ++i) {
             const auto& entry = s.entries[static_cast<std::size_t>(i)];
@@ -634,23 +650,75 @@ void DrawOverview(Rect area, ImDrawList* draw) {
             }
             ly += rowH;
         }
-        if (static_cast<int>(s.entries.size()) > shown) {
+        if (ledgerTotal > shown) {
+            // 脚注位置跟着行数走（脚注那 14px 已经算进卡高了），不再用 max.y - 24。
             DrawTextClipped(draw, FontAt(11.0f), 11.0f,
-                            ImVec2(ledgerBody.min.x, ledgerBody.max.y - 24.0f), ledgerBody.width(),
+                            ImVec2(ledgerBody.min.x, ly + 2.0f), ledgerBody.width(),
                             ColorTextMuted(),
-                            "共 " + std::to_string(static_cast<int>(s.entries.size())) + " 条，显示最后 " +
+                            "共 " + std::to_string(ledgerTotal) + " 条，显示最后 " +
                                 std::to_string(shown) + " 条");
+            ly += 14.0f;
         }
         DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                        ImVec2(ledgerBody.min.x, ledgerBody.max.y - 8.0f), ledgerBody.width(),
+                        ImVec2(ledgerBody.min.x, ly + 2.0f), ledgerBody.width(),
                         ColorTextMuted(),
-                        "阶段产物 " + std::to_string(static_cast<int>(s.entries.size())) +
+                        "阶段产物 " + std::to_string(ledgerTotal) +
                             " · LLM 调用 " + std::to_string(s.budget.llm_calls) + " · 高档 " +
                             std::to_string(s.budget.high_quality_calls) + " · 镜头 " +
                             std::to_string(s.budget.shots) + " · 估算成本 " + Money(s.budget.cost));
     }
 
-    // ---- 右列：停止条件 / 最近产物 / 运行信息 ----
+    // ---- 停止条件 · S1–S12（`09` §2.2 的真实规则表），**左列整宽** ----
+    //
+    // ⚠️ 早先这里写着一句「设计稿的 S1–S12 来自 mock.js，`StopPolicy` 只判 5 组、
+    //    没有可枚举的规则表接口，所以不硬凑 12 行」。**那个结论是错的**，而且错得
+    //    有害：真实的 S 编号就在 `shine::novelcore` 里，是三个公开的自由函数
+    //    （`src/novel/NovelRunLoop.h:43-48`）：
+    //      StopCode（S1…S12）/ StopCodeName / StopCodeCondition / StopCodeHint
+    //    实现在 `NovelRunLoop.cpp:102-138` 逐条落地，阈值（>=2 次、>2×、>=5 次、
+    //    >=500 条…）都写在那十二条中文判据里。**零 shine_core 改动。**
+    //
+    //    错因是**编号撞名**：`src/pipeline/StopPolicy.cpp:7-11` 的字面量也叫
+    //    「S1–S4 预算」/ S5 / S6 / S7 / S8，那是另一套 5 组判定。旧实现照着它把
+    //    「LLM 调用 0/1000」标成 S1 —— 于是同一个 S1 在领域文档里是「机器校验连续
+    //    失败 >= 2 次」，在界面上却是「LLM 调用预算」。**这不是少了个功能，是误导。**
+    //
+    //    放**左列整宽**而不是右栏：这些判据句子长（「Comfy 不可用且本章需要出图：
+    //    探活失败 >= 3 次（间隔 5s）」），塞进 300px 的右栏会被裁掉后半句 ——
+    //    规则表被截断等于没写。右栏留给「流水线停止规则」（实时预算状态）。
+    constexpr int kStopRuleCount = 12;
+    constexpr float kStopRuleRowH = 20.0f;
+    const float s12H = 44.0f + 16.0f + kStopRuleRowH * kStopRuleCount + 16.0f;
+    const float s12Top = ledger.max.y + kGap;
+    const Rect s12{content.min.x, s12Top, content.max.x, s12Top + s12H};
+    Rect s12Body = Card(draw, s12, "停止条件 · S1–S12", "alert", false, false);
+    float sry = s12Body.min.y;
+    for (int i = 1; i <= kStopRuleCount; ++i) {
+        const novelcore::StopCode code = static_cast<novelcore::StopCode>(i);
+        const std::string codeText(novelcore::StopCodeName(code));
+        const std::string_view cond = novelcore::StopCodeCondition(code);
+        const std::string_view hint = novelcore::StopCodeHint(code);
+        draw->AddText(MonoAt(11.0f), 11.0f, ImVec2(s12Body.min.x, sry + 1.0f), ColorTextMuted(),
+                      codeText.data(), codeText.data() + codeText.size());
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(s12Body.min.x + 34.0f, sry),
+                        s12Body.width() * 0.56f, ColorTextSecondary(), cond, true);
+        // 右半列给「停下后该做什么」（`StopCodeHint`）—— 判据说明**什么时候停**，
+        // 提示说明**停下之后怎么办**，两者缺一这条规则就没法用。
+        DrawTextClipped(draw, FontAt(11.0f), 11.0f,
+                        ImVec2(s12Body.min.x + s12Body.width() * 0.58f, sry),
+                        s12Body.width() * 0.42f, ColorTextMuted(), hint, true);
+        sry += kStopRuleRowH;
+    }
+    // ⚠️ 诚实标注：这是**规则表**，不是实时状态。真正的逐条判定发生在
+    //    `novelcore::EvaluateStop`，它要一整轮跑出来的现场数字（各 check_id 失败
+    //    次数、评审 FAIL 累计、引用缺失计数…），而本页没有跑起来的章，没有那些数。
+    //    画成「已触发 / 未触发」就是编状态 —— 那正是本轮清掉的那类假数据。
+    DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(s12Body.min.x, sry + 2.0f),
+                    s12Body.width(), ColorTextMuted(),
+                    "规则表（`09` §2.2，novelcore::StopCodeCondition / StopCodeHint）。"
+                    "逐条判定发生在跑完一章之后，本页没有现场数字，故不标触发状态。");
+
+    // ---- 右列：流水线停止规则 / 最近产物 / 运行信息 / 章节 × V 阶段 ----
     //
     // ⚠️ 这里原来用「每张卡各自 `max(下限, 剩余)`」分高度，右栏是**重叠**的：
     //    右栏可用高约 247px，而三张卡的下限之和是
@@ -671,6 +739,11 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     // 「章节 × V 阶段」矩阵（数据层 `BookSideView::chapterVStages` 已接好）之所以
     // 放不下，也是同一个原因：右栏在这个窗口高度下塞不下第四张卡。它留在数据层，
     // 等布局重排（压 KPI 行高 / 加高窗口）后直接画，见 refactor/PROGRESS.md。
+    //
+    // ⚠️ 上面那段注释的结论已经过期：矩阵现已渲染在下面。它当时记的「放不下」建立
+    //    在一个**从未生效**的机制上（右栏的 ScrollRegion 当时根本不能滚），所以
+    //    「放不下」是必然的而不是设计约束。留在这里提醒别再拿它当结论。
+    float rightBottomUsed = gridTop;
     ScrollRegion rightScroll("ov-right", rightCol);
     if (rightScroll) {
         // ⚠️ 右栏整块必须画在 **child 自己的** draw list 上。
@@ -685,56 +758,57 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         float ry = rc.min.y;
         const pipeline::StopDecision decision = EvaluateStopPolicy(s.budget);
         const bool hasReason = decision.stop && !decision.reason.empty();
-
-        // 停止条件：真实判定 + S1–S4 的真实阈值。
-        // ⚠️ 设计稿的「S1–S12」清单来自 mock.js；src/pipeline/StopPolicy 只判
-        // 「S1–S4 预算」/S5/S6/S7/S8 五组，且**没有可枚举的规则表接口**
-        // （与 Qt 版 src/ui/pages/pipeline/PipelineWorkspace 同一个结论）。
-        // 所以这里不硬凑 12 行：画真实判定 + 真实阈值 + 一行前置状态。
-        const float stopH = 44.0f + 20.0f + (hasReason ? 30.0f : 0.0f) + 4.0f * 20.0f + 28.0f;
-        const Rect stop{rc.min.x, ry, rc.max.x, ry + stopH};
-        Rect stopBody = Card(cdraw, stop, "停止条件 · S1–S8", "alert", false, false);
-        ry = stop.max.y + kGap;
-        float sy = stopBody.min.y;
-        StatusDot(cdraw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
-                  decision.stop ? theme::Tone::Warn : theme::Tone::Ok, false);
         const std::string verdict =
             decision.stop ? decision.rule : std::string("未触发任何停止条件");
-        cdraw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 16.0f, sy),
-                      decision.stop ? ColorOf(theme::Current().statusWarn)
-                                    : ColorOf(theme::Current().statusOk),
-                      verdict.data(), verdict.data() + verdict.size());
-        sy += 20.0f;
+
+        // ---- 卡 1：流水线停止规则（预算 + 前置条件，**不用 S 编号**）----
+        //
+        // 与左栏那张「停止条件 · S1–S12」**不是同一套编号**：`pipeline::StopPolicy`
+        // 判 5 组（预算 / LLM 前置 / Comfy 前置 / 交叉复核 / 场景门禁），与 `09` §2.2
+        // 的 S1–S12 是两回事。旧实现两边都用 S 开头，于是「S1」在这张卡里指 LLM 调用
+        // 预算、在左栏那张卡里指机器校验连续失败 —— 同一个代号两个意思。
+        const float budgetH = 44.0f + 20.0f + (hasReason ? 30.0f : 0.0f) + 4.0f * 20.0f + 28.0f;
+        const Rect budget{rc.min.x, ry, rc.max.x, ry + budgetH};
+        Rect budgetBody = Card(cdraw, budget, "流水线停止规则", "list", false, false);
+        ry = budget.max.y + kGap;
+        float by = budgetBody.min.y;
+        StatusDot(cdraw, ImVec2(budgetBody.min.x + 4.0f, by + 6.0f),
+                  decision.stop ? theme::Tone::Warn : theme::Tone::Ok, false);
+        cdraw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(budgetBody.min.x + 16.0f, by),
+                       decision.stop ? ColorOf(theme::Current().statusWarn)
+                                     : ColorOf(theme::Current().statusOk),
+                       verdict.data(), verdict.data() + verdict.size());
+        by += 20.0f;
         if (hasReason) {
-            DrawTextClipped(cdraw, FontAt(11.5f), 11.5f, ImVec2(stopBody.min.x, sy),
-                            stopBody.width(), ColorTextMuted(), decision.reason, true);
-            sy += 30.0f;
+            DrawTextClipped(cdraw, FontAt(11.5f), 11.5f, ImVec2(budgetBody.min.x, by),
+                            budgetBody.width(), ColorTextMuted(), decision.reason, true);
+            by += 30.0f;
         }
-        // S1–S4 就是 Budget 的四个上限，顺序与 StopReportView 一致
+        // 四个上限就是 Budget 的四个字段（`src/pipeline/Budget.h`），顺序与旧
+        // StopReportView 一致。刻意不编 S 编号 —— 上面那张卡已经把 S1–S12 占给真规则了。
         const std::vector<std::pair<std::string, std::string>> thresholds = {
-            {"S1", "LLM 调用 " + std::to_string(s.budget.llm_calls) + " / " +
-                       std::to_string(s.budget.max_llm_calls)},
-            {"S2", "高档 " + std::to_string(s.budget.high_quality_calls) + " / " +
-                       std::to_string(s.budget.max_high_quality_calls)},
-            {"S3", "镜头 " + std::to_string(s.budget.shots) + " / " +
-                       std::to_string(s.budget.max_shots)},
-            {"S4", "成本 " + Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
+            {"LLM 调用", std::to_string(s.budget.llm_calls) + " / " +
+                             std::to_string(s.budget.max_llm_calls)},
+            {"高档调用", std::to_string(s.budget.high_quality_calls) + " / " +
+                              std::to_string(s.budget.max_high_quality_calls)},
+            {"镜头", std::to_string(s.budget.shots) + " / " + std::to_string(s.budget.max_shots)},
+            {"成本", Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
         };
         for (const auto& [code, name] : thresholds) {
-            StatusDot(cdraw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
+            StatusDot(cdraw, ImVec2(budgetBody.min.x + 4.0f, by + 6.0f),
                       overBudget ? theme::Tone::Warn : theme::Tone::Idle, false);
-            cdraw->AddText(MonoAt(11.5f), 11.5f, ImVec2(stopBody.min.x + 16.0f, sy + 1.0f),
-                          ColorTextMuted(), code.data(), code.data() + code.size());
-            DrawTextClipped(cdraw, FontAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 48.0f, sy),
-                            stopBody.width() - 48.0f, ColorTextSecondary(), name);
-            sy += 20.0f;
+            DrawTextClipped(cdraw, FontAt(12.5f), 12.5f, ImVec2(budgetBody.min.x + 16.0f, by),
+                            budgetBody.width() - 16.0f, ColorTextSecondary(), code);
+            DrawTextClipped(cdraw, FontAt(12.0f), 12.0f, ImVec2(budgetBody.min.x + 90.0f, by),
+                            budgetBody.width() - 90.0f, ColorText(), name);
+            by += 20.0f;
         }
         DrawTextClipped(
-            cdraw, FontAt(11.0f), 11.0f, ImVec2(stopBody.min.x, sy + 4.0f), stopBody.width(),
+            cdraw, FontAt(11.0f), 11.0f, ImVec2(budgetBody.min.x, by + 4.0f), budgetBody.width(),
             ColorTextMuted(),
-            std::string("S5 LLM ") + (LlmConfigured() ? "已配置" : "未配置") + " · S6 ComfyUI " +
-                (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") + " · S7 复核 " +
-                (CrossReviewConfigured() ? "已配置" : "未配置") + " · S8 Scene 未查询 novel.db",
+            std::string("前置 · LLM ") + (LlmConfigured() ? "已配置" : "未配置") + " · ComfyUI " +
+                (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") + " · 交叉复核 " +
+                (CrossReviewConfigured() ? "已配置" : "未配置") + " · Scene 未查询 novel.db",
             true);
 
         // 最近产物（webui Overview.jsx:132-157 整块）
@@ -902,7 +976,19 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         // （ScrollMaxY 恒为 0），四张卡里视口以下的三张永远够不着。上面「溢出交给
         // ScrollRegion 滚动」这句话指的就是这一行。
         rightScroll.setContentHeight(ry - rc.min.y);
+        rightBottomUsed = ry; // 供下面自报页面内容高度用（绝对屏幕 y）
     }
+
+    // ---- 自报本页真实内容高度 ----
+    //
+    // Shell 给的布局区是写死的 2400px（本页在 2400 里排版），但 2400 不是本页的
+    // 真实高度。真实高度 = 左右两列**实际画到的最底**，多给一个 kGap 让最后一张卡
+    // 离页面底有点余量。Shell 拿它当工作区滚动区高度，滚动范围从此跟着内容走。
+    //
+    // ⚠️ 取 `max(左, 右)` 而不是右列的 `ry`：左列的账本卡通常比右栏**更深**，
+    //    只报右列会让工作区把左列的账本卡底裁掉（外层 child 按上报的高度裁）。
+    pages::SetPageContentHeight(std::max(std::max(ledger.max.y, s12.max.y), rightBottomUsed) -
+                                area.min.y + kGap);
 }
 
 // ================================================================ P5.2 小说 / P5.3 资产
