@@ -1,6 +1,8 @@
-# check-layers.ps1 -- ShineTV Studio layering gate
+﻿# check-layers.ps1 -- ShineTV Studio layering gate
 #
-# Qt -> Dear ImGui refactor (see refactor/phases.md P0.3). Three rules:
+# Qt -> Dear ImGui refactor, step P0.3. The step list that used to live in
+# refactor/phases.md was removed with the rest of that tree (commit ddab612);
+# the gate itself is the only thing that has to keep working. Three rules:
 #
 # Rule 1 [qt-free]: no Qt header may appear anywhere under src/.
 #         P7 deleted the whole legacy Qt front end (src/ui/{app,kit,layout,

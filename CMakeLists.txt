@@ -11,7 +11,7 @@ endif()
 
 set(THIRD ${CMAKE_SOURCE_DIR}/third)
 
-# --- 前端（Dear ImGui，refactor/phases.md P0.2 引入、P7 定型）---
+# --- 前端（Dear ImGui；重构期引入、P7 定型）---
 #
 # P7 删掉了 SHINE_UI_QT 与整棵 Qt 树（src/ui/{kit,qml,pages,layout,verify,app}），
 # 现在**只有一个前端**：src/ui/imgui/**。不再有 find_package(Qt6) / AUTOMOC / AUTORCC，
@@ -408,7 +408,7 @@ if(MINGW)
 
   # C++26 静态反射（P2996）：GCC 16 必须显式开启，否则 <meta>/^^T 不可用。
   # 只对 C++ 源文件生效（C 源文件如 mimalloc/yyjson 不需要）。
-  # 静态反射写法与边界见 docs/30-engineering/coding-rules.md。
+  # 静态反射的写法与边界直接看 util::Reflect 的实现与它的调用点。
   # PUBLIC：Qt 前端（src/ui/app）同样需要反射（设置/主题序列化）。
   target_compile_options(shine_core PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 endif()
@@ -440,7 +440,7 @@ target_link_libraries(shine_core PUBLIC
 # ============================================================================
 # ImGui 前端 —— third/imgui + src/ui/imgui/**
 #
-# 目标分层（refactor/architecture.md §3）：
+# 目标分层：
 #   shine_core（零 Qt 零 ImGui，完全不动）
 #        ▲
 #   shine_imgui（静态库：theme / font / kit / host / pages / verify）

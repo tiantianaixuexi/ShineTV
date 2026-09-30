@@ -1,11 +1,12 @@
-param(
+﻿param(
     [string]$BuildDir = "build-pkg",
     [string]$OutDir = "dist/ShineTVStudio"
 )
 # ShineTV Studio (Dear ImGui) 打包
 # 产物: dist/ShineTVStudio/ShineTVStudio.exe + themes/ + MinGW 运行时
 #
-# 替掉 scripts/package-qt.ps1（P7.5）。两个实质差别：
+# 本脚本当年替掉的是 Qt 时代的打包脚本（已随 Qt 树一起删除，提交 ddab612）。
+# 记下它的两个实质差别，因为这两个坑都「编译得过、跑得起来、只是结果不对」：
 #   1. 旧脚本传 -DSHINE_QT_UI=ON —— 这个开关在 CMakeLists 里**从来不存在**
 #      （真名是 SHINE_UI_QT，且 P7 已连同 Qt 树一起删掉），所以它一直在静默地
 #      配出一个 ImGui 版再叫 windeployqt 去部署 Qt 运行库。
