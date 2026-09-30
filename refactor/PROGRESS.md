@@ -50,7 +50,7 @@ last_verified: 2026-09-30
 
 **整体：51 / 51 步完成。** 重构主干已结束；剩下的是**产品缺口**，见「下一步」与「没做的」。
 
-### 当前取证结论（2026-09-30 第三轮，实测）
+### 当前取证结论（2026-09-30 第四轮，实测）
 
 ```
 # shots: 80  failed: 0  scroll-failed: 0  identical-theme-pairs: 0  identical-driven-pairs: 0
@@ -59,8 +59,13 @@ last_verified: 2026-09-30
 overall=PASS          （manifest 的 overall ↔ 退出码一致：PASS↔0）
 ```
 
-门禁四条全绿：`check-layers PASS(0)` · `check-colors PASS(7 acknowledged)` · `check-theme PASS(5)` ·
-`check-i18n PASS`。
+门禁四条全绿：`check-layers PASS(0)` · `check-colors PASS(24 acknowledged)` · `check-theme PASS(5)` ·
+`check-i18n PASS`。三个扫描器各报 0（`find-silent-truncation` / `find-rect-wh-misuse` /
+`find-draw-arg-order`），且 `-SelfTest` 五个全过。
+
+⚠️ **`check-colors` 的 `7 → 24 acknowledged` 是第四轮关掉盲区的直接后果**（不是新写坏的）：
+判定面变宽后，17 处以前看不见的字面量浮出来，逐条看过并各自给了理由或修掉。
+拿第一二三轮的 `7 acknowledged` 当基线会以为退化了 —— 详情见「门禁自身的盲区」。
 
 ⚠️ **跑出这个 PASS 的前提是 `novel.db` fixture 在位**（见「视觉 1:1 符合性审计」末尾）。
 本轮之前它被删掉了，于是同一份代码只能跑出 `9/11 + FAIL` ——
@@ -351,6 +356,10 @@ manifest **已不在盘上**，所以它们现在只能当二手结论引用；�
 | 鼠标注入修好后（r92） | ✅ | 80 张 · `hover-probes 11/11` · `overall=PASS` |
 | kit 收编（rv13/14） | ⚠️ | `overall=FAIL`，成因 = fixture 两个 snapshot TIMEOUT；已与基线 `31b56a0` 对照（同样红） |
 | 大文件拆分（rv20–22） | ⚠️ | 同上；manifest 的 `# shots:` 指标行与拆分前**逐字节相同** ⇒ 行为等值 |
+| **第一轮（恢复基线 + 12 处 CSS 偏差）** | ✅ | 80 张 · `overall=PASS` · 探针 11/11；⚠️ 修之前**先量了基线**：同一份代码缺 fixture 只有 9/11 |
+| **第二轮（字体 / 页面层 / kit 收编）** | ✅ | 80 张 · `overall=PASS`；纯重构部分用「两轮间稳定的 32 张」比对，0/32 变 |
+| **第三轮（#3 alpha / #9 时间线结构）** | ✅ | 80 张 · `overall=PASS`；像素计数实证（`#202734` 4902→38、`#29313E` 7→3987） |
+| **第四轮（横向滚动 + 门禁盲区 + 判据自检）** | ✅ | 80 张 · `overall=PASS`；三个扫描器各 0、五个 `-SelfTest` 全过、`check-colors` 7→24 acknowledged（**判定面变宽，不是退化**） |
 
 ⚠️ **一次未复现的失败，如实记**：r85 在第 47 张图（`overlay-palette`）之后窗口塌成 0×0
 （`capture: bad frame 0x0`），剩 36 张全 FAILED，且崩溃前有几帧报出 x 翻转的反向矩形。
@@ -517,12 +526,22 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
 `bg-panel` **426496 → 418945** —— 后者恰好是「面板长高多少、上面两张卡就矮多少」的
 净额，两者一起印证了「面板由内容撑开」而不是「写死一个高度」。
 
+**横向滚动**（2026-09-30 第四轮已接，**同轮消掉一处静默截断**）：
+
+`.timeline { overflow-x: auto }` 原先写成「放不下就 break」—— 本章镜多于视口能放下的
+数量时，后面的镜**不画也不提示**，正是本仓库最在意的那类缺陷。现在走
+`ScrollRegion(horizontalScroll=true)`。
+
+⚠️ **只开那个 flag 会得到更糟的结果**：滚条的行程取自窗口的 `ContentSize.x`，而自绘控件
+一个 item 都不提交 ⇒ `ContentSize.x` 恒 0 ⇒ 滚条不出现、内容被裁且**到不了**
+（这比原来「至少不画半截」更坏）。所以同时给 `kit::ScrollRegion` 补了
+**`setContentWidth()`** —— 与 `setContentHeight()` 同一个道理，两个都声明才滚得动。
+未声明宽度的区域行为与补这个方法之前**逐字节相同**（析构仍补 `Dummy(0, height)`）。
+
 **仍未接（都属功能，不属 1:1 版式）**：
 
-- 横向滚动条：`.timeline { overflow-x:auto }`；现在是 `x + 卡宽 > 右界就 break`
-  （**这是一处静默截断**：本章镜多于视口能放下的数量时，后面的镜不画也不提示）。
-  fixture 的 7 个镜放得下，所以取景看不出来。
-- 拖拽重排：`draggable` + `onDragStart/onDragOver/onDrop`（Storyboard.jsx:155-158）。
+- 拖拽重排：`draggable` + `onDragStart/onDragOver/onDrop`（Storyboard.jsx:155-158），
+  以及 `.tl-card.dragging { opacity: .45 }`。属功能，按「功能不需要管」的口径留在后面。
 
 #### 第二轮新发现（都是「代码与自己的注释矛盾 / 尺寸算式缺项」一类）
 
@@ -610,19 +629,33 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
 #8 甘特 8 列（没有表头带、单元格是色块，套 `DataTable` 会硬造一个设计稿里不存在的表头）。
 `kit::Drawer` 至今零调用，但页面上确实没有抽屉式交互，**不算缺口**。
 
-### 门禁自身的盲区（只记录未改）
+### 门禁自身的盲区（2026-09-30 第四轮，**已修**）
 
-1. `find-rect-wh-misuse.ps1` **没有 `-SelfTest` 参数**：带上会被静默忽略后照常扫默认根目录并打印 `0` —— 与真通过字面相同。
-   它的自检方式是 `-Root <样本目录>`：2026-09-30 实测，3 个真样本 + 3 个假样本里**只抓到 1 个真样本**
-   （见下条），证明扫描器还活着但覆盖面确实有洞。
-2. 该扫描器漏掉 8 种真误用里的 6 种：`$sizeLike` 只认 `width|height|cardW|panelW|boxW`，裸 `w`/`h` 与
-   `colW`/`cellW`/`iconW`/`thumbH` 全部放过（与它自己头部注释矛盾）。**2026-09-30 实测**：
-   `Rect{10, 20, cardW, 192.0f}` 抓到（`a3='cardW' a4='192.0f'`），而 `Rect{x, y, w, 120.0f}` 与
-   `Rect card{x, y, colW, 76.0f}` **双双漏网** —— 正是那两类形态。真实树报 0 不代表没有。
-3. `check-colors.ps1` 抓不到 `ImU32(0x…)` 形态（只认 `IM_COL32` / `ImVec4(数字×…)` / `"#rrggbb"` / `0xAARRGGBB`），
-   `kit/Widget_Status.cpp:38` 的 `ImU32(0x59FFFFFFu)` 就是漏网的真硬编码颜色。
+三处盲区一处是「根本抓不住」，一处是「抓一半」，共同点是**文档都写着已覆盖**：
 
-**改门禁会让本轮的「绿」失去可比基线，应单独一轮做，并且改完必须先跑它自己的自检证明仍能抓。**
+| # | 盲区 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | `find-rect-wh-misuse.ps1` **没有 `-SelfTest`** | 传进来会被静默忽略、照常扫默认根目录并打印 `0` —— 与真通过字面相同 | 补 `-SelfTest`：造 9 真 + 6 假样本，断言「命中数 == 真样本数」 |
+| 2 | 同一脚本漏掉 8 种真误用里的 6 种 | `$sizeLike` **按名字枚举** `width\|height\|cardW\|panelW\|boxW`，而它自己的注释承诺的是「变量名以 W/w/H/h 结尾」⇒ `w` / `h` / `colW` / `cellW` / `iconW` / `thumbH` 全漏 | 改成按**结尾字符**判（`^\w*[wh]$`）。**枚举永远漏，判据要按形态写** |
+| 3 | `check-colors.ps1` 抓不到 `ImU32(0x…)` | 没有这条规则；而**裸** `0x…` 那条又是 `\b…{8}\b`，`0x59FFFFFFu` 结尾是字字符 `u` ⇒ 无词边界 ⇒ 两个方向都漏 | 补 `ImU32(0x…)` 规则 + 容忍 `u/U/l/L` 后缀 |
+
+**关掉盲区的直接后果，要如实记**：`check-colors` 的豁免数从 **7 → 24**。
+多出来的 17 处全是**以前看不见**的，逐条看过：
+
+- `theme/Theme_Derived.cpp` 14 处 → 与 `Theme.cpp` 同一类（它就是派生调色板的源码），**补进 `$Zones`** 并写明理由。
+- `kit/Draw.cpp` 的 `ImU32(0x38FFFFFFu)`（box-shadow 上沿高光的近似值）→ **不做成 token**：
+  设计稿里没有这个色，做成 token 会让人去「对齐」一个不存在的设计值。行内 `// theme-ok <理由>`。
+- `theme/Theme_Color.cpp` 的 `0xFFFFFF00u` → 它是**位掩码**不是颜色，行内 `// theme-ok <理由>`。
+- `kit/Widget_Status.cpp` 的 `ImU32(0x59FFFFFFu)` → **真违规，已修**：这个值早就有 token
+  （`Derived::progShimmer` = 白 35%，逐位就是 `0x59FFFFFF`，注释都写着 `ui.css:448`），
+  只是这个调用点没接。顺带修掉一个后果：写死的值不跟主题走。
+
+另外两处「文档与代码不一致」也顺手修了：`check-colors` 自检汇总里的样本数**写死过**
+（写着 11、实际早不是）→ 改成现算；自检样本补了 `ImU32` 与带后缀两条真样本
+（**加规则必须同时加真样本**，否则「规则写错了」没有任何机器看着）。
+
+⚠️ 门禁的「绿」在第四轮前后**不可直接比**：`check-colors` 的判定面变宽了。
+以后拿第四轮之后的 manifest 当基线。
 
 ### 真缺陷（留给后续）
 
@@ -637,9 +670,14 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
   只是原来缺一个「设计性嵌套」的声明通道而把 `.tree` 那一类也计了进去。
   现在 `kit::DeclareNestedHit(childId)` 只豁免**三条件同时成立**的情况
   （同 id / 矩形是包含关系 / 同一帧），任一条不成立照常报 —— 声明没对上时**不许静默放行**。
-- `kit::ResetInvertedRectCount()` / `ResetDuplicateHitCount()` **全仓零调用点**。今天还不是缺陷
-  （`RunReview` 在 `RunLoop` 之前跑），但只要将来有任何代码在取证前泵帧，判据会把交互会话的违规算进取证 ⇒ 整轮假红。
-- manifest 的 `overlay-clicks` 只有 `7/7` 一个数，**没有分项也没有原因**；`hover-probes` 至少有 `unstable=`/`broken=` 后缀。两者不对等。
+- ~~`kit::ResetInvertedRectCount()` / `ResetDuplicateHitCount()` **全仓零调用点**~~ → ✅ **已修（第四轮）**：
+  `RunReview` 开头显式归零。今天本来也不是缺陷（它是总入口，所有泵帧都在取证内部），但只要将来
+  有任何代码在取证前泵过帧，那些帧里的违规会**累加**进取证计数 ⇒ 判据报红而根因在一次早已结束的
+  交互会话里。归零的代价是 0 行风险：**判据只对它自己跑出来的东西负责**。
+- ~~manifest 的 `overlay-clicks` 只有 `7/7` 一个数，**没有分项也没有原因**~~ → ✅ **已修（第四轮）**：
+  与 `hover-probes` 对齐 —— 有失败时该行带 `broken=N` 后缀，并**另起一行**
+  `overlay-clicks-failed=<名>：<原因> | …`。只报一个数的坏处是：红了以后读 manifest 的人
+  既不知道是哪两条、也不知道为什么，只能去翻 `.stdout.txt`，而脚本读的是 manifest。
 - `unstable=N` 与 `dead=N` 各自二义：同时表示「注入没到位」和「产品真的坏了」，manifest 层面没解。
 - `tools/check-colors.ps1` 把 `kit/Views.cpp` 列为**按文件**的豁免区（`$Zones`），且文件不存在时直接 `exit 1`。
   ⇒ **`Views.cpp` 这个文件名是承重结构**：删掉或改名门禁就红（`check-colors.ps1:48` / `:229-232`）。

@@ -34,8 +34,15 @@ void Progress(ImDrawList* draw, Rect bounds, float value, bool run, bool thin) {
         const float left = std::max(x, track.min.x);
         const float right = std::min(x + band, track.max.x);
         if (right > left) {
+            // ⚠️ 这里原来写的是 `ImU32(0x59FFFFFFu)` —— 硬编码的「白 35%」。
+            //    而这个值**早就有 token**：`Derived::progShimmer`
+            //    （Theme_Derived.cpp 的 `MixAlpha(0xFFFFFFFFu, 35.0f)`，逐位就是
+            //    0x59FFFFFF，注释也写着 ui.css:448 `.prog.run` 走马灯 白 35%）。
+            //    token 一直在，只是这个调用点没接 —— 属于「有 token 却写死」。
+            //    顺带修掉一个更隐蔽的后果：写死的值不跟主题走，浅色两套主题下
+            //    白色微光在浅底上几乎看不见，而它本应是设计稿里那条不变的叠层。
             DrawRoundRect(draw, ImVec2(left, fill.min.y), ImVec2(right, fill.max.y),
-                          height * 0.5f, ImU32(0x59FFFFFFu));
+                          height * 0.5f, ColorOf(theme::CurrentDerived().progShimmer));
         }
     }
 }

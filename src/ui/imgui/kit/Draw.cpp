@@ -368,6 +368,10 @@ void DrawRoundRect(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU
     }
     if (topHighlight) {
         // box-shadow 的上沿高光近似：内侧 1px 半透明白线。已知降级（R5）。
+        // `ImU32(0x38FFFFFFu)` = 白 22%，**故意不做成 token**：设计稿的 tokens.css 里
+        // 没有这个色 —— 它是为了逼近 box-shadow 的上沿观感**加出来的**近似值。
+        // 做成 token 会让人以为设计稿里有它，进而去「对齐」一个不存在的设计值。
+        // theme-ok 已知降级（R5）的上沿高光近似，设计稿没有对应 token，见 design-spec §9.3
         const float inset = std::min(1.0f, radius);
         draw->AddLine(ImVec2(min.x + inset, min.y + 0.5f), ImVec2(max.x - inset, min.y + 0.5f),
                       ImU32(0x38FFFFFFu), 1.0f);

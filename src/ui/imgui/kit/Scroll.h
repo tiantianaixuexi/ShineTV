@@ -85,6 +85,17 @@ public:
     void setContentHeight(float height);
     [[nodiscard]] float contentHeight() const { return contentHeight_; }
 
+    // 声明本区域的**内容宽度**（横向滚动用）。与 `setContentHeight` 同理，而且
+    // **必须调**：`horizontalScroll = true` 只加了 `ImGuiWindowFlags_HorizontalScrollbar`，
+    // 滚条的行程取自窗口的 `ContentSize.x`；自绘控件一个 item 都不提交，
+    // `ContentSize.x` 恒为 0 ⇒ 滚条不出现、内容被裁且**到不了**。
+    // 那比现在的行为更糟：现在是「放不下就不画」（至少没有裁一半的视觉假象）。
+    //
+    // 只在真的需要横向滚的区域调；不调时行为与本方法存在之前**逐字节相同**
+    //（析构仍然只补 `Dummy(0, height)`）。
+    void setContentWidth(float width);
+    [[nodiscard]] float contentWidth() const { return contentWidth_; }
+
     // ---- 粘性滚动请求（取证用）----
     //
     // 为什么要「粘性」：`scrollToBottom()` 只能在**该区域正在绘制的那一帧**调用，
@@ -142,6 +153,7 @@ private:
     float maxScrollY_ = 0.0f;
     float bottomHeight_ = 0.0f;
     float contentHeight_ = 0.0f;
+    float contentWidth_ = 0.0f;
     float expectedMaxScrollY_ = 0.0f;
     std::string pendingKey_;
 };

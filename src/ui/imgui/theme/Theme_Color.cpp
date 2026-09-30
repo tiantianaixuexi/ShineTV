@@ -34,7 +34,7 @@ std::uint32_t PackRgba(const ImVec4& rgba) {
 std::uint32_t MixAlpha(std::uint32_t rgb, float percent) {
     const std::uint32_t alpha =
         static_cast<std::uint32_t>(std::lround(std::clamp(percent, 0.0f, 100.0f) * 2.55f)) & 0xFFu;
-    return (rgb & 0xFFFFFF00u) | alpha;
+    return (rgb & 0xFFFFFF00u) | alpha; // theme-ok 这是**位掩码**（清掉 alpha 字节再填新值），不是颜色值
 }
 
 std::uint32_t MixAlpha(std::uint32_t rgb, alpha::Step step) {

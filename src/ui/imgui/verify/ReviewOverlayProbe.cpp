@@ -10,6 +10,7 @@
 #include <cmath>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace shine::imguiverify::detail {
 
@@ -26,6 +27,16 @@ void RunOverlayProbes(Session& session) {
 
     int overlayClicksPassed = 0;
     int overlayClickTotal = 4;
+    // 失败分项：**「哪一条 + 为什么」**。
+    //
+    // ⚠️ 原来 manifest 只有 `overlay-clicks=7/7` 一个数，红了以后从 manifest 上
+    //    完全看不出是哪两条、也看不出原因，只能去翻 `.stdout.txt` 的日志 ——
+    //    而 `run_reviews.ps1` 读的正是 manifest。`hover-probes` 至少给了
+    //    `broken=` / `unstable=` 的分档，两者不对等（见 PROGRESS「真缺陷」）。
+    std::vector<std::string> overlayFailures;
+    const auto noteFailure = [&overlayFailures](const std::string& name, const std::string& why) {
+        overlayFailures.push_back(name + "：" + why);
+    };
 
     // 浮层（设置模态 / 报告模态 / 命令面板 / 主题菜单）的 item 是在**根窗口**里提交的，
     // 而工作区是 `BeginChild`。ImGui 定 `g.HoveredWindow` 是「从 `g.Windows` 末尾往前
@@ -137,6 +148,7 @@ void RunOverlayProbes(Session& session) {
                 ++overlayClicksPassed;
             } else {
                 shine::log::Error("review: 浮层交互探针「{}」失败：{}", oc.name, why);
+                noteFailure(oc.name, why);
             }
             // 复位：按语义显式复位。**别用「再按一次」** —— 那是 toggle 动作才成立的写法。
             shell.SetSettingsOpen(false);
@@ -229,6 +241,7 @@ void RunOverlayProbes(Session& session) {
             ++overlayClicksPassed;
         } else {
             shine::log::Error("review: 项目中心按钮判据失败：{}", why);
+            noteFailure("项目中心对话框内控件可点", why);
         }
         // 复位：按语义显式复位（不是「再按一次」—— 那是 toggle 才成立的写法）。
         if (shell.projectHubOpen()) {
@@ -327,6 +340,7 @@ void RunOverlayProbes(Session& session) {
                 ++overlayClicksPassed;
             } else {
                 shine::log::Error("review: 命令面板判据「{}」失败：{}", pp.name, why);
+                noteFailure(pp.name, why);
             }
             if (shell.commandPaletteOpen()) {
                 shell.SetCommandPaletteOpen(false);
@@ -339,9 +353,26 @@ void RunOverlayProbes(Session& session) {
     // ⚠️ manifest 行**必须写在两条浮层判据都跑完之后**：早先写在项目中心那条
     //    之前，于是它报 4/4 而 kOverlayClickTotal 已经是 5 —— 判据自己报的
     //    分母与实际条数不一致，读者会以为 5 条里过了 4 条。
-    WriteManifest(manifest, std::string("overlay-clicks=") +
-                                std::to_string(session.overlayClicksPassed) + "/" +
-                                std::to_string(session.overlayClickTotal));
+    // 与 `hover-probes` 的写法对齐：计数行带 `broken=N` 后缀，失败时**另起一行**列出
+    // 「哪一条 + 为什么」。只报一个 `7/7` 的坏处是：红了以后读 manifest 的人
+    // 既不知道是哪两条、也不知道原因，只能去翻 `.stdout.txt` —— 而脚本读的是 manifest。
+    std::string overlayLine = std::string("overlay-clicks=") +
+                              std::to_string(session.overlayClicksPassed) + "/" +
+                              std::to_string(session.overlayClickTotal);
+    if (!overlayFailures.empty()) {
+        overlayLine += "  broken=" + std::to_string(overlayFailures.size());
+    }
+    WriteManifest(manifest, overlayLine);
+    if (!overlayFailures.empty()) {
+        std::string detail;
+        for (std::size_t i = 0; i < overlayFailures.size(); ++i) {
+            if (i > 0) {
+                detail += " | ";
+            }
+            detail += overlayFailures[i];
+        }
+        WriteManifest(manifest, "overlay-clicks-failed=" + detail);
+    }
 }
 
 } // namespace shine::imguiverify::detail

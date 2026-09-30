@@ -65,6 +65,8 @@ void ScrollRegion::setContentHeight(float height) {
     LastContentHeight()[pendingKey_] = contentHeight_;
 }
 
+void ScrollRegion::setContentWidth(float width) { contentWidth_ = std::max(0.0f, width); }
+
 ScrollRegion::ScrollRegion(std::string_view id, Rect bounds, bool borders, bool horizontalScroll,
                            bool noMouseInputs) {
     ImGui::SetCursorScreenPos(bounds.min);
@@ -162,8 +164,11 @@ ScrollRegion::~ScrollRegion() {
     // ⚠️ 必须在 EndChild **之前**补这个不可见 item —— 自绘控件全程没给 ImGui 提交过
     //    任何 item，ContentSize 一直是 0，ScrollMaxY 也就一直是 0，区域滚不动。
     //    Dummy 不带 ID，不会被 g.HoveredId 抢走，鼠标事件仍然落在真实控件上。
-    if (contentHeight_ > 0.0f) {
-        ImGui::Dummy(ImVec2(0.0f, contentHeight_));
+    //
+    //    宽度同理（横向滚动）：没人声明 `contentWidth_` 时这里仍是 **0 宽**，
+    //    即与本方法加之前逐字节相同；声明了才把 ContentSize.x 报出去。
+    if (contentHeight_ > 0.0f || contentWidth_ > 0.0f) {
+        ImGui::Dummy(ImVec2(contentWidth_, contentHeight_));
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();

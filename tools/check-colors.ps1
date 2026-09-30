@@ -12,9 +12,15 @@
 # ---- 怎么算「硬编码颜色字面量」----
 #   - IM_COL32(r, g, b, a)      —— 四个/三个参数全是数字
 #   - ImVec4(r, g, b[, a])      —— 全部参数是数字字面量
-#   - ImU32(0xAARRGGBB)         —— 8 位十六进制
+#   - ImU32(0xAARRGGBB)         —— 8 位十六进制（带 u/U/l/L 后缀也算）
 #   - "#rrggbb" / "#rrggbbaa"   —— 字符串里的十六进制色
-#   - 裸 0xAARRGGBB
+#   - 裸 0xAARRGGBB             —— 同样容忍 u/U/l/L 后缀
+#
+# ⚠️ 「容忍后缀」与 ImU32 这条**原先都没写**，而这份文档里已经写着「覆盖」。
+#    `ImU32(0x59FFFFFFu)` 两头都漏：没有匹配 `ImU32(...)` 的规则，而 `\b…{8}\b`
+#    又因为结尾是 `u`（字字符）而**没有词边界**。于是 kit/Widget_Status.cpp 里那处
+#    真硬编码颜色一直漏网，实测躲过了一整轮审计。
+#    **文档说覆盖了，与代码真的覆盖了，是两件事** —— 这条注释就是为此补的。
 #
 # 注释里提到颜色**不算**：本仓库的注释大量在解释「这里原来写的是 #xxx」，
 # 报出来会逼着人把解释删掉。整行注释直接跳过；行尾注释先剥掉再匹配
@@ -45,6 +51,12 @@ $Zones = @(
         Why  = '它就是调色板本身：这一段把 token 赋给 ImGuiCol_*，是「颜色从哪来」的源头'
     },
     @{
+        # ⚠️ 这条是**补上一条盲区时才需要**的：`0x…u` 后缀的十六进制原先不被匹配，
+        #    所以这个文件从来没被报过。文档一写着「覆盖完整」，就没人去看它。
+        Rel  = 'theme/Theme_Derived.cpp'
+        Why  = '它也是调色板本身：`ComputeDerived` 在这里算出「主题无关固定叠层」（白/黑半透明）与各类预混色，是派生色的源头，与 Theme.cpp 同一类'
+    },
+    @{
         Rel  = 'kit/Views.cpp'
         Why  = '设计稿 UI.jsx:184 的 12 组插画调色板（深/中/亮），是**数据表**不是界面配色；数据表本来就该把色值写死'
     }
@@ -67,8 +79,12 @@ $root = Join-Path $PSScriptRoot '..\src\ui\imgui'
 # `IM_COL32(ColorAccent())` 是取色不是写色。
 $rxImColor = [regex]'IM_COL32\s*\(\s*(?:-?[\d.]+f?|0[xX][0-9A-Fa-f]+)\s*(?:,\s*(?:-?[\d.]+f?|0[xX][0-9A-Fa-f]+)\s*){2,3}\)'
 $rxVec4 = [regex]'ImVec4\s*\(\s*-?[\d.]+f?\s*,\s*-?[\d.]+f?\s*,\s*-?[\d.]+f?\s*(?:,\s*-?[\d.]+f?\s*)?\)'
+# `ImU32(0x59FFFFFFu)`：6 位也认（`ImU32(0xRRGGBB)` 是同一个错误），后缀可有可无。
+$rxImU32 = [regex]'ImU32\s*\(\s*0[xX][0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?[uUlL]{0,3}\s*\)'
 $rxHexStr = [regex]'#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})\b'
-$rxHexNum = [regex]'\b0[xX][0-9A-Fa-f]{8}\b'
+# 结尾的 `[uUlL]{0,3}` 是补一个真实的漏：原来是 `\b…{8}\b`，而 `0x59FFFFFFu` 的结尾
+# 是字母 `u`（字字符）⇒ 没有词边界 ⇒ **不匹配**。带后缀的十六进制字面量正是本仓库的写法。
+$rxHexNum = [regex]'\b0[xX][0-9A-Fa-f]{8}[uUlL]{0,3}\b'
 
 # 剥掉行尾注释：扫一遍字符，'//' 只有不在字符串/字符字面量里时才算注释起点。
 # （naive 的 IndexOf('//') 会把 "https://…" 里的两个斜杠当注释，误伤一整行代码。）
@@ -115,6 +131,7 @@ function Scan-Text([string]$text, [string]$fileName) {
         $kind = $null
         if ($rxImColor.IsMatch($code)) { $kind = 'IM_COL32-literal' }
         elseif ($rxVec4.IsMatch($code)) { $kind = 'ImVec4-literal' }
+        elseif ($rxImU32.IsMatch($code)) { $kind = 'ImU32-literal' }
         elseif ($rxHexNum.IsMatch($code)) { $kind = '0xAARRGGBB-literal' }
         elseif ($rxHexStr.IsMatch($code)) { $kind = 'hex-string' }
         if (-not $kind) { continue }
@@ -151,12 +168,16 @@ function Scan-Text([string]$text, [string]$fileName) {
 
 # =====================================================================
 # 自检：一个「改完报 0」的扫描器和一个坏掉的没区别。
-# 11 份样本，覆盖三件事：
-#   - 匹配逻辑：3 真（IM_COL32 / ImVec4 / hex 串）5 假（取色调用、整行注释、行尾注释、
-#     预处理器行、跨行块注释）
+# 样本数**不再写死在这段注释里** —— 它曾经写着「11 份」而实际早就不是，
+# 这种数字一改就漂（下面那行汇总改成按 $samples 现算，就是为了这个）。
+# 覆盖三件事：
+#   - 匹配逻辑：每一条规则至少一个真样本（IM_COL32 / ImVec4 / ImU32 /
+#     带后缀的裸十六进制 / hex 串），以及 5 个假样本（取色调用、整行注释、
+#     行尾注释、预处理器行、跨行块注释）
 #   - 豁免逻辑：**带理由**才放行、**没理由照样算命中**
-#   - 豁免取最近的那条 `theme-ok`（下面 exempt-nearest 这份就是防「抢到最远那条」
+#   - 豁免取最近的那条 `theme-ok`（exempt-nearest 这份就是防「抢到最远那条」
 #     那个 bug 复发的，改那段代码后自检必须还是 PASS）
+# ⚠️ 加规则时必须同时加真样本：否则「规则写错了」这件事没有任何机器看着。
 # =====================================================================
 if ($SelfTest) {
     $dir = if ($SelfTestDir) { $SelfTestDir } else { Join-Path $env:TEMP 'colorscan-selftest' }
@@ -168,6 +189,9 @@ if ($SelfTest) {
         @{ Name = 'true-imcolor.cpp'; Text = 'draw->AddRectFilled(p, q, IM_COL32(255, 0, 0, 255));'; Expect = $true },
         @{ Name = 'true-imvec4.cpp';  Text = 'auto c = ImVec4(0.2f, 0.3f, 0.4f, 1.0f);'; Expect = $true },
         @{ Name = 'true-hexstr.cpp';  Text = 'const char* s = "#e86a8b";'; Expect = $true },
+        # ImU32 形态 + 带后缀的裸十六进制：这两份就是「文档说覆盖、代码没覆盖」那两个漏。
+        @{ Name = 'true-imu32.cpp';   Text = 'DrawRoundRect(d, a, b, r, ImU32(0x59FFFFFFu));'; Expect = $true },
+        @{ Name = 'true-hexnumsfx.cpp'; Text = 'const ImU32 k = 0xFF00FF00u;'; Expect = $true },
         @{ Name = 'false-token.cpp';  Text = 'ImU32 ColorAccent() { return ColorOf(theme::Current().accentPrimary); }'; Expect = $false },
         @{ Name = 'false-comment.cpp'; Text = "// 旧代码写的是 #ff0000，这整行只是注释"; Expect = $false },
         @{ Name = 'false-trailing.cpp'; Text = 'draw->AddText(d, f, p, ColorTextMuted(), "x");  // 注释里提 #123456'; Expect = $false },
@@ -210,7 +234,10 @@ if ($SelfTest) {
         Write-Output "check-colors 自检 FAILED：$fail 份样本与期望不符"
         exit 1
     }
-    Write-Output 'check-colors 自检 PASS（11 份样本：3 真 + 5 假 + 带理由豁免 + 无理由豁免 + 最近理由）'
+    # 数字现算，别写死：写死过一次（写着 11，实际早就不是），改的人也看不见它漂了。
+    $nTrue = @($samples | Where-Object { $_.Expect }).Count
+    $nFalse = @($samples | Where-Object { -not $_.Expect }).Count
+    Write-Output ("check-colors 自检 PASS（{0} 份样本：{1} 真 + {2} 假）" -f $samples.Count, $nTrue, $nFalse)
     exit 0
 }
 

@@ -1,5 +1,6 @@
 #include "ui/imgui/verify/Review.h"
 
+#include "ui/imgui/kit/Widget_Core.h"  // ResetInvertedRectCount / ResetDuplicateHitCount
 #include "ui/imgui/verify/Capture.h"
 #include "ui/imgui/verify/ReviewScene.h"
 #include "ui/imgui/verify/ReviewSession.h"
@@ -28,6 +29,20 @@ namespace shine::imguiverify {
 
 ReviewResult RunReview(imguiapp::Host& host, pages::Shell& shell,
                        const std::filesystem::path& outputDir) {
+    // ---- 两个自检计数在这里归零 ----
+    //
+    // ⚠️ 这两个 `Reset*` 长期**零调用点**（见 PROGRESS「真缺陷」）。今天还不是缺陷：
+    //    `RunReview` 排在 `RunLoop` 之前，所有泵帧都发生在取证内部，计数天然只含取证帧。
+    //    但只要将来**任何**代码在取证之前泵过帧（启动预热、主题探测、窗口尺寸自适应、
+    //    上一次会话的残留帧……），那些帧里的反向矩形 / 重叠热区会**累加**进取证的计数：
+    //    判据报红，而根因在一次早就结束的交互会话里 —— 这是最难查的一类假红
+    //    （反过来，若有人为了让它变绿把判据删了，就是假绿，更糟）。
+    //    归零的代价是 0 行风险，所以放在最前：**判据只对它自己跑出来的东西负责。**
+    //
+    //    两个函数都幂等，重跑多轮不会把上一轮的违规带进来。
+    kit::ResetInvertedRectCount();
+    kit::ResetDuplicateHitCount();
+
     detail::Session session{host, shell, outputDir};
 
     std::error_code ec;
