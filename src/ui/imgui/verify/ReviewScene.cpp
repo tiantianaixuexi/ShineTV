@@ -319,36 +319,26 @@ void RunControlledStates(Session& session) {
         session.GrabDriven("assets-grid-filtered", kWsAssets, base);
         shell.SetKindFilter({});
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
-        // ---- 等真设定图异步落地（第三段异步链，前两段是报告扫描与 novel.db）----
+        // 这一帧起，网格里带设定图的那些格子会**第一次**发出图片请求。
+        session.GrabDriven("assets-grid-all", kWsAssets, base);
+        // ---- 真设定图链的判据（第三段异步链，前两段是报告扫描与 novel.db）----
         //
-        // ⚠️⚠️ **位置是这个循环的一半**：它必须排在**清掉 kind 筛选之后**。
-        //    放在前面（`SetAssetsOverview(true)` 之后）时，那一帧的网格被筛成只剩
-        //    「物品」那一条 —— 而 fixture 里它**没有** `visual_assets` ⇒ 一张图都不会
-        //    被请求 ⇒ `PendingImageCount()` 恒 0 ⇒ 循环 0 帧「通过」，而后面的抓图
-        //    仍在和异步上屏抢时间。实测症状：**同一二进制连跑两轮，一轮资产网格里
-        //    数到 33848 个真图颜色像素，另一轮 0**。
+        // `GrabDriven` → `Shoot` 内部**已经把异步上屏等落地了**（那是唯一入口，
+        // 理由写在 ReviewPixel.cpp：按调用点补等待时漏一处就是一处随机失败的取证）。
+        // 所以这里只**记录结论**，不重复等待。
         //
-        // ⚠️ 所以「等到 0」不够，还要「确实请求过」。两个条件合起来才排除得了
-        //    「调用点压根没跑到」这一支 —— 单看 pending==0 时它与「全落地了」同形。
-        //
-        // ⚠️ 判据的边界：`Failed`（文件坏了 / 格式不支持）与 `Ready` 都算落地 ⇒
-        //    **一个坏文件不会让这里超时**，超时只可能是链子真的卡住了。
-        int imgWaited = 0;
-        while ((kit::RequestedImageCount() == 0 || kit::PendingImageCount() > 0) &&
-               imgWaited < kReportWaitFrameCap) {
-            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            ++imgWaited;
-        }
+        // ⚠️ 两半缺一不可：`pending==0` 单独看有二义 —— 「全落地了」与「一张都没被请求过」
+        //    同形，而后者正是最该报出来的那一支（调用点没跑到 / 筛选后没有带设定图的实体）。
+        //    实测踩过：把等待放在**清 kind 筛选之前**时，那一帧的网格被筛成只剩没有设定图的
+        //    那一条（fixture 里的「物品」）⇒ 一张图都不会被请求 ⇒ 循环 0 帧就「通过」，
+        //    而抓图仍在和异步上屏抢时间 —— 同一二进制连跑两轮，一轮 33848 像素、另一轮 0。
         const int imgRequested = kit::RequestedImageCount();
         const int imgPending = kit::PendingImageCount();
         session.sheetImagesSettled = (imgRequested > 0 && imgPending == 0);
         WriteManifest(manifest, std::string("sheet-images=") +
                                     (session.sheetImagesSettled ? "settled" : "TIMEOUT") +
                                     " requested=" + std::to_string(imgRequested) +
-                                    " pending=" + std::to_string(imgPending) + " after " +
-                                    std::to_string(imgWaited) + " frames");
-        session.GrabDriven("assets-grid-all", kWsAssets, base);
+                                    " pending=" + std::to_string(imgPending));
         shell.SetAssetsOverview(false);
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 

@@ -1,8 +1,12 @@
 #include "ui/imgui/verify/ReviewPixel.h"
 
 #include "core/Log.h"
+#include "ui/imgui/kit/Image.h" // PendingImageCount：抓图前把异步上屏的图等落地
 #include "ui/imgui/verify/Capture.h"
+#include "ui/imgui/verify/ReviewSession.h" // kReportWaitFrameCap
 
+#include <chrono>
+#include <thread>
 #include <vector>
 
 namespace shine::imguiverify::detail {
@@ -30,6 +34,24 @@ bool Shoot(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::pat
     shell.SetTheme(theme);
     shell.SetWorkspace(workspace);
     host.PumpFrames(kSettleFrames, [&shell](float dt) { shell.DrawFrame(dt); });
+
+    // ---- 把**异步**内容也等落地（真设定图）----
+    //
+    // 真图是 worker 解码 → `PostToUi` → 上传 GPU 才上屏的，而上面只泵了 kSettleFrames 帧。
+    // 「链断了」与「拍得太早」在截图上完全一样（都是占位画），所以必须等。
+    //
+    // ⚠️⚠️ 放在这个**唯一入口**，而不是各调用点：按调用点补等待时，**漏一处就是一处
+    //    随机失败的取证**。实测漏过的那一处正是 `assets-leaf-selected` ——
+    //    `shell.SelectAsset(1)` 之后直接抓图，新实体的图在那一刻才**第一次**被请求，
+    //    于是同一个二进制连跑两轮，一轮拍到了、一轮没有。
+    //    （上面已经画过一帧，所以请求此刻已发出；这里等着它落地即可。）
+    //
+    // 判据边界：`Failed`（文件坏了 / 格式不支持）与 `Ready` 都算落地 ⇒ 坏文件不会卡在这里；
+    //     `kReportWaitFrameCap` 保证不会真死等。
+    for (int waited = 0; kit::PendingImageCount() > 0 && waited < kReportWaitFrameCap; ++waited) {
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
 
     // ⚠️ 抓图只能发生在 PumpFrames 之后、SwapBuffers 之前。
     // glReadPixels 默认读 GL_BACK，SwapBuffers 之后后备缓冲内容未定义。

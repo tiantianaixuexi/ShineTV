@@ -180,7 +180,32 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
     const std::string layers = asset.hasAsset ? (std::to_string(asset.layersDone) + " / " +
                                                  std::to_string(asset.layers) + " 层就绪")
                                               : std::string(kDash);
-    KeyValues(draw, Rect{body.min.x, y, body.min.x + 640.0f, y + 150.0f},
+    // ---- 设定集体：**两列网格**（Assets.jsx:184）----
+    // `grid-template-columns: minmax(240px,320px) minmax(280px,1fr)`；gap 16；
+    // `align-items: start`。
+    //
+    // ⚠️ 原来这里是**单列**：KV 直接铺满 640px，而左列那块「基线图」整块没画 ——
+    //    它是这一页最大的一张图（`.art { width:100%; height:220 }`，
+    //    Assets.jsx:186-202），也是「显示真实设定图」最该出效果的地方。
+    constexpr float kSetGap = 16.0f;
+    const float setLeftW = std::clamp(body.width() * 0.25f, 240.0f, 320.0f);
+    const float setLeftRight = body.min.x + setLeftW;
+    const Rect rightCol{setLeftRight + kSetGap, y, body.max.x, body.max.y};
+
+    // 左列：基线图 + `.tiny dim` 说明行。
+    const Rect baseArt{body.min.x, y, setLeftRight, y + 220.0f};
+    // 底色先铺：设计稿的 `.art` 自带 `background: var(--fill-muted)` + r-sm（ui.css:1074）。
+    DrawRoundRect(draw, baseArt.min, baseArt.max, 6.0f, ColorFillMuted());
+    const ImageSlot baseSheet = RequestImage(AssetImagePath(s.root, asset.sheetRelPath));
+    if (baseSheet.ready()) {
+        DrawImage(draw, baseArt, baseSheet, 6.0f, ImageFit::Cover);
+    } else {
+        Art(draw, baseArt, asset.entityId, /*cover=*/true);
+    }
+    DrawTextClipped(draw, FontAt(11.0f), 11.0f, ImVec2(body.min.x, baseArt.max.y + 8.0f), setLeftW,
+                    ColorTextMuted(), "基线图 · 点击查看大图", true);
+
+    KeyValues(draw, Rect{rightCol.min.x, y, rightCol.max.x, y + 150.0f},
               {{"类别", AssetKindLabel(asset.kind)},
                {"实体 ID", "#" + std::to_string(asset.entityId)},
                {"实体状态", asset.entityStatus.empty() ? kDash : asset.entityStatus},
@@ -191,7 +216,10 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
                {"形象层", layers},
                {"设定图", asset.sheetRelPath.empty() ? kDash : asset.sheetRelPath},
                {"降级", asset.degraded ? "有降级产物" : "无"}});
-    y += 164.0f;
+    // 两列取较高者推进 y —— CSS 网格就是这个行为（`align-items:start` 只影响对齐，
+    // 网格区的行高仍由最高的那一格撑开）。
+    constexpr float kBaseCaptionH = 8.0f + 11.0f * 1.6f;  // 8 间距 + tiny 行盒
+    y += std::max(220.0f + kBaseCaptionH, 164.0f);
     draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
     y += 14.0f;
 
@@ -203,7 +231,8 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
               (asset.hasAsset ? (std::to_string(asset.layersDone) + "/" +
                                  std::to_string(asset.layers) + " 就绪")
                               : std::string("尚未建立")) +
-              "，且帧图解码尚未接入 ImGui 侧。");
+              "，而且图层路径（visual_artifacts.rel_path）还没投影到 UI 侧 —— "
+              "解码链已经通了（kit/Image.h），缺的是把这两张图的路径送上来。");
     y += 236.0f;
     draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
     y += 14.0f;

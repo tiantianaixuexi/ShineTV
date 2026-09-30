@@ -152,10 +152,26 @@ manifest: sheet-images=settled requested=2 pending=0 after 2 frames
 仍在和异步上屏抢时间。实测**同一二进制连跑两轮，一轮数到 33848 像素、另一轮 0**。
 挪到清筛选之后 + 加上 `requested>0` 这一半之后连跑三轮一致。
 
-**仍未接的图片位点**（设计稿里画 `Art` 的其余几处，几何都已就位、只差把路径接上）：
-分镜 `.tthumb`（`BookShotView` 没有图片路径字段，要业务层补投影）、出图结果面板、
-出片胶片格、查看器大图 / 联系表、总控「最近产物」缩略图。**这五处都缺同一个东西：
-业务层到 UI 的「这个实体/这一镜的图在哪」投影**，与 `sheet_rel_path` 那一处同形。
+**已接的位点**（都用 `kit::RequestImage` → 就绪画真图 / 否则画设计稿的 `Art`）：
+
+| 位点 | 设计稿几何 | 数据来源 |
+|---|---|---|
+| 资产**总览**网格卡缩略图 | `.asset-grid .thumb { height:150px }` + r-sm + cover（views.css:713-715） | `visual_assets.sheet_rel_path` |
+| 资产**详情**左列基线图 | `.art { width:100%; height:220 }` + r-sm + cover，下面一行 `.tiny dim`（Assets.jsx:186-203） | 同上 |
+| （详情页顺带补齐的两列网格） | `grid-template-columns: minmax(240px,320px) minmax(280px,1fr)`；gap 16；`align-items:start`（Assets.jsx:184） | — |
+
+⚠️ **详情页原来是单列**：KV 铺满 640px，而左列那块「基线图」**整块没画** ——
+它是这一页最大的一张图。两列都要一起改（网格的列宽决定图的宽度）。
+
+**仍未接的图片位点**（四处，几何都已就位、只差把路径接上）：
+分镜 `.tthumb`、出图结果面板、出片胶片格、查看器大图 / 联系表、总控「最近产物」缩略图。
+
+⚠️ 其中**分镜那处没有诚实的映射**：设计稿按 `s.status === 'done'` 二选一，而
+`stage_artifacts` 表**没有路径列**（只有 `payload_json`，见 `out/_fixture_schema.sql:748-757`），
+`BookShotView` 也就没有图路径字段 ⇒ 「这一镜的图在哪」在数据层目前**没有答案**，
+不能靠 `output/ch001_S001.png` 这种文件名约定去凑（那是发明约定，不是复刻）。
+**资产详情页的 V0 派生链**则有真数据：`visual_artifacts.rel_path`（`NovelVisual.h:43`
+的注释就写着「产出图（相对工程根）」），只是还没投影到 `BookAssetView`。
 | R9 | cover 缩放锚点 | **已解决** | 满幅画布页改用可视高度 |
 | R10 | 启动初始化顺序 | **已解决** | `AppEntry` 分派 + APPDATA 沙箱 |
 | R11 | ImGui 叠放 item 抢 hover | **已解决** | 同一矩形只能 `HitTest` 一次；遮罩只画不注册 |
