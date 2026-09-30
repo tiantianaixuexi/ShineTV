@@ -239,6 +239,45 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
         }
     }
 
+    // —— 逐镜的成片图：`generated_images` 的 `source_kind='shot'` ——
+    //
+    // 业务层提交**单镜出图**时就把镜 id 记在这一对列上
+    // （`src/novel/NovelImageStore.cpp`：`if (in.shot_id > 0) { source_kind="shot"; source_id=shot_id; }`），
+    // 表上也专门建了 `idx_gimg_source(source_kind, source_id)` —— 这条查询正是为它写的。
+    //
+    // ⚠️ 这里**裸 SQL**：`novelcore` 没有「按 shot 取成片图」的访问器，但 UI 侧读库
+    //    这个文件里早就是既有做法（同一函数上面读 `volumes` 就是裸 SQL，那张表同样
+    //    没有访问器）。**不改 shine_core** 是硬约束，所以这里也照这个口径读。
+    // ⚠️ 只取**当前这一章**的镜（`out.shots` 就是当前章）：一次 `IN (...)` 查完，
+    //    不要每镜一次查询。
+    // ⚠️ 同一条镜可能有多张（重出过图）：按 id 升序取**最后一条**（= 最新那次）。
+    //    不按 created 排 —— 那是秒级时间戳，同一秒重出会分不出先后。
+    if (!out.shots.empty()) {
+        std::string sql =
+            "SELECT source_id,rel_path FROM generated_images WHERE source_kind='shot' "
+            "AND rel_path<>'' AND source_id IN (";
+        for (std::size_t i = 0; i < out.shots.size(); ++i) {
+            sql += (i == 0 ? "?" : ",?");
+            sql += std::to_string(i + 1);
+        }
+        sql += ") ORDER BY id";
+        if (auto st = db.Prepare(sql)) {
+            for (std::size_t i = 0; i < out.shots.size(); ++i) {
+                (void)st->BindInt(static_cast<int>(i + 1),
+                                  static_cast<std::int64_t>(out.shots[i].id));
+            }
+            while (st->Step() == db::sqlite::StepResult::Row) {
+                const auto shotId = static_cast<RowId>(st->ColumnInt(0));
+                const std::string rel = st->ColumnText(1);
+                for (BookShot& shot : out.shots) {
+                    if (shot.id == shotId) {
+                        shot.imageRelPath = rel;  // 后写的覆盖先写的 ⇒ 留最新那条
+                    }
+                }
+            }
+        }
+    }
+
     // V1–V7：逐阶段查 stage_artifacts，**有产物才算 done**，没有就是 todo。
     for (int v = 1; v <= 7; ++v) {
         const std::string code = "V" + std::to_string(v);

@@ -115,6 +115,11 @@ bool SeedReportFixture(const std::filesystem::path& root) {
         {"assets/chain/wardrobe.png", kChainColorWardrobe, "派生链 · wardrobe"},
         {"assets/chain/front_zhouyi.png", 0x0EA5E9u, "派生链 · front（资产 2）"},
         {"assets/chain/turnaround_zhouyi.png", 0xA855F7u, "派生链 · turnaround（资产 2）"},
+        // 分镜页时间线卡片（`.tthumb`）的**逐镜成片图**：来源是 `generated_images` 的
+        // `source_kind='shot'` + `source_id=shots.id`。`assets/shot/s4_missing.png` 这
+        // 一条**刻意不造**（`generated_images` 里登记了、文件不在）⇒ 回退到设计稿的 `Art`。
+        {"assets/shot/s1.png", 0xFB7185u, "分镜 · 第 1 镜成片图"},
+        {"assets/shot/s2.png", 0x34D399u, "分镜 · 第 2 镜成片图"},
     };
     for (const SheetSeed& sheet : sheets) {
         constexpr std::uint32_t kSide = 64;

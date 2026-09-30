@@ -49,6 +49,9 @@ $al = & $sqlite $Db 'select count(distinct layer) from visual_artifacts;'
 $ad = & $sqlite $Db 'select count(*) from visual_artifacts where degraded=1;'
 $vc = & $sqlite $Db 'select count(*) from chapters;'
 $vv = & $sqlite $Db 'select count(*) from volumes;'
+# 逐镜成片图（分镜页 `.tthumb`）。`source_kind='shot'` 的行数必须 > 0 ——
+# 这张表在 2026-09-30 之前**一行都没有**，于是「镜 → 图」这条链在证据图里从来没有输入。
+$gi = & $sqlite $Db "select count(*) from generated_images where source_kind='shot' and rel_path<>'';"
 # 下面两行是**编码自检**：中文正常就说明没被 GBK 码页重编码过。
 $f1 = & $sqlite $Db 'select title from foreshadowings where id=1;'
 $t1 = & $sqlite $Db 'select title from scenes where id=1;'
@@ -62,6 +65,7 @@ $t1 = & $sqlite $Db 'select title from scenes where id=1;'
 "entity kinds      = $($ek -join ', ')"
 "visual_assets     = $va  (distinct status = $vs / 8)"
 "visual_artifacts  = $aa  (status = $as / 4, layer = $al / 4, degraded = $ad)"
+"shot images       = $gi  (generated_images where source_kind='shot' and rel_path<>'')"
 "foreshadow#1      = $f1"
 "scene#1 title     = $t1"
 
@@ -74,6 +78,7 @@ if ($vs -ne 8) { throw "visual_assets 只覆盖了 $vs/8 种状态（状态机 8
 if ($as -ne 4) { throw "visual_artifacts 只覆盖了 $as/4 种层状态（PENDING|RUNNING|DONE|FAILED）" }
 if ($al -ne 4) { throw "visual_artifacts 只覆盖了 $al/4 层（kChain: front|turnaround|base_body|wardrobe）" }
 if ($ad -lt 1) { throw "没有一条 degraded=1 的产物 ⇒ K28「降级必须可见」那条分支验不到" }
+if ($gi -lt 1) { throw "没有 source_kind='shot' 的成片图 ⇒ 分镜页的 .tthumb 永远只能画「待出图」占位（这条链没有任何输入）" }
 
 # 自检同时落一份盘。控制台回显在本机会零星吞掉整行（`entities` / `foreshadow#1`
 # 两行稳定显示为空，但门禁比字符串证明它们的值是对的）—— 门禁过了不等于**看得见**，

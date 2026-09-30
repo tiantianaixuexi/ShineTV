@@ -67,7 +67,7 @@ last_verified: 2026-09-30
 |---|---|
 | 第五轮 | **R8 界面侧接上真实图片**：新增 `kit/Image.{h,cpp}`（路径 → 纹理 → 画进矩形，走已有的 `gallery::ThumbnailService`）。接线时挖出两个真缺陷：`RegisterBuiltinDecoders()` **全仓零调用**（⇒ 每个文件都报「不支持的图片格式」）、fixture 里那几个 `.png` 是文本桩。已接：资产网格卡缩略图、详情页左列基线图（顺带补齐**整块缺失的两列网格**） |
 | 第六轮 | **数据面铺开**（`out/_fixture_seed.sql`）：17 实体 / 13 种 kind / 12 章 / 3 卷 / 19 镜 / 8-8 种资产状态 / 10 条 `visual_artifacts` 行（原来 **0 行**）/ 12 张真 PNG + 坏文件 + 缺文件 + 中文文件名。`_make_fixture.ps1` 的硬门禁加了**枚举覆盖度** |
-| 第七轮 | **侧栏树可滚**（`Tree` 改成报**完整内容高度**；两棵树套 `ScrollRegion`；提成 `Shell::OverlayBlocksMouse()`）、**V0 派生链**（逐层真图 + 层状态点，`visual_artifacts` 一路投影到视图层） |
+| 第七轮 | **侧栏树可滚**（`Tree` 改成报**完整内容高度**；两棵树套 `ScrollRegion`；提成 `Shell::OverlayBlocksMouse()`）、**V0 派生链**（逐层真图 + 层状态点，`visual_artifacts` 一路投影到视图层）、**分镜 `.tthumb` 逐镜成片图**（`generated_images` 的 `source_kind='shot'`，三分支：真图 / `Art` / 「待出图」） |
 
 当前实测（可复现）：
 
@@ -114,17 +114,31 @@ overall=PASS ↔ 退出码 0；四门禁全绿
 设计稿出处：`webui/src/views/Assets.jsx` 的 `setViewer({name, type:'image'|'sheet', seed, meta, gallery})`
 （image 见 150-202、sheet 见 177-181/195-198；画廊左右切换、`meta` 说明行）。
 
-## 仍未做（堵点都在**数据层**，不是 UI 层）
+## 仍未做
 
-- **分镜 `.tthumb`** 要「**这一镜**的图」，而：`generated_images` 有 `rel_path` 但只连到
-  **`scene_id`（没有 `shot_id`）**；`visual_artifacts` **没有 `shot_ord` 列**；
-  `stage_artifacts` 有 `shot_ord` ✓ 但图路径只可能在 `payload_json` 里，而**全仓没有代码
-  解析过其中任何图路径字段**（`NovelVisual.cpp` 只当不透明字符串存取）。
-  ⇒「第 3 镜的图」在数据层**确定不出来**。出图结果面板 / 出片胶片格同族。
-  **要做得先在业务层补一条「镜 → 产物图」的只读投影**（新增列，或一条按 shot 的关联查询，
-  并在文档里定下 `payload_json` 的那个键）。
+- **出图结果面板 / 出片胶片格 / 查看器大图与联系表** 这几处图片位点。
+  前两者很可能与分镜**同族**（都从 `generated_images` 取）。
+  ⚠️ **先按下面这条教训把那张表的列全列一遍、并 grep 一遍谁在写它，再下结论。**
 - 主题层 #3（`line.*`/`fill.*` 的 alpha 摊平）、页面层若干细则：见 `PROGRESS.md` 的审计表，
   每条都标了归因在哪一层。
+
+### ⚠️ 一条必须带走的教训（真栽过）
+
+第七轮我写下了「分镜 `.tthumb` 的堵点在**数据层**：`generated_images` 只连 `scene_id`、
+没有 `shot_id` ⇒『这一镜的图』确定不出来」，并据此把它记成「可以跳过」。
+**那是错的**：那张表里有一对 **`source_kind` / `source_id`**（多态来源），
+业务层提交单镜出图时就写着 `source_kind='shot', source_id=shots.id`
+（`src/novel/NovelImageStore.cpp`），表上还专门建了 `idx_gimg_source(source_kind, source_id)`，
+`src/visual/ReferenceChain.cpp:137` 也早在用它。**我只看了 `scene_id` 就下了结论。**
+
+- 代价：整块功能被误判成「业务层问题」而永久留成占位（`Page_Storyboard.cpp` 里
+  那段注释当年也是这么写的：「`BookShotView` 没有 status 字段 ⇒ 数据层给不出这个判断」——
+  判断与图**是同一个查询**，那对列一直就在库里）。
+- 纪律：**说「数据层没有答案」之前，先把那张表的列全列一遍 + `search_content` 一遍谁在写它。**
+  归因写错层，比不改还贵。
+- 补一条：UI 侧**可以**读库 —— `BookQuery.cpp` 里既有做法（同一函数读 `volumes` 就是裸 SQL，
+  那张表同样没有 `novelcore` 访问器），`check-layers.ps1` 只禁「业务层 include ImGui 头」
+  与「UI 里写颜色字面量」。所以**这类活通常不需要动 `shine_core`**。
 
 ---
 

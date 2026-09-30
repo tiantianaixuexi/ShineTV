@@ -119,6 +119,9 @@ struct BookShotView {
     std::string durationNote;
     std::string canonStatus;
     double durationSec = 0.0;
+    // 这一镜的成片图（相对工程根）。来源与口径见 `BookShot::imageRelPath` 的注释。
+    // 分镜页的时间线卡片用它画真图；空 = 回退设计稿那张 `Art` 占位。
+    std::string imageRelPath;
 };
 
 struct BookChapterView {

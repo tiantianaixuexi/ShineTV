@@ -67,6 +67,12 @@ struct BookShot {  // 分镜页的镜头（shots 表一行）
     RowId lightingId = 0;
     std::string timelineJson;
     std::string canonStatus;
+    // 这一镜的成片图（相对工程根）。来源是 `generated_images` 的
+    // `source_kind='shot'` + `source_id=shots.id` —— 业务层在提交单镜出图时就是这么写的
+    // （`src/novel/NovelImageStore.cpp`：`if (in.shot_id > 0) { source_kind="shot" }`），
+    // 表上还专门建了 `idx_gimg_source(source_kind, source_id)`。
+    // 空 = 这一镜还没出图（或出图失败）⇒ 分镜页回退到设计稿那张 `Art` 占位。
+    std::string imageRelPath;
 };
 
 // 检查器「关联」段的**场 → 伏笔**链路（scenes + scene_foreshadows + foreshadows）。

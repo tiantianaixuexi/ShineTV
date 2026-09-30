@@ -8,6 +8,7 @@
 
 #include "ui/imgui/pages/PageCommon.h"
 
+#include "ui/imgui/kit/Image.h"  // 逐镜成片图（真图 / Art / 「待出图」三分支）
 #include "ui/imgui/kit/Scroll.h"
 
 #include <algorithm>
@@ -344,13 +345,33 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
             const float innerL = ink.min.x + 1.0f;  // 让开卡片自己的 1px 边框
             const float innerR = ink.max.x - 1.0f;
             const Rect thumb{innerL, ink.min.y + 1.0f, innerR, ink.min.y + 1.0f + kTlThumbH};
-            // 真实分镜图要走 gpu 纹理链路（出图页才接），所以这里**不画假缩略图**：
-            // 显示「待出图」占位，与 webui 自己没有图时的那一支一致（Storyboard.jsx:163-166
-            // 是 `image` 20px + gap 4 + `.tiny` 竖排居中）。
-            // ⚠️ webui 那一支按 `s.status === 'done'` 二选一，而 `BookShotView` **没有**
-            //    status 字段（WorkspacePages.h:102-113）—— 数据层给不出这个判断，
-            //    就不臆断成「已出图」去画插图。
-            {
+            // ---- 这一镜的成片图（三条分支，别合并）----
+            //
+            // 来源：`generated_images` 的 `source_kind='shot'` + `source_id=shots.id`。
+            // 业务层提交**单镜出图**时就把镜 id 记在这对列上
+            // （`src/novel/NovelImageStore.cpp`：`if (in.shot_id > 0) { source_kind="shot" }`），
+            // 表上还专门建了 `idx_gimg_source(source_kind, source_id)`。
+            //
+            // ⚠️ 这里原来写着「`BookShotView` 没有 status 字段 ⇒ 数据层给不出
+            //    `s.status === 'done'` 这个判断，就不臆断成已出图去画插图」——
+            //    **那个归因是错的**：判断与图**是同一个查询**（有没有
+            //    `source_kind='shot'` 且 `rel_path<>''` 的行），而且那对列一直就在库里。
+            //    当时的结论对（不臆断），但因此把整块留成了永久占位。
+            //
+            // 三条分支（按设计稿 Storyboard.jsx:163-166 的状态分支）：
+            //   ① 有真图且解码成功        → 画它（`.tthumb` 满幅 cover）
+            //   ② 登记过这一镜的图但解不出 → 画设计稿那张 `Art`（`done` 那一支）
+            //   ③ 压根没登记（还没出图）   → 保持「待出图」那一格
+            // ⚠️ ②③ 必须分开：合成一条就分不出「出过图但文件坏了」与「还没出图」——
+            //    而这两种状态在界面上该是不同的东西（R8 那一族栽过一模一样的跟头）。
+            const ImageSlot frame = RequestImage(AssetImagePath(s.root, row.imageRelPath));
+            if (frame.ready()) {
+                DrawImage(sdraw, thumb, frame, 0.0f, ImageFit::Cover);
+            } else if (!row.imageRelPath.empty()) {
+                // seed 用镜序：设计稿的 `s.id+4` 是 mock 字段，库里没有对应列 ——
+                // 按镜序派生是确定的（同一镜永远同一张），不编随机数。
+                Art(sdraw, thumb, row.ord, /*cover=*/true);
+            } else {
                 static constexpr char kPending[] = "待出图";
                 ImFont* tinyFont = FontAt(12.0f);            // .tiny = 12px
                 const float tinyW = LabelWidth(tinyFont, 12.0f, kPending);

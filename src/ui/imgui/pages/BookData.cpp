@@ -76,6 +76,7 @@ void RebuildBookSide(const BookState& s) {
         row.durationNote = shot.durationNote;
         row.canonStatus = shot.canonStatus;
         row.durationSec = shot.durationSec;  // <=0 = timeline_json 里没有，别当成 0 秒
+        row.imageRelPath = shot.imageRelPath;  // 这一镜的成片图；空 = 还没出图
         v.shots.push_back(std::move(row));
     }
     // ---- 资产工作区侧栏：全量实体，**不按 kind 预筛** ----

@@ -275,6 +275,27 @@ INSERT INTO stage_artifacts(chapter_id,stage,scene_ord,shot_ord,payload_json,inp
    (104,104,1,'阁楼·铁皮匣','夜'),
    (105,105,1,'阁楼·灯下','夜');
 
+ -- ---- 5. 逐镜成片图：`generated_images` 的 `source_kind='shot'` ----
+ -- 为什么必须有：分镜页的 `.tthumb` 要画「**这一镜**的图」，而这张表在扩充前**一行都没有**——
+ -- 于是「镜 → 图」这条链在证据图里从来没有输入（页面拍到了、分支没跑到）。
+ -- 业务层提交单镜出图时就是这么写来源的（`NovelImageStore.cpp`：
+ -- `if (in.shot_id > 0) { source_kind='shot'; source_id=shot_id; }`），
+ -- 表上还专门建了 `idx_gimg_source(source_kind, source_id)`。
+ --
+ -- ⚠️ `source_id` 是 **shots.id（自增主键）**，不是镜序 —— 所以下面这几条要按
+ --    `shots` 里实际的 id 写。第 1 章的 5 个镜是 fixture 最早那批 INSERT 建的
+ --    （没有显式 id），id 就是 1..5；这里按 1/2/4 三条取，故意**留两个镜没有图**
+ --    （验「待出图」那条分支），并且**故意不建** `shot_missing.png`（验「登记过但文件不在」）。
+ INSERT INTO generated_images(job_id,backend,model,prompt,negative,width,height,steps,rel_path,
+                              source_kind,source_id,chapter_id,scene_id,status,error,raw_meta,
+                              checklist_json,created,updated) VALUES
+   ('seed-job-shot1','comfy','seed-model','推门进屋','',1024,1024,20,'assets/shot/s1.png',
+    'shot',1,1,1,'CANON','','{}','{}',1750103000,1750103100),
+   ('seed-job-shot2','comfy','seed-model','拆开信封','',1024,1024,20,'assets/shot/s2.png',
+    'shot',2,1,1,'PROPOSED','','{}','{}',1750103200,1750103300),
+   ('seed-job-shot4','comfy','seed-model','踩上台阶','',1024,1024,20,'assets/shot/s4_missing.png',
+    'shot',4,1,2,'FAILED','文件被删了','{}','{}',1750103400,1750103500);
+
  INSERT INTO shots(scene_id,ord,action,expression,mood,dialogue,narration,canon_status,timeline_json) VALUES
    (101,1,'黑猫从台阶下探出头','警惕','压抑','','它右耳缺了一角。','APPROVED','{"duration_s":3.0}'),
    (101,2,'他蹲下去伸手','迟疑','克制','你也在等第七封？','猫没有躲。','APPROVED','{"duration_s":4.0}'),
