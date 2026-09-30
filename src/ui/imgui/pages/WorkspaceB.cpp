@@ -916,9 +916,17 @@ std::function<void(std::string)>& ToastSink() {
     static std::function<void(std::string)> sink;
     return sink;
 }
+float& WorkspaceViewportHeightSlot() {
+    static float height = 0.0f;
+    return height;
+}
 } // namespace
 
 void SetWorkspaceToast(std::function<void(std::string)> sink) { ToastSink() = std::move(sink); }
+
+void SetWorkspaceViewportHeight(float height) { WorkspaceViewportHeightSlot() = height; }
+
+float WorkspaceViewportHeight() { return WorkspaceViewportHeightSlot(); }
 
 void WorkspaceToast(std::string message) {
     if (auto& sink = ToastSink(); sink) {

@@ -2207,6 +2207,10 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     const kit::Rect view{origin.min,
                          ImVec2(origin.max.x, origin.min.y + (fullBleed ? origin.height() : 2400.0f))};
 
+    // 页面要自建视口（侧栏 / 面板 / 列）时必须知道**真正能看见多少**，
+    // 而不是下面那个 2400 的布局区高。见 WorkspacePages.h 的说明。
+    pages::SetWorkspaceViewportHeight(origin.height());
+
     switch (layout_.workspace) {
     case 0: DrawOverview(view, draw); break;
     case 1: novel_.Draw(view, draw); break;
@@ -2216,6 +2220,11 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     case 5: videoflow_.Draw(view, draw); break;
     default: gallery_.Draw(view, draw); break;
     }
+    // ⚠️ 这行是整个外壳**唯一**让工作区能滚的地方，缺了它滚轮怎么转都停在原地。
+    //    页面是纯自绘的，全程没给 ImGui 提交过 item，`view` 的 2400 只是个局部变量，
+    //    ImGui 不知道，于是 ContentSize=0 → ScrollMaxY=0 → 视口以下的内容被裁掉
+    //    且**无法到达**（实测：分镜页 5 个镜头里第 3 个起就够不着）。
+    region.setContentHeight(view.height());
 }
 
 // ---------------------------------------------------------------- P4.6c 产物
@@ -2990,6 +2999,8 @@ void Shell::DrawProjectHubScreen(Rect area, ImDrawList* draw) {
         return;
     }
     DrawProjectHub(region.content(), ImGui::GetWindowDrawList());
+    // 同上：自绘内容不会自己告诉 ImGui 有多高，不报就永远滚不动。
+    region.setContentHeight(region.content().height());
 }
 
-} // namespace shine::p⚠️
+} // namespace shine::pages

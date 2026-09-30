@@ -512,8 +512,16 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         (static_cast<int>(std::size(kpis)) + kpiCols - 1) / std::max(1, kpiCols);
     const float gridTop = kpiTop + (96.0f + 14.0f) * static_cast<float>(kpiRows) + kGap;
     const float rightW = 300.0f;
+    // 右栏按**可视高度**收口，不跟着 2400 的布局区高跑。
+    // ⚠️ 跟着布局区高跑的后果是实测出来的：右栏 child 高 1978px，于是它成了
+    //    一个**布局容器**而不是视口 —— 卡片在里面从头排到尾、裁切交给外层，
+    //    「右栏自己滚」这件事压根不存在（构造期读到的可视高 1978 > 内容高 654，
+    //    期望滚动上限 0）。正文流（左列甘特 + 账本）仍然按布局区高排。
+    const float viewportH = pages::WorkspaceViewportHeight();
+    const float rightBottom =
+        viewportH > 0.0f ? std::min(content.max.y, area.min.y + viewportH) : content.max.y;
     const Rect left{content.min.x, gridTop, content.max.x - rightW - kGap, content.max.y};
-    const Rect rightCol{left.max.x + kGap, gridTop, content.max.x, content.max.y};
+    const Rect rightCol{left.max.x + kGap, gridTop, content.max.x, rightBottom};
 
     // ---- 甘特：行 = T 链阶段，列 = 链上 8 等分桶，表头是那一桶的**真实阶段码** ----
     // 旧版是 `(i*3)%8` 的假跨度 + 只有"在/不在跨度"两态。现在三态都来自真实状态：
@@ -665,6 +673,13 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     // 等布局重排（压 KPI 行高 / 加高窗口）后直接画，见 refactor/PROGRESS.md。
     ScrollRegion rightScroll("ov-right", rightCol);
     if (rightScroll) {
+        // ⚠️ 右栏整块必须画在 **child 自己的** draw list 上。
+        //    Shell.cpp 传进来的是**外层**（工作区 child）的 list，BeginChild 的裁剪
+        //    矩形只写进 child 自己那条 list 的 CmdBuffer —— 画到外层 list 上，右栏照样
+        //    Begin/End，但裁剪对那些 draw call **完全无效**。症状不是「卡片消失」，
+        //    而是右栏滚上去之后盖住 KPI 行和页头按钮（实测：停止条件卡浮到 y=93，
+        //    压在「镜头 / 未接入 ↑」和页头「运行」按钮上面），一眼看去像布局算错。
+        ImDrawList* cdraw = rightScroll.drawList();
         const Rect rc = rightScroll.content();
         const float cardW = rc.width();
         float ry = rc.min.y;
@@ -678,20 +693,20 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         // 所以这里不硬凑 12 行：画真实判定 + 真实阈值 + 一行前置状态。
         const float stopH = 44.0f + 20.0f + (hasReason ? 30.0f : 0.0f) + 4.0f * 20.0f + 28.0f;
         const Rect stop{rc.min.x, ry, rc.max.x, ry + stopH};
-        Rect stopBody = Card(draw, stop, "停止条件 · S1–S8", "alert", false, false);
+        Rect stopBody = Card(cdraw, stop, "停止条件 · S1–S8", "alert", false, false);
         ry = stop.max.y + kGap;
         float sy = stopBody.min.y;
-        StatusDot(draw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
+        StatusDot(cdraw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
                   decision.stop ? theme::Tone::Warn : theme::Tone::Ok, false);
         const std::string verdict =
             decision.stop ? decision.rule : std::string("未触发任何停止条件");
-        draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 16.0f, sy),
+        cdraw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 16.0f, sy),
                       decision.stop ? ColorOf(theme::Current().statusWarn)
                                     : ColorOf(theme::Current().statusOk),
                       verdict.data(), verdict.data() + verdict.size());
         sy += 20.0f;
         if (hasReason) {
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(stopBody.min.x, sy),
+            DrawTextClipped(cdraw, FontAt(11.5f), 11.5f, ImVec2(stopBody.min.x, sy),
                             stopBody.width(), ColorTextMuted(), decision.reason, true);
             sy += 30.0f;
         }
@@ -706,16 +721,16 @@ void DrawOverview(Rect area, ImDrawList* draw) {
             {"S4", "成本 " + Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
         };
         for (const auto& [code, name] : thresholds) {
-            StatusDot(draw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
+            StatusDot(cdraw, ImVec2(stopBody.min.x + 4.0f, sy + 6.0f),
                       overBudget ? theme::Tone::Warn : theme::Tone::Idle, false);
-            draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(stopBody.min.x + 16.0f, sy + 1.0f),
+            cdraw->AddText(MonoAt(11.5f), 11.5f, ImVec2(stopBody.min.x + 16.0f, sy + 1.0f),
                           ColorTextMuted(), code.data(), code.data() + code.size());
-            DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 48.0f, sy),
+            DrawTextClipped(cdraw, FontAt(12.5f), 12.5f, ImVec2(stopBody.min.x + 48.0f, sy),
                             stopBody.width() - 48.0f, ColorTextSecondary(), name);
             sy += 20.0f;
         }
         DrawTextClipped(
-            draw, FontAt(11.0f), 11.0f, ImVec2(stopBody.min.x, sy + 4.0f), stopBody.width(),
+            cdraw, FontAt(11.0f), 11.0f, ImVec2(stopBody.min.x, sy + 4.0f), stopBody.width(),
             ColorTextMuted(),
             std::string("S5 LLM ") + (LlmConfigured() ? "已配置" : "未配置") + " · S6 ComfyUI " +
                 (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") + " · S7 复核 " +
@@ -731,13 +746,13 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         const float artH =
             44.0f + 16.0f + (artRows > 0 ? 32.0f * static_cast<float>(artRows) + 4.0f : 24.0f);
         const Rect art{rc.min.x, ry, rc.max.x, ry + artH};
-        Rect artBody = Card(draw, art, "最近产物", "folder", false, false);
+        Rect artBody = Card(cdraw, art, "最近产物", "folder", false, false);
         ry = art.max.y + kGap;
         ButtonSpec viewSpec;
         viewSpec.variant = ButtonVariant::Ghost;
         viewSpec.size = ButtonSize::Small;
         viewSpec.disabled = s.entries.empty();
-        if (Button(draw, RectAt(art.max.x - 60.0f, art.min.y + 10.0f, 44.0f, 24.0f), "查看", viewSpec,
+        if (Button(cdraw, RectAt(art.max.x - 60.0f, art.min.y + 10.0f, 44.0f, 24.0f), "查看", viewSpec,
                    "ov-view")) {
             const std::string err = util::ShellOpen(util::PathFromUtf8(s.entries.back().output_path));
             if (!err.empty()) {
@@ -745,7 +760,7 @@ void DrawOverview(Rect area, ImDrawList* draw) {
             }
         }
         if (artRows == 0) {
-            DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(artBody.min.x, artBody.min.y),
+            DrawTextClipped(cdraw, FontAt(12.0f), 12.0f, ImVec2(artBody.min.x, artBody.min.y),
                             artBody.width(), ColorTextMuted(),
                             s.bound ? "还没有落盘产物。" : "未绑定工程根。", true);
         } else {
@@ -759,18 +774,18 @@ void DrawOverview(Rect area, ImDrawList* draw) {
                 // HoveredId，第二个永远 clicked=false —— 这一行点不开。
                 const Hit hit = HitTest(row, "ov-art-" + std::to_string(i));
                 if (hit.hovered) {
-                    DrawRoundRect(draw, row.min, row.max, 6.0f, ColorFillHover());
+                    DrawRoundRect(cdraw, row.min, row.max, 6.0f, ColorFillHover());
                 }
                 const std::string name = util::PathToUtf8(path.filename());
-                DrawTextClipped(draw, FontBoldAt(12.0f), 12.0f, ImVec2(row.min.x + 6.0f, ay + 3.0f),
+                DrawTextClipped(cdraw, FontBoldAt(12.0f), 12.0f, ImVec2(row.min.x + 6.0f, ay + 3.0f),
                                 row.width() - 26.0f, ColorText(), name);
                 std::string sub = pipeline::StageCode(entry.stage);
                 if (!entry.degradation.empty()) {
                     sub += " · 降级 " + entry.degradation;
                 }
-                DrawTextClipped(draw, FontAt(11.0f), 11.0f, ImVec2(row.min.x + 6.0f, ay + 18.0f),
+                DrawTextClipped(cdraw, FontAt(11.0f), 11.0f, ImVec2(row.min.x + 6.0f, ay + 18.0f),
                                 row.width() - 26.0f, ColorTextMuted(), sub);
-                DrawIcon(draw, "chevron", ImVec2(row.max.x - 16.0f, ay + 10.0f), 12.0f,
+                DrawIcon(cdraw, "chevron", ImVec2(row.max.x - 16.0f, ay + 10.0f), 12.0f,
                          ColorTextMuted());
                 if (hit.clicked) {
                     const std::string err = util::ShellOpen(path);
@@ -785,16 +800,108 @@ void DrawOverview(Rect area, ImDrawList* draw) {
         // 运行信息：Overview.jsx:160-167 的四行（当前项目 / 数据目录 / 检查点 / 预算余量）
         const float infoH = 44.0f + 4.0f * 20.0f + 16.0f;
         const Rect info{rc.min.x, ry, rc.max.x, ry + infoH};
-        Rect infoBody = Card(draw, info, "运行信息", "info", false, false);
+        Rect infoBody = Card(cdraw, info, "运行信息", "info", false, false);
+        ry = info.max.y + kGap;
         char chapterText[16];
         std::snprintf(chapterText, sizeof(chapterText), "ch%03d", s.chapter < 0 ? 0 : s.chapter);
-        KeyValues(draw, infoBody,
+        KeyValues(cdraw, infoBody,
                   {{"当前项目", s.root.empty() ? std::string("未打开项目")
                                               : util::PathToUtf8(s.root.filename())},
                    {"数据目录", s.root.empty() ? std::string("—") : util::PathToUtf8(s.root)},
                    {"检查点", s.chapter < 0 ? std::string("无") : std::string(chapterText)},
                    {"预算余量", Money(s.budget.max_cost - s.budget.cost) + " / " +
                                     Money(s.budget.max_cost)}});
+
+        // ---- 章节 × V 阶段矩阵：行 = 章，列 = V1–V7 ----
+        //
+        // ⚠️ 这个维度**在数据层一直就有**：表 `stage_artifacts` 带 `chapter_id` + `stage`
+        //    + `scene_ord/shot_ord` + `created`，只读接口 `ListStageArtifacts(chapterId,
+        //    stage)` 也在（`src/novel/NovelVisual.h:242-243`）。早先把「章节 × 阶段」
+        //    整个记成缺口（「章节维度在数据层根本不存在」）是**只看了 T 链**得出的结论
+        //    —— T 链的 `LedgerEntry` / `work/T1.json` 确实不带章节，但**V 链带**。
+        //    所以左边那张 T 链甘特没有章节轴是事实，这里这张有。
+        //
+        // 上一轮这张卡渲染过又删掉了：当时右栏是「各自 max(下限, 剩余)」的重叠布局，
+        // 塞不进去。改成 ScrollRegion + 内容真实高度之后**容量不再是硬约束**，
+        // 高度按行数直接算，超出由滚动承载。
+        const pages::BookSideView& book = pages::BookSide();
+        if (book.bound && !book.chapters.empty()) {
+            const int rows = static_cast<int>(book.chapters.size());
+            // 高度按内容**逐段**算，不写死一个数：
+            //   Card 带标题时 body.min.y = min.y+44、body.max.y = max.y-16
+            //   （Widgets.cpp:416），所以卡高 = 44(头) + bodyH + 16(底 pad)；
+            //   bodyH = 16(列头留白) + 22*行数 + 6(行后间隙) + 16(脚注)。
+            //
+            // ⚠️ 早先这里写的是 `44 + 16 + 22*rows + 16` —— 脚注没有自己的高度，
+            //    于是 `matBody.max.y - 12` 落在**最后一行里面**（行底 = +16+22*rows，
+            //    脚注顶 = +22*rows+4），脚注压在最后一行上。**表面上矩阵是对的**，
+            //    只有截图放大看才发现最后一行被文字糊住。
+            constexpr float kMatBodyTopPad = 16.0f;
+            constexpr float kMatRowH = 22.0f;
+            constexpr float kMatFootGap = 6.0f;
+            constexpr float kMatFootH = 16.0f;
+            constexpr float kMatBottomPad = 16.0f;
+            const float matBodyH = kMatBodyTopPad + kMatRowH * static_cast<float>(rows) +
+                                   kMatFootGap + kMatFootH;
+            const float matH = 44.0f + matBodyH + kMatBottomPad;
+            const Rect mat{rc.min.x, ry, rc.max.x, ry + matH};
+            Rect matBody = Card(cdraw, mat, "章节 × V 阶段", "grid", false, false);
+            const float labelW = 40.0f;
+            const float cell = (matBody.width() - labelW) / 7.0f;
+            for (int v = 0; v < 7; ++v) {
+                const std::string head = "V" + std::to_string(v + 1);
+                cdraw->AddText(FontBoldAt(9.5f), 9.5f,
+                              ImVec2(matBody.min.x + labelW + cell * v + 2.0f, matBody.min.y),
+                              ColorTextMuted(), head.data(), head.data() + head.size());
+            }
+            float my = matBody.min.y + kMatBodyTopPad;
+            for (int i = 0; i < rows; ++i) {
+                const pages::BookChapterView& ch = book.chapters[static_cast<std::size_t>(i)];
+                const std::string ord = "第" + std::to_string(ch.ord);
+                cdraw->AddText(MonoAt(9.5f), 9.5f, ImVec2(matBody.min.x, my + 4.0f),
+                              ColorTextSecondary(), ord.data(), ord.data() + ord.size());
+                for (int v = 0; v < 7; ++v) {
+                    // 下标与 chapters 对齐；长度不足（快照还没回来）时按「没跑过」处理。
+                    const int count =
+                        i < static_cast<int>(book.chapterVStages.size())
+                            ? book.chapterVStages[static_cast<std::size_t>(i)]
+                                  [static_cast<std::size_t>(v)]
+                            : 0;
+                    const Rect cell0{matBody.min.x + labelW + cell * v + 1.5f, my,
+                                     matBody.min.x + labelW + cell * (v + 1) - 1.5f, my + 17.0f};
+                    DrawRoundRect(cdraw, cell0.min, cell0.max, 3.0f,
+                                  count > 0 ? ColorOf(theme::CurrentDerived()
+                                                          .ganttCell[static_cast<int>(theme::Tone::Ok)])
+                                            : ColorFillMuted());
+                    if (count > 0) {
+                        // 居中用实测宽度，不写死字符数偏移 —— 数字会从 1 涨到两位数，
+                        // 固定偏移会让两位数整体偏右。
+                        const std::string n = std::to_string(count);
+                        ImFont* nf = MonoAt(9.0f);
+                        const float nw = nf->CalcTextSizeA(9.0f, 1e9f, 0.0f, n.data(),
+                                                           n.data() + n.size())
+                                             .x;
+                        cdraw->AddText(nf, 9.0f,
+                                      ImVec2(cell0.min.x + (cell0.max.x - cell0.min.x - nw) * 0.5f,
+                                             cell0.min.y + 4.0f),
+                                      ColorText(), n.data(), n.data() + n.size());
+                    }
+                }
+                my += kMatRowH;
+            }
+            // 脚注位置由同一组常量推出来，不是 `max.y - 12` 之类的手写锚点。
+            const float footY = my + kMatFootGap; // my 此时已是最后一行的底
+            DrawTextClipped(cdraw, FontAt(10.5f), 10.5f,
+                            ImVec2(matBody.min.x, footY), matBody.width(), ColorTextMuted(),
+                            "格内数字 = 该章在该阶段的产物条数（ListStageArtifacts）。");
+            // 推进 ry —— ScrollRegion 的可滚高度靠最后一次上报的内容底算出来，
+            // 忘了推就等于这张卡「不在内容里」，滚到底也拍不到（与「有内容但没被拍到」同族）。
+            ry = mat.max.y + kGap;
+        }
+        // 把累加出来的内容高度报给 ScrollRegion —— 没有这一行，右栏就**滚不动**
+        // （ScrollMaxY 恒为 0），四张卡里视口以下的三张永远够不着。上面「溢出交给
+        // ScrollRegion 滚动」这句话指的就是这一行。
+        rightScroll.setContentHeight(ry - rc.min.y);
     }
 }
 

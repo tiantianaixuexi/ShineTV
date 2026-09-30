@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "ui/imgui/kit/Draw.h"
+#include "ui/imgui/kit/Scroll.h"
 #include "ui/imgui/verify/Capture.h"
 #include "util/File.h"
 
@@ -450,6 +451,67 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         shell.SetWorkspace(overview);
         host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
         grabDriven("overview-bound", overview, base);
+
+        // 右栏滚到底：「章节 × V 阶段」矩阵排在最后（停止条件 → 最近产物 → 运行信息 →
+        // 矩阵），默认滚动位置只能拍到前两张。
+        //
+        // ⚠️ 旧门禁只查「图写出来了」，矩阵那张从来没被拍过 —— 与「fixture 缺数据
+        //    造成覆盖洞」同族：**页面上有一块内容，但它不在任何一张截图里**。
+        //    粘性请求（ScrollRegion::RequestScrollBottom）解决的是「取证驱动在
+        //    DrawFrame 外面，拿不到局部 ScrollRegion 对象」这个接线问题。
+        //
+        // ⚠️ 下面必须**再判一次请求真的生效**，不能只看两张图不一样：
+        //    第一版这里只有 `identical-driven-pairs = 0` 这一个判据，而它是绿的 ——
+        //    实际滚都没滚（SetScrollHereY 在构造期没有 item 可依）。两张图仍然
+        //    不同，只是因为左上角 326 个像素在动。**「图不一样」有二义性**：
+        //    「滚到位了」和「别处在动」分不开。于是加 ScrollRegion::LastApplied()
+        //    这个正交信号 —— 它读产品自己的 scrollY / maxScrollY，不从像素反推。
+        kit::ScrollRegion::RequestScrollBottom("ov-right");
+        // 2 帧：第 1 帧消费请求，第 2 帧才读得到生效后的 scrollY（核销就在第 2 帧）。
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        const kit::ScrollRegion::ScrollApplied scrolled = kit::ScrollRegion::LastApplied();
+        // ⚠️ 三个分支必须**平级**写。早先写成
+        //    `if (id == "ov-right" && maxScrollY > 0 && !ok)`，于是「maxScrollY == 0」
+        //    （内容压根没超出区域）和「id 对不上」（请求压根没被核销）都落进 else，
+        //    **静默通过** —— 而「没超出」恰恰是最该红的覆盖洞。判据自己漏一支，
+        //    表现得和「一切正常」一模一样。
+        if (scrolled.id != "ov-right") {
+            shine::log::Error(
+                "review: ov-right 的滚动请求从没被核销（id=\"{}\"）—— 请求没送到，"
+                "或者 ScrollRegion 那一帧没被构造（覆盖洞）",
+                scrolled.id);
+            result.scrollFailed = true;
+        } else if (scrolled.maxScrollY <= 0.0f) {
+            shine::log::Error(
+                "review: ov-right 期望滚动上限=0（自报内容高={:.1f} / 可视高={:.1f}）—— "
+                "内容没超出就说明右栏压根没画够，或者 setContentHeight 没被调到（覆盖洞）",
+                scrolled.contentHeight, scrolled.viewHeight);
+            result.scrollFailed = true;
+        } else if (!scrolled.ok) {
+            shine::log::Error(
+                "review: ov-right 滚到底失败：scrollY={:.1f} / 期望上限={:.1f} —— "
+                "overview-vstages 这张图拍的仍是顶部，等于矩阵没被取证"
+                "（ImGui 侧上限={:.1f}：它比期望值小说明内容高度没报上去，滚轮也滚不动）",
+                scrolled.scrollY, scrolled.maxScrollY, scrolled.imGuiMaxScrollY);
+            result.scrollFailed = true;
+        } else if (scrolled.imGuiMaxScrollY < scrolled.maxScrollY - 1.0f) {
+            // 粘性请求到位了，但 ImGui 自己不认识这个高度 ⇒ 用户用滚轮依然滚不动。
+            // 判据必须报出来，否则「取证能滚」会掩盖「产品滚不动」。
+            shine::log::Error(
+                "review: ov-right 内容高度没报给 ImGui（期望上限={:.1f} / ImGui 侧={:.1f}）"
+                " —— 自绘内容不被 ImGui 计入 ContentSize，滚轮无法滚动",
+                scrolled.maxScrollY, scrolled.imGuiMaxScrollY);
+            result.scrollFailed = true;
+        }
+        grabDriven("overview-vstages", overview, base);
+        // 复位：滚回顶部，否则后面几张图都在底部状态。
+        //
+        // ⚠️ 只登记**一次**。同一 id 先后登记「底 / 顶」时 ScrollRegion 按后登记者覆盖，
+        //    多写一次不影响结果，但会让读代码的人以为「两次登记是必要的」—— 而实际上
+        //    分成两个请求入口（不带 target 参数）时两次登记会互相抵消，正好停在中途，
+        //    两张图都拍不到位。顶与底必须共用 RequestScroll 这一个入口。
+        kit::ScrollRegion::RequestScrollTop("ov-right");
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
         // 两个模态状态拍的是**不同内容**（一份有未过项、一份有未核对项），
         // 于是它们既不该与列表图相同，也不该彼此相同。
@@ -979,12 +1041,15 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     // ⚠️ overall 行必须存在且与退出码一致（脚本 :66 要求 PASS↔0 / FAIL↔1）。
     //    reportScanConverged / bookSnapshotConverged 也进判据：没拍成就是没拍成，
     //    不能因为「其它图都写出来了」就整轮报绿。
-    const bool pass = result.failed == 0 && identicalPairs == 0 && drivenDuplicates == 0 &&
-                      reportScanConverged && bookSnapshotConverged && assetSnapshotConverged &&
-                      artifactsConverged && inverted == 0 &&
+    //    scrollFailed 同理，而且**必须**进判据：第一版就是漏了它 —— 判据全绿，
+    //    而 overview-vstages 拍的其实是右栏顶部，矩阵那张等于没拍。
+    const bool pass = result.failed == 0 && !result.scrollFailed && identicalPairs == 0 &&
+                      drivenDuplicates == 0 && reportScanConverged && bookSnapshotConverged &&
+                      assetSnapshotConverged && artifactsConverged && inverted == 0 &&
                       hoverProbesPassed == kHoverProbeTotal && shortcutsPassed == kShortcutTotal;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
+                                "  scroll-failed: " + (result.scrollFailed ? "1" : "0") +
                                 "  identical-theme-pairs: " + std::to_string(identicalPairs) +
                                 "  identical-driven-pairs: " + std::to_string(drivenDuplicates) +
                                 "  inverted-rects: " + std::to_string(inverted) +

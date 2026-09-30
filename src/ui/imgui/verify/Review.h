@@ -15,6 +15,10 @@ namespace shine::imguiverify {
 struct ReviewResult {
     int captured = 0;
     int failed = 0;
+    // 粘性滚动请求**已登记但没到位**。与 failed 分开：图片照样写出来了（manifest
+    // 记 saved），但那张图拍到的不是它承诺的状态 —— 判据绿、结论错。
+    // 归到 failed 里会掩盖原因，所以单列一个标志并参与 overall 判定。
+    bool scrollFailed = false;
 };
 
 // pages 由 Shell 提供；每张图之前显式设置主题与工作区（不依赖"默认恰好是我要的"）。

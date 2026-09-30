@@ -47,6 +47,19 @@ void BindOverviewProject(std::filesystem::path root);
 void SetWorkspaceToast(std::function<void(std::string)> sink);
 void WorkspaceToast(std::string message);
 
+// ---- 工作区的**可视高度**（每帧由 Shell 写入，页面只读）----
+//
+// 为什么页面需要知道它：`Shell::DrawWorkspace` 给页面的布局区是**撑高**的（2400px，
+// 满幅画布页则是视口高），这样页面内容超出视口时仍能被外壳滚到。但页面拿着这个
+// 2400 当「我的可视区」就会把侧栏一起撑高 —— 总控页右栏因此高达 1978px，
+// 于是右栏里的 ScrollRegion 变成一个 1978px 高的**布局容器**而不是视口：
+// 卡片在里面从头排到尾，裁切交给外层，于是「右栏自己滚」这件事根本不存在。
+//
+// 页面要建**自己的视口**（侧栏、面板、列）时用这个高度收口；正文流该多长还多长。
+void SetWorkspaceViewportHeight(float height);
+// 尚未被 Shell 写入时返回 0 —— 页面据此退回「布局区就是视口」的旧行为。
+float WorkspaceViewportHeight();
+
 // ---- 小说 / 资产 / 分镜：绑定"当前工程根"（照 BindOverviewProject 的模式）----
 //
 // 三个页面共用同一份 **novel.db 快照**：开库 + 查询全在 worker 线程
