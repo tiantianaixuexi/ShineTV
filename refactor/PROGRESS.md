@@ -358,6 +358,11 @@ last_verified: 2026-09-30
 | 2026-09-30 | 门禁 | **滚动取证：加一个正交信号，别信「两张图不一样」** | 第一版 `overview-vstages` 判据全绿（`identical-driven-pairs: 0`）而右栏**压根没滚** —— 两张图只差 326px、位置在左上角一块无关区域（`SetScrollHereY` 在构造期没有 item 可依）。**「图不一样」有二义性**：「滚到位了」和「别处在动」分不开。加 `ScrollRegion::LastApplied()`：读产品自己的 `scrollY` / 期望上限 / ImGui 侧上限，不从像素反推。⚠️ 判据自己的三个分支必须**平级**写 —— 第一版把 `maxScrollY > 0` 塞进 `if` 里，于是「内容压根没超出」和「请求没被核销」都落进 `else` **静默通过**，而那恰恰是最该红的覆盖洞。失败时 `scroll-failed: 1` 直接把 `overall` 拉成 FAIL | ✅ |
 | 2026-09-30 | 验证 | 章节 × V 阶段矩阵渲染 + 滚动修复（终轮） | **79/79 saved · 盘上 79 张 md5 全唯一 · manifest saved 行数 = PNG 数 = `# shots` · `scroll-failed: 0` · `identical-theme-pairs: 0` · `identical-driven-pairs: 0` · `inverted-rects: 0` · `hover-probes: 11/11` · `shortcuts: 7/7` · 四个 snapshot converged · `overall=PASS`**；**四道门禁全过**；Rect 扫描器：真实树 0 命中、自检 3 命中。像素证据：`overview-bound` vs `overview-vstages` 差 36,578px / bbox `150,143..1319,743`（对比修之前的 326px / `150,143..202,196`，那个 bbox 正是「差异来自别处」的实证）；矩阵逐格与 fixture 一致（第 1 章 V1–V7 全 5、第 2 章到 V5、第 3 章空） | ✅ |
 | 2026-09-30 | 缺陷 | **`hub-scroll` 的内容高度上报成了视口高（自己引入的回归）** | 上一轮修「ScrollRegion 不滚」时给三个调用点都补了 `setContentHeight`，项目中心那处写的是 `setContentHeight(region.content().height())` —— 上报值恰好等于视口高 ⇒ `ScrollMaxY` 恒为 0 ⇒ 项目超过一屏就够不着（1080 高窗口约 6 张，第 7 张起被裁掉且滚不到）。**看着加了、实际等于没加**，是「改了但没生效」最典型的形态：编译器不报错、像素看不出来，只有真去滚才发现。改成由 `DrawProjectHub` 自报栅格实际高度，Shell 侧加了**只报一次的错误哨兵**（没上报就明写进日志，而不是静默返回） | ✅ |
+| 2026-09-30 | 缺陷 | **小说侧栏「快速跳转」整组被空态吞掉** | `DrawJumpButtons` 排在「这本小说还没有章」的 `Empty()+return` **之后** ⇒ 没章节 / 没绑定 / 读取中 / 读取失败四种状态下四个按钮一个都不画，而它跳的是资产 / 分镜 / 出图 / 出片四个工作区，与「有没有章节」无关。界面看着正常（有空态提示），只有 `hover-jump-btn` 探针知道那里本该有东西。挪到所有空态 `return` 之前 | ✅ |
+| 2026-09-30 | 门禁 | **「点空了」分不出三种原因，加热区扫描** | `hit=0` 至少对应：注入没到位 / 视口塌了 / **坐标落在热区外**。第三种是布局一改就全失效的（坐标是照旧截图量的），而日志只说「点空了」，不告诉你控件现在在哪 —— 只能靠猜。上一条那个缺陷就是这样定位不到的：探针报「坐标偏了，别改产品」，可产品明明有 bug。`SHINE_SCAN=<ws>:<x0>:<y0>:<x1>:<y1>:<step>` 打出每格命中的控件 id，扫一遍就看见 `jump-*` **在那个工作区压根不存在**。**诊断工具，不参与 pass/fail**；必须跑在探针**之后**（前面扫到的是 fixture 没就绪那一帧） | ✅ |
+| 2026-09-30 | 门禁 | **同帧重叠热区自检**（抓「画得出但点不动」） | ImGui 同窗口内先注册者独占 `HoveredId`（`imgui.cpp:5161`）⇒ 重叠矩形上的第二个 `InvisibleButton` 永远 `clicked=false`，而它上面的控件外观画得好好的。`kit::NoteDuplicateHit` 按帧分桶比对矩形（不比 id —— 漏写的人通常还换了个 id），计数进 `overall`。与 `InvertedRectCount` 同一族：那个抓「画不出」，这个抓「画得出但点不动」。迁移报告行时我自己犯了一次（`spec.id` 之后又补了一次 `HitTest`），靠读代码看不出来，是判据逼我回去看出来的 | ✅ |
+| 2026-09-30 | 重构 | **kit 小组件收编：7 处重复实现 → 2 个组件** | 抽 `kit::ListRow`（5 处单行）+ `kit::ListCard`（2 处双行卡，**刻意不合并**：hover 一个走填色一个走投影档，选中一个换底一个换描边环，视觉形态不同）。4 个「已实现、算得对、全树零调用」的组件全部接线：`ModalFrameRect` / `Toast`（补 `alpha` 保住 0.4s 淡出）/ `Menu` / `DataTable`（补 `tag` / `mono` 两个形态）。**归因修正**：原表记「8 处列表行」，实际只有 5 处是；模板与打开列表是双行卡，胶片条是缩略图格，**硬塞进一个函数就是造第二份假抽象** | ✅ |
+| 2026-09-30 | 验证 | kit 收编后取证（`overall=FAIL`，原因已定位） | **79/79 saved · 0 failed · `duplicate-hits: 0` · `identical-theme-pairs: 0` · `identical-driven-pairs: 0` · `inverted-rects: 0` · `scroll-failed: 0` · `overlay-clicks: 4/4` · `shortcuts: 7/7` · `hover-probes: 9/11`（基线 8/11，本轮修好 `hover-jump-btn`）**；四道门禁 + 三个扫描器（含 `-SelfTest`）全过。**`overall=FAIL` 的原因是 fixture 没落地**：`book-snapshot=TIMEOUT` / `asset-snapshot=TIMEOUT`（`assets=0`）⇒ 资产侧栏走 `Empty()`、`hover-tree-node` 与 `hover-asset-card` 坐标上没有控件。`git stash` 对照跑过基线，**同样红**，与本轮改动无关，属环境/fixture 缺口，未在本轮修 | ⚠️ |
 | 2026-09-30 | 门禁 | **工作区主滚动区也要有探针** | 上一轮只验了 `ov-right`，而**工作区才是主滚动区** —— 修好 `setContentHeight` 之后它才第一次真的能滚，却没有任何探针。一个没人验的滚动区等于没有。补 `workspace-scroll` 的四分支判据（没核销 / 上限为 0 / 没滚到位 / ImGui 侧不认识这个高度），并打出实测数字：`自报内容高=1142 可视高=664 上限=478` | ✅ |
 | 2026-09-30 | 缺陷 | **2400 的布局区高被页面当视口用，卡片被撑成巨型空盒子** | 总控页「账本」卡的 rect 一直拉到 `left.max.y`（= Shell 给的 2400）⇒ 实测一张 **1750px 高、只有 6 行**的卡，6 行浮在顶上、下面 1450px 全是空背景，还让工作区多出约 1450px 只能滚到空白的范围。同一族的还有小说页 `timelineTop = content.max.y - 118` 与撑到 2200 的 `StageList`。解法两条：① 卡片高度按**内容**算；② 新增 `pages::SetPageContentHeight()`，页面自报实际画到的最底，Shell 用它替代 2400 作为滚动区高度（没自报的页面退回 2400，可逐页迁移） | ✅ |
 | 2026-09-30 | 门禁 | **`tools/find-silent-truncation.ps1`：找「按容器高度静默截断列表」** | 形如 `if (y + 24.0f > body.max.y) { break; }` —— 自绘列表不像 DOM 自动给滚动条，`break` 之后用户看到的是一个「就这么多」的列表，**看不出还有第 N+1 条**。实测出图页「绑定」页签里 Comfy 队列有 50 个任务时只画前 6 个。全树 **10 处**（含 `maxRows = (body.height() - 4)/18` 这种反推式砍行）。带 `-Root` 自检：3 真 + 4 假样本恰好命中 3；豁免必须写 `// scan:allow-silent-truncation <理由>`，**无理由的豁免无效**，且豁免项单列一节照常打印（不静默） | ✅ |
@@ -469,21 +474,55 @@ last_verified: 2026-09-30
 | `pages/WorkspaceA.cpp` | 甘特行标 | 高 0.75px | |
 | `pages/Shell.cpp` 检查器段头 | 高度 24→39.2、文字改 `CenterTextY`、分隔线移到整段底部、箭头 10→11、颜色→`text-secondary`、hover 去掉底色 | — | 见上 |
 
-### 还没做：kit 小组件覆盖缺口（用户要求「小组件请封装，不要重复写」）
+### kit 小组件覆盖缺口（2026-09-30 收掉前 6 项，第 7 项仍未做）
 
-按重复次数排序：
+用户要求「小组件请封装，不要重复写」。这一轮**归因修正了**：原表把 8 处全记成同一族「列表行」，那是错的 —— 按实际几何只有 **5 处**是列表行，另 3 处是另一种东西，强行合并只会造第二份假抽象。
 
-| # | 重复模式 | 重复处 | 现状 |
+| # | 重复模式 | 实际重复处 | 处置 |
 |---|---|---|---|
-| 1 | 列表行（行框 + hover 底 + 左图标 + 主文字 + 右侧次要文字 + chevron） | **8 处**（队列 / palette / 产物 / 报告 / 模板 / 打开列表 / 胶片格 / WorkspaceA 产物），**每一处都各自算错了一次 Y** | 无 kit 函数。应抽 `kit::ListRow` |
-| 2 | 对话框外壳（scrim + 圆角 + 投影 + 头 + 体 + 脚） | **4 处** | `kit::Modal` **已实现、零调用**；另有页面层私有副本 `DrawModalTitle` |
-| 3 | Toast | 1 处，且低 2.25px | `kit::Toast` **已实现、算得对、零调用** |
-| 4 | 分段页签条 | 3 处、2 套实现 | `kit::Tabs` 存在（偏差已修） |
-| 5 | 下拉菜单 | 1 处 | `kit::Menu` **已实现、零调用** |
-| 6 | 数据表格 | 2 处（报告表 4 列 / 甘特 8 列） | `kit::DataTable` **已实现、零调用** |
-| 7 | 「图标 + 文字」居中胶囊 | 3 处 | 无 |
+| 1 | 列表行（行框 + hover 底 + 左图标 + 主文字 + 右侧次要文字 + chevron） | **5 处**（队列 / palette / 产物 / 报告 / WorkspaceA 产物） | ✅ 抽 `kit::ListRow`（`kit/Widgets.h`），5 处全改 |
+| 2 | 双行卡（标题 + 描述，hover 走**投影档**、选中走 accent 描边环） | **2 处**（向导模板 / 打开列表） | ✅ 抽 `kit::ListCard`，**刻意不与 ListRow 合并** |
+| 3 | 缩略图格（60px 固定格，无 hover 无命中） | 1 处（胶片条） | **原表归因错了**：它既不是列表行也不是卡（`hoverable=false` 的 `ListCard` 也不能用 —— 它要的是 `fill-muted + 1px 边` 而不是 panel + 投影）。维持现状，1 处不值得抽 |
+| 4 | 对话框外壳（scrim + 圆角 + 投影 + 头 + 体 + 脚） | 3 处（向导 / 打开 / 确认） | ✅ 走 `kit::ModalFrameRect`（`Overlays.h`），删掉页面层私有 `DrawModal` |
+| 5 | Toast | 1 处，偏低 2.25px | ✅ 走 `kit::Toast`，给 kit 补了 `alpha` 参数保住 0.4s 淡出 |
+| 6 | 下拉菜单 | 1 处（主题菜单） | ✅ 走 `kit::Menu`。**代价是主题色块没有了**（`.swatch` 是 24×14 渐变方块不是图标字形），选中态改由 accent 字 + accent-dim 底表达 |
+| 7 | 数据表格 | 1 处（报告表 4 列） | ✅ 走 `kit::DataTable`，给 `TableColumn` 补 `tag` / `mono` 两个形态 |
+| 8 | 甘特 8 列 | 1 处 | **不是表格**：没有表头带、单元格是色块、列是等分网格。套 `DataTable` 会硬造一个设计稿里不存在的表头 |
+| 9 | 「图标 + 文字」居中胶囊 | 3 处 | 仍未做 |
+| 10 | 分段页签条 | 3 处、2 套实现 | 仍未做（`kit::Tabs` 在，调用点没统一） |
 
-**零调用的 5 个（`Modal` / `Drawer` / `Toast` / `Menu` / `DataTable`）是最优先的**：它们既写好了、位置也算对，页面层却又手写了一份还写错 —— 同一份逻辑两处实现，是所有偏差的温床。
+**原表说「零调用的 5 个最优先」这个判断是对的**，但其中 `Modal`/`Toast`/`DataTable` 三个**本身不需要改**（Y 居中上一轮已经改成 `CenterTextY` 了，Δ 已经是 0）—— 要做的是**接线**，不是修组件。`Drawer` 至今零调用，页面上确实没有抽屉式交互，**不算缺口**。
+
+### 顺带修掉的三个真缺陷（不是重构噪声）
+
+1. **「打开…」列表行的「打开」按钮是死按钮**：整行 `HitTest` 先注册，按钮后注册，而 ImGui 同窗口内**先注册者独占** `HoveredId`（`imgui.cpp:5161`）⇒ 按钮永远 `clicked=false`。当时没暴露，只因为外面还写着 `|| hit.clicked` 兜底，整卡点击把功能兜住了 —— 按钮画得出来、按下去没反应。`ListCard` 的 footer 回调在整卡命中**之后**调用，顺序对了。
+2. **小说侧栏的「快速跳转」整组被空态吞掉**：`DrawJumpButtons` 排在「这本小说还没有章」那个 `Empty()+return` **之后**，于是没章节 / 没绑定 / 读取中 / 读取失败四种状态下这四个按钮一个都不画 —— 而它跳的是资产 / 分镜 / 出图 / 出片四个工作区，与「有没有章节」毫无关系。挪到所有空态 `return` 之前。
+3. **同帧重叠热区自检**（`kit::NoteDuplicateHit` → `DuplicateHitCount` → 进 `overall` 判据）：上面第 1 条那类 bug 的失败模式是**静默**的 —— 控件画得出来、编译过、截图正常、manifest 记 `saved`，只有那个控件点不动。现在它会自己举手。这与 `InvertedRectCount` 同一族兜底，区别是那个抓「画不出」，这个抓「画得出但点不动」。
+
+**迁移过程中被自检抓到的一次**：报告行我先写了 `spec.id` 又在下面补了一次 `kit::HitTest` —— 正是上面第 1 条那个形状，靠读代码看不出来（新旧两段都「看起来对」），是 `DuplicateHitCount` 判据逼我回去看出来的。修完实测 `duplicate-hits: 0`。
+
+### 判据基建：热区扫描（`SHINE_SCAN`）
+
+排查上面第 2 条时加的：`SHINE_SCAN=<ws>:<x0>:<y0>:<x1>:<y1>:<step>` 把鼠标沿一片网格挨个挪过去，打出每格命中了哪个控件 id。
+
+**为什么需要**：`hit=0` 这一个信号至少对应三种原因（注入没到位 / 视口塌了 / **坐标落在热区外**），而第三种是「布局一改就全失效」的：坐标是照着某个旧截图量的。布局改完之后探针报红，日志只说「点空了」，**不告诉你这个控件现在在哪** —— 于是要么去改本来正确的产品代码，要么凭感觉挪两个数字再跑一轮 300 秒。扫一次把这个信息补齐：`jump-*` 在小说侧栏**根本不存在**这件事，是扫描一眼看出来的，日志读不出来。
+
+⚠️ 扫描跑在**探针之后**：放在前面扫到的是 fixture 还没就绪的那一帧（`jump-*` 连同章节树都还没画），据此改坐标会一路改错。
+
+### 取证结果（2026-09-30 本轮）
+
+| 指标 | 改动前基线 | 本轮之后 |
+|---|---|---|
+| `hover-probes` | 8/11 | **9/11** |
+| `duplicate-hits`（新判据） | — | **0** |
+| `overlay-clicks` | 4/4 | 4/4 |
+| `shortcuts` | 7/7 | 7/7 |
+| `identical-theme-pairs` / `identical-driven-pairs` | 0 / 0 | 0 / 0 |
+| `inverted-rects` | 0 | 0 |
+| shots / failed | 79 / 0 | 79 / 0 |
+| `overall` | FAIL | **FAIL**（见下） |
+
+**`overall=FAIL` 的准确原因**：`book-snapshot=TIMEOUT` / `asset-snapshot=TIMEOUT`（`assets=0`），fixture 的 `novel.db` 没落地 ⇒ 资产侧栏走 `Empty()` 分支、`hover-tree-node` 与 `hover-asset-card` 两个探针的坐标上**没有控件**。用 `git stash` 对照跑过基线：**同样红**，不是本轮引入。这是环境/fixture 缺口，与 kit 封装无关，未在本轮修。
 
 ---
 

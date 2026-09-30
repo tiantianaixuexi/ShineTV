@@ -241,6 +241,68 @@ int HoveredItemCount() { return HoverState().count; }
 void ResetHoveredItemCount() { HoverState() = HoverProbeState{}; }
 const char* LastHoveredItem() { return HoverState().last; }
 
+namespace {
+// 重复命中的状态。与 InvertedState 不同的两点：
+//   1. 按**帧**分桶（ImGui::GetFrameCount）—— 同一矩形每帧都命中是正常的，
+//      跨帧不清空的话计数会涨到几万，判据就废了。
+//   2. 只比对**矩形**不看 id：漏写的是「同一个矩形上的第二次命中」，而调用点
+//      通常还换了个 id（`dock-report-3` vs `dock-report-hit-3`），比 id 抓不到。
+//
+// ⚠️ 这里用 4 个 float 而不是 `Rect`：那个类型声明在 Widgets.h，而 Widgets.h
+//    依赖本文件（Draw.h），反向包含就成环。Draw.h 里的 NoteInvertedRect 当年
+//    也是同样原因收四个裸 float。
+struct HitRect {
+    float minX = 0.0f;
+    float minY = 0.0f;
+    float maxX = 0.0f;
+    float maxY = 0.0f;
+};
+struct DuplicateHitBucket {
+    int frame = -1;
+    std::vector<HitRect> rects;
+    int overlaps = 0;   // 本帧累计的重叠次数
+    char last[160] = {};
+};
+DuplicateHitBucket& DuplicateBucket() {
+    static DuplicateHitBucket bucket;
+    return bucket;
+}
+} // namespace
+
+void NoteDuplicateHit(float minX, float minY, float maxX, float maxY, const char* id) {
+    DuplicateHitBucket& bucket = DuplicateBucket();
+    const int frame = ImGui::GetFrameCount();
+    if (bucket.frame != frame) {
+        bucket.frame = frame;
+        bucket.rects.clear();
+    }
+    const HitRect r{minX, minY, maxX, maxY};
+    for (const HitRect& seen : bucket.rects) {
+        // 有实际面积的交叠才算。相邻（贴边）或零面积不算 ——
+        // 父子结构里父矩形包含子矩形是**设计如此**，不算重复。
+        const float w = std::min(seen.maxX, r.maxX) - std::max(seen.minX, r.minX);
+        const float h = std::min(seen.maxY, r.maxY) - std::max(seen.minY, r.minY);
+        if (w > 0.0f && h > 0.0f) {
+            std::snprintf(bucket.last, sizeof(bucket.last),
+                          "%s min=(%.0f,%.0f) max=(%.0f,%.0f) 与本帧另一热区交叠 %.0fx%.0f", id,
+                          minX, minY, maxX, maxY, w, h);
+            // 只报前 8 次：同一处每帧都会触发，不限量会把真正的「唯一一处」埋掉。
+            // 判据读的是计数，不是条数。
+            if (++bucket.overlaps <= 8) {
+                shine::log::Error(
+                    "kit: 同一帧内重叠热区 —— {} —— ImGui 先注册者独占，后一个永远 "
+                    "clicked=false（控件画得出来但按不动）",
+                    bucket.last);
+            }
+            return;
+        }
+    }
+    bucket.rects.push_back(r);
+}
+int DuplicateHitCount() { return DuplicateBucket().overlaps; }
+void ResetDuplicateHitCount() { DuplicateBucket() = DuplicateHitBucket{}; }
+const char* LastDuplicateHit() { return DuplicateBucket().last; }
+
 void DrawRoundRect(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 fill,
                    ImU32 border, float borderWidth, bool topHighlight) {
     if (max.x <= min.x || max.y <= min.y) {

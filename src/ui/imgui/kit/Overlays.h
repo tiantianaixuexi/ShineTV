@@ -37,6 +37,27 @@ bool Scrim(ImDrawList* draw, Rect screen, std::string_view id);
 Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
            float width = 0.0f, std::string_view id = "kit-modal");
 
+// ---- ModalFrame（Modal 的完整分块形式）----
+//
+// 有些模态要自己摆页脚（ProjectHub 的向导 / 打开 / 确认三个对话框都有按钮条），
+// 只拿到内容区不够用。这一个把 **面板框 / 头部 / 内容区 / 页脚** 四块一次交出来，
+// 几何与 Modal **同源**（同一份 headerH / padding 常量），不是另算一遍。
+//
+// `footerButtons > 0` 才切出页脚带（`.modal-f`，ui.css:970-975）：
+// 12/18 内边距 + 1px 上边 + 按钮高。footerOut 给按钮可摆的矩形。
+//
+// ⚠️ 与 Modal 一样：面板画在**当前 draw list** 上，调用方必须在一帧的**最后**
+// 画它（外壳 onFrame 收尾处），否则会被后面画的内容盖住。
+struct ModalFrame {
+    Rect frame;   // 整个面板（含头与脚）
+    Rect header;  // .modal-h：14/18 内边距 + 1px 下边
+    Rect body;    // .modal-b：18 内边距之内
+    Rect footer;  // .modal-f（footerButtons == 0 时高度为 0）
+};
+ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
+                          std::string_view icon, float width, float height,
+                          int footerButtons = 0, std::string_view id = "kit-modal-frame");
+
 // ---- Drawer（ui.css:647-686）----
 // 右侧 390 宽通栏抽屉：bg-overlay + 1px 左边线 + shadow-2；
 // 头 h = 14/16 内边距 + 1px 下边（drawer-h）；脚 12/16 + 1px 上边（drawer-f）。
@@ -54,8 +75,11 @@ Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_v
 // **左侧 3px 状态色竖条**（border-left）+ r-md10 + shadow-2 + 12.5px。
 // 这是**最后一条**（最靠近屏幕底部那条）该在哪：stackBottom 给 .toasts 的下边。
 // 返回这条的高度，调用方往上累加即可排出多条的间距。
+//
+// `alpha` 是本体的整体不透明度（含投影）：toast 尾巴有 0.4s 淡出，投影必须
+// 一起淡 —— 本体没了影子还挂着，看着像渲染残留。1.0 = 不透明（默认）。
 float Toast(ImDrawList* draw, Rect screen, std::string_view text, theme::Tone tone,
-            std::string_view icon, float above = 0.0f);
+            std::string_view icon, float above = 0.0f, float alpha = 1.0f);
 // .toasts 的固定边距：right 16 / bottom 40。
 inline constexpr float kToastRight = 16.0f;
 inline constexpr float kToastBottom = 40.0f;

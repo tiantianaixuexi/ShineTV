@@ -846,31 +846,40 @@ void DrawOverview(Rect area, ImDrawList* draw) {
             for (std::size_t i = 0; i < s.entries.size(); ++i) {
                 const auto& entry = s.entries[i];
                 const std::filesystem::path path = util::PathFromUtf8(entry.output_path);
-                const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + 32.0f};
-                // ⚠️ 一次 HitTest 拿 hovered + clicked：先 Hovered(idA) 再 Clicked(idB)
-                // 会在同一矩形上叠两个 InvisibleButton，ImGui 只让先注册的那个拿到
-                // HoveredId，第二个永远 clicked=false —— 这一行点不开。
-                const Hit hit = HitTest(row, "ov-art-" + std::to_string(i));
-                if (hit.hovered) {
-                    DrawRoundRect(cdraw, row.min, row.max, 6.0f, ColorFillHover());
-                }
-                const std::string name = util::PathToUtf8(path.filename());
-                DrawTextClipped(cdraw, FontBoldAt(12.0f), 12.0f, ImVec2(row.min.x + 6.0f, ay + 3.0f),
-                                row.width() - 26.0f, ColorText(), name);
+                // 产物行是**双行卡**（文件名 + 阶段/降级说明）→ kit::ListCard，
+                // 不是 ListRow。硬塞进 ListRow 会逼调用点自己排第二行的 Y ——
+                // 那正是这 5 处各写各的根源。
+                //
+                // ⚠️ hit 由 ListCard **一次性**取齐并返回。原代码注释记的就是这个坑：
+                // 先 Hovered(idA) 再 Clicked(idB) 会在同一矩形上叠两个 InvisibleButton，
+                // ImGui 只让先注册的拿到 HoveredId，第二个永远 clicked=false ——
+                // 那一行点不开，而编译、日志、截图全绿。
                 std::string sub = pipeline::StageCode(entry.stage);
                 if (!entry.degradation.empty()) {
                     sub += " · 降级 " + entry.degradation;
                 }
-                DrawTextClipped(cdraw, FontAt(11.0f), 11.0f, ImVec2(row.min.x + 6.0f, ay + 18.0f),
-                                row.width() - 26.0f, ColorTextMuted(), sub);
-                DrawIcon(cdraw, "chevron", ImVec2(row.max.x - 16.0f, ay + 10.0f), 12.0f,
-                         ColorTextMuted());
-                if (hit.clicked) {
+                kit::ListCardSpec spec;
+                spec.id = "ov-art-" + std::to_string(i);
+                spec.title = util::PathToUtf8(path.filename());
+                spec.description = sub;
+                spec.iconSize = 0.0f;   // 无图标
+                spec.paddingX = 6.0f;
+                spec.titleSize = 12.0f;
+                spec.descSize = 11.0f;
+                spec.textInset = 0.0f;
+                // 右侧留给 chevron：文字可用宽因此收窄，不必调用点自己算。
+                spec.textGap = 3.0f;
+                const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + 32.0f};
+                if (kit::ListCard(cdraw, row, spec).clicked) {
                     const std::string err = util::ShellOpen(path);
                     if (!err.empty()) {
                         log::Error("总控：打开产物失败 {}", err);
                     }
                 }
+                // chevron：ListCard 不画它（设计里这一族是 hover 卡 + 选中勾）。
+                // 这一行原本有 chevron，保留它作为「可点开」的提示。
+                DrawIcon(cdraw, "chevron",
+                         ImVec2(row.max.x - 16.0f, row.center().y - 6.0f), 12.0f, ColorTextMuted());
                 ay += 36.0f;
             }
         }

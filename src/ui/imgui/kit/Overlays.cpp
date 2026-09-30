@@ -4,6 +4,15 @@
 
 namespace shine::kit {
 
+namespace {
+// .modal-h 的头高：padding 14 上下 + 标题 18 + 1px 下边（ui.css:955-965）。
+// Modal 与 ModalFrameRect **共用**这一份 —— 原来两处各写一遍字面量，
+// 改一处忘另一处就是两个模态的头高不一样，而那在界面上看不出来。
+constexpr float kModalHeaderH = 14.0f * 2.0f + 18.0f + 1.0f;
+// .modal-f 的页脚高：padding 12 上下 + 按钮高 + 1px 上边（ui.css:970-975）。
+constexpr float kModalFooterPad = 12.0f * 2.0f + 1.0f;
+} // namespace
+
 // ------------------------------------------------------------------ Scrim
 bool Scrim(ImDrawList* draw, Rect screen, std::string_view id) {
     draw->AddRectFilled(screen.min, screen.max, ColorScrim());
@@ -22,7 +31,7 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
     // max-height: min(640, 100vh - 64)（ui.css:949）。这里按内容自适应，
     // 只把上限当硬约束 —— 内容少的时候不该留一块空白。
     const float maxH = std::min(640.0f, screen.height() - 64.0f);
-    const float headerH = title.empty() ? 0.0f : 14.0f * 2.0f + 18.0f + 1.0f;
+    const float headerH = title.empty() ? 0.0f : kModalHeaderH;
     // 内容高度：调用方在返回的矩形里画，所以这里给一个「尽量高但不超过上限」
     // 的值，让 Modal 变成一个占位式 API（内容画完可能不满，实际以内容为准）。
     const float bodyH = std::max(0.0f, maxH - headerH - 18.0f * 2.0f);
@@ -54,6 +63,57 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
     // .modal-b（ui.css:966-969）：padding 18 + overflow-y auto（滚动由 ScrollRegion 负责）。
     return RectAt(frame.min.x + 18.0f, top + 18.0f, w - 36.0f,
                   std::max(0.0f, frame.max.y - 18.0f - (top + 18.0f)));
+}
+
+// --------------------------------------------------------------- ModalFrame
+ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
+                          std::string_view icon, float width, float height,
+                          int footerButtons, std::string_view id) {
+    // 遮罩 + 面板：与 Modal() 同一套（scrim / r-lg14 / line-normal / shadow-2）。
+    // ⚠️ 遮罩**注册命中**（点它 = 关闭），这是 Modal 的既定行为；页面层旧的
+    //    私有副本只画了遮罩不注册，于是「点外面关不掉」—— 那不是设计。
+    Scrim(draw, screen, std::string(id) + "#scrim");
+    const float w = width > 0.0f ? width : std::min(560.0f, screen.width() - 48.0f);
+    const float h = height > 0.0f ? height : std::min(640.0f, screen.height() - 64.0f);
+    const Rect frame = RectAt(screen.center().x - w * 0.5f, screen.center().y - h * 0.5f, w, h);
+    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
+                 theme::ShadowTier::Overlay);
+
+    float top = frame.min.y;
+    const bool hasHeader = !title.empty();
+    if (hasHeader) {
+        const float iconSize = 17.0f;
+        float x = frame.min.x + 18.0f;
+        if (!icon.empty()) {
+            DrawIcon(draw, icon, ImVec2(x, top + 15.0f), iconSize, ColorAccent());
+            x += iconSize + 10.0f;
+        }
+        ImFont* font = FontBoldAt(15.0f);
+        // 标题按**头部中心**落字（15px 字该落在 `top + 23.5 - 7.5`）——
+        // 原来写死 `top + 14.0f` 是把 padding 当成了文字偏移，偏上 2.0px。
+        DrawTextClipped(draw, font, 15.0f, ImVec2(x, CenterTextY(font, 15.0f, top + kModalHeaderH * 0.5f)),
+                        frame.max.x - x - 18.0f, ColorText(), title);
+        top += kModalHeaderH;
+        draw->AddLine(ImVec2(frame.min.x, top - 0.5f), ImVec2(frame.max.x, top - 0.5f),
+                      ColorLineSubtle(), 1.0f);
+    }
+
+    float bottom = frame.max.y;
+    ModalFrame out;
+    if (footerButtons > 0) {
+        const float footerH = kModalFooterPad + ButtonHeight(ButtonSize::Medium);
+        bottom -= footerH;
+        out.footer = RectAt(frame.min.x + 18.0f, bottom + 12.0f, w - 36.0f,
+                            ButtonHeight(ButtonSize::Medium));
+        draw->AddLine(ImVec2(frame.min.x, bottom + 0.5f), ImVec2(frame.max.x, bottom + 0.5f),
+                      ColorLineSubtle(), 1.0f);
+    }
+
+    out.frame = frame;
+    out.header = RectAt(frame.min.x, frame.min.y, frame.width(), hasHeader ? kModalHeaderH : 0.0f);
+    out.body = RectAt(frame.min.x + 18.0f, top + 18.0f, w - 36.0f,
+                      std::max(0.0f, bottom - 18.0f - (top + 18.0f)));
+    return out;
 }
 
 // ------------------------------------------------------------------ Drawer
@@ -110,7 +170,7 @@ Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_v
 
 // ------------------------------------------------------------------ Toast
 float Toast(ImDrawList* draw, Rect screen, std::string_view text, theme::Tone tone,
-            std::string_view icon, float above) {
+            std::string_view icon, float above, float alpha) {
     const float padX = 14.0f;
     const float padY = 10.0f;
     const float borderLeft = 3.0f;
@@ -127,25 +187,34 @@ float Toast(ImDrawList* draw, Rect screen, std::string_view text, theme::Tone to
     // right 16 / bottom 40（ui.css:980-981）；above 用来往上叠多条。
     const Rect frame = RectAt(screen.max.x - kToastRight - w,
                               screen.max.y - kToastBottom - above - h, w, h);
-    // ui.css:998 `.toast` 的 box-shadow: var(--shadow-2)。这里只画本体；淡出时投影
-    // 一起淡走的是 Shell.cpp:1858 那处（`DrawShadow(..., alphaScale = alpha)`）。
-    DrawShadowed(draw, frame.min, frame.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
-                 theme::ShadowTier::Overlay);
+    // ui.css:998 `.toast` 的 box-shadow: var(--shadow-2)。
+    // alpha < 1 时**本体与投影一起淡**（阴影单独一层 alphaScale），否则尾巴
+    // 淡出后影子还挂着 —— 那是页面层旧副本的做法，抽上来时保留。
+    if (alpha >= 1.0f) {
+        DrawShadowed(draw, frame.min, frame.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
+                     theme::ShadowTier::Overlay);
+    } else {
+        DrawShadow(draw, frame.min, frame.max, 10.0f, theme::ShadowTier::Overlay, alpha);
+        DrawRoundRect(draw, frame.min, frame.max, 10.0f, WithAlpha(ColorOverlay(), alpha),
+                      WithAlpha(ColorLineNormal(), alpha), 1.0f);
+    }
     // border-left: 3px <status>（ui.css:996 + .ok/.warn/.err 覆盖 ui.css:1003-1005）。
     // 画成一个 3px 宽的圆角矩形：Toast 左角是 r10 的圆，直接画直角条会戳出弧外，
     // 所以把条的上下各内缩 2px 让它落在圆角以内。
     const ImU32 accent = tone == theme::Tone::Idle ? ColorOf(theme::Current().accentInfo)
                                                     : ToneColor(tone);
     DrawRoundRect(draw, ImVec2(frame.min.x + 1.0f, frame.min.y + 2.0f),
-                  ImVec2(frame.min.x + 1.0f + borderLeft, frame.max.y - 2.0f), 1.5f, accent);
+                  ImVec2(frame.min.x + 1.0f + borderLeft, frame.max.y - 2.0f), 1.5f,
+                  WithAlpha(accent, alpha));
 
     float x = frame.min.x + borderLeft + padX;
     if (!icon.empty()) {
-        DrawIcon(draw, icon, ImVec2(x, frame.center().y - iconSize * 0.5f), iconSize, accent);
+        DrawIcon(draw, icon, ImVec2(x, frame.center().y - iconSize * 0.5f), iconSize,
+                 WithAlpha(accent, alpha));
         x += gap;
     }
     DrawTextClipped(draw, font, 12.5f, ImVec2(x, frame.min.y + padY + 1.0f),
-                    frame.max.x - x - padX, ColorText(), text, /*wrap=*/true);
+                    frame.max.x - x - padX, WithAlpha(ColorText(), alpha), text, /*wrap=*/true);
     return h;
 }
 

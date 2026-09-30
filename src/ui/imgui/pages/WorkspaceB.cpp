@@ -13,6 +13,7 @@
 #include "project/Project.h"
 #include "project/ProjectIndex.h"
 #include "project/ProjectTemplate.h"
+#include "ui/imgui/kit/Overlays.h"
 #include "ui/imgui/kit/Scroll.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
@@ -2758,29 +2759,25 @@ struct ModalBox {
     Rect footer;
 };
 
-// 弹窗外壳：scrim + 圆角面板 + 头 / 体 / 脚（ProjectHub.jsx 的 .modal）。
-ModalBox DrawModal(ImDrawList* draw, Rect area, float width, float height) {
-    const float top = area.height() * 0.15f;
-    const Rect frame{(area.width() - width) * 0.5f, top, (area.width() + width) * 0.5f, top + height};
-    DrawRoundRect(draw, area.min, area.max, 0.0f, ColorScrim());
-    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
-    constexpr float headerH = 52.0f;
-    constexpr float footerH = 60.0f;
+// 弹窗外壳（ProjectHub.jsx 的 .modal）现在**直接走 kit::ModalFrameRect**：
+// 遮罩 / 圆角 / 投影 / 头 / 体 / 脚 全部由 kit 画，几何与 kit::Modal 同源。
+//
+// 原来这里是页面层私有一份：scrim **不注册命中**（点外面关不掉）、头高写死 52
+// （kit 的是 47）、页脚写死 60、标题自己排 Y。同一份逻辑两处实现，而这份
+// 「算得对但零调用」的就在 kit 里躺着。
+//
+// 标题**由 kit 画**（这是 ModalFrameRect 的主路径）；页面层只在头部右侧补
+// 自己的东西（向导那一步的 Steps 条），那才是页面层该管的部分。
+ModalBox DrawModal(ImDrawList* draw, Rect area, std::string_view title, std::string_view icon,
+                   float width, float height, int footerButtons = 2) {
+    const kit::ModalFrame mf = kit::ModalFrameRect(draw, area, title, icon, width, height,
+                                                   footerButtons, "hub-modal");
     ModalBox box;
-    box.frame = frame;
-    box.header = RectAt(frame.min.x, frame.min.y, frame.width(), headerH);
-    box.body = RectAt(frame.min.x, frame.min.y + headerH, frame.width(),
-                      frame.height() - headerH - footerH);
-    box.footer = RectAt(frame.min.x, frame.max.y - footerH, frame.width(), footerH);
+    box.frame = mf.frame;
+    box.header = mf.header;
+    box.body = mf.body;
+    box.footer = mf.footer;
     return box;
-}
-
-void DrawModalTitle(ImDrawList* draw, Rect header, const char* icon, const char* title) {
-    DrawIcon(draw, icon, ImVec2(header.min.x + 18.0f, header.center().y - 7.0f), 14.0f, ColorAccent());
-    draw->AddText(FontBoldAt(15.0f), 15.0f, ImVec2(header.min.x + 40.0f, header.center().y - 7.5f),
-                  ColorText(), title, title + std::strlen(title));
-    DrawRoundRect(draw, ImVec2(header.min.x, header.max.y - 1.0f), ImVec2(header.max.x, header.max.y),
-                  0.0f, ColorLineSubtle());
 }
 
 struct ModalAction {
@@ -2944,8 +2941,7 @@ bool DrawHubCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect boun
 // 新建项目向导：模板 / 命名 / 创意 / 确认。数据源 = AllTemplates / PreviewTree / Create。
 void DrawHubWizard(HubState& hub, Rect area, ImDrawList* draw) {
     static const std::vector<std::string> stepNames{"模板", "命名", "创意", "确认"};
-    const ModalBox box = DrawModal(draw, area, 600.0f, 420.0f);
-    DrawModalTitle(draw, box.header, "sparkles", "新建项目");
+    const ModalBox box = DrawModal(draw, area, "新建项目", "sparkles", 600.0f, 420.0f);
     const float stepsW = StepsWidth(stepNames);
     Steps(draw, RectAt(box.header.max.x - 20.0f - stepsW, box.header.center().y - 10.0f, stepsW, 20.0f),
           stepNames, hub.step);
@@ -2956,26 +2952,24 @@ void DrawHubWizard(HubState& hub, Rect area, ImDrawList* draw) {
         float y = body.min.y;
         for (const project::ProjectTemplate& tpl : project::AllTemplates()) {
             const Rect row{body.min.x, y, body.max.x, y + 62.0f};
-            const Hit hit = HitTest(row, "hub-tpl-" + tpl.id);
-            const bool on = hub.tpl == tpl.id;
-            // 向导模板行是 `.card.hoverable`（ProjectHub.jsx:39）→ hover 走
-            // ui.css:196-199 的 shadow-1。**选中态不要折成投影档**：设计稿那一态
-            // 用的是内联 `0 0 0 3px var(--accent-dim)` 描边环（ProjectHub.jsx:40），
-            // 不是 box-shadow，两者视觉形态不同。
-            DrawShadowed(draw, row.min, row.max, 10.0f, on ? ColorFillMuted() : ColorPanel(),
-                         on ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle()),
-                         1.0f, hit.hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
-            DrawIconCentered(draw, TemplateIcon(tpl.id), ImVec2(row.min.x + 28.0f, row.center().y),
-                             20.0f, on ? ColorAccent() : ColorTextMuted());
-            draw->AddText(FontBoldAt(13.0f), 13.0f, ImVec2(row.min.x + 60.0f, row.min.y + 14.0f),
-                          ColorText(), tpl.name.data(), tpl.name.data() + tpl.name.size());
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(row.min.x + 60.0f, row.min.y + 34.0f),
-                            row.width() - 100.0f, ColorTextMuted(), tpl.description);
-            if (on) {
-                DrawIconCentered(draw, "check", ImVec2(row.max.x - 20.0f, row.center().y), 16.0f,
-                                 ColorAccent());
-            }
-            if (hit.clicked) {
+            // 模板行走 kit::ListCard：hover 投影档 / 选中 accent 边 / 双行块的
+            // 垂直居中全在里面。原来这一段自己排 `row.min.y + 14` 与 `+ 34`，
+            // 两行文字的**块**中心偏上 0.875px —— 两行各自都不居中，靠硬凑。
+            kit::ListCardSpec spec;
+            spec.id = "hub-tpl-" + std::string(tpl.id);
+            spec.icon = TemplateIcon(tpl.id);
+            spec.iconSize = 20.0f;
+            spec.title = tpl.name;
+            spec.description = tpl.description;
+            spec.titleSize = 13.0f;
+            spec.descSize = 11.5f;
+            spec.textGap = 4.0f;
+            spec.paddingX = 14.0f;
+            // 文字原从 +60 起：图标 20 + 8 间距 + 14 padding = 42，再让 18 给
+            // 右侧的「选中勾」⇒ 60。这里 paddingX 已经是 14，textInset 补到 60。
+            spec.textInset = 60.0f - 14.0f - (20.0f + 8.0f);
+            spec.selected = hub.tpl == tpl.id;
+            if (kit::ListCard(draw, row, spec).clicked) {
                 hub.tpl = tpl.id;
             }
             y += 70.0f;
@@ -3151,8 +3145,7 @@ void DrawHubWizard(HubState& hub, Rect area, ImDrawList* draw) {
 
 // 「打开…」对话框：列最近项目，点了就 Open。
 void DrawHubOpenDialog(HubState& hub, Rect area, ImDrawList* draw) {
-    const ModalBox box = DrawModal(draw, area, 520.0f, 440.0f);
-    DrawModalTitle(draw, box.header, "folder", "打开项目");
+    const ModalBox box = DrawModal(draw, area, "打开项目", "folder", 520.0f, 440.0f);
     // 右上角标出列表的真实来源（索引文件所在目录）
     const std::string indexDir = util::PathToUtf8(project::DefaultIndexFile().parent_path());
     const float indexW = LabelWidth(FontAt(11.5f), 11.5f, indexDir.c_str());
@@ -3167,38 +3160,60 @@ void DrawHubOpenDialog(HubState& hub, Rect area, ImDrawList* draw) {
         float y = box.body.min.y + 6.0f;
         for (const HubCard& card : hub.cards) {
             const Rect row{box.body.min.x + 12.0f, y, box.body.max.x - 12.0f, y + 62.0f};
-            const Hit hit = HitTest(row, "hub-open-" + card.entry.id);
-            // 「打开…」列表行是 `.card.hoverable`（ProjectHub.jsx:226）→ ui.css:196-199。
-            DrawShadowed(draw, row.min, row.max, 10.0f, ColorPanel(),
-                         hit.hovered ? ColorLineStrong() : ColorLineSubtle(), 1.0f,
-                         hit.hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
-            Art(draw, Rect{row.min.x + 10.0f, row.min.y + 10.0f, row.min.x + 74.0f, row.min.y + 52.0f},
-                card.artSeed, false);
-            const float nameX = row.min.x + 86.0f;
-            float nameW = LabelWidth(FontBoldAt(13.0f), 13.0f, card.entry.name.c_str());
-            draw->AddText(FontBoldAt(13.0f), 13.0f, ImVec2(nameX, row.min.y + 12.0f), ColorText(),
-                          card.entry.name.data(), card.entry.name.data() + card.entry.name.size());
-            if (!card.tplLabel.empty()) {
-                const theme::Tone tone = card.tplLabel == "小说"  ? theme::Tone::Accent
-                                          : card.tplLabel == "影视" ? theme::Tone::Info
-                                                                    : theme::Tone::Idle;
-                const float tagW = TagWidth(card.tplLabel, true, false);
-                Tag(draw, RectAt(nameX + nameW + 8.0f, row.min.y + 11.0f, tagW, TagHeight(true)),
-                    card.tplLabel, tone, true);
-            }
-            const std::string meta = card.tplName.empty() ? ("最近 " + card.when)
-                                                          : (card.tplName + " · " + card.when);
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(nameX, row.min.y + 34.0f),
-                            row.width() - 160.0f, ColorTextMuted(), meta);
-            ButtonSpec openSpec;
-            openSpec.variant = ButtonVariant::Primary;
-            openSpec.size = ButtonSize::Small;
-            const float openW =
-                ButtonWidth(ButtonSize::Small, 0.0f, LabelWidth(FontBoldAt(12.0f), 12.0f, "打开"));
-            const Rect openRect{row.max.x - 14.0f - openW, row.min.y + 19.0f, row.max.x - 14.0f,
-                                row.min.y + 19.0f + ButtonHeight(ButtonSize::Small)};
-            if (Button(draw, openRect, "打开", openSpec, "hub-open-btn-" + card.entry.id) ||
-                hit.clicked) {
+            // 「打开…」列表行走 kit::ListCard（`.card.hoverable`，ProjectHub.jsx:226）。
+            // 两行文字块原来自己排 `row.min.y + 12` 与 `+ 34`，块中心偏上 1.875px。
+            //
+            // ⚠️ 「打开」按钮必须由 ListCard 的 footer 回调画 —— 原代码把它排在
+            // 整行 HitTest **之后**，而 ImGui 同窗口内先注册者独占 HoveredId
+            //（imgui.cpp:5161），于是那个按钮永远 clicked=false。它当时没暴露，
+            // 只因为外面还写了 `|| hit.clicked` 兜底，整卡点击把功能兜住了 ——
+            // 按钮画得出来、按下去没反应。footer 在整卡命中**之后**调用，顺序对了。
+            const std::string meta =
+                card.tplName.empty() ? ("最近 " + card.when) : (card.tplName + " · " + card.when);
+            bool openPressed = false;
+            kit::ListCardSpec spec;
+            spec.id = "hub-open-" + std::string(card.entry.id);
+            spec.icon = {}; // 缩略图走 Art，不是 kit 图标
+            spec.title = card.entry.name;
+            spec.description = meta;
+            spec.titleSize = 13.0f;
+            spec.descSize = 11.5f;
+            spec.paddingX = 12.0f;
+            // 缩略图 64 宽 + 10 左内边距 + 12 间距 ⇒ 文字从 +86 起（原代码的 nameX）。
+            spec.textInset = 64.0f + 10.0f + 12.0f;
+            const Rect rowFinal = row;
+            // 缩略图 + 类型 Tag + 「打开」按钮都排在 footer 里，而 footer 由
+            // ListCard 在整卡命中**之后**调用（顺序反了按钮永远点不动）。
+            const kit::Hit cardHit = kit::ListCard(
+                draw, row, spec, [&](ImDrawList* d, Rect footer) {
+                // 封面：程序化插画（无外部资源），64×42。
+                Art(d, Rect{rowFinal.min.x + 10.0f, rowFinal.min.y + 10.0f, rowFinal.min.x + 74.0f,
+                            rowFinal.min.y + 52.0f},
+                    card.artSeed, false);
+                // 类型 Tag 贴在标题右侧（标题行，不是卡心）。
+                if (!card.tplLabel.empty()) {
+                    const theme::Tone tone = card.tplLabel == "小说"  ? theme::Tone::Accent
+                                              : card.tplLabel == "影视" ? theme::Tone::Info
+                                                                        : theme::Tone::Idle;
+                    const float tagW = TagWidth(card.tplLabel, true, false);
+                    const float nameW = LabelWidth(FontBoldAt(13.0f), 13.0f, card.entry.name.c_str());
+                    Tag(d, RectAt(rowFinal.min.x + 86.0f + nameW + 8.0f,
+                                 rowFinal.min.y + 10.0f, tagW, TagHeight(true)),
+                        card.tplLabel, tone, true);
+                }
+                ButtonSpec openSpec;
+                openSpec.variant = ButtonVariant::Primary;
+                openSpec.size = ButtonSize::Small;
+                const float openW =
+                    ButtonWidth(ButtonSize::Small, 0.0f, LabelWidth(FontBoldAt(12.0f), 12.0f, "打开"));
+                const Rect openRect{rowFinal.max.x - 14.0f - openW, rowFinal.center().y - 12.0f,
+                                    rowFinal.max.x - 14.0f, rowFinal.center().y + 12.0f};
+                openPressed = Button(d, openRect, "打开", openSpec,
+                                     "hub-open-btn-" + std::string(card.entry.id));
+            });
+            // 整卡点击走 ListCard **返回的同一个 Hit**，不能再补一次 HitTest：
+            // 同窗口内先注册者独占 HoveredId，第二次永远 clicked=false。
+            if (openPressed || cardHit.clicked) {
                 // 先按值取出来：OpenHubCard 会刷新列表，hub.cards 随即重建
                 const HubCard target = card;
                 hub.openDlg = false;
@@ -3416,8 +3431,7 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
         }
     }
     if (hub.confirm) {
-        const ModalBox box = DrawModal(draw, area, 460.0f, 210.0f);
-        DrawModalTitle(draw, box.header, "info", hub.confirmTitle.c_str());
+        const ModalBox box = DrawModal(draw, area, hub.confirmTitle, "info", 460.0f, 210.0f);
         DrawTextClipped(draw, FontAt(12.5f), 12.5f,
                         ImVec2(box.body.min.x + 18.0f, box.body.min.y + 18.0f),
                         box.body.width() - 36.0f, ColorTextSecondary(), hub.confirmBody, true);

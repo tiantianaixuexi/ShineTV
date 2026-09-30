@@ -21,6 +21,13 @@ Hit HitTestImpl(Rect bounds, std::string_view id) {
     }
     ImGui::SetCursorScreenPos(bounds.min);
     const std::string idStr(id);
+    // 同一帧内重叠热区自检：ImGui 先注册者独占，第二个 InvisibleButton
+    // 永远 clicked=false，而它上面的控件外观画得好好的。调用点在 kit 组件
+    // 之外补第二次命中是最常见的触发方式。
+    // ⚠️ 传 idStr.c_str() 而不是 id.data()：string_view 的 data() **不保证**
+    //    以 '\0' 结尾，而 NoteDuplicateHit 内部按 C 字符串写进定长缓冲，
+    //    拿 string_view 的裸指针会越界读。
+    NoteDuplicateHit(bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y, idStr.c_str());
     ImGui::InvisibleButton(idStr.c_str(), ImVec2(bounds.width(), bounds.height()));
     hit.hovered = ImGui::IsItemHovered();
     hit.held = ImGui::IsItemActive();
@@ -1006,6 +1013,160 @@ void Divider(ImDrawList* draw, Rect bounds) {
     draw->AddLine(ImVec2(bounds.min.x, y), ImVec2(bounds.max.x, y), ColorLineSubtle(), 1.0f);
 }
 
+// ------------------------------------------------------------------ 20b ListRow
+float ListRowHeight(const ListRowSpec& spec, float paddingY) {
+    // 下限取文字与图标里更高的那个：行**只装一行**时，文字高度 + 上下内边距
+    // 就够了，但图标比文字高（16px 图标 vs 10.5px 次要文字）时行会被压扁。
+    const float content = std::max({spec.titleSize, spec.trailingSize,
+                                    spec.icon.empty() ? 0.0f : spec.iconSize});
+    return content + paddingY * 2.0f;
+}
+
+Hit ListRow(ImDrawList* draw, Rect bounds, const ListRowSpec& spec) {
+    // 命中**一次**取齐：hovered 与 clicked 来自同一个 HitTestImpl。
+    // 页面层曾写成 `Hovered(idA)` 叠 `Clicked(idB)`，ImGui 只让先注册的那个
+    // 拿到 HoveredId，于是第二个永远 clicked=false —— 那一行点不开，
+    // 而编译、日志、截图全绿。
+    Hit hit;
+    if (!spec.id.empty() && !spec.suppressed) {
+        hit = HitTestImpl(bounds, spec.id);
+    }
+    // 底色：选中优先于 hover（`.mi.on` / `tr.sel` 的既有语义）。
+    // 圆角 6 —— 页面层 5 处自己写的时候有 4 处用 6、1 处用 8。
+    if (spec.selected) {
+        DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, ColorFillSelected());
+    } else if (hit.hovered) {
+        DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, ColorFillHover());
+    }
+
+    const float centerY = bounds.center().y;
+    float x = bounds.min.x + spec.paddingX;
+    // chevron 先量宽度：标题可用宽要减去它，否则长标题会压在 chevron 底下
+    // （页面层几处是「标题写死 220/300 宽」，容器一变窄就压字）。
+    constexpr float kChevronW = 10.0f;
+    const bool hasChevron = !spec.chevron.empty() && spec.chevron != "none";
+    if (hasChevron) {
+        DrawIcon(draw, spec.chevron, ImVec2(bounds.max.x - spec.paddingX - kChevronW,
+                                            centerY - kChevronW * 0.5f),
+                 kChevronW, spec.disabled ? WithAlpha(ColorTextMuted(), 0.45f) : ColorTextMuted());
+    }
+
+    const ImU32 iconColor =
+        spec.disabled ? WithAlpha(ColorTextMuted(), 0.45f)
+                      : (spec.iconColor != 0 ? spec.iconColor : ColorTextMuted());
+    if (!spec.icon.empty()) {
+        DrawIcon(draw, spec.icon, ImVec2(x, centerY - spec.iconSize * 0.5f), spec.iconSize, iconColor);
+        x += spec.iconSize + spec.iconGap;
+    }
+
+    // 标题可用宽 = 到 chevron（或右内边距）为止，再减去右侧次要文字的实际宽度。
+    float titleRight = bounds.max.x - spec.paddingX;
+    if (hasChevron) {
+        titleRight -= kChevronW + 6.0f;
+    }
+    ImFont* titleFont = spec.titleMono ? MonoAt(spec.titleSize) : FontAt(spec.titleSize);
+    if (!spec.trailing.empty()) {
+        ImFont* trailingFont =
+            spec.trailingMono ? MonoAt(spec.trailingSize) : FontAt(spec.trailingSize);
+        const float trailingW = MeasureClipped(trailingFont, spec.trailingSize, 1e9f, spec.trailing);
+        // 右侧次要文字也从 chevron 往回退，两者互不重叠。
+        const float trailingX =
+            std::max(x, (hasChevron ? bounds.max.x - spec.paddingX - kChevronW - 6.0f
+                                    : bounds.max.x - spec.paddingX) - trailingW);
+        // ⚠️ 同样走 CenterTextY。页面层这 5 处里有 3 处写死 `y + 5.0f` / `y + 6.0f`，
+        // 行高 24~30 时偏上 1.25~2.5px。
+        DrawTextClipped(draw, trailingFont, spec.trailingSize,
+                        ImVec2(trailingX, CenterTextY(trailingFont, spec.trailingSize, centerY)),
+                        trailingW, spec.disabled ? WithAlpha(ColorTextMuted(), 0.45f) : ColorTextMuted(),
+                        spec.trailing);
+        titleRight = std::min(titleRight, trailingX - 8.0f);
+    }
+    if (!spec.title.empty()) {
+        const ImU32 titleColor =
+            spec.disabled ? WithAlpha(ColorTextSecondary(), 0.45f)
+                          : (spec.titleColor != 0 ? spec.titleColor : ColorTextSecondary());
+        DrawTextClipped(draw, titleFont, spec.titleSize,
+                        ImVec2(x, CenterTextY(titleFont, spec.titleSize, centerY)),
+                        std::max(0.0f, titleRight - x), titleColor, spec.title);
+    }
+    return hit;
+}
+
+// ------------------------------------------------------------------ 20c ListCard
+float ListCardHeight(const ListCardSpec& spec, float paddingY) {
+    const float textH = spec.description.empty()
+                            ? spec.titleSize
+                            : (spec.titleSize + spec.textGap + spec.descSize);
+    return std::max(textH, spec.iconSize) + paddingY * 2.0f;
+}
+
+Hit ListCard(ImDrawList* draw, Rect bounds, const ListCardSpec& spec,
+             const std::function<void(ImDrawList*, Rect)>& footer) {
+    Hit hit;
+    if (spec.hoverable && !spec.id.empty()) {
+        hit = HitTestImpl(bounds, spec.id);
+    }
+    // .card.hoverable（ProjectHub.jsx:39/226）：hover 走 **shadow-1**（投影档切换），
+    // 不是填色底。选中态是 accent 描边（ProjectHub.jsx:40 的 accent-dim 环）——
+    // 刻意**不**折成投影档，两者视觉形态不同。
+    DrawShadowed(draw, bounds.min, bounds.max, 10.0f,
+                 spec.selected ? ColorFillMuted() : ColorPanel(),
+                 spec.selected ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle()),
+                 1.0f, hit.hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
+
+    if (!spec.icon.empty()) {
+        DrawIconCentered(draw, spec.icon,
+                         ImVec2(bounds.min.x + spec.paddingX + spec.iconSize * 0.5f, bounds.center().y),
+                         spec.iconSize, spec.selected ? ColorAccent() : ColorTextMuted());
+    }
+    // 文字左界 = paddingX + 图标占位（有图标时 paddingX + iconSize + 8）+ 额外缩进。
+    // ⚠️ 不要写成 `paddingX * 2`：那是把「内边距」当成了「图标占位宽」，
+    //   无图标的卡会凭空多缩进一整份 paddingX。
+    const float textX = bounds.min.x + spec.paddingX + spec.textInset +
+                        (spec.icon.empty() ? 0.0f : (spec.iconSize + 8.0f));
+    // 右侧要给 footer 留位（打开列表的「打开」按钮），所以文字右界取整个右内边距 ——
+    // footer 自己在**整卡命中之后**画，两者在水平上不重叠。
+    const float textRight = bounds.max.x - spec.paddingX;
+
+    if (!spec.description.empty()) {
+        // 两行的**块**按卡中心对齐：块高 = title + gap + desc，块顶 = 中心 − 块高/2。
+        // 页面层两处双行卡原来各写各的 `row.min.y + 12/14` 与 `+ 34`，
+        // 块中心偏上 0.875px 与 1.875px（打开列表那处还把标题顶到 −12.5）。
+        const float blockH = spec.titleSize + spec.textGap + spec.descSize;
+        const float blockTop = bounds.center().y - blockH * 0.5f;
+        ImFont* titleFont = FontBoldAt(spec.titleSize);
+        DrawTextClipped(draw, titleFont, spec.titleSize,
+                        ImVec2(textX, CenterTextY(titleFont, spec.titleSize, blockTop + spec.titleSize * 0.5f)),
+                        std::max(0.0f, textRight - textX), ColorText(), spec.title);
+        ImFont* descFont = FontAt(spec.descSize);
+        const float descCenter = blockTop + spec.titleSize + spec.textGap + spec.descSize * 0.5f;
+        DrawTextClipped(draw, descFont, spec.descSize,
+                        ImVec2(textX, CenterTextY(descFont, spec.descSize, descCenter)),
+                        std::max(0.0f, textRight - textX), ColorTextMuted(), spec.description);
+    } else if (!spec.title.empty()) {
+        ImFont* titleFont = FontBoldAt(spec.titleSize);
+        DrawTextClipped(draw, titleFont, spec.titleSize,
+                        ImVec2(textX, CenterTextY(titleFont, spec.titleSize, bounds.center().y)),
+                        std::max(0.0f, textRight - textX), ColorText(), spec.title);
+    }
+
+    if (spec.selected) {
+        // 选中勾在卡的右缘，与 footer 互斥：footer 存在时把勾让出去。
+        if (!footer) {
+            DrawIconCentered(draw, "check",
+                             ImVec2(bounds.max.x - spec.paddingX - 8.0f, bounds.center().y), 16.0f,
+                             ColorAccent());
+        }
+    }
+    // ⚠️ footer 必须在**整卡命中之后**画：ImGui 同窗口内先注册者独占 HoveredId
+    // （imgui.cpp:5161），反过来按钮永远 clicked=false，而整卡照样 clicked=true ——
+    // 症状是「点『打开』不是打开，而是直接打开这张卡」。顺序反了整轮静默。
+    if (footer) {
+        footer(draw, RectAt(textX, bounds.min.y, std::max(0.0f, textRight - textX), bounds.height()));
+    }
+    return hit;
+}
+
 // ------------------------------------------------------------------ 21 DataTable
 float TableHeaderHeight(bool compact) {
     // th padding 8px 12px（.compact 是 7px 8px）+ 11.5px 字高 + 1px 下边。
@@ -1140,13 +1301,26 @@ float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& c
                 continue;
             }
             const std::string& cell = row.cells[c];
-            // .table .num（ui.css:760-764）：等宽 11.5 muted。
+            // `tag` 列：画小号 Tag 而不是文字。Tag 自带量宽与色相，按单元格
+            // 左内边距摆、垂直**居中在行中心**（原来页面层写 `y + 6.0f`，
+            // 行高 29 时偏上 0.5px，且那两列的色相要调用方自己传）。
+            if (column.tag) {
+                const theme::Tone tone =
+                    static_cast<std::size_t>(c) < row.tones.size() ? row.tones[c] : theme::Tone::Idle;
+                Tag(draw, RectAt(x0, rowRect.center().y - TagHeight(true) * 0.5f,
+                                 std::min(TagWidth(cell, true, false), cellWidth), TagHeight(true)),
+                    cell, tone, /*small=*/true);
+                continue;
+            }
+            // `.table .num`（ui.css:760-764）：等宽 11.5 muted。
             // 选中行的 td 转 text-primary（ui.css:757），但 .num 保持 muted ——
             // 数字列的低对比是刻意的，等宽小字转正色会和主文本抢层级。
-            ImFont* font = column.numeric ? MonoAt(11.5f) : FontAt(fontSize);
-            const float size = column.numeric ? 11.5f : fontSize;
-            ImU32 fg = column.numeric ? ColorTextMuted()
-                                      : (row.selected ? ColorText() : ColorTextSecondary());
+            // `mono` 是同一字形但保留 secondary（规则码那一列）。
+            ImFont* font = (column.numeric || column.mono) ? MonoAt(11.5f) : FontAt(fontSize);
+            const float size = (column.numeric || column.mono) ? 11.5f : fontSize;
+            ImU32 fg = column.numeric  ? ColorTextMuted()
+                       : column.mono  ? (row.selected ? ColorText() : ColorAccent())
+                                       : (row.selected ? ColorText() : ColorTextSecondary());
             // 原来写死 `y + (compact ? 7.0f : 9.0f)` —— 同样是 `.table td` 的
             // **padding** 而不是文字偏移，行高 35（compact 29）时按实际字号
             // 13 / 12 / 11.5 分别偏上 2.0 / 1.5 / 2.75px。

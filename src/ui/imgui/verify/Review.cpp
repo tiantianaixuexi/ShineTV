@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iterator>
 #include <map>
@@ -69,6 +70,37 @@ struct HoverTarget {
     // 小说页模式标签；-1 = 不动。
     int novelMode = -1;
 };
+
+// 热区扫描：沿一条竖线（或网格）把鼠标挨个挪过去，打出每格命中了哪个
+// 控件。用途只有一个 —— **把「探针坐标」从猜的变成量出来的**。
+//
+// 为什么需要它：`hit=0` 这一个信号至少对应三种原因（注入没到位 / 视口塌了 /
+// 坐标落在热区外），而第三种是**布局一改就全失效**的：坐标是照着某个
+// 旧版截图量的。布局改完之后探针报红，日志只能告诉你「点空了」，不告诉你
+// 「现在这个控件在哪」—— 于是要么去改本来正确的产品代码，要么凭感觉挪
+// 两个数字再跑一轮 300 秒。扫描一次把这个信息补齐。
+//
+// ⚠️ 只扫**命中 id**，不判 hover 像素变化：它的产物是坐标，不是通过/失败。
+void ScanHotspots(Host& host, Shell& shell, float x0, float y0, float x1, float y1,
+                  float step) {
+    struct Unpin {
+        ~Unpin() { kit::UnpinAnimation(); }
+    } unpin;
+    kit::PinAnimation(kit::Now());
+    for (float y = y0; y <= y1; y += step) {
+        for (float x = x0; x <= x1; x += step) {
+            host.SetFrameMouseOverride(x, y);
+            kit::ResetHoveredItemCount();
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            host.ClearFrameMouseOverride();
+            if (kit::HoveredItemCount() > 0) {
+                shine::log::Info("scan: ({:.0f},{:.0f}) -> {} x{}", x, y, kit::LastHoveredItem(),
+                                 kit::HoveredItemCount());
+            }
+        }
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+    }
+}
 
 // 悬停探针：把鼠标放到 (x, y) 拍一张，**再把鼠标放到窗外拍一张只取哈希**，
 // 要求两者像素不同。对照那张不落盘（落盘会与已有静息态图逐字节撞上，把
@@ -908,6 +940,28 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                                          : std::string()));
         kHoverProbeTotal = hoverTotal;
 
+        // SHINE_SCAN=<ws>:<x0>:<y0>:<x1>:<y1>:<step>：热区扫描，**跑在探针之后**。
+        //
+        // ⚠️ 位置很要紧：放在探针前面扫到的是「fixture 还没就绪」的那一帧 ——
+        //    小说侧栏的「快速跳转」2×2 那一段那时候压根没画，扫出来的结果里
+        //    根本没有 `jump-*`，而据此去改探针坐标就会一路改错。探针跑完时
+        //    fixture 已经落地（章节 / 树 / 资产都在），那才是量坐标的正确状态。
+        //
+        // 用途：探针报「点空了」时，坐标应当**量**出来而不是猜。诊断工具，
+        // 不参与 pass/fail（它只打 id，不判像素变化）。
+        if (const char* scan = std::getenv("SHINE_SCAN"); scan != nullptr) {
+            int ws = 0;
+            float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f, step = 10.0f;
+            if (std::sscanf(scan, "%d:%f:%f:%f:%f:%f", &ws, &x0, &y0, &x1, &y1, &step) == 6) {
+                shell.SetTheme(base);
+                shell.SetWorkspace(ws);
+                host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+                shine::log::Info("scan: start ws={} rect=({:.0f},{:.0f})-({:.0f},{:.0f}) step={:.0f}",
+                                 ws, x0, y0, x1, y1, step);
+                ScanHotspots(host, shell, x0, y0, x1, y1, step);
+            }
+        }
+
         // ---- 第八段：动作判据（快捷键按了到底有没有发生） ----
         //
         // 这几轮反复抓到的都是同一类：「界面上有个可点的东西」≠「点了会发生什么」。
@@ -1230,6 +1284,14 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         shine::log::Error("review: {} 次反向矩形，最后一次 = {} —— 有控件被整块丢弃",
                           inverted, kit::LastInvertedRect());
     }
+    // 同一帧重叠热区：ImGui 先注册者独占，后一个 InvisibleButton 永远
+    // clicked=false。它上面的控件**画得出来**（不画完不等于画不出），所以
+    // 静息截图与 hover 探针对它零覆盖 —— 漏进判据就只是一行日志。
+    const int duplicateHits = kit::DuplicateHitCount();
+    if (duplicateHits > 0) {
+        shine::log::Error("review: {} 次同帧重叠热区，最后一次 = {} —— 有一个控件画得出但点不动",
+                          duplicateHits, kit::LastDuplicateHit());
+    }
     // 悬停探针全过才算数（-1 = 这一段根本没跑到，判它不通过而不是当它通过）。
     if (hoverProbesPassed < kHoverProbeTotal) {
         shine::log::Error("review: 悬停探针只过了 {}/{} —— 有控件的 hover 链路是断的，"
@@ -1254,6 +1316,7 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     const bool pass = result.failed == 0 && !result.scrollFailed && identicalPairs == 0 &&
                       drivenDuplicates == 0 && reportScanConverged && bookSnapshotConverged &&
                       assetSnapshotConverged && artifactsConverged && inverted == 0 &&
+                      duplicateHits == 0 &&
                       hoverProbesPassed == kHoverProbeTotal && shortcutsPassed == kShortcutTotal &&
                       overlayClicksPassed == kOverlayClickTotal;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
@@ -1262,6 +1325,7 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                                 "  identical-theme-pairs: " + std::to_string(identicalPairs) +
                                 "  identical-driven-pairs: " + std::to_string(drivenDuplicates) +
                                 "  inverted-rects: " + std::to_string(inverted) +
+                                "  duplicate-hits: " + std::to_string(duplicateHits) +
                                 "  hover-probes: " + std::to_string(hoverProbesPassed) + "/" + std::to_string(kHoverProbeTotal) +
                                 "  shortcuts: " + std::to_string(shortcutsPassed) + "/" + std::to_string(kShortcutTotal) +
                                 "  overlay-clicks: " + std::to_string(overlayClicksPassed) + "/" + std::to_string(kOverlayClickTotal) +

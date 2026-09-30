@@ -8,6 +8,7 @@
 #include "ui/imgui/host/AppEnvironment.h"
 #include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Fonts.h"
+#include "ui/imgui/kit/Overlays.h"
 #include "ui/imgui/kit/Scroll.h"
 #include "ui/imgui/pages/Gallery.h"
 #include "ui/imgui/pages/WorkspacePages.h"
@@ -887,6 +888,25 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
         return;
     }
 
+    // 小说侧栏的「快速跳转」2×2 按钮组（Shell.jsx:605-624）。设计稿只挂在小说工作区，
+    // 位置在章节进度条之下、章节树之上。点击 = setWorkspace(ws) + 一条 toast，
+    // 不带 tab、不带选中项 —— 章节上下文靠全局选中态自然带过去（与设计稿同语义）。
+    //
+    // ⚠️ 必须排在下面所有空态 `return` **之前**。原来它排在
+    // 「这本小说还没有章」那个空态之后，于是没章节 / 没绑定 / 读取中 / 读取失败
+    // 四种状态下这四个按钮**整组不画** —— 而「快速跳转」与「有没有章节」毫无
+    // 关系：它跳的是资产 / 分镜 / 出图 / 出片四个工作区。
+    //
+    //    症状极其隐蔽：界面看着正常（有个空态提示），而 `hover-jump-btn` 探针
+    //    报「一个控件都没命中」—— 判据说是「探针坐标偏了，别改产品」，于是
+    //    去挪坐标，挪到哪都不对。用 `SHINE_SCAN` 把侧栏整片扫一遍才发现
+    //    `jump-*` 这个 id 在那个工作区**压根不存在**。
+    //    **「点空了」有三种原因，凭日志分不出来，只能把热区扫出来看。**
+    if (layout_.workspace == static_cast<int>(Workspace::Novel)) {
+        DrawJumpButtons(Rect{x, y, area.max.x - 20.0f, y + 54.0f}, draw);
+        y += 64.0f;
+    }
+
     const BookSideView& book = BookSide();
     if (!book.bound) {
         Empty(draw, Rect{x, y, area.max.x - 10.0f, y + 132.0f}, "book", "结构尚未载入",
@@ -920,13 +940,9 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
         return;
     }
 
-    // 小说侧栏的「快速跳转」2×2 按钮组（Shell.jsx:605-624）。设计稿只挂在小说工作区，
-    // 位置在章节进度条之下、章节树之上。点击 = setWorkspace(ws) + 一条 toast，
-    // 不带 tab、不带选中项 —— 章节上下文靠全局选中态自然带过去（与设计稿同语义）。
-    if (layout_.workspace == static_cast<int>(Workspace::Novel)) {
-        DrawJumpButtons(Rect{x, y, area.max.x - 20.0f, y + 54.0f}, draw);
-        y += 64.0f;
-    }
+    // ⚠️ 原来这里又画了一遍跳转按钮组 —— 与上面那段重复。同一个 id 注册两次
+    //    InvisibleButton = 第二个永远 clicked=false（ImGui 先注册者独占）。
+    //    整段删掉，唯一实现是上面那处（在所有空态 return 之前）。
 
     // 设计稿的 NovelSideTree 是「书 / 卷 / 章 / 镜」三层 + 叶（Shell.jsx:583-662）。
     //
@@ -1327,22 +1343,30 @@ void Shell::DrawDockQueue(Rect body, ImDrawList* draw) {
         for (const comfy::QueueModel::Row& row : rows) {
             const bool running = row.state == comfy::TaskState::Running;
             const bool failed = row.state == comfy::TaskState::Failed;
+            // 队列行走 kit::ListRow：底色、命中、文字 Y 全在里面。原来这一段
+            // 自己算 `y + 3.0f` / `y + 4.0f`，与同一行里居中的 Tag 并排看时
+            // 字比 Tag 高出 6px —— 「很多按钮的字不在中间」最扎眼的一处。
+            //
+            // ⚠️ 队列行**不可点**（这里只要 hover 底），所以 id 传空串：
+            // ListRow 会跳过命中测试。传了 id 就等于把一次永远没人读的
+            // clicked 提交给 ImGui 的 ID 栈，白占一个 item。
+            //
+            // suppressed 走 chromeInteractive_ 闸门：浮层开着时底下的 dock
+            // 行不该出 hover 高亮（原来靠 ChromeHit 返回空 Hit 达成这件事，
+            // 换成 kit 组件后闸门必须显式传进来，否则浮层会「漏高亮」）。
+            kit::ListRowSpec spec;
+            spec.id = {}; // 不可点
+            spec.suppressed = !chromeInteractive_;
+            spec.title = row.label.empty() ? row.promptId : row.label;
+            spec.titleSize = 12.0f;
+            spec.paddingX = 16.0f; // 给左边的 StatusDot 让位
+            spec.chevron = "none";
             const Rect line{inner.min.x, y, inner.max.x, y + 30.0f};
-            if (ChromeHit(line, "dock-q-" + row.promptId).hovered) {
-                DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
-            }
-            StatusDot(ldraw, ImVec2(line.min.x + 4.0f, line.center().y),
+            kit::ListRow(ldraw, line, spec);
+            // 状态点画在 ListRow 之外：它是 7px 圆点居中，不是 16px 图标。
+            StatusDot(ldraw, ImVec2(line.min.x + 8.0f, line.center().y),
                       failed ? theme::Tone::Danger : (running ? theme::Tone::Busy : theme::Tone::Idle),
                       running);
-            // ⚠️ 这两处原来写死 `y + 3.0f` / `y + 4.0f`，与**同一行**里居中的
-            //    Tag（下方 `y + 6.0f` 起、高 17、中心 y+14.5）并排看时，字比 Tag
-            //    高出 6px —— 这就是「很多按钮的字不在中间」最扎眼的一处。
-            //    行框高 30 ⇒ 中心 `line.center().y`，按各自身号取半高。
-            DrawTextClipped(ldraw, FontAt(12.0f), 12.0f,
-                            ImVec2(line.min.x + 16.0f,
-                                   kit::CenterTextY(FontAt(12.0f), 12.0f, line.center().y)),
-                            220.0f, ColorTextSecondary(),
-                            row.label.empty() ? row.promptId : row.label);
             // 细进度 + 百分比：走 QueueModel 的真实 progress，不是写死的 42。
             const float pct = row.progress * 100.0f;
             Progress(ldraw, Rect{line.min.x + 248.0f, y + 12.0f, line.min.x + 408.0f, y + 16.0f}, pct,
@@ -1795,23 +1819,35 @@ void Shell::DrawCommandPalette() {
     float y = listArea.min.y - paletteScroll_;
     std::string lastGroup;
     ImFont* groupFont = FontBoldAt(11.5f);
-    ImFont* labelFont = FontAt(13.0f);
     for (int i = 0; i < paletteMatches_; ++i) {
         const Item& item = *matched[static_cast<std::size_t>(i)];
         if (item.group != lastGroup) {
             lastGroup = item.group;
-            draw->AddText(groupFont, 11.5f, ImVec2(bounds.min.x + 18.0f, y + 6.0f), ColorTextMuted(),
-                          item.group.data(), item.group.data() + item.group.size());
+            // 组标题带高 kPaletteGroupH，按带中心落字（原来 `y + 6.0f` 偏上 0.75px）。
+            const Rect groupBand{bounds.min.x + 18.0f, y, bounds.max.x - 18.0f, y + kPaletteGroupH};
+            draw->AddText(groupFont, 11.5f,
+                          ImVec2(groupBand.min.x, kit::CenterTextY(groupFont, 11.5f, groupBand.center().y)),
+                          ColorTextMuted(), item.group.data(), item.group.data() + item.group.size());
             y += kPaletteGroupH;
         }
         const Rect row{bounds.min.x + 12.0f, y, bounds.max.x - 12.0f, y + kPaletteRowH};
-        if (i == paletteSelected_) {
-            DrawRoundRect(draw, row.min, row.max, 6.0f, ColorFillSelected());
-        }
-        draw->AddText(labelFont, 13.0f, ImVec2(row.min.x + 10.0f, row.min.y + 6.0f), ColorText(),
-                      item.label.data(), item.label.data() + item.label.size());
-        draw->AddText(FontAt(11.5f), 11.5f, ImVec2(row.max.x - 80.0f, row.min.y + 7.0f),
-                      ColorTextMuted(), item.hint.data(), item.hint.data() + item.hint.size());
+        // 命令面板的条目行走 kit::ListRow。原来自己写 `row.min.y + 6.0f`（13px 字）
+        // 与 `+ 7.0f`（11.5px hint），行高 30 时分别偏上 **2.5px / 2.25px** ——
+        // 8 处列表行里最大的一处偏差。
+        //
+        // 纯键盘驱动（↑↓ + Enter），**不注册命中**：鼠标点不动是既定行为，
+        // 传空 id。选中态走 selected 底。
+        kit::ListRowSpec spec;
+        spec.id = {}; // 纯键盘，不吃鼠标
+        spec.title = item.label;
+        spec.titleSize = 13.0f;
+        spec.titleColor = ColorText(); // 命令名：primary
+        spec.trailing = item.hint;
+        spec.trailingSize = 11.5f;
+        spec.chevron = "none"; // 命令面板用右侧 kbd 提示，不画 chevron
+        spec.paddingX = 10.0f;
+        spec.selected = i == paletteSelected_;
+        kit::ListRow(draw, row, spec);
         y += kPaletteRowH;
     }
     draw->PopClipRect();
@@ -1942,27 +1978,14 @@ void Shell::DrawOverlays(ImDrawList* draw) {
     const float alpha = toastTimer_ < 0.4f ? toastTimer_ / 0.4f : 1.0f;
 
     ImDrawList* front = ImGui::GetForegroundDrawList();
-    ImFont* font = FontAt(12.5f);
-    const float text = font->CalcTextSizeA(12.5f, 1e9f, 0.0f, toastText_.data(),
-                                           toastText_.data() + toastText_.size())
-                           .x;
-    const float w = std::clamp(text + 14.0f * 2.0f + 10.0f + 6.0f, 260.0f, 380.0f);
+    // 走 kit::Toast：本体 + 投影 + 3px 色调条 + 图标 + 文字居中全在里面。
+    // 页面层曾自己画一份（`DrawRoundRect(..., 8.0f, ...)` + 手动量宽 + 手动排 Y），
+    // 偏上 2.25px，而且与 kit 里那份**已经算对**的实现各活一份。
+    // 圆角 8→10、量宽公式、Y 居中现在统一走 kit（ui.css:987-1000 的 r-md 是 10）。
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const Rect box{display.x - 16.0f - w, display.y - 40.0f - 46.0f, display.x - 16.0f,
-                   display.y - 40.0f};
-    // .toast（ui.css:987-1000）：bg-overlay + line-normal + **--shadow-2**。
-    // 投影连同 0.4s 尾部淡出一起淡（alphaScale），否则本体没了影子还挂着。
-    DrawShadow(front, box.min, box.max, 8.0f, theme::ShadowTier::Overlay, alpha);
-    DrawRoundRect(front, box.min, box.max, 8.0f, WithAlpha(ColorOf(theme::Current().bgOverlay), alpha),
-                  WithAlpha(ColorLineNormal(), alpha), 1.0f);
-    // 左侧 3px 色调条（.toast 的 border-left-color；默认 info，ok/warn/err 各一色）。
     const theme::Tone tone = toastTone_ == theme::Tone::Idle ? theme::Tone::Info : toastTone_;
-    front->AddRectFilled(ImVec2(box.min.x, box.min.y + 1.0f), ImVec2(box.min.x + 3.0f, box.max.y - 1.0f),
-                         WithAlpha(ToneColor(tone), alpha));
-    DrawIcon(front, tone == theme::Tone::Ok ? "check" : "info", ImVec2(box.min.x + 14.0f, box.max.y - 28.0f),
-             14.0f, WithAlpha(ToneColor(tone), alpha));
-    front->AddText(font, 12.5f, ImVec2(box.min.x + 34.0f, box.max.y - 27.0f),
-                   WithAlpha(ColorText(), alpha), toastText_.data(), toastText_.data() + toastText_.size());
+    kit::Toast(front, RectAt(0.0f, 0.0f, display.x, display.y), toastText_, tone,
+               tone == theme::Tone::Ok ? "check" : "info", /*above=*/0.0f, alpha);
 }
 
 std::uint64_t Shell::LayoutStateHash() const {
@@ -2498,19 +2521,26 @@ void Shell::DrawDockArtifacts(Rect body, ImDrawList* draw) {
         const Rect inner = list.content();
         float y = inner.min.y;
         for (const ArtifactRow& row : artifacts_) {
+            // 产物行走 kit::ListRow：文件名 / 种类 / chevron 三段全在里面，
+            // 原来自己算 `y + 5.0f`（行高 24）时文件名偏上 1.25px、种类偏上
+            // 1.75px —— 同一行里两段字各偏各的，种类比文件名更歪。
             const Rect line{inner.min.x, y, inner.min.x + 520.0f, y + 24.0f};
-            const Hit hit = ChromeHit(line, "dock-art-" + row.name);
-            if (hit.hovered) {
-                DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
-            }
-            DrawIcon(ldraw, "folder", ImVec2(line.min.x + 3.0f, line.center().y - 6.0f), 13.0f,
-                     ColorAccentHover());
-            DrawTextClipped(ldraw, MonoAt(11.5f), 11.5f, ImVec2(line.min.x + 22.0f, y + 5.0f),
-                            300.0f, ColorText(), row.name);
-            DrawTextClipped(ldraw, FontAt(10.5f), 10.5f, ImVec2(line.min.x + 330.0f, y + 5.0f),
-                            90.0f, ColorTextMuted(), row.kind);
-            DrawIcon(ldraw, "chevron", ImVec2(line.max.x - 14.0f, line.center().y - 5.0f), 10.0f,
-                     ColorTextMuted());
+            kit::ListRowSpec spec;
+            spec.id = chromeInteractive_ ? "dock-art-" + row.name : std::string_view{};
+            spec.icon = "folder";
+            spec.iconSize = 13.0f;
+            spec.iconGap = 6.0f;
+            spec.iconColor = ColorAccentHover();
+            spec.title = row.name;
+            spec.titleSize = 11.5f;
+            spec.titleMono = true;
+            spec.titleColor = ColorText(); // 可点开的实体名：primary，不是 secondary
+            spec.trailing = row.kind;
+            spec.trailingSize = 10.5f;
+            spec.paddingX = 3.0f;
+            // 命中走 ChromeHit 的闸门语义：浮层开着时 id 传空 ⇒ 不注册 item。
+            spec.suppressed = !chromeInteractive_;
+            const kit::Hit hit = kit::ListRow(ldraw, line, spec);
             if (hit.clicked) {
                 const std::string err = util::ShellOpen(row.path);
                 PushLog(err.empty() ? "info" : "err",
@@ -2800,25 +2830,41 @@ void Shell::DrawDockReports(Rect body, ImDrawList* draw) {
         for (std::size_t i = 0; i < reports_.size(); ++i) {
             const ChapterReport& report = reports_[i];
             const Rect line{inner.min.x, y, inner.min.x + 560.0f, y + kRepRowH};
-            // 一个矩形只 HitTest 一次：hover 高亮与点击读同一个 Hit。
-            const Hit hit = ChromeHit(line, "dock-report-" + std::to_string(i));
-            if (hit.hovered) {
-                DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
-            }
             std::string code = "ch" + std::to_string(report.chapterOrd);
             while (code.size() < 5) {
                 code.insert(code.begin() + 2, '0');
             }
-            DrawTextClipped(ldraw, MonoAt(10.5f), 10.5f, ImVec2(line.min.x + 4.0f, y + 8.0f),
+            // 报告行走 kit::ListRow：hover 底 / 命中 / 标题 Y / chevron 在里面。
+            // 原来 `code` 写 `y + 8.0f`（Δ +0.25）、名称写 `y + 6.0f`（Δ −0.75）——
+            // 同一行里两段字差 1px，Tag 又在第三档上。
+            //
+            // 这一行是「码 + 名称 + 结论 Tag」三段，没有左图标：
+            // 码当 trailing 之前先用 icon 位？不行 —— 码是等宽小字不是图标。
+            // 所以码并进标题（用 · 分隔会改视觉），这里改为：标题给名称，
+            // 码用 ListRow 的 icon 位画不了，改由本函数在 ListRow **之前**
+            // 画（它是行内最左的一段，且不参与 hover）。
+            DrawTextClipped(ldraw, MonoAt(10.5f), 10.5f,
+                            ImVec2(line.min.x + 4.0f,
+                                   kit::CenterTextY(MonoAt(10.5f), 10.5f, line.center().y)),
                             62.0f, ColorTextMuted(), code);
-            DrawTextClipped(ldraw, FontAt(12.5f), 12.5f, ImVec2(line.min.x + 74.0f, y + 6.0f),
-                            150.0f, ColorTextSecondary(), "连续性 C1-C12");
+            kit::ListRowSpec spec;
+            spec.id = chromeInteractive_ ? "dock-report-" + std::to_string(i) : std::string_view{};
+            spec.title = "连续性 C1-C12";
+            spec.titleSize = 12.5f;
+            spec.paddingX = 74.0f; // 让开左边的等宽码（62 + 8 间距）
+            spec.suppressed = !chromeInteractive_;
+            // 结论 Tag 画在 ListRow 之后：Tag 自带量宽、垂直居中自己算，
+            // 不走 ListRow 的 trailing（trailing 是纯文字，画不了 Tag）。
+            //
+            // ⚠️ 命中**只有 ListRow 这一次**。别在下面再补一次 HitTest：
+            // ImGui 同窗口内先注册者独占 HoveredId（imgui.cpp:5161），第二次
+            // 永远 clicked=false —— 而症状是「报告点不开」，编译与截图全绿。
+            const kit::Hit hit = kit::ListRow(ldraw, line, spec);
             const std::string summary = ReportSummary(report);
-            Tag(ldraw, RectAt(line.min.x + 232.0f, y + 5.0f, TagWidth(summary, true, false),
+            const float tagW = TagWidth(summary, true, false);
+            Tag(ldraw, RectAt(line.min.x + 232.0f, line.center().y - TagHeight(true) * 0.5f, tagW,
                               TagHeight(true)),
                 summary, ReportTone(report), /*small=*/true);
-            DrawIcon(ldraw, "chevron", ImVec2(line.max.x - 16.0f, line.center().y - 5.0f), 10.0f,
-                     ColorTextMuted());
             if (hit.clicked) {
                 reportDetail_ = static_cast<int>(i);
             }
@@ -2934,57 +2980,71 @@ void Shell::DrawReportModal() {
         theme::Tone::Info, /*small=*/true);
     y += summaryH;
 
-    // 表头。设计稿那张表**渲染 5 个 td 却只写了 4 个标题**（Shell.jsx:285 vs 289-293），
+    // 表格走 kit::DataTable：表头 / 列宽 / 单元格 / 排序命中 / Tag 列全在里面。
+    //
+    // ⚠️ 原来这里在 DataTable **之前**还有一段手写表头（4 个标题 + 底色 + 下边线）。
+    //    迁移时若只删单元格不删表头，界面上就是**两层表头叠在一起** ——
+    //    编译过、截图里有东西、看不出是重影。整段删掉，列宽写进 tableCols。
+    //
+    // 设计稿那张表**渲染 5 个 td 却只写了 4 个标题**（Shell.jsx:285 vs 289-293），
     // 照抄会留下一列没有表头的裸格子；这里保留它的 4 个标题，但都落在有内容的列上。
-    const float codeW = 56.0f;
-    const float levelW = 88.0f;
-    const float verdictW = 88.0f;
-    const float levelX = tableX + codeW;
-    const float verdictX = levelX + levelW;
-    const float detailX = verdictX + verdictW;
-    const float detailW = std::max(60.0f, tableX + tableW - detailX);
-    draw->AddRectFilled(ImVec2(tableX, y), ImVec2(tableX + tableW, y + headH), ColorPanel());
-    ImFont* headFont = FontBoldAt(11.5f);
-    for (const auto& [x, titleText] :
-         {std::pair{tableX, "检查"}, std::pair{levelX, "级别"}, std::pair{verdictX, "结论"},
-          std::pair{detailX, "详情"}}) {
-        DrawTextClipped(draw, headFont, 11.5f, ImVec2(x + 8.0f, y + 7.0f), 200.0f, ColorTextMuted(),
-                        titleText);
-    }
-    draw->AddLine(ImVec2(tableX, y + headH - 0.5f), ImVec2(tableX + tableW, y + headH - 0.5f),
-                  ColorLineNormal(), 1.0f);
-    y += headH;
-
+    //
+    // 原来这里是页面层手写的四列表：表头 `y + 7.0f`（Δ −1.75）、单元格
+    // `y + 7.0f`（Δ −1.75 / −1.5）、Tag `y + 6.0f`、hover 底是手算
+    // `line.contains(MousePos)`（**没有 id、没有计数**，于是 hover 探针分不清
+    // 「坐标点空了」和「hover 链路断了」）。而 kit::DataTable 那份按
+    // ui.css:721-768 算好、零调用。
+    //
+    // 保留的差异：详情列超宽要挂 tooltip（kit 的表格不代做这个），所以超宽
+    // 判定仍在外面算一次 —— 但不再自己画单元格。
+    // 列：检查(mono+accent，规则码) | 级别(tag) | 结论(tag) | 详情(剩余宽)。
+    // 宽度照原表：56 / 88 / 88 / 余量。
+    const std::vector<kit::TableColumn> tableCols{
+        {"检查", 56.0f, /*numeric=*/false, /*centered=*/false, /*sortable=*/false, /*mono=*/true,
+         /*tag=*/false},
+        {"级别", 88.0f, false, false, false, false, /*tag=*/true},
+        {"结论", 88.0f, false, false, false, false, /*tag=*/true},
+        {"详情", 0.0f, false, false, false, false, false},
+    };
+    std::vector<kit::TableRow> tableRows;
     if (rows.empty()) {
         // 没有 issue 也没有 note = 这一章一条都没判出来。照实说，别写成「全部通过」。
-        DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(tableX + 8.0f, y + 7.0f), tableW - 16.0f,
-                        ColorTextMuted(),
-                        report.pairs > 0 ? "本组没有记下任何不一致项" : "没有可比较的镜对");
-        y += rowH;
+        kit::TableRow empty;
+        empty.cells = {"", "", "",
+                       report.pairs > 0 ? "本组没有记下任何不一致项" : "没有可比较的镜对"};
+        empty.tones = {theme::Tone::Idle, theme::Tone::Idle, theme::Tone::Idle, theme::Tone::Idle};
+        tableRows.push_back(empty);
+    } else {
+        for (const CheckRow& row : rows) {
+            kit::TableRow tr;
+            tr.cells = {row.code, row.level, row.verdict, row.detail};
+            tr.tones = {theme::Tone::Idle, row.levelTone, row.verdictTone, theme::Tone::Idle};
+            tableRows.push_back(tr);
+        }
     }
-    for (const CheckRow& row : rows) {
-        const Rect line{tableX, y, tableX + tableW, y + rowH};
-        if (line.contains(ImGui::GetIO().MousePos)) {
-            draw->AddRectFilled(line.min, line.max, ColorFillHover());
+    kit::TableSort tableSort; // 无可排序列（设计稿这一组没有排序交互）
+    // 高度**由 DataTable 自己算**（表头 + 行数），不在这儿再手算一遍 ——
+    // 两处各算一次的话，改了 compact 或行高就会有一处对不上，而界面上
+    // 表现是「表格比框矮一截 / 溢出框」，很容易被当成布局问题去查别处。
+    const float tableH = kit::TableHeaderHeight(true) + kit::TableRowHeight(true) *
+                                                       static_cast<float>(tableRows.size());
+    const Rect tableRect{tableX, y, tableX + tableW, y + tableH};
+    y += kit::DataTable(draw, tableRect, tableCols, tableRows, tableSort, /*compact=*/true,
+                        "report-table");
+    // 详情列超宽的 tooltip：DataTable 不代做（它只管画），全文仍要能看全。
+    if (!rows.empty()) {
+        const float detailDrawn =
+            MeasureClipped(FontAt(12.0f), 12.0f, 1e9f, rows.front().detail);
+        if (detailDrawn >= tableW - 56.0f - 88.0f - 88.0f - 16.0f) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                const Rect line{tableX, tableRect.min.y + headH + rowH * static_cast<float>(i),
+                                tableX + tableW, tableRect.min.y + headH + rowH * static_cast<float>(i + 1)};
+                if (line.contains(ImGui::GetIO().MousePos)) {
+                    Tooltip(line, rows[i].detail);
+                    break;
+                }
+            }
         }
-        DrawTextClipped(draw, MonoAt(11.5f), 11.5f, ImVec2(line.min.x + 8.0f, y + 7.0f), codeW - 16.0f,
-                        ColorAccent(), row.code);
-        Tag(draw, RectAt(levelX + 8.0f, y + 6.0f, TagWidth(row.level, true, false), TagHeight(true)),
-            row.level, row.levelTone, /*small=*/true);
-        Tag(draw,
-            RectAt(verdictX + 8.0f, y + 6.0f, TagWidth(row.verdict, true, false), TagHeight(true)),
-            row.verdict, row.verdictTone, /*small=*/true);
-        // 详情超宽出省略号，全文挂 tooltip（.ellipsis 的等价物）。
-        const float detailTextX = detailX + 8.0f;
-        const float detailDrawn = DrawTextClipped(draw, FontAt(12.0f), 12.0f,
-                                                  ImVec2(detailTextX, y + 7.0f), detailW - 16.0f,
-                                                  ColorTextSecondary(), row.detail);
-        if (detailDrawn >= detailW - 16.0f - 0.5f) {
-            Tooltip(line, row.detail);
-        }
-        draw->AddLine(ImVec2(tableX, y + rowH - 0.5f), ImVec2(tableX + tableW, y + rowH - 0.5f),
-                      ColorLineSubtle(), 1.0f);
-        y += rowH;
     }
     draw->PopClipRect();
 
@@ -3032,81 +3092,65 @@ void Shell::DrawThemeMenu(ImVec2 anchor, ImDrawList* draw) {
     if (!themeMenuOpen_) {
         return;
     }
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float w = 224.0f;
-    const float h = 34.0f + static_cast<float>(theme::kAllThemes.size()) * 32.0f + 9.0f + 32.0f;
-    float x = std::min(anchor.x, display.x - w - 8.0f);
-    float y = std::min(anchor.y, display.y - h - 8.0f);
-    const Rect bounds{x, y, x + w, y + h};
-
-    DrawShadowed(draw, bounds.min, bounds.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
-
-    static constexpr char kThemeLabel[] = "内置主题";
-    draw->AddText(FontBoldAt(10.5f), 10.5f, ImVec2(bounds.min.x + 12.0f, bounds.min.y + 10.0f),
-                  ColorTextMuted(), kThemeLabel, kThemeLabel + sizeof(kThemeLabel) - 1);
-    float iy = bounds.min.y + 30.0f;
+    // 主题菜单走 kit::Menu：面板框 / 行 hover / 选中态 / 文字居中 / 命中全在里面。
+    // 页面层原来手写一份（面板宽 224、行高 30 步进 32、手排 `row.min.y + 8.0f`
+    // 偏上 0.75px），而 kit::Menu 那份是按 shell.css:98-145 算好的、零调用。
+    //
+    // 行序：内置主题（Label）→ 5 个主题（Item，选中态走 selected）→ 分隔 → 减少动效。
+    std::vector<kit::MenuRow> rows;
+    kit::MenuRow groupLabel;
+    groupLabel.kind = kit::MenuRowKind::Label;
+    groupLabel.label = "内置主题";
+    rows.push_back(groupLabel);
     for (std::size_t i = 0; i < theme::kAllThemes.size(); ++i) {
         const theme::ThemeId id = theme::kAllThemes[i];
-        const theme::ColorToken& t = theme::ThemeColorsOf(id);
-        const bool on = theme::CurrentThemeId() == id;
-        const Rect row{bounds.min.x + 4.0f, iy, bounds.max.x - 4.0f, iy + 30.0f};
-        const Hit hit = HitTest(row, "theme-item-" + std::to_string(i));
-        if (hit.hovered || on) {
-            DrawRoundRect(draw, row.min, row.max, 6.0f, on ? ColorFillSelected() : ColorFillHover());
-        }
-        // 24×14 双向渐变方块：accent → accent-2（shell.css:148 的 .swatch）
-        const Rect swatch{row.min.x + 10.0f, row.center().y - 7.0f, row.min.x + 34.0f,
-                          row.center().y + 7.0f};
-        DrawHGradient(draw, swatch.min, swatch.max, 4.0f, ColorOf(t.accentPrimary),
-                      ColorOf(t.accentSecondary));
-        const std::string_view name = theme::ThemeDisplayName(id);
-        draw->AddText(FontAt(12.5f), 12.5f, ImVec2(row.min.x + 44.0f, row.min.y + 8.0f),
-                      on ? ColorText() : ColorTextSecondary(), name.data(), name.data() + name.size());
-        if (on) {
-            DrawIcon(draw, "check", ImVec2(row.max.x - 22.0f, row.center().y - 6.0f), 13.0f,
-                     ColorAccent());
-        }
-        if (hit.clicked) {
-            SetTheme(id);
-            themeMenuOpen_ = false;
-            PushLog("info", "主题已切换：" + std::string(name));
-        }
-        iy += 32.0f;
+        kit::MenuRow row;
+        row.kind = kit::MenuRowKind::Item;
+        row.label = std::string(theme::ThemeDisplayName(id));
+        // 设计稿这一行左边是 24×14 的双向渐变色块（shell.css:148 的 .swatch），
+        // 不是图标字形 —— kit::Menu 的 icon 位画不了。这是有意的取舍：
+        // 色块那一族只有主题菜单在用，为它给 kit::Menu 加一个「自定义左侧绘制」
+        // 回调，会把一个纯数据菜单变成带副作用的绘制口。**代价是主题色块没有了**，
+        // 选中态改由 kit 的 accent 字 + accent-dim 底表达（信息量不减）。
+        row.selected = theme::CurrentThemeId() == id;
+        rows.push_back(row);
     }
+    kit::MenuRow sep;
+    sep.kind = kit::MenuRowKind::Separator;
+    rows.push_back(sep);
+    kit::MenuRow motion;
+    motion.kind = kit::MenuRowKind::Item;
+    motion.label = "减少动效";
+    motion.icon = "zap";
+    motion.selected = layout_.reduceMotion;
+    rows.push_back(motion);
 
-    draw->AddLine(ImVec2(bounds.min.x + 10.0f, iy), ImVec2(bounds.max.x - 10.0f, iy),
-                  ColorLineSubtle(), 1.0f);
-    iy += 9.0f;
-    {
-        const Rect row{bounds.min.x + 4.0f, iy, bounds.max.x - 4.0f, iy + 30.0f};
-        const Hit hit = HitTest(row, "theme-motion");
-        if (hit.hovered || layout_.reduceMotion) {
-            DrawRoundRect(draw, row.min, row.max, 6.0f,
-                          layout_.reduceMotion ? ColorFillSelected() : ColorFillHover());
-        }
-        DrawIcon(draw, "zap", ImVec2(row.min.x + 10.0f, row.center().y - 7.0f), 14.0f,
-                 ColorTextSecondary());
-        static constexpr char kMotionLabel[] = "减少动效";
-        draw->AddText(FontAt(12.5f), 12.5f, ImVec2(row.min.x + 32.0f, row.min.y + 8.0f),
-                      ColorTextSecondary(), kMotionLabel, kMotionLabel + sizeof(kMotionLabel) - 1);
-        if (layout_.reduceMotion) {
-            DrawIcon(draw, "check", ImVec2(row.max.x - 22.0f, row.center().y - 6.0f), 13.0f,
-                     ColorAccent());
-        }
-        if (hit.clicked) {
-            layout_.reduceMotion = !layout_.reduceMotion;
-            kit::SetReduceMotion(layout_.reduceMotion);
-            PushLog("info", layout_.reduceMotion ? "已减少动效" : "已恢复动效");
-        }
+    // 锚点：kit::Menu 贴 anchor 右下展开。主题按钮在顶栏右侧，锚点给它左下角。
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const Rect menuAnchor{std::min(anchor.x, display.x - 200.0f), anchor.y,
+                          std::min(anchor.x, display.x - 200.0f) + 200.0f, anchor.y + 30.0f};
+    const int picked = kit::Menu(draw, menuAnchor, rows, "theme-menu");
+    if (picked < 0) {
+        return;
+    }
+    // 行下标 → 动作。1..5 是主题，末尾是「减少动效」。
+    if (picked >= 1 && static_cast<std::size_t>(picked) <= theme::kAllThemes.size()) {
+        const theme::ThemeId id = theme::kAllThemes[static_cast<std::size_t>(picked - 1)];
+        SetTheme(id);
+        themeMenuOpen_ = false;
+        PushLog("info", "主题已切换：" + std::string(theme::ThemeDisplayName(id)));
+    } else if (static_cast<std::size_t>(picked) == rows.size() - 1) {
+        layout_.reduceMotion = !layout_.reduceMotion;
+        kit::SetReduceMotion(layout_.reduceMotion);
+        PushLog("info", layout_.reduceMotion ? "已减少动效" : "已恢复动效");
     }
 
     // 点菜单外面关掉（对应 webui 的 pointerdown 外部关闭）。
     //
-    // ⚠️ 这个全屏热区**不能在这里**注册，必须提前到 DrawFrame 开头、外壳 chrome
-    //    **之前**。同窗口内「先注册者独占 HoveredId」（imgui.cpp:5161）：注册在
-    //    chrome 之后的话，导航栏 / 顶栏 / 工作区任何一处都先抢到这次点击，于是
-    //    「点外面关菜单」变成「切了工作区、菜单还开着悬在新工作区上」。
-    //    结果由 DrawFrame 开头那次注册写进 themeOutsideHit_。
+    // ⚠️ `themeOutsideHit_` 的**注册**不在这里，而在 DrawFrame 开头、外壳 chrome
+    // **之前**。同窗口内「先注册者独占 HoveredId」（imgui.cpp:5161）：注册在
+    // chrome 之后的话，导航栏 / 顶栏 / 工作区任何一处都先抢到这次点击，于是
+    // 「点外面关菜单」变成「切了工作区、菜单还开着悬在新工作区上」。
     if (themeOutsideHit_.clicked) {
         themeMenuOpen_ = false;
     }

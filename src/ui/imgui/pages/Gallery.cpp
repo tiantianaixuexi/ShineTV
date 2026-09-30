@@ -245,6 +245,120 @@ void Card_Art(ImDrawList* draw, Rect area) {
     ArtInk(draw, RectAt(area.min.x, area.min.y + 108.0f, area.width(), 80.0f), 2, 0.8f);
 }
 
+// ListRow / ListCard / DataTable / Menu —— 2026-09-30 才补上的四个。
+//
+// 为什么这张卡重要：这一页存在的意义就是**证明 kit 控件真的可用**（上一轮
+// 「组件画廊的开关与复选框点不动」就是在这里暴露的）。而这四个组件当时
+// 「已实现、算得对、全树零调用」—— 零调用意味着**没有任何一处证明它们能用**，
+// 于是页面层各写了一份还写错。所以它们必须有演示。
+void Card_Rows(ImDrawList* draw, Rect area) {
+    float y = area.min.y;
+    // ListRow：选中 / 普通 / 禁用 三态。id 给不同值，鼠标点得动。
+    {
+        ListRowSpec spec;
+        spec.id = "gal-row-0";
+        spec.icon = "folder";
+        spec.title = "open/output";
+        spec.trailing = "目录";
+        spec.trailingMono = true;
+        ListRow(draw, RectAt(area.min.x, y, area.width(), 26.0f), spec);
+        y += 30.0f;
+    }
+    {
+        ListRowSpec spec;
+        spec.id = "gal-row-1";
+        spec.icon = "file";
+        spec.title = "ch012.json";
+        spec.trailing = "T12";
+        spec.trailingMono = true;
+        spec.selected = true;
+        ListRow(draw, RectAt(area.min.x, y, area.width(), 26.0f), spec);
+        y += 30.0f;
+    }
+    {
+        ListRowSpec spec;
+        spec.id = "gal-row-2";
+        spec.icon = "file";
+        spec.title = "ch013.json";
+        spec.trailing = "降级";
+        spec.disabled = true;
+        ListRow(draw, RectAt(area.min.x, y, area.width(), 26.0f), spec);
+        y += 34.0f;
+    }
+    // ListCard：双行（标题 + 描述）+ 选中态。
+    {
+        ListCardSpec spec;
+        spec.id = "gal-card-0";
+        spec.icon = "sparkles";
+        spec.title = "小说长篇";
+        spec.description = "章节 → 分镜 → 出图 → 出片，含连续性校验";
+        spec.selected = true;
+        ListCard(draw, RectAt(area.min.x, y, area.width(), 54.0f), spec);
+        y += 60.0f;
+    }
+    {
+        ListCardSpec spec;
+        spec.id = "gal-card-1";
+        spec.title = "影视短片";
+        spec.description = "剧本 → 镜表 → 连贯性 → 渲染";
+        ListCard(draw, RectAt(area.min.x, y, area.width(), 54.0f), spec);
+        y += 60.0f;
+    }
+}
+
+void Card_TableMenu(ImDrawList* draw, Rect area) {
+    // DataTable：4 列 + tag 列 + mono 列 + 排序。
+    static kit::TableSort sort;
+    const std::vector<kit::TableColumn> columns{
+        {"检查", 56.0f, false, false, false, true, false},
+        {"级别", 72.0f, false, false, false, false, true},
+        {"结论", 72.0f, false, false, false, false, true},
+        {"详情", 0.0f, false, false, /*sortable=*/true, false, false},
+    };
+    std::vector<kit::TableRow> rows;
+    for (int i = 0; i < 4; ++i) {
+        kit::TableRow row;
+        row.cells = {"C" + std::to_string(i + 1), i < 2 ? "high" : "low", i < 2 ? "未过" : "提示",
+                     "第 " + std::to_string(i + 1) + " 项校验的说明文字"};
+        row.tones = {theme::Tone::Idle, i < 2 ? theme::Tone::Danger : theme::Tone::Warn,
+                     i < 2 ? theme::Tone::Danger : theme::Tone::Warn, theme::Tone::Idle};
+        rows.push_back(row);
+    }
+    DataTable(draw, RectAt(area.min.x, area.min.y, area.width(), 200.0f), columns, rows, sort,
+              /*compact=*/true, "gal-table");
+    // Menu：贴锚点右下展开（点它看展开）。
+    std::vector<MenuRow> menu;
+    MenuRow label;
+    label.kind = MenuRowKind::Label;
+    label.label = "视图";
+    menu.push_back(label);
+    MenuRow a;
+    a.kind = MenuRowKind::Item;
+    a.label = "紧凑列表";
+    a.icon = "list";
+    a.selected = true;
+    menu.push_back(a);
+    MenuRow b;
+    b.kind = MenuRowKind::Item;
+    b.label = "网格";
+    b.icon = "grid";
+    menu.push_back(b);
+    MenuRow sep;
+    sep.kind = MenuRowKind::Separator;
+    menu.push_back(sep);
+    MenuRow c;
+    c.kind = MenuRowKind::Item;
+    c.label = "归档（暂不可用）";
+    c.disabled = true;
+    menu.push_back(c);
+    const Rect anchor{area.max.x - 130.0f, area.min.y + 210.0f, area.max.x, area.min.y + 240.0f};
+    DrawRoundRect(draw, anchor.min, anchor.max, 6.0f, ColorElevated(), ColorLineNormal(), 1.0f);
+    DrawTextClipped(draw, FontAt(12.0f), 12.0f,
+                    ImVec2(anchor.min.x, kit::CenterTextY(FontAt(12.0f), 12.0f, anchor.center().y)),
+                    anchor.width() - 20.0f, ColorTextSecondary(), "点我展开菜单");
+    Menu(draw, anchor, menu, "gal-menu");
+}
+
 } // namespace
 
 void GalleryPage::Draw(Rect area, ImDrawList* draw) {
@@ -284,6 +398,8 @@ void GalleryPage::Draw(Rect area, ImDrawList* draw) {
         {"KV 键值对", Card_KV, 92.0f},
         {"Empty 空态", Card_Empty, 190.0f},
         {"Steps / StageFlow 5 态", Card_Steps, 200.0f},
+        {"ListRow / ListCard", Card_Rows, 226.0f},
+        {"DataTable / Menu", Card_TableMenu, 340.0f},
         {"Art / ArtInk 程序化占位画", Card_Art, 200.0f},
     };
 
