@@ -40,24 +40,34 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
         //   ⚠️ 而**截图上看不出来**：树被裁掉了（所以图上那片区域是干净的），
         //      只有热区登记漏在外面。这正是「判据抓得住、眼睛看不出来」的那一类。
         //
-        // 边界：完全放不下就整行不画也不登记（不画半行 —— 半个行高的可点区域比没有更糟）。
-        if (y + rowH > bounds.max.y) {
-            return y;
-        }
+        // 边界：完全放不下就整行**不登记命中**（不画半行 —— 半个行高的可点区域比没有更糟）。
+        //
+        // ⚠️ 但**只跳命中，不跳累加**：`counter` 与 `y` 都无条件推进。两条都必要：
+        //   · `counter` 无条件 —— `selectedIndex` 是按**完整**扁平序算出来的
+        //     （调用方的 `FlatTreeIndex`），少算一行就会选错节点，而且只在滚下来之后才看得出；
+        //   · `y` 无条件 —— 返回值是**完整内容高度**，调用方拿它喂
+        //     `ScrollRegion::setContentHeight`，内容才滚得动（不给高度 = 这个区域永远滚不动，
+        //     见 Scroll.h 的说明）。
+        // 早先这里是 `return y`：高度被截断成「可见高度」⇒ 套上滚动区也滚不动，
+        // 而且下半截内容**永远够不着**。
+        const bool visible = (y + rowH <= bounds.max.y);
         TreeNode& node = nodes[i];
         const int index = counter++;
         const Rect row = RectAt(bounds.min.x + 20.0f * static_cast<float>(depth), y,
                                 bounds.width() - 20.0f * static_cast<float>(depth), rowH);
         const bool on = selectedIndex == index;
         const Hit hit =
-            detail::HitTestItem(row, detail::UniqueId(std::string(id) + "#" + std::to_string(depth), static_cast<int>(i)));
+            visible ? detail::HitTestItem(
+                          row, detail::UniqueId(std::string(id) + "#" + std::to_string(depth),
+                                                static_cast<int>(i)))
+                    : Hit{};
 
         // 折叠箭头单独占一个 hit item（.tw，14×14）：它**套在行矩形里面**，
         // 所以点它会连带把整行的 hit 也触发 → 折叠的同时还会改选中项。
         // 设计稿里两者是同一个 onClick（Shell.jsx:486），但 ImGui 的 item 栈
         // 会让两个都算「点到」，所以这里显式让位：点箭头只翻折叠。
         bool twistClicked = false;
-        if (node.hasChildren) {
+        if (visible && node.hasChildren) {
             const Rect twist = RectAt(row.min.x + 8.0f, row.center().y - 7.0f, 14.0f, 14.0f);
             const std::string twistId =
                 detail::UniqueId(std::string(id) + "#t" + std::to_string(depth),

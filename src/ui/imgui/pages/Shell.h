@@ -259,6 +259,18 @@ private:
     // 浮层开着时**一个 item 都不提交**（模态语义：底下点不动，点击交给浮层的遮罩）。
     // 机制与证据见 chromeInteractive_ 的注释。
     kit::Hit ChromeHit(const kit::Rect& bounds, std::string_view id);
+
+    // 浮层是否开着（命令面板 / 设置模态 / 报告模态 / 主题菜单）。
+    //
+    // **必须只有这一份**：每个 `kit::ScrollRegion` 都是一次 `BeginChild`，而 child
+    // 会成为鼠标所在处的 `HoveredWindow`，根窗口里提交的浮层 item 于是恒
+    // `hovered=false` ——「按钮画得出来、点不动」。所以**每一个** child 都要按这个
+    // 开态退出命中测试（机制见 `kit/Scroll.h` 的构造注释）。
+    // 早先这个布尔只在 `DrawWorkspace` 里就地算了一遍，侧栏后来也加了滚动区 ——
+    // 就地再算一遍就是两个真相源，迟早只改一处。
+    [[nodiscard]] bool OverlayBlocksMouse() const {
+        return paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 || themeMenuOpen_;
+    }
     [[nodiscard]] bool ChromeClicked(const kit::Rect& bounds, std::string_view id) {
         return ChromeHit(bounds, id).clicked;
     }

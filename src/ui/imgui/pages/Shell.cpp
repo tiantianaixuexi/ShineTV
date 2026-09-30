@@ -485,13 +485,11 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     //    滚动，内容超出既不会被裁也不会滚，鼠标还会穿透。BeginChild 一次给全。
     // ⚠️ 浮层开着的时候必须让这个 child 退出命中测试，否则浮层按钮全是死的。
     //    机制写在 Scroll.h 的构造注释里（`g.HoveredWindow` 归 child，根窗口 item
-    //    一律 hovered=false）。这里四个开态正好对应 DrawFrame 尾部那四个在**根窗口**
-    //    里提交 item 的浮层：命令面板 / 设置模态 / 报告模态 / 主题菜单。
+    //    一律 hovered=false）。判定提成了 `OverlayBlocksMouse()`，因为**侧栏的滚动区
+    //    也要吃同一个开态**（两个 child 各算一遍就是两个真相源）。
     //    项目中心不走这里（整屏替身，浮层在 hub-scroll child 内部提交，本来就能点）。
-    const bool overlayBlocksMouse = paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 ||
-                                    themeMenuOpen_;
     kit::ScrollRegion region("workspace-scroll", area, /*borders=*/false, /*horizontal=*/false,
-                             /*noMouseInputs=*/overlayBlocksMouse);
+                             /*noMouseInputs=*/OverlayBlocksMouse());
     if (!region) {
         return;
     }

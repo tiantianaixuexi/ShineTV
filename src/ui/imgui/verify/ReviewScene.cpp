@@ -251,6 +251,12 @@ void RunControlledStates(Session& session) {
                                     " shots=" + std::to_string(pages::BookSide().shots.size()) +
                                     " after " + std::to_string(bookWaited) + " frames");
         session.GrabDriven("side-tree", kWsStoryboard, base);
+        // ⚠️ 这里**故意不拍**「小说侧栏滚到底」那张，也没有对应判据：
+        //    12 章的 fixture 下小说侧栏树是 20 行 = 560px，可视区 ~630px ⇒ **放得下**
+        //    （实测读数 560 / 630，滚动上限 0）。给一张「滚动后」的图会与这张**逐字节相同**
+        //    ⇒ `identical-driven-pairs` 假红。
+        //    真正必然溢出的是**资产侧栏**那棵树（30 行），判据打在那里 —— 见上面的
+        //    `asset-tree-scroll`。想给小说侧栏也加判据，得先把 fixture 铺到 22 章以上。
 
         // 选中第 2 镜再拍一张：证明检查器属性**跟着选中项变**，不是静态占位。
         pages::SelectBookShot(1);
@@ -299,6 +305,49 @@ void RunControlledStates(Session& session) {
                                     std::to_string(bookWaited) + " frames");
         session.assetSnapshotConverged = assetsReady;
         session.GrabDriven("assets-kind-tree", kWsAssets, base);
+
+        // ---- 侧栏树可滚（2026-09-30）----
+        //
+        // ⚠️ 判据打在**资产侧栏那棵树**上，不是小说侧栏：只有它在当前 fixture 下
+        //    必然溢出（13 个 kind 组 + 17 个叶子 = 30 行 ≈ 840px，可视区 ~630px）。
+        //    小说侧栏那棵 20 行 = 560px，**放得下**（实测读数 560 / 630）——
+        //    拿它当判据会报一个「内容没超出」的假红，而那不是缺陷。
+        //    两棵树共用同一套 `ScrollRegion` 写法，验这一棵就覆盖了那个机制。
+        //
+        // 为什么必须有这条：`Tree` 早先把自己的返回值截断成「可见高度」，
+        // 于是套上滚动区也**滚不动** —— 后面的 kind 组与叶子在界面上够不着，
+        // 而截图上只有「前面几组」，看不出区别。与 ov-right / workspace-scroll 同一条纪律：
+        // 读产品自己的滚动读数，不从像素反推。
+        kit::ScrollRegion::RequestScrollBottom("asset-tree-scroll");
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        const kit::ScrollRegion::ScrollApplied treeScroll = kit::ScrollRegion::LastApplied();
+        if (treeScroll.id != "asset-tree-scroll") {
+            shine::log::Error(
+                "review: 资产侧栏树的滚动请求从没被核销（id=\"{}\"）—— 侧栏树没有滚动区"
+                "（或那一帧没被构造），kind 一多后面的分组与叶子在界面上够不着",
+                treeScroll.id);
+            session.result.scrollFailed = true;
+        } else if (treeScroll.maxScrollY <= 0.0f) {
+            shine::log::Error(
+                "review: 资产侧栏树期望滚动上限=0（自报内容高={:.1f} / 可视高={:.1f}）—— "
+                "要么 setContentHeight 没拿到**完整**内容高度（`Tree` 的返回值被截断了，"
+                "这正是修之前的样子），要么这棵树确实没超出可视区",
+                treeScroll.contentHeight, treeScroll.viewHeight);
+            session.result.scrollFailed = true;
+        } else if (!treeScroll.ok) {
+            shine::log::Error("review: 资产侧栏树滚到底失败：scrollY={:.1f} / 期望上限={:.1f}"
+                              "（ImGui 侧上限={:.1f}）",
+                              treeScroll.scrollY, treeScroll.maxScrollY,
+                              treeScroll.imGuiMaxScrollY);
+            session.result.scrollFailed = true;
+        } else {
+            shine::log::Info(
+                "review: asset-tree-scroll 可滚 自报内容高={:.1f} 可视高={:.1f} 上限={:.1f}",
+                treeScroll.contentHeight, treeScroll.viewHeight, treeScroll.maxScrollY);
+        }
+        session.GrabDriven("assets-kind-tree-scrolled", kWsAssets, base);
+        kit::ScrollRegion::RequestScrollTop("asset-tree-scroll");
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
         // 点第 2 个实体（库里是「周姨」）。必须走 shell.SelectAsset 而不是分别写两个状态 ——
         // 侧栏高亮与主区详情是同一份选中的两个投影，分开写迟早只改得动一边。

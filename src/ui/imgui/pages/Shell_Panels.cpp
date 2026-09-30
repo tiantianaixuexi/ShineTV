@@ -440,7 +440,27 @@ void Shell::DrawAssetSideTree(Rect area, ImDrawList* draw, float y) {
         // 不占序号 —— 与上面章 / 镜树同一套先序约定，这里是它的资产版。
         const int wanted = AssetLeafFlat(nodes, leafAsset, book.selectedAsset);
         int picked = wanted;
-        y += Tree(draw, Rect{x, y, x + w, area.max.y - 34.0f}, nodes, picked, "asset-tree");
+        // ---- 资产树的可滚区（2026-09-30）----
+        //
+        // 这棵树**最容易溢出**：13 个 kind 组 + 17 个叶子 = 30 行（840px），而可视区
+        // 只有 ~630px。以前它是「放不下就不画」—— 后面的组与叶子**在界面上够不着**，
+        // 而截图上看不出区别（都只拍到前面几组）。
+        // 与小说侧栏那棵共用同一套写法与同一个 `noMouseInputs` 判定；两棵树按工作区
+        // 互斥出现，所以各自一个 ScrollRegion id（取证判据打的是**这一棵**，
+        // 因为只有它在当前 fixture 下必然溢出）。
+        const Rect treeArea{x, y, x + w, area.max.y - 34.0f};
+        kit::ScrollRegion treeScroll("asset-tree-scroll", treeArea, /*borders=*/false,
+                                     /*horizontalScroll=*/false,
+                                     /*noMouseInputs=*/OverlayBlocksMouse());
+        if (treeScroll) {
+            // 内容必须画在 child 自己的 draw list 上，否则裁剪无效（见 Scroll.h）。
+            ImDrawList* tdraw = treeScroll.drawList();
+            const Rect inner = treeScroll.content();
+            // 下边界仍用 `treeArea.max.y`（`Tree` 拿它做可见性截断），完整高度由返回值给。
+            const Rect walkBounds{inner.min.x, inner.min.y, treeArea.max.x, treeArea.max.y};
+            y += Tree(tdraw, walkBounds, nodes, picked, "asset-tree");
+            treeScroll.setContentHeight(y - inner.min.y);
+        }
         if (picked != wanted) {
             // 分组行只切展开 / 收起（设计稿的 onClick 只有 setOpen，没有 setSelEntity）；
             // 叶子行才选资产。展开态存成员上，存局部变量的话下一帧就收回。
@@ -637,7 +657,30 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
                             : FlatTreeIndex(volumes, book.selectedChapter, -1);
     int picked = wanted;
     const Rect treeArea{x, y, area.max.x - 20.0f, area.max.y - 10.0f};
-    Tree(draw, treeArea, volumes, picked, "side-tree");
+    // ---- 侧栏树的可滚区（2026-09-30）----
+    //
+    // ⚠️ 之前树**没有滚动**：把 fixture 从 3 章铺到 12 章之后，第 7 章起在侧栏里
+    //    **够不着**（`Tree` 只按可用高度截断多余的行 —— 那一步是为了不让热区越界
+    //    压到底栏上，见 `Widget_Tree.cpp`；但当时它连内容高度一起截断了，
+    //    于是套滚动区也滚不动）。现在 `Tree` 返回**完整内容高度**，这里喂给
+    //    `setContentHeight` 就能滚 —— 设计稿的侧栏本来也是可滚的。
+    //
+    // ⚠️ `noMouseInputs` 必须跟浮层开态走：这一层是 `BeginChild`，鼠标在它范围内时
+    //    `g.HoveredWindow` 就是它，根窗口里那四个浮层的 item 会一律 hovered=false ⇒
+    //    **按钮画得出来、点不动**（而这在静息截图上看不出来）。与工作区那层共用
+    //    `OverlayBlocksMouse()`。
+    kit::ScrollRegion treeScroll("side-tree-scroll", treeArea, /*borders=*/false,
+                                 /*horizontalScroll=*/false, /*noMouseInputs=*/OverlayBlocksMouse());
+    if (treeScroll) {
+        // 内容必须画在 child **自己的** draw list 上，否则裁剪无效（见 Scroll.h）。
+        ImDrawList* tdraw = treeScroll.drawList();
+        const Rect inner = treeScroll.content();
+        // ⚠️ 传下去的 bounds：左右与上沿来自 `inner`（含滚动偏移），**下边界仍是
+        //    `treeArea.max.y`** —— `Tree` 拿 max.y 做可见性截断（画与命中），
+        //    完整内容高度由返回值给出，两者不冲突。
+        const Rect walkBounds{inner.min.x, inner.min.y, treeArea.max.x, treeArea.max.y};
+        treeScroll.setContentHeight(Tree(tdraw, walkBounds, volumes, picked, "side-tree"));
+    }
     if (picked == wanted) {
         return;  // 没点中
     }
