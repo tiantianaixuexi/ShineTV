@@ -68,19 +68,23 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     draw->AddLine(ImVec2(area.min.x, area.max.y - 0.5f), ImVec2(area.max.x, area.max.y - 0.5f),
                   ColorLineSubtle(), 1.0f);
 
-    float x = area.min.x + 16.0f;
+    // shell.css:25 `.topbar { padding: 0 12px }` —— 左右内边距都是 12，不是 16。
+    float x = area.min.x + 12.0f;
     // 品牌标 22×22 / r6 / grad-accent + shadow-accent + 内嵌 12px play
-    const Rect brand{area.min.x + 16.0f, 0.5f * (area.min.y + area.max.y) - 11.0f,
-                     area.min.x + 38.0f, 0.5f * (area.min.y + area.max.y) + 11.0f};
-    const Rect halo = Rect(brand.min.x, brand.min.y - 2.0f, brand.max.x, brand.max.y + 2.0f);
-    DrawRoundRect(draw, halo.min, halo.max, 8.0f, 0, ColorAccentGlow(), 2.0f);
-    DrawDiagGradient(draw, brand.min, brand.max, 6.0f, ColorAccent(), ColorAccentHover());
-    DrawIconCentered(draw, "play", brand.center(), 12.0f, ColorAccentFg());
+    const Rect brand{area.min.x + 12.0f, 0.5f * (area.min.y + area.max.y) - 11.0f,
+                     area.min.x + 34.0f, 0.5f * (area.min.y + area.max.y) + 11.0f};
+    // 品牌标统一走 `kit::LogoMark`（同一份实现也给项目中心的 `.hub-logo` 用）。
+    // ⚠️ 它接管了三件事：`--shadow-accent` 柔光、`--grad-accent` 斜渐变、
+    //    以及**水墨主题下这两个都换成「纯 accent 实底 + 无投影」**。
+    //    原来这里是手写的「`accent-glow` 描边环 ±2px」当投影 —— 环不是虚化，
+    //    形状与 CSS 的 `0 4px 20px` 无关，而且水墨下还会照画不误。
+    LogoMark(draw, brand, 6.0f, 12.0f);
 
     ImFont* brandFont = FontBoldAt(13.5f);
     const std::string_view prefix = "ShineTV ";
     const std::string_view suffix = "Studio";
-    x = brand.max.x + 10.0f;
+    // shell.css:34 `.brand { gap: 8px }` —— 标与字之间是 8px，不是顶栏的 10px。
+    x = brand.max.x + 8.0f;
     draw->AddText(brandFont, 13.5f, ImVec2(x, 0.5f * (area.min.y + area.max.y) - 6.75f),
                   ColorText(), prefix.data(), prefix.data() + prefix.size());
     x += brandFont->CalcTextSizeA(13.5f, 1e9f, 0.0f, prefix.data(), prefix.data() + prefix.size())
@@ -90,11 +94,12 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
         brandFont->CalcTextSizeA(13.5f, 1e9f, 0.0f, suffix.data(), suffix.data() + suffix.size()).x;
     draw->AddText(brandFont, 13.5f, ImVec2(x, 0.5f * (area.min.y + area.max.y) - 6.75f),
                   ColorAccent(), suffix.data(), suffix.data() + suffix.size());
-    x += suffixW + 20.0f;
+    // shell.css:24 `.topbar { gap: 10px }` —— 顶栏子项之间一律 10px。
+    x += suffixW + 10.0f;
 
     // 品牌标整块可点：同样回项目中心（webui Shell.jsx:26 的 onHub）。
     {
-        const Rect hit{area.min.x + 16.0f, area.min.y, x - 20.0f, area.max.y};
+        const Rect hit{area.min.x + 12.0f, area.min.y, x - 10.0f, area.max.y};
         if (ChromeHit(hit, "tb-brand").clicked) {
             ToggleProjectHub();
         }
@@ -126,22 +131,25 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     if (ChromeHit(capsule, "tb-projchip").clicked) {
         ToggleProjectHub();
     }
-    x = capsule.max.x + 16.0f;
+    x = capsule.max.x + 10.0f;
 
     // 搜索触发器 260×28 胶囊 + 右侧 Kbd "Ctrl K"
     const Rect search{x, 0.5f * (area.min.y + area.max.y) - 14.0f, x + 260.0f,
                       0.5f * (area.min.y + area.max.y) + 14.0f};
-    DrawRoundRect(draw, search.min, search.max, 14.0f, ColorFillMuted(), ColorLineNormal(), 1.0f);
-    DrawIcon(draw, "search", ImVec2(search.min.x + 10.0f, search.center().y - 7.0f), 14.0f,
+    // ui.css:332-341 `.search`：底色 fill-muted、边是 **line-subtle**（不是 line-normal）、
+    // 内边距 0 12、子项 gap 8；`.topsearch`（shell.css:81）只覆盖宽 260 / 高 28。
+    DrawRoundRect(draw, search.min, search.max, 14.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
+    DrawIcon(draw, "search", ImVec2(search.min.x + 12.0f, search.center().y - 7.0f), 14.0f,
              ColorTextMuted());
     // ⚠️ 长度一律用 sizeof(字面量) - 1。本树曾有 6 处把字节数写死在 AddText 的
     //    text_end 上，而 4 个汉字在 UTF-8 里是 12 字节 —— 结果每处都少画 1 个字；
     //    另有一处比实际多 5 字节，直接读到字面量池外面。搜索提示「搜索命令」就属于前者。
     static constexpr char kSearchHint[] = "搜索命令";
-    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(search.min.x + 30.0f, search.center().y - 6.25f),
+    // 文字左沿 = padding 12 + 图标 14 + gap 8 = 34；Kbd 右沿 = 右 padding 12。
+    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(search.min.x + 34.0f, search.center().y - 6.25f),
                   ColorTextMuted(), kSearchHint, kSearchHint + sizeof(kSearchHint) - 1);
     const float kbdW = KbdWidth("Ctrl K");
-    Kbd(draw, RectAt(search.max.x - kbdW - 6.0f, search.center().y - 9.0f, kbdW, 18.0f), "Ctrl K");
+    Kbd(draw, RectAt(search.max.x - kbdW - 12.0f, search.center().y - 9.0f, kbdW, 18.0f), "Ctrl K");
     // 搜索框可点：开命令面板（webui Shell.jsx:36）。
     if (ChromeHit(search, "tb-search").clicked) {
         ToggleCommandPalette();
@@ -150,7 +158,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     // 右侧：运行 / 停止 / 主题 / 设置 / Comfy 状态
     // 排布照 webui Shell.jsx:44-78（自右向左）：Comfy 状态项 · 设置 · 主题 · 运行/停止
     const float cy = 0.5f * (area.min.y + area.max.y);
-    float rx = area.max.x - 16.0f;
+    float rx = area.max.x - 12.0f;
 
     // Comfy 状态项（shell.css:458 的 .sb-item）：状态点 + 文字。
     // 早先这里只画一个恒为 Idle 的裸点，没有任何文字，也点不动。
@@ -188,10 +196,11 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
             // 点开设置模态看连接细节，而不是像设计稿那样凭空把连接状态翻个面。
             ToggleSettingsModal(true);
         }
-        rx -= w + 6.0f;
+        rx -= w + 10.0f;
     }
 
-    rx -= 28.0f;
+    // 28 是图标钮的宽，另一个 10 是 `.topbar{gap:10px}` —— 减掉一个只会让两者贴死。
+    rx -= 28.0f + 10.0f;
     if (IconButton(draw, RectAt(rx, cy - 14.0f, 28.0f, 28.0f), "settings", false, false,
                    "tb-settings", "设置")) {
         ToggleSettingsModal(!settingsOpen_);
@@ -218,7 +227,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
             }
         }
     }
-    rx -= 12.0f;
+    rx -= 10.0f;
     // 运行 / 停止是**二选一**（webui Shell.jsx:44-48：`run.active ? 停止 : 运行`）。
     // 早先两个按钮常驻且「停止」恒 disabled，界面上等于挂了一个永远按不动的控件。
     ImFont* topFont = FontBoldAt(13.0f);
@@ -290,38 +299,55 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
                   ColorLineSubtle(), 1.0f);
 
     // 6 个工作区（设计稿序），第 6 项后是分隔线 + 3 个面板开关 + 弹性空隙 + 画廊
+    //
+    // shell.css:157-183：`.rail{gap:4px;padding:10px 0}` + `.rail-btn{40×40;r10}`
+    // ⇒ 行距固定 44（= 40 + 4），行高 40 —— 不是 48/44 混着来。
+    // ⚠️ 三处曾按「铺满 56px 栏宽」画，全部订正：
+    //    ① 选中底画成 44×44（应 40×40，左右各留 8px 栏内边距）；
+    //    ② hover 底压根没画，而 CSS 有 `.rail-btn:hover{background:var(--fill-hover)}`；
+    //    ③ 左侧 2.5px accent 竖条按 `area.min.x - 8` 落在**栏外**（x = -8..-5.5），
+    //       被裁掉 ⇒ 设计稿里最显眼的「当前工作区」标识一直是不可见的。
+    //       `.rail-btn.on::before{left:-8px}` 的 -8 是相对 **40px 按钮盒**的左边；
+    //       按钮在栏内居中 ⇒ 盒左沿 = 栏中线 - 20，竖条绝对 x = 栏中线 - 28 .. -25.5。
+    constexpr float kBtn = 40.0f;
+    constexpr float kPitch = kBtn + 4.0f;
+    const float btnLeft = area.center().x - 0.5f * kBtn;
     float y = area.min.y + 10.0f;
     for (int i = 0; i < 6; ++i) {
         const bool on = layout_.workspace == i;
-        const Rect item{area.min.x, y, area.max.x, y + 48.0f};
-        const ImVec2 center = ImVec2(area.center().x, item.center().y);
-        if (on) {
-            DrawRoundRect(draw, ImVec2(item.min.x + 6.0f, item.min.y + 2.0f),
-                          ImVec2(item.max.x - 6.0f, item.max.y - 2.0f), 10.0f, ColorFillSelected());
-            // 左侧 2.5px accent 竖条：left:-8px，上下内缩 9px，r3
-            const Rect bar{area.min.x - 8.0f, item.min.y + 9.0f, area.min.x - 5.5f,
-                           item.max.y - 9.0f};
-            DrawRoundRect(draw, bar.min, bar.max, 3.0f, 0, ColorAccentGlow(), 6.0f);
-            DrawRoundRect(draw, bar.min, bar.max, 3.0f, ColorAccent());
-        }
+        const Rect item{btnLeft, y, btnLeft + kBtn, y + kBtn};
         // ⚠️ 一次 HitTest 拿走 hovered + clicked。早先这里先 Hovered("rail-hover-N")
         // 再 Clicked("rail-ws-N") —— 两个 InvisibleButton 落在**同一矩形**上，
         // ImGui 的 ItemHoverable 只让先注册的那个拿到 HoveredId（HoveredAllowOverlap 默认 false），
         // 第二个永远 hovered=false / clicked=false，整个导航栏点不动。
+        // 命中测试必须排在画底之前：hover 底要用 hit.hovered，而它只从这一次测试里来。
         const Hit hit = ChromeHit(item, "rail-ws-" + std::to_string(i));
-        DrawIconCentered(draw, WorkspaceIcon(i), center, 19.0f,
+        // `.rail-btn.on`（两个类，权重 0,2,0）与 `.rail-btn:hover`（类+伪类，同样 0,2,0）
+        // 同权重，而 `.on` 在 CSS 里更靠后 ⇒ 选中压过 hover，两个底不会同时画。
+        if (on) {
+            DrawRoundRect(draw, item.min, item.max, 10.0f, ColorFillSelected());
+        } else if (hit.hovered) {
+            DrawRoundRect(draw, item.min, item.max, 10.0f, ColorFillHover());
+        }
+        if (on) {
+            const Rect bar{area.center().x - 28.0f, y + 9.0f, area.center().x - 25.5f,
+                           y + kBtn - 9.0f};
+            DrawRoundRect(draw, bar.min, bar.max, 3.0f, 0, ColorAccentGlow(), 6.0f);
+            DrawRoundRect(draw, bar.min, bar.max, 3.0f, ColorAccent());
+        }
+        DrawIconCentered(draw, WorkspaceIcon(i), item.center(), 19.0f,
                          on ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextMuted()));
         if (hit.clicked) {
             SetWorkspace(i);
         }
-        y += 48.0f;
+        y += kPitch;
     }
 
-    // 分隔线 24×1
-    y += 4.0f;
+    // 分隔线 24×1：`.rail-sep{margin:5px 0}` ⇒ 上 5px + 线 1px + 下 5px
+    y += 5.0f;
     draw->AddLine(ImVec2(area.center().x - 12.0f, y), ImVec2(area.center().x + 12.0f, y),
                   ColorLineSubtle(), 1.0f);
-    y += 8.0f;
+    y += 6.0f;
 
     struct Toggle {
         const char* icon;
@@ -339,33 +365,38 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
     // —— 那个 active 类是死类，不产生任何视觉。早先这里画了一层常驻 fill-hover，
     // 等于凭空多出一个设计稿没有的常亮态；只保留 hover（shell.css 的 .rail-btn:hover）。
     for (const Toggle& toggle : toggles) {
-        const Rect item{area.min.x, y, area.max.x, y + 44.0f};
+        const Rect item{btnLeft, y, btnLeft + kBtn, y + kBtn};
         // ⚠️ 一帧里只 HitTest 一次。同一个 id 注册两个 InvisibleButton 会让 hover 整个
         //    失效（实测：hover-jump-btn 与静息态逐像素零差异）。hovered / clicked 从
         //    同一次命中测试里取。
         const kit::Hit hit = ChromeHit(item, "rail-tg-" + std::string(toggle.icon));
         if (hit.hovered) {
-            DrawRoundRect(draw, ImVec2(item.min.x + 6.0f, item.min.y), ImVec2(item.max.x - 6.0f, item.max.y),
-                          10.0f, ColorFillHover());
+            DrawRoundRect(draw, item.min, item.max, 10.0f, ColorFillHover());
         }
-        DrawIconCentered(draw, toggle.icon, ImVec2(area.center().x, item.center().y), 19.0f,
+        DrawIconCentered(draw, toggle.icon, item.center(), 19.0f,
                          hit.hovered ? ColorText() : ColorTextMuted());
         if (hit.clicked) {
             *toggle.state = !*toggle.state;
         }
-        y += 44.0f;
+        y += kPitch;
     }
 
-    // 弹性空隙后固定「组件画廊」（hidden: true，只在这一栏出现）
-    const Rect gallery{area.min.x, area.max.y - 58.0f, area.max.x, area.max.y - 10.0f};
-    if (layout_.workspace == 6) {
-        DrawRoundRect(draw, ImVec2(gallery.min.x + 6.0f, gallery.min.y + 2.0f),
-                      ImVec2(gallery.max.x - 6.0f, gallery.max.y - 2.0f), 10.0f, ColorFillSelected());
-    }
-    DrawIconCentered(draw, "grid", ImVec2(area.center().x, gallery.center().y), 19.0f,
-                     layout_.workspace == 6 ? ColorAccent() : ColorTextMuted());
-    if (ChromeClicked(gallery, "rail-gallery")) {
-        SetWorkspace(6);
+    // 弹性空隙后固定「组件画廊」（hidden: true，只在这一栏出现）。
+    // `.rail{padding:10px 0}` ⇒ 底沿留 10px；按钮仍是 40×40，所以是 58→50 那一段。
+    {
+        const Rect gallery{btnLeft, area.max.y - 10.0f - kBtn, btnLeft + kBtn, area.max.y - 10.0f};
+        const Hit hit = ChromeHit(gallery, "rail-gallery");
+        const bool on = layout_.workspace == 6;
+        if (on) {
+            DrawRoundRect(draw, gallery.min, gallery.max, 10.0f, ColorFillSelected());
+        } else if (hit.hovered) {
+            DrawRoundRect(draw, gallery.min, gallery.max, 10.0f, ColorFillHover());
+        }
+        DrawIconCentered(draw, "grid", gallery.center(), 19.0f,
+                         on ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextMuted()));
+        if (hit.clicked) {
+            SetWorkspace(6);
+        }
     }
 }
 
@@ -547,16 +578,31 @@ void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
     // 「项目 › 小说 › 总览」。状态字段没跟动作走，和「只显示不联动」是同一类。
     const std::string derived = DerivedViewLabel();
     const std::string viewLabel = derived.empty() ? std::string("总览") : derived;
-    const char* crumbs[] = {"项目", WorkspaceLabel(layout_.workspace), viewLabel.c_str()};
-    for (int i = 0; i < 3; ++i) {
-        const bool current = (i == 2);
+    // 第一段是**真实工程名**，不是字面量「项目」：webui Shell.jsx:126 写的是
+    // `project?.name || '无项目'`（顶栏胶囊那里才是 `|| '未打开项目'`，两处回退串不同，
+    // 不要统一）。早先这里是死的 "项目"，于是界面上永远看不出打开的是哪个工程。
+    const std::string rootLabel =
+        layout_.projectName.empty() ? std::string("无项目") : layout_.projectName;
+    // Shell.jsx:128-136：当第 2 段的文字与第 3 段**恰好相等**时只渲染两段
+    // （否则组件画廊页会出现「组件画廊 › 组件画廊」这种重复）。
+    std::vector<std::string> parts;
+    parts.push_back(rootLabel);
+    if (WorkspaceLabel(layout_.workspace) != viewLabel) {
+        parts.push_back(WorkspaceLabel(layout_.workspace));
+    }
+    parts.push_back(viewLabel);
+
+    const int last = static_cast<int>(parts.size()) - 1;
+    for (int i = 0; i <= last; ++i) {
+        const bool current = (i == last);
         ImFont* face = current ? FontBoldAt(kCrumbsFont) : FontAt(kCrumbsFont);
-        const std::size_t len = std::strlen(crumbs[i]);
-        const float w = face->CalcTextSizeA(kCrumbsFont, 1e9f, 0.0f, crumbs[i], crumbs[i] + len).x;
+        const char* text = parts[static_cast<std::size_t>(i)].c_str();
+        const std::size_t len = std::strlen(text);
+        const float w = face->CalcTextSizeA(kCrumbsFont, 1e9f, 0.0f, text, text + len).x;
         draw->AddText(face, kCrumbsFont, ImVec2(x, cy - kCrumbsFont * 0.5f),
-                      current ? ColorText() : ColorTextSecondary(), crumbs[i], crumbs[i] + len);
+                      current ? ColorText() : ColorTextSecondary(), text, text + len);
         x += w + kCrumbsGap;
-        if (i < 2) {
+        if (i < last) {
             // ⚠️ 长度用 sizeof() - 1，**不要**写死字节数。
             //    这里原来写的是一个单角引号 U+203A 加 "+ 3"：它在 UTF-8 里正好 3 字节，
             //    当时对得上；但字面量一旦被改写成一个 1 字节的字符（编码往返、编辑器保存），

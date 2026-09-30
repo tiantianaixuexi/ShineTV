@@ -40,9 +40,15 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
         bool twistClicked = false;
         if (node.hasChildren) {
             const Rect twist = RectAt(row.min.x + 8.0f, row.center().y - 7.0f, 14.0f, 14.0f);
-            twistClicked = detail::HitTestItem(twist, detail::UniqueId(std::string(id) + "#t" + std::to_string(depth),
-                                                    static_cast<int>(i)))
-                               .clicked;
+            const std::string twistId =
+                detail::UniqueId(std::string(id) + "#t" + std::to_string(depth),
+                                 static_cast<int>(i));
+            // ⚠️ 必须声明：twisty 是**故意**套在行矩形里面的（见本段开头那段说明），
+            //    而 `kit::HitTestItem` 会把每个矩形登记进本帧重叠自检表。
+            //    不声明的话，小说侧栏那两个箭头会被逐帧记成「重复命中」，
+            //    取证的 duplicate-hits 判据恒红（实测 815 次/轮，全是这里）。
+            DeclareNestedHit(twistId);
+            twistClicked = detail::HitTestItem(twist, twistId).clicked;
             if (twistClicked) {
                 node.expanded = !node.expanded;
             }

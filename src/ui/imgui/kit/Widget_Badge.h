@@ -27,4 +27,19 @@ void StatusDot(ImDrawList* draw, ImVec2 center, theme::Tone tone, bool run);
 void Kbd(ImDrawList* draw, Rect bounds, std::string_view label);
 [[nodiscard]] float KbdWidth(std::string_view label);
 
+// ---- 5b. LogoMark（品牌标：顶栏 `.brand .mark` / 项目中心 `.hub-logo`）----
+// `--grad-accent` 120° 斜渐变底 + 居中 play 图标 + `--shadow-accent`（0 4px 20px）柔光。
+// 两处只有尺寸不同：顶栏 22×22 / r6 / 图标 12（shell.css:39-53），
+//                     项目中心 52×52 / r-lg(14) / 图标 26（views.css:25-40）。
+//
+// ⚠️ 水墨主题下 tokens.css:202-207 把这两处**一起**覆盖成
+//    「纯 `--accent` 实底 + `box-shadow: none`」—— 不是换个色 token 就完事，
+//    而是换了一种画法（渐变→实色、投影→不画）。判断走 `theme::ThemeLogoHasShadow()`。
+//
+// ⚠️ 投影用投影档位表的 `Accent` 档，**不要**再用一圈 `accent-glow` 描边去近似：
+//    这一处原来是两个页面各自画的描边环（±2/半径+2/线宽 2 与 ±4/半径+4/线宽 8），
+//    同一个 token 被近似成两个不同形状，而且都跟 CSS 的 blur 半径无关。
+//    档位表里 `Accent` 的几何就是 `--shadow-accent` 原文（0 4px 20px，逐主题核对过）。
+void LogoMark(ImDrawList* draw, Rect bounds, float radius, float iconSize);
+
 } // namespace shine::kit

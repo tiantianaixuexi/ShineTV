@@ -67,9 +67,9 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
             //    背景上。thumb 用了 card.max.x，同一个原因一起消失。
             //    编译不报错、运行不崩，截图看得出「卡没了」但看不出是哪儿 —— 见
             //    kit::Rect 四参构造上的警告。宽高一律走 RectAt。
-            const Rect card = RectAt(body.min.x + (cardW + 14.0f) * static_cast<float>(column),
-                                     body.min.y + (192.0f + 14.0f) * static_cast<float>(r), cardW,
-                                     192.0f);
+            Rect card = RectAt(body.min.x + (cardW + 14.0f) * static_cast<float>(column),
+                               body.min.y + (192.0f + 14.0f) * static_cast<float>(r), cardW,
+                               192.0f);
             const bool on = (i == selected_);
             // ⚠️ 一次 HitTest 取齐 hovered + clicked。悬停描边是设计稿里 .card:hover
             //    的一部分（与项目中心 DrawHubCard 同一条规则：hover 把 border 从
@@ -79,6 +79,15 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
             //    「帧内注入 MousePos + 钉住动画时钟」才逼出来：坐标在热区内、
             //    页面静止，两帧像素却逐字节相同。
             const Hit hit = HitTest(card, "asset-card-" + std::to_string(i));
+            // `.card.hoverable:hover { transform: translateY(-2px) }`（ui.css:196-200）。
+            // ⚠️ 位移必须在 **HitTest 之后**：先命中、再抬高绘制矩形（`kit::Card` 同构）。
+            //    反过来写会让热区跟着鼠标动 —— 鼠标停在卡片下缘 2px 内时，
+            //    hovered 把卡片推上去、鼠标出界、又落回来，状态在帧间来回抖。
+            //    位移对卡内全部元素生效（缩略图 / 名称 / 状态行都从 `card` 推位置），
+            //    所以这里直接改 `card` 本身，而不是只改下面那一行 DrawShadowed。
+            const float lift = kit::CardHoverLift(hit.hovered, true);
+            card.min.y += lift;
+            card.max.y += lift;
             // ui.css:196-200 `.card.hoverable:hover` → border 提到 **--line-strong**
             // + `box-shadow: var(--shadow-1)`；views.css:723-725 `.asset-card.on` →
             // `box-shadow: var(--shadow-accent)`。JSX 那边 class 是
@@ -86,8 +95,7 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
             //
             // ⚠️ 这里的 hover 边框原来用的是 accent-glow —— 那是「让 hover 看得出来」
             //    时自己挑的颜色，设计稿写的是 line-strong。两者差得很远，1:1 以 CSS 为准。
-            //    （`.card.hoverable:hover` 还带 translateY(-2px)，那条还没接，见
-            //    refactor/PROGRESS.md 的缺口表。）
+            //    `.card.hoverable:hover` 的另一半 translateY(-2px) 也已接上（见上面几行）。
             DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
                          on ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle()),
                          1.0f, on ? theme::ShadowTier::Accent

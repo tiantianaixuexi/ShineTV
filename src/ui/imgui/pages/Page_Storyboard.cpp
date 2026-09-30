@@ -225,49 +225,78 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     for (const BookShot& row : s.shots) {
         longest = std::max(longest, row.durationSec);
     }
+    // `.tl-card { width: 128px }`（views.css:959）+ `.timeline { gap: 10px }`（views.css:953）
+    // ⇒ 步进 138。原来写的是宽 96 / 步进 104（96 + 8），**卡片比设计稿窄 32px**，
+    //   而 32px 在一张只有 96px 宽的卡上是三分之一的宽度，缩略图与文字全被挤。
+    constexpr float kTlCardW = 128.0f;
+    constexpr float kTlCardR = 10.0f;  // --r-md（tokens.css:11）
+    constexpr float kTlGap = 10.0f;
     float x = timeline.min.x + 10.0f;
     for (int i = 0; i < static_cast<int>(s.shots.size()); ++i) {
-        if (x + 96.0f > timeline.max.x) {
+        if (x + kTlCardW > timeline.max.x) {
             break;  // 横向超出视口就不画（外壳的 ScrollRegion 负责滚动）
         }
         const BookShot& row = s.shots[static_cast<std::size_t>(i)];
-        const Rect card{x, timeline.min.y + 10.0f, x + 96.0f, timeline.max.y - 10.0f};
+        const Rect card{x, timeline.min.y + 10.0f, x + kTlCardW, timeline.max.y - 10.0f};
         const bool on = (i == s.selectedShot);
-        DrawRoundRect(draw, card.min, card.max, 8.0f, ColorFillMuted(),
-                      on ? ColorAccent() : ColorLineNormal(), on ? 1.5f : 1.0f);
+        // 一帧只命中**一次**，hovered / clicked 都从它取（同时注册两次会让
+        // hover 恒假 —— 这条在全树踩过好几轮，见 kit/Widget_Core.h 的自检）。
+        const kit::Hit tlHit = HitTest(card, "sb-tl-" + std::to_string(i));
+        // `.tl-card:hover { border-color: accent-glow; box-shadow: shadow-1; translateY(-2px) }`
+        //   （views.css:967-971）
+        // `.tl-card.on` 走的是 **inline style**（Storyboard.jsx:154）：
+        //   `border-color: accent-glow` + `box-shadow: 0 0 0 3px var(--accent-dim)`。
+        //   两点容易画错：
+        //   ① `0 0 0 3px` 是**3px 扩展环**（blur 0），不是「2px 描边」；
+        //      spread 会把外圆角一并放大 3px。
+        //   ② inline 的 box-shadow **盖掉** `:hover` 那条 ⇒ 选中项 hover 时**没有** shadow-1。
+        //      而 `transform` 不在 inline 里 ⇒ 选中项照样上浮。
+        //   原来画的是「accent 色 1.5px 边框 + 2px 环」，两者都不对（颜色与厚度都错）。
+        const float lift = kit::CardHoverLift(tlHit.hovered, true);
+        const Rect ink{card.min.x, card.min.y + lift, card.max.x, card.max.y + lift};
+        DrawShadowed(draw, ink.min, ink.max, kTlCardR, ColorFillMuted(),
+                     (on || tlHit.hovered) ? ColorAccentGlow() : ColorLineNormal(), 1.0f,
+                     (!on && tlHit.hovered) ? theme::ShadowTier::Card : theme::ShadowTier::None);
         if (on) {
-            DrawRoundRect(draw, card.min - ImVec2(2, 2), card.max + ImVec2(2, 2), 10.0f, 0,
-                          ColorOf(theme::CurrentDerived().accentDim), 2.0f);
+            // 环的**路径**在 border-box 外 1.5px、线宽 3 ⇒ 实际铺满外扩 0..3px。
+            // （先把路径放到 +3 再画 3px 线，会变成外扩 1.5..4.5，外侧多出 1.5px。）
+            DrawRoundRect(draw, ink.min - ImVec2(1.5f, 1.5f), ink.max + ImVec2(1.5f, 1.5f),
+                          kTlCardR + 1.5f, 0, ColorOf(theme::CurrentDerived().accentDim), 3.0f);
         }
         // ⚠️ 缩略图：真实分镜图要走 gpu 纹理链路（出图页才接），这里**不画假缩略图** ——
         // 显示"待出图"占位，与 webui 自己在没有图时的状态一致。
-        const Rect thumb{card.min.x + 6.0f, card.min.y + 6.0f, card.max.x - 6.0f, card.min.y + 66.0f};
+        // 卡内一律用 `ink`（位移后的矩形）—— 只抬背景不抬内容等于卡片在抖。
+        // ⚠️ CSS 的 `.tthumb` 是**满幅、无内缩**的 72px（views.css:976-978），
+        //    卡的 `overflow:hidden` 负责裁掉圆角。这里现在画的是「内缩 6px 的 60px 块」，
+        //    属时间线高度模型那一条已知缺口（见 refactor/PROGRESS.md），
+        //    与步进/宽度不是同一件事，没在这一轮一起动。
+        const Rect thumb{ink.min.x + 6.0f, ink.min.y + 6.0f, ink.max.x - 6.0f, ink.min.y + 66.0f};
         DrawRoundRect(draw, thumb.min, thumb.max, 6.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
         DrawIconCentered(draw, "image", thumb.center(), 20.0f, ColorTextMuted());
         // 镜码与侧栏树 / 检查器共用 WorkspacePages.h 的 ShotCode —— 同一个镜三处同名。
         const std::string code = ShotCode(row.ord);
-        draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(card.min.x + 8.0f, card.min.y + 70.0f),
+        draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(ink.min.x + 8.0f, ink.min.y + 70.0f),
                       ColorAccent(), code.data(), code.data() + code.size());
         // 时长条：按真实 durationSec / 本章最长。没有 duration 就画一条灰槽，不画 60%。
-        const float barY = card.max.y - 10.0f;
-        const float barMaxW = card.width() - 12.0f;
+        const float barY = ink.max.y - 10.0f;
+        const float barMaxW = ink.width() - 12.0f;
         const float ratio =
             (longest > 0.0 && row.durationSec > 0.0)
                 ? std::clamp(static_cast<float>(row.durationSec / longest), 0.08f, 1.0f)
                 : 0.0f;
-        DrawRoundRect(draw, ImVec2(card.min.x + 6.0f, barY),
-                      ImVec2(card.min.x + 6.0f + barMaxW, barY + 4.0f), 2.0f, ColorFillSelected());
+        DrawRoundRect(draw, ImVec2(ink.min.x + 6.0f, barY),
+                      ImVec2(ink.min.x + 6.0f + barMaxW, barY + 4.0f), 2.0f, ColorFillSelected());
         if (ratio > 0.0f) {
-            DrawRoundRect(draw, ImVec2(card.min.x + 6.0f, barY),
-                          ImVec2(card.min.x + 6.0f + barMaxW * ratio, barY + 4.0f), 2.0f, ColorAccent());
+            DrawRoundRect(draw, ImVec2(ink.min.x + 6.0f, barY),
+                          ImVec2(ink.min.x + 6.0f + barMaxW * ratio, barY + 4.0f), 2.0f, ColorAccent());
         }
-        if (Clicked(card, "sb-tl-" + std::to_string(i))) {
+        if (tlHit.clicked) {
             // 走 SelectBookShot 而不是就地写 `s.selectedShot` + RebuildBookSide：
             // 那两行本来是 SelectBookShot 的复制品，少了夹取边界检查，再多一份就要
             // 靠「记得同步」维持。选中态只有一条路径。
             SelectBookShot(i);
         }
-        x += 104.0f;
+        x += kTlCardW + kTlGap;
     }
 }
 

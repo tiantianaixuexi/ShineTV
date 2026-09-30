@@ -106,7 +106,14 @@ void KeyValues(ImDrawList* draw, Rect bounds,
                const std::vector<std::pair<std::string, std::string>>& rows) {
     // 网格 auto 1fr，gap 6px 14px，字号 12.5
     ImFont* font = FontAt(12.5f);
-    ImFont* bold = FontBoldAt(12.5f);
+    // ⚠️ 值列用**常规字重**，不是 bold。设计稿 `.kv .v` 是 `font-weight: 500`
+    //    （ui.css:1025-1028），而 500 在「只有 400 / 700 两档的字体族」上按 CSS
+    //    的字重匹配规则会落到 **400**（Fonts 4：请求 500 时先看 ≤500 的档，取最近的
+    //    400）。微软雅黑只有 Light/Regular/Bold，没有 Medium ⇒ 浏览器画出来就是常规。
+    //    早先用 `FontBoldAt` 画值列，等于把「值」比「键」加重了两档 ——
+    //    检查器「属性」段、报告卡、章节详情共用这条路径，一处偏处处偏。
+    //    **不要**为了「更贴 500」去加一档 Medium 字面：字体里没有，浏览器也不会合成。
+    //    值列与键列共用同一个 `font`（都是 400），只有颜色不同（primary vs muted）。
     const float keyWidth = [&] {
         float w = 0.0f;
         for (const auto& [k, v] : rows) {
@@ -125,7 +132,7 @@ void KeyValues(ImDrawList* draw, Rect bounds,
         const float ty = CenterTextY(font, 12.5f, y + rowHeight * 0.5f);
         DrawTextClipped(draw, font, 12.5f, ImVec2(bounds.min.x, ty), keyWidth, ColorTextMuted(),
                         key);
-        DrawTextClipped(draw, bold, 12.5f, ImVec2(bounds.min.x + keyWidth + 14.0f, ty),
+        DrawTextClipped(draw, font, 12.5f, ImVec2(bounds.min.x + keyWidth + 14.0f, ty),
                         bounds.width() - keyWidth - 14.0f, ColorText(), value);
         y += rowHeight;
     }

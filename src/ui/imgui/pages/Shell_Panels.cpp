@@ -209,31 +209,52 @@ bool KindCollapsed(const std::vector<std::string>& collapsed, const std::string&
 // ⚠️ ButtonVariant 只有 Primary/Secondary/Ghost/Danger，**没有** jump 这一档 —— 所以
 //    这里自绘，不去硬凑一个 Ghost 变体（那会把「强调跳转」画成普通幽灵按钮）。
 //    jumpBtnBg 是主题加载时算好的派生色（Theme.cpp），直接取。
-void Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
+float Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
     struct Jump {
         const char* icon;
         const char* label;
         Workspace target;
     };
+    // 设计稿的整组（Shell.jsx:605-624）是三段，**逐段的尺寸都要算进占高**：
+    //   ① `<div className="plabel" style={{padding:'2px 8px 2px'}}>快速跳转</div>`
+    //      —— `.plabel` 是 10.5px/700（shell.css:583-588），行盒 10.5×1.6 = 16.8，
+    //      加内联的上下各 2 ⇒ **20.8**。
+    //   ② `grid 1fr 1fr / gap 6`，`margin:'0 8px 10px'`，格内是 `size="sm"` 按钮 ⇒
+    //      高 24，网格 24×2 + 6 = **54**，左右各内缩 8。
+    //   ③ `margin-bottom: 10` ⇒ **10**。
+    //
+    // ⚠️ 早先这里按「标签 18 + 两行 30 一行」画，调用方又按 64 推进 y —— 而真实占高
+    //    是 84.8。于是第二行跳转按钮（y+48..y+72）**压在侧栏树第一行**（y+64 起）上
+    //    18px，取证的重复命中自检逐个报出来（`side-tree#0##0` 与 jump 行交叠 102x8）。
+    //    按设计稿的语义，下面这段的返回值才是唯一真相。
+    constexpr float kLabelPadY = 2.0f;      // 内联 padding 2px
+    constexpr float kLabelFont = 10.5f;     // .plabel
+    constexpr float kGridInset = 8.0f;      // grid 的 margin 0 8px
+    constexpr float kGap = 6.0f;            // grid gap
+    constexpr float kCellH = 24.0f;         // .btn.sm
+    constexpr float kMarginBottom = 10.0f;  // grid 的 margin-bottom
+    const float labelH = kLabelFont * 1.6f + 2.0f * kLabelPadY;  // 16.8 + 4 = 20.8
+
     static constexpr char kLabel[] = "快速跳转";
-    draw->AddText(FontBoldAt(11.0f), 11.0f, ImVec2(bounds.min.x + 8.0f, bounds.min.y),
-                  ColorTextMuted(), kLabel, kLabel + sizeof(kLabel) - 1);
+    draw->AddText(FontBoldAt(kLabelFont), kLabelFont,
+                  ImVec2(bounds.min.x + kGridInset, bounds.min.y + kLabelPadY), ColorTextMuted(),
+                  kLabel, kLabel + sizeof(kLabel) - 1);
 
     const Jump jumps[] = {{"masks", "资产", Workspace::Assets},
                           {"clapper", "分镜", Workspace::Storyboard},
                           {"image", "出图", Workspace::ImageFlow},
                           {"film", "出片", Workspace::VideoFlow}};
-    const float top = bounds.min.y + 18.0f;
-    const float gap = 6.0f;
-    const float cellW = (bounds.width() - gap) * 0.5f;
-    const float cellH = 24.0f;  // .btn.sm
+    const float gridLeft = bounds.min.x + kGridInset;
+    const float gridWidth = bounds.width() - 2.0f * kGridInset;
+    const float top = bounds.min.y + labelH;
+    const float cellW = (gridWidth - kGap) * 0.5f;
 
     for (int i = 0; i < 4; ++i) {
         const int column = i % 2;
         const int row = i / 2;
-        const float left = bounds.min.x + (cellW + gap) * static_cast<float>(column);
-        const float boxTop = top + (cellH + gap) * static_cast<float>(row);
-        const Rect box{left, boxTop, left + cellW, boxTop + cellH};
+        const float left = gridLeft + (cellW + kGap) * static_cast<float>(column);
+        const float boxTop = top + (kCellH + kGap) * static_cast<float>(row);
+        const Rect box{left, boxTop, left + cellW, boxTop + kCellH};
         const std::string hitId = "jump-" + std::to_string(i);
         // ⚠️ 一帧里只能 HitTest 一次。以前这里先 `HitTest(...).hovered` 画完再
         //    `Clicked(...)`，等于用**同一个 id** 注册了两个 InvisibleButton。实测后果：
@@ -250,10 +271,13 @@ void Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
             font->CalcTextSizeA(12.0f, 1e9f, 0.0f, label, label + std::strlen(label)).x;
         const float iconSize = 13.0f;
         // 图标与文字 gap 4（.btn.sm 的 gap），两者合计在格子里居中。
-        const float left2 = box.min.x + (cellW - (iconSize + 4.0f + text)) * 0.5f;
+        // 走 `kit::PlaceIconText`：这条居中算式原先在这里是**第四份拷贝**
+        // （Button / Tag / CenterTextX 各一份），现在只有一处实现。
+        const IconTextLayout content = PlaceIconText(box, iconSize, 4.0f, text, IconTextAlign::Center);
         const float cy = box.center().y;
-        DrawIcon(draw, jumps[i].icon, ImVec2(left2, cy - iconSize * 0.5f), iconSize, ColorAccent());
-        draw->AddText(font, 12.0f, ImVec2(left2 + iconSize + 4.0f, cy - 6.0f), ColorAccent(), label,
+        DrawIcon(draw, jumps[i].icon, ImVec2(content.iconX, cy - iconSize * 0.5f), iconSize,
+                 ColorAccent());
+        draw->AddText(font, 12.0f, ImVec2(content.textX, cy - 6.0f), ColorAccent(), label,
                       label + std::strlen(label));
 
         if (hit.clicked) {
@@ -274,6 +298,8 @@ void Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
             Notify(std::string(label) + " · 上下文：" + context, theme::Tone::Ok);
         }
     }
+    // 标签 + 网格(2 行) + 底部外边距 —— 唯一一份占高算式，外面按它推进 y。
+    return labelH + kCellH * 2.0f + kGap + kMarginBottom;
 }
 
 void Shell::SelectAsset(int index) {
@@ -488,8 +514,9 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
     //    `jump-*` 这个 id 在那个工作区**压根不存在**。
     //    **「点空了」有三种原因，凭日志分不出来，只能把热区扫出来看。**
     if (layout_.workspace == static_cast<int>(Workspace::Novel)) {
-        DrawJumpButtons(Rect{x, y, area.max.x - 20.0f, y + 54.0f}, draw);
-        y += 64.0f;
+        // 占高由 DrawJumpButtons 自己报（标签 + 网格 + 底部外边距 = 84.8）。
+        // ⚠️ 这里曾写死 `y += 64.0f`，比真实占高少 20.8 —— 第二行按钮因此压住树的第一行。
+        y += DrawJumpButtons(Rect{x, y, area.max.x - 20.0f, y + 84.8f}, draw);
     }
 
     const BookSideView& book = BookSide();

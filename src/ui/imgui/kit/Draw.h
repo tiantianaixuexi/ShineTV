@@ -137,6 +137,10 @@ float DrawTextClipped(ImDrawList* draw, ImFont* font, float fontSize, ImVec2 pos
 [[nodiscard]] float CenterTextY(ImFont* font, float fontSize, float centerY);
 [[nodiscard]] float CenterTextX(float minX, float maxX, float textWidth);
 
+// 「图标 / 状态点 + 文字」两段内容的**水平落点**（`PlaceIconText`）不在这里，
+// 而在 Widget_Core.h —— 它要吃 `kit::Rect`，而 `Rect` 声明在 Widget_Core.h
+// （本文件被它依赖，反向包含成环）。与 `DrawTextCentered(Rect, …)` 同一个原因。
+
 // `DrawTextCentered(…, Rect, …)` 需要 `kit::Rect`，而 `Rect` 声明在 Widgets.h
 //（Widgets.h 依赖 Draw.h，反过来就成循环包含），所以那个重载放在 Widgets.h。
 
@@ -150,6 +154,26 @@ void DrawDotGrid(ImDrawList* draw, ImVec2 min, ImVec2 max, float cell, ImU32 dot
 [[nodiscard]] ImU32 ToneColor(theme::Tone tone);
 [[nodiscard]] ImU32 ToneBackground(theme::Tone tone);
 [[nodiscard]] ImU32 ToneBorder(theme::Tone tone);
+
+// ---- 声明「设计性嵌套」（配合 Widget_Core.h 的 NoteDuplicateHit）----
+//
+// 同一个矩形上注册第二个 ImGui item 是危险的（先注册者独占 HoveredId，第二个
+// 永远 clicked=false），所以 `kit::HitTestItem` 每次都把矩形登记进一份本帧表，
+// 撞上就报一次，取证据此判 FAIL。
+//
+// 但**父矩形里套一个子矩形**是设计稿里就有的结构：`.tree .node` 行里套着
+// `.tw` 折叠箭头（ui.css:775-806），点箭头只翻折叠、点行的其余部分才选中。
+// 这类嵌套是刻意的，不该报。所以要在注册子 item **之前**声明一次：
+//
+//     kit::DeclareNestedHit(childId);          // 紧邻的下一次同 id 命中被豁免
+//     const Hit h = detail::HitTestItem(childRect, childId);
+//
+// 豁免条件很窄，三件事同时成立才生效：
+//   ① 声明的 id 与紧接着那次 `NoteDuplicateHit` 的 id **完全相同**；
+//   ② 二者矩形是**包含**关系（一个把另一个整个盖住，不是只擦边）；
+//   ③ 声明与命中在**同一帧**（跨帧自动作废）。
+// 任一条不成立就照常报 —— 声明没对上时不许静默放行，否则这个自检就白做了。
+void DeclareNestedHit(std::string_view childId);
 
 // ---- 反向矩形自检（2026-09-30 加）----
 //

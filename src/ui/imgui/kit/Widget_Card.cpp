@@ -10,6 +10,10 @@
 
 namespace shine::kit {
 
+float CardHoverLift(bool hovered, bool hoverable) {
+    return (hovered && hoverable) ? -2.0f : 0.0f;
+}
+
 // ------------------------------------------------------------------ 6 Card
 Rect Card(ImDrawList* draw, Rect bounds, std::string_view title, std::string_view icon,
           bool hoverable, bool glow) {
@@ -25,7 +29,7 @@ Rect Card(ImDrawList* draw, Rect bounds, std::string_view title, std::string_vie
                                        std::to_string(static_cast<int>(bounds.min.y)))
             : Hit{};
     // hover 上浮 2px（transform: translateY(-2px)）—— 用整体偏移近似
-    const float lift = (hit.hovered && hoverable) ? -2.0f : 0.0f;
+    const float lift = CardHoverLift(hit.hovered, hoverable);
     const ImVec2 min(bounds.min.x, bounds.min.y + lift);
     const ImVec2 max(bounds.max.x, bounds.max.y + lift);
 

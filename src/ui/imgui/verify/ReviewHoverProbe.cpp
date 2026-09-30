@@ -225,27 +225,38 @@ void RunHoverProbes(Session& session) {
     const HoverTarget targets[] = {
         // 侧栏 2×2 里的「资产」
         {"hover-jump-btn", kWsNovel, 123.0f, 135.0f},
-        // 左栏第 4 个开关
-        {"hover-rail-toggle", kWsNovel, 28.0f, 275.0f},
+        // 左栏第 5 个工作区按钮（0 基下标 4 = 出图）。
+        // ⚠️ 这个探针以前叫 `hover-rail-toggle`，名字在骗人：日志里它一直命中
+        //    `rail-ws-4`，是个**工作区按钮**，不是面板开关。
+        // 坐标推导（`shell.css:157-183`）：栏从 topbar 下沿 46 开始，
+        //    行距 = .rail-btn(40) + .rail gap(4) = 44，起点 46 + padding 10 = 56
+        //    ⇒ 下标 4 的行 = [56+4×44, +40] = [232, 272] ⇒ 取中心 252。
+        {"hover-rail-ws", kWsNovel, 28.0f, 252.0f},
         // kind 树里的实体叶子（侧栏，与主区视图无关）
         {"hover-tree-node", kWsAssets, 170.0f, 210.0f},
         // 总览网格的一张卡 —— 必须显式切回总览并清空 kind 筛选，
         // 否则上一条探针留在详情态/筛选态，这张坐标上压根没有卡片。
         {"hover-asset-card", kWsAssets, 420.0f, 200.0f, true, true},
-        // 底栏「校验报告」的一行
-        {"hover-dock-row", kWsOverview, 420.0f, 790.0f},
+        // 底栏第一行（默认停在「校验报告」页签）。行高 26（Shell_Reports 的 kRepRowH）。
+        {"hover-dock-row", kWsOverview, 420.0f, 800.0f},
         // 检查器「属性」段头
         {"hover-inspector-head", kWsNovel, 1400.0f, 69.0f},
-        // 判别探针：同样这两个控件换到另一个工作区再试一次。
+        // 判别探针：同样的两个控件换到另一个工作区再试一次。
         // 首轮实测 novel 上的 3 个全灭、assets/overview 上的 3 个全过，所以要分清
         // 是「小说工作区整体没有 hover」还是「这几个控件本身没 hover 样式」。
-        {"hover-rail-toggle-overview", kWsOverview, 28.0f, 275.0f},
-        {"hover-dock-row-novel", kWsNovel, 420.0f, 790.0f},
+        //
+        // 这一个打的是**真的面板开关**（`rail-tg-panelL`），补上工作区按钮之外的
+        // 那半条链路：`.rail-btn:hover` 的 fill-hover 底。
+        // 坐标：6 个按钮之后 y = 56 + 6×44 = 320，再 + 分隔线(5 + 1 + 5) = 331
+        //    ⇒ 第一个开关 [331, 371] ⇒ 中心 351。
+        {"hover-rail-toggle", kWsOverview, 28.0f, 351.0f},
+        {"hover-dock-row-novel", kWsNovel, 420.0f, 800.0f},
         // 第七段新覆盖的视图。坐标逐个对着 out/review-* 里那些新图量的；
         // 命中数与命中的 widget id 都会进日志，坐标偏了会直接报「一个控件都没命中」
         // 而不是含糊的「悬停前后相同」。
-        // 底栏产物页第一行（fixture 造了 6 个产物，行有 hover 底色）
-        {"hover-artifact-row", kWsOverview, 200.0f, 789.0f, false, false, 2},
+        // 底栏产物页第一行（fixture 造了 6 个产物，行有 hover 底色）。
+        // 行高 26（kArtRowH），第一行从 dock-body 内容顶开始。
+        {"hover-artifact-row", kWsOverview, 200.0f, 800.0f, false, false, 2},
         // 出图页右侧面板的页签。⚠️ 打的是**非选中**项「图评审」：设计稿
         // `.seg > button:hover` 只改文字色，`.on` 本来就是 text-primary，
         // 所以**选中项按设计就没有 hover 反馈**。拿选中项当探针等于测一个设计稿

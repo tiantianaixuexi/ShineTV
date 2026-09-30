@@ -48,6 +48,33 @@ struct Hit {
     bool doubleClicked = false;
 };
 [[nodiscard]] Hit HitTest(Rect bounds, std::string_view id);
+
+// ---- 「图标（或状态点）+ 文字」两段内容在一条容器里的水平落点 ----
+//
+// 这条算式在本树里被抄了**至少四份**，每份都一模一样：
+//   `Button`           Widget_Button.cpp  `body.min.x + (body.width() - (iconW + gap + textW)) * 0.5f`
+//   `Tag`              Widget_Badge.cpp   `bounds.min.x + (bounds.width() - (dotSize + gap + textW)) * 0.5f`
+//   `DrawJumpButtons`  Shell_Panels.cpp   同上（cellW / 13 / 4）
+//   `CenterTextX`      Draw.h，就是它的「纯文字版」
+// 抄四份的代价不是这 4 行，是**改对齐规则时要找齐四处** —— 上一轮把按钮里的图标
+// 字号从 14 改成 13 时，只有 Button 那一份跟着动了。
+//
+// 居中与贴左各自也只是一条算式，这里合并成**一个**入口，以后只改这一处。
+// 只算几何：不画、不测命中、不认识颜色 —— 与 `CardHeaderRow` 同一风格，
+// 免得又抽出一个把颜色画死的控件。
+enum class IconTextAlign {
+    Center,  // 两段整体在容器内居中（胶囊 / 按钮）
+    Left,    // 从 `box.min.x + padLeft` 起贴左排（列表行 / 行内状态项）
+};
+
+struct IconTextLayout {
+    float iconX = 0.0f;  // 图标（或状态点）左沿
+    float textX = 0.0f;  // 文字左沿 = iconX + iconSize + gap
+};
+
+// `align == Center` 时忽略 `padLeft`。
+[[nodiscard]] IconTextLayout PlaceIconText(Rect box, float iconSize, float gap, float textWidth,
+                                           IconTextAlign align, float padLeft = 0.0f);
 // 外壳/页面层最常用的一条：本帧是否点了这块矩形。
 [[nodiscard]] bool Clicked(Rect bounds, std::string_view id);
 [[nodiscard]] bool Hovered(Rect bounds, std::string_view id);

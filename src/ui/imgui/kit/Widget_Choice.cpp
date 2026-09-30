@@ -145,34 +145,79 @@ bool Chip(ImDrawList* draw, Rect bounds, std::string_view label, const ChipSpec&
 }
 
 // ------------------------------------------------------------------ 8 Tabs
+namespace {
+
+float TabsPadTop(const TabsSpec& spec) {
+    return spec.paddingTop >= 0.0f ? spec.paddingTop : spec.paddingY;
+}
+
+float TabsPadBottom(const TabsSpec& spec) {
+    return spec.paddingBottom >= 0.0f ? spec.paddingBottom : spec.paddingY;
+}
+
+} // namespace
+
+float TabsHeight(const TabsSpec& spec) {
+    if (spec.height > 0.0f) {
+        return spec.height;
+    }
+    // border-box：页签自己的 `border-bottom` 也算在盒高里，所以要加回来。
+    return TabsPadTop(spec) + spec.fontSize * spec.lineHeightRatio + TabsPadBottom(spec) +
+           spec.borderBottom;
+}
+
 std::string_view Tabs(ImDrawList* draw, Rect bounds, const std::vector<SegmentOption>& tabs,
-                      std::string_view value, std::string_view id) {
-    ImFont* font = FontBoldAt(13.0f);
+                      std::string_view value, std::string_view id, const TabsSpec& spec) {
+    ImFont* font = FontBoldAt(spec.fontSize);
+    // ⚠️ bounds 只用来定**起点和行高**；每个页签的宽由 `字宽 + 2×paddingX` 决定。
+    //    早先写的是 `text + 24.0f`（= 2×12）—— 与 paddingX 分开两份，改一处必漏另一处。
+    //    行高也一样：早先直接用调用方给的 bounds.height()（32），而 CSS 的页签高是
+    //    `paddingTop + 行盒 + paddingBottom`（`.tabs` 是 8+20.8+8 = 36.8）——
+    //    给 32 就等于把上下内边距压掉，文字看着偏上。
+    const float itemH = TabsHeight(spec);
+    const float y = bounds.min.y;
     float x = bounds.min.x;
-    std::string_view picked = value;
+    // 空 = 本帧没人点（见头文件的契约）。
+    std::string_view picked;
     for (std::size_t i = 0; i < tabs.size(); ++i) {
         const SegmentOption& tab = tabs[i];
         const float text =
-            font->CalcTextSizeA(13.0f, 1e9f, 0.0f, tab.label.data(),
+            font->CalcTextSizeA(spec.fontSize, 1e9f, 0.0f, tab.label.data(),
                                 tab.label.data() + tab.label.size())
                 .x;
-        const Rect item = RectAt(x, bounds.min.y, text + 24.0f, bounds.height());
+        const Rect item = RectAt(x, y, text + 2.0f * spec.paddingX, itemH);
         const Hit hit = detail::HitTestItem(item, detail::UniqueId(id, static_cast<int>(i)));
         if (hit.clicked) {
             picked = tab.value;
         }
         const bool on = tab.value == value;
+        // 选中底 / hover 底都只在 spec 要求时画。三条 CSS 规则里只有 `.ntab` 有这两个底；
+        // `.tabs` / `.dock-tabs` 的选中只换字色 + 下划线。
+        const auto fillTab = [&](ImU32 color) {
+            if (spec.roundTopOnly) {
+                // `.ntab` 坐在容器的 1px 下边框上 ⇒ 下面两个角必须是方的。
+                draw->AddRectFilled(item.min, item.max, color, spec.radius,
+                                    ImDrawFlags_RoundCornersTop);
+            } else {
+                DrawRoundRect(draw, item.min, item.max, spec.radius, color);
+            }
+        };
+        if (on && spec.selectedFill) {
+            fillTab(ColorFillSelected());
+        } else if (hit.hovered && spec.hoverFill) {
+            fillTab(ColorFillMuted());
+        }
         const ImU32 fg = on ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextSecondary());
-        // 原来写死 `item.min.y + 8.0f` —— 那个 8 只在页签高 29（`8 + 13 + 8`）时
-        // 才对；实际调用方给的是 32（外壳底栏页签条），偏上 1.5px。改按页签中心算。
-        draw->AddText(font, 13.0f, ImVec2(item.min.x + 12.0f, CenterTextY(font, 13.0f, item.center().y)),
+        draw->AddText(font, spec.fontSize,
+                      ImVec2(item.min.x + spec.paddingX,
+                             CenterTextY(font, spec.fontSize, item.center().y)),
                       fg, tab.label.data(), tab.label.data() + tab.label.size());
         if (on) {
-            // 2px 下划线，左右各内缩 10px
-            draw->AddLine(ImVec2(item.min.x + 10.0f, item.max.y - 1.0f),
-                          ImVec2(item.max.x - 10.0f, item.max.y - 1.0f), ColorAccent(), 2.0f);
+            const float uy = item.max.y + spec.underlineDy;
+            draw->AddLine(ImVec2(item.min.x + spec.underlineInset, uy),
+                          ImVec2(item.max.x - spec.underlineInset, uy), ColorAccent(), 2.0f);
         }
-        x = item.max.x;
+        x = item.max.x + spec.gap;
     }
     return picked;
 }

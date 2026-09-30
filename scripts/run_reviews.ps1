@@ -6,8 +6,21 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $repo 'build/ShineTVStudio.exe'
-if (-not (Test-Path $exe)) { Write-Error "missing exe: $exe" }
+# Build.bat puts the exe in build\<config>\ (Debug and Release use separate dirs).
+# This used to hardcode build\ShineTVStudio.exe, which no longer exists -- and the
+# day it silently pointed at a stale binary, the review still said PASS. Resolve
+# it explicitly and print what we picked, so "which product did this measure?" is
+# answerable from the log.
+$exe = $null
+foreach ($cand in @('build/release/ShineTVStudio.exe', 'build/debug/ShineTVStudio.exe',
+                    'build/ShineTVStudio.exe')) {
+    $p = Join-Path $repo $cand
+    if (Test-Path $p) { $exe = $p; break }
+}
+if (-not $exe) {
+    Write-Error "missing exe: looked for build/release, build/debug and build (run Build.bat first)"
+}
+Write-Host "exe: $exe  ($((Get-Item $exe).LastWriteTime))"
 
 $all = @('P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10')
 $want = if ($args.Count -ge 1) { $args } else { $all }

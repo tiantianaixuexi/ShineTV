@@ -35,24 +35,56 @@ void Shell::DrawDock(Rect area, ImDrawList* draw) {
 
     const char* tabs[] = {"任务队列", "日志", "产物", "校验报告"};
     const std::vector<SegmentOption> options{{"0", tabs[0]}, {"1", tabs[1]}, {"2", tabs[2]},
-                                             {"3", tabs[3]}};
+                                            {"3", tabs[3]}};
     const std::string value = std::to_string(layout_.dockTab);
     // ⚠️ 宽高一律走 RectAt()。这里原来写 `Rect{x, y, 400.0f, 32.0f}`，而 kit::Rect 的
     //    四参构造是 (minX, minY, maxX, maxY) —— bounds.height() 成了 32 - dockTop(745)
     //    = **-713**。Tabs 内部按 bounds.height() 排每个页签，于是文字位置碰巧还对，
     //    但选中页签那条 2px accent 下划线被画到 y≈31（屏幕顶栏里），点击区域也是负高的。
     //    不报编译错、不崩，只是下划线跑错地方 —— 见 tools\find-rect-wh-misuse.ps1。
-    const std::string_view picked = Tabs(draw, RectAt(area.min.x + 12.0f, area.min.y, 400.0f, 32.0f),
-                                         options, value, "dock-tabs");
+    //
+    // shell.css:382-403 `.dock-tabs`：容器 `padding:5px 10px 0` + 1px 下边框；
+    // 页签本体 `padding:5px 12px 7px` / `12px 600` / `gap:2px` / 下划线是**盒内满宽**的
+    // `border-bottom:2px`。这三条与 `ui.css` 的 `.tabs`（8/12、13px、下划线左右各内缩
+    // 10px）**全都不一样** —— 早先这里直接套 `kit::Tabs` 的默认档，等于字号大一号、
+    // 下划线短 20px、没有 gap。现在用 TabsSpec 表达，不再另写第二份实现。
+    TabsSpec dockTabs;
+    dockTabs.fontSize = 12.0f;
+    dockTabs.paddingX = 12.0f;
+    dockTabs.paddingTop = 5.0f;
+    dockTabs.paddingBottom = 7.0f;
+    dockTabs.gap = 2.0f;
+    dockTabs.underlineInset = 0.0f;  // 满宽
+    dockTabs.underlineDy = -1.0f;    // 盒内 2px border ⇒ 中心在底边上方 1px
+    dockTabs.borderBottom = 2.0f;    // `.dock-tabs > button` 的 `border-bottom: 2px`（在盒内）
+    const float tabStripTop = area.min.y + 5.0f;
+    const float tabStripH = TabsHeight(dockTabs);
+    const float tabStripLeft = area.min.x + 10.0f;
+    const std::string_view picked =
+        Tabs(draw, RectAt(tabStripLeft, tabStripTop, 400.0f, tabStripH), options, value,
+             "dock-tabs", dockTabs);
     if (!picked.empty()) {
         layout_.dockTab = std::atoi(std::string(picked).c_str());
     }
-    if (IconButton(draw, RectAt(area.max.x - 34.0f, area.min.y + 3.0f, 22.0f, 22.0f), "x", false,
-                   false, "dock-close")) {
-        ToggleDock();
+    // 容器自身的 1px 下边框：页签的 accent 下划线正好压在它上面（CSS 里就是这种叠法）。
+    const float stripBottom = tabStripTop + tabStripH + 1.0f;
+    draw->AddLine(ImVec2(area.min.x, stripBottom - 0.5f), ImVec2(area.max.x, stripBottom - 0.5f),
+                  ColorLineSubtle(), 1.0f);
+    // 关闭钮是 `.icon-btn.sm.dock-close`：22×22，`margin-bottom:4px` 让它在
+    // `align-items:center` 的条里**上移 2px**；右沿贴容器 padding-right(10)。
+    {
+        constexpr float kClose = 22.0f;
+        constexpr float kCloseMarginBottom = 4.0f;
+        const float closeY =
+            tabStripTop + (tabStripH - (kClose + kCloseMarginBottom)) * 0.5f;
+        const Rect close{RectAt(area.max.x - 10.0f - kClose, closeY, kClose, kClose)};
+        if (IconButton(draw, close, "x", false, false, "dock-close", "收起 · Ctrl+J")) {
+            ToggleDock();
+        }
     }
 
-    const Rect body{area.min.x + 12.0f, area.min.y + 34.0f, area.max.x - 12.0f, area.max.y - 10.0f};
+    // `.dock-body { padding: 10px 14px }`（shell.css:404-410）
+    const Rect body{area.min.x + 14.0f, stripBottom + 10.0f, area.max.x - 14.0f, area.max.y - 10.0f};
     if (layout_.dockTab == 0) {
         DrawDockQueue(body, draw);
     } else if (layout_.dockTab == 1) {

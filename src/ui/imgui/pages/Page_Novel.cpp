@@ -16,8 +16,11 @@
 #include "pipeline/StageMachine.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace shine::pages {
 
@@ -29,47 +32,64 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
     const Rect center{area.min.x, area.min.y, area.max.x - inspectorW, area.max.y};
     const Rect inspector{center.max.x, area.min.y, area.max.x, area.max.y};
 
-    // 8 个模式标签（min-h 44，横向滚动；选中 = accent + 2px accent 下边框）
+    // 8 个模式标签。走 kit::Tabs + TabsSpec，不再在这里手写第三份页签条 ——
+    // 手写那份的尺寸是**逐条错的**，对齐 `views.css:527-554`：
+    //   `.novel-modes`  ：gap 2 / padding 0 16 / border-bottom 1px / min-height 44
+    //   `.ntab`         ：padding 8px 12px（⇒ 宽 = 字宽 + 24，不是 +32）/ 13px 600 /
+    //                     基色 text-**muted**（不是 text-secondary）/ 圆角 6 6 0 0 /
+    //                     底部 2px 边框
+    //   `.ntab:hover`   ：文字 text-primary + 底 **fill-muted**（原代码画的是 fill-hover，
+    //                     它自己的注释写的却是 fill-muted —— 代码与注释互相矛盾，注释对）
+    //   `.ntab.on`      ：文字 accent + 下边框 accent，**没有背景**（原代码额外铺了一层
+    //                     fill-selected ⇒ 选中页签比设计稿多一个色块）
     const char* modes[] = {"章节", "设定", "初始化", "流水线", "评审", "模型", "状态", "自动"};
-    float tx = area.min.x;
-    const float tabY = area.min.y;
-    ImFont* tabFont = FontBoldAt(12.5f);
+    // ⚠️ `SegmentOption` 的两个字段都是 `string_view` —— 指的东西必须活过这次调用。
+    //    用 `std::array<std::string, 8>` 而不是 `push_back({std::to_string(i), ...})`：
+    //    后者是临时 string，语句一结束就析构，选项表里全是悬空 view。
+    //    （`std::vector` 还会在扩容时把已有元素的地址搬走，所以连 reserve 也不够稳。）
+    std::array<std::string, 8> modeValues;
+    std::vector<SegmentOption> modeOptions;
+    modeOptions.reserve(8);
     for (int i = 0; i < 8; ++i) {
-        const float w = LabelWidth(tabFont, 12.5f, modes[i]) + 32.0f;
-        const Rect tab{tx, tabY, tx + w, tabY + 44.0f};
-        if (i == mode_) {
-            DrawRoundRect(draw, tab.min, tab.max, 6.0f, ColorFillSelected());
-            draw->AddLine(ImVec2(tab.min.x, tab.max.y - 1.0f), ImVec2(tab.max.x, tab.max.y - 1.0f),
-                          ColorAccent(), 2.0f);
-        }
-        // 一次 HitTest 取齐 hovered + clicked。
-        //
-        // ⚠️ 悬停**背景对选中项也生效**，这不是我一开始写的那样。设计稿
-        //    `views.css` 的两条规则是：
-        //      .novel-modes .ntab:hover { color: text-primary; background: fill-muted; }
-        //      .novel-modes .ntab.on   { color: accent; border-bottom-color: accent; }
-        //    两条特异度相同、后者胜出，但 `.on` **没有声明 background**，
-        //    所以 hover 的 fill-muted 底**照样作用在选中项上**。早先写成
-        //    `hit.hovered && i != mode_`，选中页签悬停时一点反应都没有 ——
-        //    CSS 不会因为「已经选中」就免掉 hover 底。悬停探针直接判 `broken` 抓到了它。
-        const Hit hit = HitTest(tab, "novel-mode-" + std::to_string(i));
-        if (hit.hovered) {
-            DrawRoundRect(draw, tab.min, tab.max, 6.0f, ColorFillHover());
-        }
-        // 原来写死 `tab.min.y + 14.0f`：页签高 44，正确中心是 +22，字盒中心落在
-        // 20.25，**偏上 1.75px**。改成按容器中心算。
-        draw->AddText(tabFont, 12.5f,
-                      ImVec2(tab.min.x + 16.0f, kit::CenterTextY(tabFont, 12.5f, tab.center().y)),
-                      i == mode_ ? ColorAccent()
-                                 : (hit.hovered ? ColorText() : ColorTextSecondary()),
-                      modes[i], modes[i] + std::strlen(modes[i]));
-        if (hit.clicked) {
-            mode_ = i;
-        }
-        tx += w + 4.0f;
+        modeValues[static_cast<std::size_t>(i)] = std::to_string(i);
+        modeOptions.push_back({modeValues[static_cast<std::size_t>(i)], modes[i]});
     }
+    TabsSpec novelTabs;
+    novelTabs.fontSize = 13.0f;
+    novelTabs.paddingX = 12.0f;
+    novelTabs.paddingY = 8.0f;
+    novelTabs.gap = 2.0f;
+    novelTabs.underlineInset = 0.0f;  // 满宽（它是按钮自己的 border-bottom）
+    novelTabs.underlineDy = -1.0f;    // 盒内 2px border
+    novelTabs.radius = 6.0f;          // r-sm
+    novelTabs.roundTopOnly = true;    // `r-sm r-sm 0 0`
+    novelTabs.hoverFill = true;
+    novelTabs.selectedFill = false;   // `.on` 没有 background
+    // `.novel-modes{min-height:44px}` 且 `align-items:stretch` ⇒ 页签被拉满到 43
+    // （44 减去容器自己的 1px 下边框）。
+    constexpr float kNovelStripH = 44.0f;
+    novelTabs.height = kNovelStripH - 1.0f;
+    const float tabStripTop = area.min.y;
+    const float tabStripLeft = center.min.x + 16.0f;
+    // 当前值也用**具名** string，不要 `std::to_string(mode_)` 直接进调用
+    // （那个临时量在语句结束就没了，而 Tabs 的形参是 view）。
+    const std::string modeValue = std::to_string(mode_);
+    const std::string_view pickedMode =
+        Tabs(draw, RectAt(tabStripLeft, tabStripTop, center.width() - 32.0f, kNovelStripH - 1.0f),
+             modeOptions, modeValue, "novel-modes", novelTabs);
+    if (!pickedMode.empty()) {
+        mode_ = std::atoi(std::string(pickedMode).c_str());
+    }
+    // 容器下边框：页签的 accent 下划线压在它上面（CSS 里就是这种叠法）。
+    draw->AddLine(ImVec2(center.min.x, tabStripTop + kNovelStripH - 0.5f),
+                  ImVec2(center.max.x, tabStripTop + kNovelStripH - 0.5f), ColorLineSubtle(), 1.0f);
 
-    const Rect body{center.min.x, tabY + 52.0f, center.max.x, center.max.y};
+    // `.novel-body { padding: 16px 18px 24px }`（views.css:561-565）。
+    // ⚠️ 这个内边距原先**整条都没有**：body 直接用 center 的左右沿与 `tabY + 52`，
+    //    于是章选择条、正文、各模式的卡片全部贴到视图边缘，且正文的首行缩进
+    //    看起来比设计稿更靠左。
+    const Rect body{center.min.x + 18.0f, tabStripTop + kNovelStripH + 16.0f,
+                    center.max.x - 18.0f, center.max.y - 24.0f};
 
     // 章选择条：切章会重跑 worker（镜头/阶段/连续性都按章取）。
     if (s.bound && s.error.empty() && !s.chapters.empty()) {
@@ -273,25 +293,36 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
     draw->AddLine(ImVec2(inspector.min.x + 0.5f, inspector.min.y),
                   ImVec2(inspector.min.x + 0.5f, inspector.max.y), ColorLineSubtle(), 1.0f);
     const BookChapter* chapter = s.chapter();
+    // `.novel-right { padding: 14px }`（views.css:521-526），且它的第一行是
+    // `<div className="small strong" style={{marginBottom:10}}>属性</div>`
+    // （Novel.jsx:457）—— `.small`=12.5px、`.strong`=600（base.css:121-122）。
+    // ⚠️ 两块原先都没接：右栏内容从 `area.min.y + 60` 起步（右栏是网格的另一列，
+    //    **不随中间的模式页签下移**，它的内容本该从 +14 开始），而且「属性」这个
+    //    小标题压根没画。现在按 CSS 从 14 起步 + 补上小标题。
+    constexpr float kRailPad = 14.0f;
+    const float railX = inspector.min.x + kRailPad;
+    const float railW = inspectorW - 2.0f * kRailPad;
+    ImFont* railTitleFont = FontBoldAt(12.5f);
+    draw->AddText(railTitleFont, 12.5f,
+                  ImVec2(railX, inspector.min.y + kRailPad), ColorText(), "属性");
+    // 小标题行盒 20（12.5 × 1.6）+ margin-bottom 10 ⇒ 属性表从 +44 开始。
+    const float kvTop = inspector.min.y + kRailPad + 12.5f * 1.6f + 10.0f;
     if (chapter != nullptr) {
         std::string statusLabel;
         theme::Tone statusTone = theme::Tone::Idle;
         ChapterTone(chapter->status, statusLabel, statusTone);
-        KeyValues(draw,
-                  Rect{inspector.min.x + 16.0f, tabY + 60.0f, inspector.max.x - 16.0f, tabY + 220.0f},
+        KeyValues(draw, Rect{railX, kvTop, inspector.max.x - kRailPad, kvTop + 160.0f},
                   {{"章节", "第 " + std::to_string(chapter->ord) + " 章"},
                    {"标题", chapter->title.empty() ? kDash : chapter->title},
                    {"字数", chapter->words > 0 ? std::to_string(chapter->words) : "未统计"},
                    {"状态", statusLabel},
                    {"更新", TimeText(chapter->updated)},
                    {"本章镜头", std::to_string(s.shots.size())}});
-        DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                        ImVec2(inspector.min.x + 16.0f, tabY + 230.0f), inspectorW - 32.0f,
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(railX, kvTop + 170.0f), railW,
                         ColorTextMuted(), "数据源：" + s.dbPath, true);
     } else {
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                        ImVec2(inspector.min.x + 16.0f, tabY + 64.0f), inspectorW - 32.0f,
-                        ColorTextMuted(), "未绑定工程", true);
+        DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(railX, kvTop), railW, ColorTextMuted(),
+                        "未绑定工程", true);
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
+#include "ui/imgui/kit/Icon.h"
 #include "ui/imgui/kit/Widget_Color.h"
 
 #include <algorithm>
@@ -39,22 +40,26 @@ void Tag(ImDrawList* draw, Rect bounds, std::string_view label, theme::Tone tone
         font->CalcTextSizeA(fontSize, 1e9f, 0.0f, label.data(), label.data() + label.size()).x;
     const float dotSize = dot ? 7.0f : 0.0f;
     const float gap = dot > 0.0f ? 5.0f : 0.0f;
-    float x = bounds.min.x + (bounds.width() - (dotSize + gap + text)) * 0.5f;
+    // 「圆点 + gap + 文字」整体居中：走 `kit::PlaceIconText`。
+    // 代数上与本来的 `bounds.min.x + (bounds.width() - (…)) * 0.5f` 等价，
+    // 原来那句「有圆点时 x 再右移 dotSize + gap」就是这里的 `textX`。
+    const IconTextLayout content =
+        PlaceIconText(bounds, dotSize, gap, text, IconTextAlign::Center);
     const float cy = 0.5f * (bounds.min.y + bounds.max.y);
 
     if (dot > 0.0f) {
         if (busyPulse) {
             const float halo = Pulse(1.6f);
-            draw->AddCircleFilled(ImVec2(x + dotSize * 0.5f, cy), dotSize * 0.5f + halo * 2.4f,
-                                 WithAlpha(fg, 0.28f * (1.0f - halo)), 12);
+            draw->AddCircleFilled(ImVec2(content.iconX + dotSize * 0.5f, cy),
+                                 dotSize * 0.5f + halo * 2.4f, WithAlpha(fg, 0.28f * (1.0f - halo)),
+                                 12);
         }
-        draw->AddCircleFilled(ImVec2(x + dotSize * 0.5f, cy), dotSize * 0.5f,
+        draw->AddCircleFilled(ImVec2(content.iconX + dotSize * 0.5f, cy), dotSize * 0.5f,
                              WithAlpha(fg, alphaScale), 12);
-        x += dotSize + gap;
     }
     const float textY = cy - fontSize * 0.5f;
-    draw->AddText(font, fontSize, ImVec2(x, textY), WithAlpha(fg, alphaScale), label.data(),
-                  label.data() + label.size());
+    draw->AddText(font, fontSize, ImVec2(content.textX, textY), WithAlpha(fg, alphaScale),
+                  label.data(), label.data() + label.size());
 }
 
 // ------------------------------------------------------------------ 4 StatusDot
@@ -89,6 +94,21 @@ void Kbd(ImDrawList* draw, Rect bounds, std::string_view label) {
                   ImVec2(0.5f * (bounds.min.x + bounds.max.x) - 0.5f * text,
                          0.5f * (bounds.min.y + bounds.max.y) - 5.25f),
                   ColorTextSecondary(), label.data(), label.data() + label.size());
+}
+
+// ------------------------------------------------------------------ 5b LogoMark
+void LogoMark(ImDrawList* draw, Rect bounds, float radius, float iconSize) {
+    if (theme::ThemeLogoHasShadow(theme::CurrentThemeId())) {
+        // 上半段：`--shadow-accent` 的柔光。投影必须**先于**本体画（本体是实心的）。
+        DrawShadow(draw, bounds.min, bounds.max, radius, theme::ShadowTier::Accent);
+        // 下半段：`--grad-accent` 的 120° 斜渐变。
+        DrawDiagGradient(draw, bounds.min, bounds.max, radius, ColorAccent(), ColorAccentHover());
+    } else {
+        // 水墨：`background: var(--accent)` + `box-shadow: none`（tokens.css:202-207）。
+        // 注意 `color: var(--accent-fg)` 与基础规则相同 ⇒ 图标色不用改。
+        DrawRoundRect(draw, bounds.min, bounds.max, radius, ColorAccent());
+    }
+    DrawIconCentered(draw, "play", bounds.center(), iconSize, ColorAccentFg());
 }
 
 } // namespace shine::kit

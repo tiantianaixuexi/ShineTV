@@ -224,7 +224,10 @@ private:
     // 数据源、展开态、点击语义都不同，不合并成「一棵参数化树」。
     void DrawAssetSideTree(kit::Rect area, ImDrawList* draw, float y);
     // 小说侧栏的「快速跳转」2×2 按钮组（Shell.jsx:605-624）。
-    void DrawJumpButtons(kit::Rect bounds, ImDrawList* draw);
+    // 返回本组**占掉的总高度**（标签 20.8 + 网格 54 + 底部外边距 10）。调用方按它推进
+    // y —— ⚠️ 不要在外面另写一个常量：那正是本次「第二行跳转按钮压住侧栏树第一行」的成因
+    // （外面按 64 推进，实际占 84.8，差 20.8 正好是那个没算的标签）。
+    [[nodiscard]] float DrawJumpButtons(kit::Rect bounds, ImDrawList* draw);
     void DrawInspector(kit::Rect area, ImDrawList* draw);
     void DrawDock(kit::Rect area, ImDrawList* draw);
     void DrawStatusBar(kit::Rect area, ImDrawList* draw);

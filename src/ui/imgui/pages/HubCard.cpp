@@ -39,6 +39,19 @@ bool DrawCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect bounds,
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool cardHovered = bounds.contains(mouse);
     constexpr float radius = 10.0f;
+    // `.card.hoverable:hover { transform: translateY(-2px) }`（ui.css:196-204）。
+    // 这张卡是手写的 `DrawShadowed`，原本只有边框与投影跟着 hover 变，**卡片不动** ——
+    // 等于只接了半条 hover。
+    //
+    // 位移对**绘制与卡内控件**都生效（CSS 里 transform 会带着子元素一起走，
+    // 页脚那四个按钮也在卡片坐标系里）；唯独**整卡热区**保留位移前的矩形：
+    // 热区跟着动会让鼠标停在卡片下缘 2px 内时状态来回抖
+    //（hovered → 卡片上移 → 鼠标出界 → 落回 → 又 hovered）。
+    // 这一点与 `kit::Card()` 同构，它也是「按原矩形命中、按位移后的矩形画」。
+    const Rect boundsHit = bounds;
+    const float lift = CardHoverLift(cardHovered, true);
+    bounds.min.y += lift;
+    bounds.max.y += lift;
     // `.card.proj-card.hoverable.glow`（ProjectHub.jsx:167）。命中的是
     // `.card.glow:hover`（ui.css:201-203 → border accent-glow + shadow-accent）；
     // `views.css:117` 的 `.proj-card:hover`（shadow-2）在**本元素上是死规则** ——
@@ -115,7 +128,8 @@ bool DrawCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect bounds,
         "hub-theme-" + card.entry.id, "切换主题");
 
     // ⚠️ 整卡热区**必须排在页脚四个按钮之后**（理由见函数开头那段）。
-    const Hit hit = HitTest(bounds, "hub-card-" + card.entry.id);
+    // ⚠️ 用 `boundsHit`（位移**前**的矩形），不是位移后的 `bounds` —— 见函数上方那段。
+    const Hit hit = HitTest(boundsHit, "hub-card-" + card.entry.id);
 
     // 整卡点击要扣掉页脚按钮：ImGui 的 IsItemClicked 只看「光标在本 item 矩形内」，
     // 页脚按钮压在卡片上，不扣掉的话点「移除」会顺手把项目也打开

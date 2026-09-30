@@ -1,7 +1,7 @@
 ﻿# 临时驱动：跑一轮 SHINE_IMGUI_REVIEW 并回显退出码 + manifest。
 #
 # 用法:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File out\_run_review.ps1 -OutDir <dir> [-Exe <exe>] [-Theme ink]
+#   powershell -NoProfile -ExecutionPolicy Bypass -File out\_run_review.ps1 -OutDir <dir> [-Exe <exe>] [-Theme deepspace]
 #
 # ⚠️ 本文件**必须带 UTF-8 BOM**。PowerShell 5.1 读无 BOM 的 .ps1 会按系统 ANSI 码页
 #    （中文 Windows = GBK/936）解码，里面每一行中文注释都会被拆成错字节；某些字节组合
@@ -12,8 +12,8 @@ param(
     #    控制之后这就成了换机器即失效的默认值 —— 别人 clone 下来直接跑会静默去读一个
     #    不存在的盘。改成从仓库根 + $PSScriptRoot 推出来，本机不用传参也能跑。
     [string]$OutDir = (Join-Path $PSScriptRoot 'review'),
-    [string]$Exe    = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build-p7\ShineTVStudio.exe'),
-    [string]$Theme  = "ink",
+    [string]$Exe    = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\release\ShineTVStudio.exe'),
+    [string]$Theme  = "deepspace",
     # 取证用的 novel.db 源（由 _make_fixture.ps1 生成）。
     [string]$FixtureDb = (Join-Path $PSScriptRoot '_fixture\db\novel.db')
 )

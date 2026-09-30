@@ -143,6 +143,15 @@ void SetCurrentTheme(ThemeId id) noexcept;
 [[nodiscard]] std::string_view ThemeFontFamilyOf(ThemeId id);
 [[nodiscard]] bool ThemeUsesSerif(ThemeId id);
 
+// 品牌标（`.brand .mark` / `.hub-logo`）在该主题下该不该有投影。
+//
+// tokens.css:202-207 在水墨主题下把这两处一起覆盖成
+//     `.hub-logo, .brand .mark { background: var(--accent); color: var(--accent-fg);
+//                               box-shadow: none }`
+// 也就是**底从 --grad-accent 换成纯 --accent、投影去掉**。一个判断管两件事，
+// 因为 CSS 那条规则也是一次覆盖两个选择器的同一个元素集。
+[[nodiscard]] bool ThemeLogoHasShadow(ThemeId id);
+
 // ---- 应用到 ImGui ----
 void ApplyTheme(ThemeId id);      // 换 ImGuiStyle + 记下当前主题
 void ApplyCurrentTheme();          // 当前主题重铺（P0.4 初始化 / 字体图集重建后）

@@ -147,7 +147,10 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
             ? 0.0f
             : font->CalcTextSizeA(fontSize, 1e9f, 0.0f, label.data(), label.data() + label.size()).x;
     const float gap = (iconWidth > 0.0f && textWidth > 0.0f) ? 6.0f : 0.0f;
-    float x = body.min.x + (body.width() - (iconWidth + gap + textWidth)) * 0.5f;
+    // 「图标 + gap + 文字」整体居中：走 `kit::PlaceIconText`（全树唯一一份实现）。
+    // 代数上与本来的 `body.min.x + (body.width() - (…) ) * 0.5f` 完全等价。
+    const IconTextLayout content = PlaceIconText(body, iconWidth, gap, textWidth, IconTextAlign::Center);
+    const float x = content.iconX;
     const float y = body.min.y + (body.height() - iconSize) * 0.5f;
     ImU32 fg = enabled ? text : WithAlpha(text, 0.45f);
 
@@ -165,7 +168,7 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
         //    真正让字「看着不在中间」的是写死偏移（检查器段头的 `min.y + 5.0f`
         //    配 24px 框 = 偏上 6.2px），量级差两个数量级，不是 0.7px 那种。
         const float textY = CenterTextY(font, fontSize, body.center().y);
-        draw->AddText(font, fontSize, ImVec2(x + iconWidth + gap, textY), fg, label.data(),
+        draw->AddText(font, fontSize, ImVec2(content.textX, textY), fg, label.data(),
                       label.data() + label.size());
     }
     return hit.clicked && enabled;
@@ -179,12 +182,17 @@ bool IconButton(ImDrawList* draw, Rect bounds, std::string_view icon, bool activ
     const float iconSize = small ? 13.0f : 16.0f;
     ImU32 fill = 0;
     ImU32 text = ColorTextMuted();
+    // ui.css:98-105 —— 两条规则的字色**不同**，别图省事合成一种：
+    //   .icon-btn:hover  { background: var(--fill-hover);    color: var(--text-primary) }
+    //   .icon-btn.active { background: var(--fill-selected); color: var(--accent) }
+    // ⚠️ 早先 hover 也给了 ColorAccent()，于是「设置 / 收起底栏 / 卡片上的图标钮」
+    //    悬停时都是**变绿**而不是**变亮** —— 全树所有图标钮共用这一处颜色。
     if (active) {
         fill = ColorFillSelected();
         text = ColorAccent();
     } else if (hit.hovered && !disabled) {
         fill = ColorFillHover();
-        text = ColorAccent();
+        text = ColorText();
     }
     DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, fill);
     if (disabled) {

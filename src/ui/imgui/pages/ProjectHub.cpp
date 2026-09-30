@@ -90,17 +90,19 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
                       area.max.y - 40.0f};
 
     const float float_ = ReduceMotion() ? 0.0f : (Pulse(5.0f) - 0.5f) * 8.0f;
+    // ⚠️ `.hub-logo { animation: float-y 5s }`（views.css:35）—— 位移是**整个元素**
+    //    一起动，投影跟着走。所以 `float_` 要先并进 logo 矩形，再整体交给 LogoMark，
+    //    不能「按原位置画投影、按浮动位置画本体」。
     const Rect logo{column.min.x, column.min.y + float_, column.min.x + 52.0f,
                     column.min.y + 52.0f + float_};
-    DrawRoundRect(draw, ImVec2(logo.min.x, logo.min.y - 4.0f), ImVec2(logo.max.x, logo.max.y + 4.0f),
-                  18.0f, 0, ColorAccentGlow(), 8.0f);
-    DrawDiagGradient(draw, logo.min, logo.max, 14.0f, ColorAccent(), ColorAccentHover());
-    DrawIconCentered(draw, "play", logo.center(), 26.0f, ColorAccentFg());
+    LogoMark(draw, logo, 14.0f, 26.0f);  // --r-lg = 14（views.css:28）
+    // `.hub-hero { gap: 18px }`（views.css:22）—— 原来写的是 16。
+    constexpr float kHeroGap = 18.0f;
     const char* brand = "ShineTV Studio";
-    draw->AddText(FontBoldAt(26.0f), 26.0f, ImVec2(logo.max.x + 16.0f, column.min.y + 8.0f),
+    draw->AddText(FontBoldAt(26.0f), 26.0f, ImVec2(logo.max.x + kHeroGap, column.min.y + 8.0f),
                   ColorText(), brand, brand + std::strlen(brand));
     const char* subtitle = "把小说变成画面";
-    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(logo.max.x + 16.0f, column.min.y + 40.0f),
+    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(logo.max.x + kHeroGap, column.min.y + 40.0f),
                   ColorTextMuted(), subtitle, subtitle + std::strlen(subtitle));
 
     // ---- 工具条：搜索 / 排序 / 打开… / 新建项目 ----

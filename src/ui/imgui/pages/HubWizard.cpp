@@ -124,7 +124,10 @@ void DrawWizard(HubState& hub, Rect area, ImDrawList* draw) {
             7, false);
         const std::string title = util::Trim(hub.name).empty() ? "未命名项目"
                                                                     : std::string(util::Trim(hub.name));
-        draw->AddText(FontBoldAt(17.0f), 17.0f, ImVec2(card.min.x + 128.0f, card.min.y + 16.0f),
+        // `.proj-card .pname { font-size: 14.5px }`（views.css:97-99）。原来这里是 17.0 ——
+        // 栅格里的真项目卡（HubCard.cpp）早就改成 14.5 了，这张向导汇总卡漏改，
+        // 于是「同一个项目名」在列表里和确认页上**字号不一样**。
+        draw->AddText(FontBoldAt(14.5f), 14.5f, ImVec2(card.min.x + 128.0f, card.min.y + 16.0f),
                       ColorText(), title.data(), title.data() + title.size());
         const std::filesystem::path target = TargetDir(hub);
         const std::string pathText = target.empty() ? std::string{} : util::PathToUtf8(target);

@@ -191,6 +191,12 @@ std::string_view ThemeFontFamilyOf(ThemeId id) {
 }
 bool ThemeUsesSerif(ThemeId id) { return id == ThemeId::InkWash; }
 
+bool ThemeLogoHasShadow(ThemeId id) {
+    // tokens.css:202-207：只有水墨把 `.hub-logo` / `.brand .mark` 的 box-shadow
+    // 覆盖成 none（并把渐变底换成纯 accent）。
+    return id != ThemeId::InkWash;
+}
+
 void ApplyGeometry(ImGuiStyle& style) {
     // design-spec §1：控件/输入框/按钮 = r-sm(6)，卡片/面板 = r-md(10)，
     // 弹窗/浮层 = r-lg(14)，胶囊 = r-pill，小构件 = r-xs(4)。

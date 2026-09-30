@@ -45,6 +45,19 @@ std::string UniqueId(std::string_view id, int index) {
 
 } // namespace detail
 
+IconTextLayout PlaceIconText(Rect box, float iconSize, float gap, float textWidth,
+                             IconTextAlign align, float padLeft) {
+    IconTextLayout out;
+    if (align == IconTextAlign::Center) {
+        // 与 `CenterTextX` 同一条算式：把「图标 + gap + 文字」当成一整段来居中。
+        out.iconX = CenterTextX(box.min.x, box.max.x, iconSize + gap + textWidth);
+    } else {
+        out.iconX = box.min.x + padLeft;
+    }
+    out.textX = out.iconX + iconSize + gap;
+    return out;
+}
+
 // 对外的命中测试（外壳/页面层用）。内部实现叫 detail::HitTestItem，
 // 名字不与这里重。
 Hit HitTest(Rect bounds, std::string_view id) { return detail::HitTestItem(bounds, id); }

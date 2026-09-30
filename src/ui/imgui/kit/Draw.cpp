@@ -260,14 +260,36 @@ struct HitRect {
 struct DuplicateHitBucket {
     int frame = -1;
     std::vector<HitRect> rects;
-    int overlaps = 0;   // 本帧累计的重叠次数
+    int overlaps = 0;   // 本帧累计的重叠次数（只数**没声明过**的）
     char last[160] = {};
+    // 本帧内被 DeclareNestedHit 声明过的子项 id。只对**紧接着的一次**同 id 命中生效。
+    std::string declaredChild;
 };
 DuplicateHitBucket& DuplicateBucket() {
     static DuplicateHitBucket bucket;
     return bucket;
 }
+
+// a 是否把 b 整个盖住（或反之）。要求**严格包含**至少一条边：
+// 两个完全一样大的矩形也算包含 —— 那正是「同一矩形注册两次」的典型形态，
+// 但它只该在**声明过**的情况下被豁免，否则照样报（见 DeclareNestedHit）。
+bool ContainsEitherWay(const HitRect& a, const HitRect& b) {
+    const bool aWrapsB = a.minX <= b.minX && a.minY <= b.minY && a.maxX >= b.maxX && a.maxY >= b.maxY;
+    const bool bWrapsA = b.minX <= a.minX && b.minY <= a.minY && b.maxX >= a.maxX && b.maxY >= a.maxY;
+    return aWrapsB || bWrapsA;
+}
 } // namespace
+
+void DeclareNestedHit(std::string_view childId) {
+    DuplicateHitBucket& bucket = DuplicateBucket();
+    const int frame = ImGui::GetFrameCount();
+    if (bucket.frame != frame) {
+        bucket.frame = frame;
+        bucket.rects.clear();
+        bucket.declaredChild.clear();
+    }
+    bucket.declaredChild.assign(childId);
+}
 
 void NoteDuplicateHit(float minX, float minY, float maxX, float maxY, const char* id) {
     DuplicateHitBucket& bucket = DuplicateBucket();
@@ -275,17 +297,42 @@ void NoteDuplicateHit(float minX, float minY, float maxX, float maxY, const char
     if (bucket.frame != frame) {
         bucket.frame = frame;
         bucket.rects.clear();
+        // 声明**只在当帧有效**：跨帧留着的声明会去豁免一个跟它毫无关系的命中。
+        bucket.declaredChild.clear();
+    }
+    // 声明是**一次性**的：取走就清空。这样同一次声明不可能连豁免两处，
+    // 而且「声明了但没对上」时下一次会照常报。
+    const bool declared = !bucket.declaredChild.empty() && bucket.declaredChild == id;
+    if (declared) {
+        bucket.declaredChild.clear();
     }
     const HitRect r{minX, minY, maxX, maxY};
     for (const HitRect& seen : bucket.rects) {
-        // 有实际面积的交叠才算。相邻（贴边）或零面积不算 ——
-        // 父子结构里父矩形包含子矩形是**设计如此**，不算重复。
+        // 有实际面积的交叠才算。相邻（贴边）或零面积不算。
         const float w = std::min(seen.maxX, r.maxX) - std::max(seen.minX, r.minX);
         const float h = std::min(seen.maxY, r.maxY) - std::max(seen.minY, r.minY);
         if (w > 0.0f && h > 0.0f) {
+            // 设计性嵌套：调用方在注册子 item 前用 DeclareNestedHit 声明过，
+            // **且**两个矩形确实是包含关系 ⇒ 这是 `.tree .node` 套 `.tw` 那一类，
+            // 不算重复。豁免后仍把子矩形登记进本帧表，之后若有第三个无关控件
+            // 压在它上面，照样会报。
+            //
+            // ⚠️ 早先这里只有「有面积就算」一条判据，而上面的注释却写着
+            //    「父子结构里父矩形包含子矩形是设计如此，不算重复」——
+            //    注释和代码说的不是一回事，于是小说侧栏那两个 `.tw` 箭头被
+            //    逐帧计了一遍（815 次/轮），整个 regression 恒为 FAIL。
+            if (declared && ContainsEitherWay(seen, r)) {
+                bucket.rects.push_back(r);
+                return;
+            }
+            // ⚠️ 把**对方**的矩形也打出来。只报自己的坐标时，「跟谁撞的」得靠猜 ——
+            //    一次实测里报的是 `side-tree#t0##0 ... 交叠 14x1`，单看这一行既看不出
+            //    对方是谁，也看不出该不该声明。对方矩形的 y 才是定位它的钥匙。
             std::snprintf(bucket.last, sizeof(bucket.last),
-                          "%s min=(%.0f,%.0f) max=(%.0f,%.0f) 与本帧另一热区交叠 %.0fx%.0f", id,
-                          minX, minY, maxX, maxY, w, h);
+                          "%s min=(%.0f,%.0f) max=(%.0f,%.0f) 与 min=(%.0f,%.0f) max=(%.0f,%.0f) "
+                          "交叠 %.0fx%.0f",
+                          id, minX, minY, maxX, maxY, seen.minX, seen.minY, seen.maxX, seen.maxY, w,
+                          h);
             // 只报前 8 次：同一处每帧都会触发，不限量会把真正的「唯一一处」埋掉。
             // 判据读的是计数，不是条数。
             if (++bucket.overlaps <= 8) {
