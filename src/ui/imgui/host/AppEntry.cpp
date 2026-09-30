@@ -3,6 +3,7 @@
 #include "core/Async.h"
 #include "core/Log.h"
 #include "media/Gallery.h"
+#include "media/ImageLoader.h" // RegisterBuiltinDecoders（见下面那段：不调它整条图片链是死的）
 #include "mcp/MCPServer.h"
 #include "novel/NovelCli.h"
 #include "ui/imgui/host/AppEnvironment.h"
@@ -153,6 +154,30 @@ int RunApp(int argc, char** argv) {
     LoadStartupTheme();
 
     shine::async::Init();
+
+    // ⚠️⚠️ **必须先注册解码器，再 init 图库。**
+    //
+    // `ImageLoader::Load` 的分发方式是：读出前 32 字节，在**登记表**里逐个
+    // `can_decode(文件头)`，谁认就交给谁；一个都不认 → `DecodeError::Unsupported`
+    // （界面上是「不支持的图片格式」）。而登记表只有 `RegisterBuiltinDecoders()`
+    // 会填 —— 它自己的头文件（`media/ImageLoader.h:33`）写着「启动时调用一次（幂等）」，
+    // 但**全仓没有任何地方调用过它**。实测（2026-09-30）：
+    //     thumb worker start #1 id=… linwan_base.png
+    //     图库缩略图失败：linwan_base.png —— 不支持的图片格式
+    // 文件是合法 PNG（文件头 `89 50 4E 47 0D 0A 0A …`，libpng 自己的编码器写的），
+    // 报错却指向"格式不支持" —— 那句错话误导性极强：**不是某个格式不支持，
+    // 是整条图片链压根没接通**。
+    //
+    // 为什么一直没人发现：设计稿里的"图"全是 `kit::Art` 程序化占位
+    //（`kit/Views.h:18-19` 明说「不需要任何图片资源」），界面侧从来没有请求过任何文件，
+    // 于是这张空表谁也没撞上。这与 R8「纹理异步未就绪」是同一处的两个半截：
+    // 上传链、注入点、缩略图流水线都在，**缺的是让解码器进登记表这一行**。
+    //
+    // 幂等（内部 `if (DecoderCount() == 0)`），放在 `async::Init()` 之后、
+    // `gallery::Init()` 之前：解码器注册不依赖线程池，但图库 init 之后就会开始
+    // 应答请求，顺序上先有解码器更自然。
+    shine::gallery::RegisterBuiltinDecoders();
+
     shine::gallery::Init();
 
     pages::Shell shell;

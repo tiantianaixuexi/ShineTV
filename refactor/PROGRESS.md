@@ -124,7 +124,38 @@ overall=PASS          （manifest 的 overall ↔ 退出码一致：PASS↔0）
 | R5 | box-shadow 无等价 | **已解决** | 2026-09-30 已按 CSS 逐条接投影档（`ShadowTier` + `kShadowSpecs`） |
 | R6 | `color-mix` 无合成 | **已解决** | `Derived` 预混 + `MixSrgb` 实色混合 |
 | R7 | 取证代码全废 | **已解决** | 79–80 张 / 判据齐 |
-| R8 | 纹理异步未就绪 | **未处理** | 界面里所有图像仍是程序化占位 `kit::Art()`，**真实纹理解码/上传路径尚未接入**；接入时必须走 worker + `async::PostToUi`（P5.3 早已完成，旧备注「P5.3 未完成」作废） |
+| R8 | 纹理异步未就绪 | **界面侧已接**（2026-09-30） | 新增 `kit/Image.{h,cpp}`：路径 → 纹理 → 画进矩形，走的是**已有的** `gallery::ThumbnailService`（worker 解码 + CPU/GPU 两级 LRU）。接入时挖出两个真缺陷，见下节 |
+
+#### R8 接线时挖出的两个真缺陷（都属「脚本说通了、其实没接」）
+
+| # | 缺陷 | 为什么一直没人发现 |
+|---|---|---|
+| 1 | **`gallery::RegisterBuiltinDecoders()` 全仓无人调用** | 它自己的头文件（`media/ImageLoader.h:33`）写着「启动时调用一次（幂等）」，而应用从来没调。于是解码器登记表是空的，`ImageLoader::Load` 对**每一个文件**都返回 `DecodeError::Unsupported` —— 界面上是「不支持的图片格式」。**那句错话误导性极强：不是某个格式不支持，是整条图片链压根没接通。** 没被发现的原因：设计稿里的「图」全是 `kit::Art` 程序化占位（`kit/Views.h:18-19` 明说「不需要任何图片资源」），界面侧从来没有请求过任何文件 ⇒ 这张空表谁也没撞上。已修：`AppEntry.cpp` 在 `gallery::Init()` 之前注册 |
+| 2 | **fixture 里的 `output/*.png` 是文本桩**（后缀 `.png`、内容 `"not-a-real-png-fixture"`），而 `visual_assets.sheet_rel_path` 指向的两张图**根本不存在** | 于是「界面能不能显示真实设定图」这条链在取证里**从来没有输入** —— 它报红还是报绿，都跟链子通没通无关。已修：fixture 用工程自带的 `paint::EncodePng` 造两张**纯色真 PNG**（`#FF2D55` / `#7CFF00`，刻意选在五套主题调色板之外），取证的像素计数可直接判 |
+
+**接线后的效果与它自己的判据**（`assets-grid-all` 单张图，逐像素计数）：
+
+```
+                          接线前   接线后
+#FF2D55（林昭设定图）          0     33848
+#7CFF00（周姨设定图）          0     33848
+manifest: sheet-images=settled requested=2 pending=0 after 2 frames
+```
+
+⚠️ **`sheet-images` 是判据、不是日志**：`requested>0 && pending==0` 才成立，两半缺一不可 ——
+`pending==0` 单独看有二义（「全落地了」与「一张都没被请求过」同形），而后者正是最该报出来的
+那一支。它已进 `overall`（初值 false = 「这一段没跑到」，与其余几族同一条规矩）。
+
+⚠️ **这个判据是被一个真实的 race 逼出来的**，不是预防性设计：第一版把等图循环放在
+`SetAssetsOverview(true)` 之后、**清 kind 筛选之前**，而那一帧的网格被筛成只剩「物品」那一条
+（fixture 里它没有 `visual_assets`）⇒ 一张图都不会被请求 ⇒ 循环 0 帧「通过」⇒ 后面的抓图
+仍在和异步上屏抢时间。实测**同一二进制连跑两轮，一轮数到 33848 像素、另一轮 0**。
+挪到清筛选之后 + 加上 `requested>0` 这一半之后连跑三轮一致。
+
+**仍未接的图片位点**（设计稿里画 `Art` 的其余几处，几何都已就位、只差把路径接上）：
+分镜 `.tthumb`（`BookShotView` 没有图片路径字段，要业务层补投影）、出图结果面板、
+出片胶片格、查看器大图 / 联系表、总控「最近产物」缩略图。**这五处都缺同一个东西：
+业务层到 UI 的「这个实体/这一镜的图在哪」投影**，与 `sheet_rel_path` 那一处同形。
 | R9 | cover 缩放锚点 | **已解决** | 满幅画布页改用可视高度 |
 | R10 | 启动初始化顺序 | **已解决** | `AppEntry` 分派 + APPDATA 沙箱 |
 | R11 | ImGui 叠放 item 抢 hover | **已解决** | 同一矩形只能 `HitTest` 一次；遮罩只画不注册 |

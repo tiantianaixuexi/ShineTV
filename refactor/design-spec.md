@@ -392,7 +392,7 @@ hover = `--fill-hover` + primary 文字；
 | 15 | `Progress` | 轨 h6（thin 4）r-pill；填充 **`grad-accent`**；`run` 时叠 100° 白 35% 微光扫过 | 自绘（渐变填充 ImGui 原生不支持） |
 | 16 | `Empty` | 居中 gap10 pad 40/20；字形 **52×52 r14 虚线边** + 24px 图标 + 4s 上下浮动；标题 13/600；正文 max-w 320 | 自绘 |
 | 17 | `KV` | 网格 `auto 1fr` gap `6px 14px` 12.5；键 muted，值 primary/500 | 自绘 |
-| 18 | `Art` | **程序化 SVG 占位画**，12 组调色板按 `|seed| % 12`；viewBox 160×100；竖直渐变天空 + 日轮 r13（+r20 光晕）+ 3 层山形 | 可用 `ImDrawList` 复刻（同为纯几何绘制） |
+| 18 | `Art` | **程序化 SVG 占位画**，12 组调色板按 `|seed| % 12`；viewBox 160×100；竖直渐变天空 + 日轮 r13（+r20 光晕）+ 3 层山形。⚠️ 这一格在**真产品**里优先画真实图片文件，`Art` 是它的占位与回退 —— 见 §9.5 | `ImDrawList` 复刻（纯几何）+ `kit::RequestImage` / `kit::DrawImage` 画真图（`kit/Image.h`） |
 | 19 | `ArtInk` | 800×260，4 层水墨山形用 `--text-primary` 透明度 .08/.13/.22/.42，远两层高斯模糊 7；小船 + 26×26 印泥印章 | 同上；模糊用多层半透明叠 |
 | 20 | `Steps` | 步 12/600 + 20×20 序号圆；当前 = accent 底 + accent-fg 字；完成 = accent 边 + 10px 对勾；连接线 24×1.5 | 自绘 |
 | 21 | `StageFlow` | 节点 h30 pad 0 11 **r-pill** 1px 边 + 等宽 `.code` 10.5/700；5 态 todo/run/done/fail/skip；连接线 18×1.5，`done` 时 accent 填充 | 自绘 |
@@ -636,7 +636,33 @@ manifest 里的四族判据：
 
 **仍存在的降级**（不在上表，见 §9.4）：单一字体族没有 `font-weight: 500` 这一档
 （见 `PROGRESS.md` 审计 #5：CSS 上 500 落到 400 档，所以用常规字重就是对的）；
-`R8` 纹理链路界面侧未消费（页面里没有 `ImGui::Image`）。
+本版 ImGui 没有 push clip path ⇒ 铺满矩形的过程画（`Art` / 真图）**裁不掉圆角**，
+四角会各自凸出一点（与 `HubCard` 封面同一个降级）。
+
+### 9.5 「图」到底是不是图片文件（把这件事一次说清，别再来回改）
+
+**设计稿里一张图片文件都没有。** 全仓 `webui/` 下 `*.png|jpg|webp|svg` 为 0 个，
+`<img>` / `URL.createObjectURL` / `FileReader` / `new Image()` / `type="file"` 命中数全为 0；
+唯一的 `url(` 是 `ui.css:325` 那个下拉箭头的**内联 data-URI SVG**。
+所有「图」都是 `Art` 组件的**程序化内联 SVG**（`UI.jsx:198-220`：12 组配色 + seed 驱动的
+日轮位置 + 三层山形）。`kit/Views.h:18-19` 早就写着这一点。
+
+**但真产品的设定图是磁盘上的文件**：`visual_assets.sheet_rel_path`（业务层一直在读，
+`BookQuery.cpp:143`）。所以两侧不是对立的，而是**同一个格子的两层**：
+
+| 优先级 | 画什么 | 何时 |
+|---|---|---|
+| ① | **真实图片文件** | 路径解析出来了、且解码成功（`kit::RequestImage` 返回 `Ready`） |
+| ② | 设计稿的 `Art` 占位画 | 还没就绪 / 文件不存在 / 解不出来 / 这个实体压根没登记设定图 |
+
+②不是「降级到假数据」，它就是设计稿那一格；①是它在真产品里的内容。
+判据：`kit/Image.h` 的 `ImageSlot` 三态（`Pending` / `Ready` / `Failed`），
+`Failed` 与 `Ready` 都算**落地**（见 `PendingImageCount()` 的注释）。
+
+⚠️ 接线时挖出两个真缺陷，**都不是「没接」而是「接了但断了」**，记在
+`PROGRESS.md` 的风险状态 R8 下：`RegisterBuiltinDecoders()` 全仓零调用（解码器登记表是空的，
+于是**每个**文件都报「不支持的图片格式」）；fixture 里那几张 `.png` 是文本桩
+（后缀是 `.png`、内容是字符串），真图从来没被端到端验过。
 
 完整、逐条、带归因的未修偏差清单在
 [`PROGRESS.md` §「视觉 1:1 符合性审计」](PROGRESS.md) —— **改之前先读那一节**，

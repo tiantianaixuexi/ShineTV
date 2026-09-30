@@ -114,6 +114,15 @@ struct Session {
     // 快捷键动作判据：几个快捷键按下去真的改变了界面状态。-1 = 没跑到。
     int shortcutsPassed = -1;
     int shortcutTotal = 7;
+    // 真设定图的异步链有没有落地（`kit::PendingImageCount()` 归零）。
+    //
+    // ⚠️ 与 reportScanConverged / bookSnapshotConverged 同级，**必须进 overall**：
+    //    图片是异步上屏的（worker 解码 → PostToUi → 上传 GPU），而「摆好状态就抓图」
+    //    只泵一两帧 —— 那一两帧里图还没到。若只把它写成一行日志，
+    //    「图片链断了」与「拍得太早」在截图上完全一样，而整轮照样 PASS。
+    //    初值 false = 「这一段没跑到」，与其余几族同一条规矩。
+    bool sheetImagesSettled = false;
+
     // 浮层点击探针的结果。**必须与 hover / shortcuts 同级**：它的效果不在像素上，
     // 只打日志而 overall 仍 PASS 就是假绿（见 ReviewVerdict.cpp 的 overall 那行）。
     int overlayClicksPassed = 0;

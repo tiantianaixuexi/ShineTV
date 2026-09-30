@@ -97,7 +97,12 @@ powershell -File out\_run_review.ps1 -OutDir "$PWD\build\shots" -Theme deepspace
 | 假信号 | 真相 |
 |---|---|
 | **缺 `novel.db` fixture** | `SeedReportFixture()` 不建它。少了它侧栏树 / 资产树退化成诚实空态，`hover-tree-node` / `hover-asset-card` 永远命中不到 —— 同一份代码缺库 `9/11+FAIL`、有库 `11/11+PASS`。「图照常 saved、判据照常红」就是它 |
-| **默认跑了一个旧产物** | `Build.bat` 的产物在 `build\debug\|release\`。`scripts\run_reviews.ps1` 曾把 `-Exe` 写死在 `build\`（那里躺着一个更旧的二进制，而它照样报 PASS）—— **现已修成按 `build/release → debug → build` 解析并打印时间戳**。纪律不变：核对日志里那行 `exe:` |
+| **默认跑了一个旧产物** | `Build.bat` 的产物在 `build\debug\|release\`。`scripts\run_reviews.ps1` 曾把 `-Exe` 写死在 `build\`（那里躺着一个更旧的二进制，而它照样报 PASS）—— **现已修成按 `build/release → debug → build` 解析并打印时间戳**。纪律不变：核对日志里那行 `exe:`（**编译失败时脚本仍会跑起来**，那两轮数字全是旧二进制的） |
+| **以为「异步的图」拍得到** | 真设定图是 worker 解码 → `PostToUi` → 上传 GPU 的**异步**链，只泵一两帧抓到的必然是占位画 —— 而「链断了」与「拍得太早」在截图上完全一样。`ReviewScene.cpp` 在抓资产网格之前等到 `kit::PendingImageCount()==0`，并把 `sheet-images=settled requested=N pending=0 after M frames` 写进 manifest（**它进 overall**）。实测同一个二进制曾出现一轮 33848 像素、一轮 0 |
+
+**数某个具体颜色的像素**（`out\_colorcount.ps1`）是这一族唯一可靠的取证手段：截图跨轮不可复现
+（80 张里 48 张会变），而**数某个色值免疫**。真设定图在 fixture 里是两张纯色 PNG
+（`#FF2D55` / `#7CFF00`，刻意选在五套主题调色板之外），上没上屏一数便知。
 
 ## 门禁与扫描器
 

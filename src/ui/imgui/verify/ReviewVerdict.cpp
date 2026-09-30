@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "ui/imgui/kit/Draw.h"
+#include "ui/imgui/kit/Image.h" // RequestedImageCount / PendingImageCount（诊断信息）
 #include "ui/imgui/verify/Capture.h"
 
 #include <cstddef>
@@ -88,10 +89,23 @@ void FinishVerdict(Session& session) {
     //    overlayClicksPassed 同理：浮层按钮点不动这件事**在像素上看不出来**，
     //    静息截图与 hover 探针对它零覆盖。漏进判据的话，那条正交信号就只是
     //    一行日志，overall 照样 PASS —— 那是假绿，不是验证。
+    // sheetImagesSettled 同理，而且它挡的正是最难自查的一类：真设定图是**异步**上屏的，
+    // 而「抓图太早」与「图片链断了」在截图上完全一样（都是占位画）。没有这条判据时，
+    // 界面上少了一整块真图而 overall 照样 PASS —— 假绿。
+    if (!session.sheetImagesSettled) {
+        shine::log::Error("review: 真设定图没落地（等满 {} 帧后 requested={} / pending={}）—— "
+                          "requested=0 表示资产网格那一支**一次都没请求过图**（调用点没跑到，"
+                          "或筛选后没有带设定图的实体）；pending>0 表示 worker/上传链卡住。"
+                          "两种情况都让资产网格画成 `Art` 占位，等于「显示真实设定图」这条链"
+                          "在本轮没被验过。查链路，别改判据",
+                          kReportWaitFrameCap, kit::RequestedImageCount(),
+                          kit::PendingImageCount());
+    }
     const bool pass = result.failed == 0 && !result.scrollFailed && identicalPairs == 0 &&
                       drivenDuplicates == 0 && session.reportScanConverged &&
                       session.bookSnapshotConverged && session.assetSnapshotConverged &&
-                      session.artifactsConverged && inverted == 0 && duplicateHits == 0 &&
+                      session.artifactsConverged && session.sheetImagesSettled && inverted == 0 &&
+                      duplicateHits == 0 &&
                       session.hoverProbesPassed == session.hoverProbeTotal &&
                       session.shortcutsPassed == session.shortcutTotal &&
                       session.overlayClicksPassed == session.overlayClickTotal;

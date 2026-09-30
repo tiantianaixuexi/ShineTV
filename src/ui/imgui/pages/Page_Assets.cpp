@@ -5,7 +5,10 @@
 // 现在逐项来自 entities + visual_assets + visual_artifacts。
 #include "ui/imgui/pages/BookData.h"
 
+#include "ui/imgui/kit/Image.h"
 #include "ui/imgui/pages/PageCommon.h"
+
+#include "util/Encoding.h"
 
 #include <algorithm>
 #include <string>
@@ -101,11 +104,34 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
                          1.0f, on ? theme::ShadowTier::Accent
                                   : (hit.hovered ? theme::ShadowTier::Card
                                                  : theme::ShadowTier::None));
-            // ⚠️ 缩略图：真实设定图要经 gpu 纹理链路解码（出图页才接）。没有就显示
-            //    "无产出图"，不拿 Art() 占位画冒充这个角色的设定图。
+            // ---- 缩略图：**真设定图优先，没有就画设计稿那张 `Art` 占位** ----
+            //
+            // 这里原来写的是「不拿 Art() 占位画冒充这个角色的设定图」+ 一个 masks 字形。
+            // 那条顾虑是对的（占位画不该冒充真图），但**结论选错了对象**：
+            // 设计稿这一格本来就是 `<Art seed={e.art}>`（Assets.jsx:152）——
+            // `Art` 是设计稿自己的占位画，画它不属于冒充，画一个设计稿里没有的
+            // masks 字形才是两处都不对（既不是真图、也不是设计稿）。
+            //
+            // 现在按「真图 > 设计稿占位」的次序：
+            //   ① `visual_assets.sheet_rel_path` 那个文件解出来了 → 画**真图**
+            //      （`.art` 的 `--r-sm` 圆角 + cover 裁切，与设计稿同一套几何）
+            //   ② 还没就绪 / 文件不存在 / 解不出来 → 画 `Art` 占位
+            // ②包含了「没有产出图」那条诚实状态 —— 卡片下方的状态行照旧说明白了。
             const Rect thumb{card.min.x + 8.0f, card.min.y + 8.0f, card.max.x - 8.0f, card.min.y + 158.0f};
-            DrawRoundRect(draw, thumb.min, thumb.max, 8.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
-            DrawIconCentered(draw, "masks", thumb.center(), 24.0f, ColorTextMuted());
+            const ImageSlot sheet = RequestImage(AssetImagePath(s.root, row.sheetRelPath));
+            // 底色先铺：`Art` 是纯几何绘制、不铺底，而设计稿的 `.art` 自带
+            // `background: var(--fill-muted)`（ui.css:1074）——真图与占位都靠它兜底。
+            DrawRoundRect(draw, thumb.min, thumb.max, 6.0f, ColorFillMuted()); // --r-sm = 6
+            if (sheet.ready()) {
+                DrawImage(draw, thumb, sheet, 6.0f, ImageFit::Cover);
+            } else {
+                // seed 用 `entityId`：设计稿的 `e.art` 是 mock 数据的字段
+                // （mock.js:309-317 的 5..12），库里**没有**对应列 ——
+                // 按实体 id 派生是确定的（同一实体永远同一张），不编随机数。
+                // ⚠️ 本版 ImGui 没有 push clip path，`Art` 的四个角会盖住圆角一点点；
+                //    与 HubCard 封面同一个已知降级。
+                Art(draw, thumb, row.entityId, /*cover=*/true);
+            }
             const std::string name = row.name.empty() ? std::string(kDash) : row.name;
             DrawTextClipped(draw, FontBoldAt(13.0f), 13.0f, ImVec2(card.min.x + 12.0f, card.min.y + 164.0f),
                             cardW - 24.0f, ColorText(), name, true);

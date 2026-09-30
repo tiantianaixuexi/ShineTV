@@ -91,6 +91,15 @@ void BindNovelProject(std::filesystem::path root);
 void BindAssetsProject(std::filesystem::path root);
 void BindStoryboardProject(std::filesystem::path root);
 
+// `visual_assets.sheet_rel_path` → 绝对路径。口径与 `src/visual/ReferenceChain.cpp` 的
+// `AbsolutePath(project_root, image_path)` 一致：**相对路径按工程根解**，已是绝对的就不动。
+//
+// 为什么不直接引 shine_core 那个同名函数：它住在 `visual/` 模块里、为参考图链路服务，
+// 页面层为一件「拼路径」的事去依赖它会把两层绑在一起。规则只有两行，**放这里一份公开**，
+// 比在页面里各写一遍好（散着写就会出现「相对谁」的不同口径）。
+[[nodiscard]] std::filesystem::path AssetImagePath(const std::filesystem::path& root,
+                                                  const std::string& sheetRelPathUtf8);
+
 // ---- P4 侧栏树 / 检查器：外层外壳要读的那份 novel.db 快照 ----
 //
 // 小说的内容区已经持有真实数据（章节 / 场 / 镜 / 阶段产物 / 连续性），但它住在一

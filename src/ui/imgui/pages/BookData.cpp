@@ -3,6 +3,7 @@
 #include "ui/imgui/pages/PageCommon.h"
 
 #include "core/Async.h"
+#include "util/Encoding.h"
 
 #include <algorithm>
 #include <utility>
@@ -330,6 +331,15 @@ void BookEmpty(Rect body, ImDrawList* draw, const char* icon, const char* hint) 
 // 三页绑定"当前工程根"的入口（必须在匿名命名空间之外，否则 Shell 链接不到）。
 // 三个入口共用同一份快照：Shell 在 SetProjectRoot 里连同 BindOverviewProject 一起调，
 // 调任意一个即可（同一个 root 只会开一次库）。
+std::filesystem::path AssetImagePath(const std::filesystem::path& root,
+                                     const std::string& sheetRelPathUtf8) {
+    if (sheetRelPathUtf8.empty() || root.empty()) {
+        return {};
+    }
+    const std::filesystem::path rel = util::PathFromUtf8(sheetRelPathUtf8);
+    return rel.is_absolute() ? rel : (root / rel);
+}
+
 void BindNovelProject(std::filesystem::path root) { BindBook(std::move(root)); }
 void BindAssetsProject(std::filesystem::path root) { BindBook(std::move(root)); }
 void BindStoryboardProject(std::filesystem::path root) { BindBook(std::move(root)); }
