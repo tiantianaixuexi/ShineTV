@@ -589,7 +589,31 @@ DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ...);            // ← 下一
 
 构建 `exit=0`；`check-layers` / `check-colors` / `check-theme` / `check-i18n` / `find-silent-truncation` / `find-draw-arg-order` 全 `exit=0`，后两者 `-SelfTest` 亦 0。
 
-证据留档：取证目录 `build/rv14/`（`shots-manifest.txt` + `rv14.log`）**保留在盘上未删**，可复核。
+证据留档：取证目录 `build/rv14/`（`shots-manifest.txt` + `rv14.log`）与基线目录 `build/rv15-baseline-31b56a0/` **都保留在盘上未删**，可复核。
+
+### 基线对照（`overall=FAIL` 不是本轮引入的）
+
+早先这里写的是「已用 `git stash` 对照跑过基线，基线同样红」—— 结论对，**但那个基线目录跟 `rv13` 一起被我当临时垃圾清掉了**，等于结论只在提交信息里，工作区查无实据。重跑一次并**把证据留下**。
+
+基线取 `31b56a0`（= `90b8b9f` 的父，整个 kit 收编工作的**前**一个提交）。做法是 `git checkout 31b56a0 -- src/ui/imgui refactor/PROGRESS.md` 临时回退、增量构建、跑取证，再 `git checkout HEAD --` 原样还原并重建 —— **不碰工作区里用户自己的 `Plugins/` `docs/` `design/` 删除**。
+
+| 指标 | 基线 `31b56a0` | 当前 `eea33a6` |
+|---|---|---|
+| `book-snapshot` / `asset-snapshot` | **TIMEOUT / TIMEOUT** | **TIMEOUT / TIMEOUT** |
+| `hover-probes` | 8/11（红 `hover-jump-btn` / `tree-node` / `asset-card`） | **9/11**（红 `tree-node` / `asset-card`） |
+| `overlay-clicks` | 4/4 | **7/7** |
+| `duplicate-hits` | 该指标当时**还不存在** | 0 |
+| `inverted-rects` | 0 | 0 |
+| shots / failed | 79 / 0 | 79 / 0 |
+| `overall` | **FAIL** | **FAIL** |
+
+**结论有两层，都要分开说**：
+- `overall=FAIL` 的**成因逐字相同**（那两个 TIMEOUT），且基线**同样红** ⇒ 失败是环境/fixture 缺口，与 kit 封装无关。
+- 但基线不是「一模一样」：基线红**三个** hover 探针，当前红**两个** —— `hover-jump-btn` 那一条是被本轮修掉的（小说侧栏「快速跳转」被空态 `Empty()+return` 吞掉）。所以「基线同样红」只能支撑**成因没变**这一句，**不能**拿来支撑「本轮没有改善」。
+
+证据文件：`build/rv15-baseline-31b56a0/shots-manifest.txt`、`build/rv15-baseline-31b56a0.log`。
+
+**为什么值得单列**：这是同一句「已对照跑过基线」在两种写法下的差别 —— 一种只有结论，一种有可复核的产物。而**基线「同样红」很容易被读成「本轮没变化」**，实际上基线更红。
 
 **删除 `kit::Modal` 后的复核**：`Modal` 全树零调用，且其头部绘制与 `ModalFrameRect` 逐行重复。删除后重跑取证，指标与删除前逐项一致（`overlay-clicks 7/7`、`duplicate-hits 0`、`shots 79/0`），门禁仍全 0 —— **这次删的是纯冗余 API，没有任何行为依赖它**。
 
@@ -606,7 +630,7 @@ DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ...);            // ← 下一
 | shots / failed | 79 / 0 | 79 / 0 |
 | `overall` | FAIL | **FAIL**（见下） |
 
-**`overall=FAIL` 的准确原因**：`book-snapshot=TIMEOUT` / `asset-snapshot=TIMEOUT`（`assets=0`），fixture 的 `novel.db` 没落地 ⇒ 资产侧栏走 `Empty()` 分支、`hover-tree-node` 与 `hover-asset-card` 两个探针的坐标上**没有控件**。用 `git stash` 对照跑过基线：**同样红**，不是本轮引入。这是环境/fixture 缺口，与 kit 封装无关，未在本轮修。
+**`overall=FAIL` 的准确原因**：`book-snapshot=TIMEOUT` / `asset-snapshot=TIMEOUT`（`assets=0`），fixture 的 `novel.db` 没落地 ⇒ 资产侧栏走 `Empty()` 分支、`hover-tree-node` 与 `hover-asset-card` 两个探针的坐标上**没有控件**。已对照跑过基线（证据见下节），**同样红**，不是本轮引入。这是环境/fixture 缺口，与 kit 封装无关，未在本轮修。
 
 ---
 
