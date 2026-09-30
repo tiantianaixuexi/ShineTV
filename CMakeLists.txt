@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(ShineTVStudio LANGUAGES C CXX)
 
+# 生成 compile_commands.json（clangd / IDE 的唯一数据来源：include 路径、宏、标准）。
+# 它落在各自 build 目录里，再由 Build.bat 拷一份到仓库根目录 —— clangd 从
+# 任何 src/ 或 third/ 文件向上查找都能发现它，IDE 侧不必再配路径。
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 17)

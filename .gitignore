@@ -49,6 +49,8 @@ libhv*.log
 .clice/
 .codebuddy/
 .clangd/
+# clangd 后台索引（.clangd 里 Index.Background: Build）
+.cache/
 compile_commands.json
 
 # OS

@@ -100,6 +100,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+rem Keep a compile database at the repo root for clangd: it looks for
+rem compile_commands.json walking up from each source file, so src\ and
+rem third\ both hit this copy. build\ and the root copy are gitignored.
+if exist "%BUILD_DIR%\compile_commands.json" (
+    copy /y "%BUILD_DIR%\compile_commands.json" "%ROOT%\compile_commands.json" >nul
+)
+
 echo.
 echo === build ===
 cmake --build "%BUILD_DIR%" --parallel %JOBS% --target ShineTVStudio

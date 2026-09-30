@@ -1,0 +1,59 @@
+# ShineTV Studio —— clangd 配置（工具链：MSYS2 MinGW64 / GCC 16.2）
+#
+# 这里解决两件事：
+#
+# 1) 仓库原本没有 compile_commands.json，clangd 拿不到任何 include 路径、宏与标准，
+#    于是 src/ 与 third/ 满屏报错。现在 CMakeLists.txt 里打开了
+#    CMAKE_EXPORT_COMPILE_COMMANDS，Build.bat 每次 configure 后把它拷到仓库根目录；
+#    clangd 从 src/ 或 third/ 下任何文件向上查找都能发现它，IDE 侧不必再配路径。
+#
+# 2) 本机 clangd/clang 自带的目标是 x86_64-pc-windows-msvc，且没有 MinGW 的库搜索
+#    路径 —— 不补它就会按 MSVC 的规则去找标准库，<vector>/<string> 之类立刻全红。
+#    下面的 Add 手工把 target 与 libstdc++/Win32 头补齐。
+#
+#    为什么不走 clangd 那条"正统"的 --query-driver：实测它会连 GCC 的
+#    lib/gcc/x86_64-w64-mingw32/16.2.0/include 一起带进来，而那里的 ia32intrin.h
+#    用的是 GCC 专有内建（__builtin_ia32_bsrsi 等），clang 不认 —— 同一个
+#    windows.h 会炸出 47 个错误。所以这里只精确给出 libstdc++ 与 Win32 头，
+#    clang 的内建头（stddef.h / xmmintrin.h / immintrin.h …）用它自己那一套。
+#    注意 CompileFlags.Compiler 单独写是不够的：不匹配 --query-driver 白名单时
+#    clangd 根本不执行那个编译器（见 clangd 官方 Configuration 文档）。
+#
+#    ⚠️ 路径里含 GCC 版本号（include/c++/16.2.0）。升级 GCC 后若标准库开始报错，
+#       先改这里：目录名 = `g++ -dumpfullversion`。
+#
+# ⚠️ 下面这几个文件 clangd 必然报错，本文件修不掉（clang 的能力边界，非配置问题）：
+#   src/util/Reflect.h、src/db/redis/RedisCmd.h、src/db/redis/RedisHash.h
+#   它们用了 GCC 16 的 C++26 静态反射（^^T / std::meta::* / <meta>），
+#   而 Clang 22 尚未实现 P2996。这些文件 GCC 能正常编译，只有 IDE 里会红。
+
+CompileFlags:
+  Remove:
+    # GCC 16 专有开关（C++26 静态反射），clang 会直接报 unknown argument。
+    - -freflection
+
+  Add:
+    # MinGW 目标（clang 默认 x86_64-pc-windows-msvc，那是另一套世界）
+    - --target=x86_64-w64-windows-gnu
+
+    # libstdc++：GCC 16 的布局是版本目录直接挂在 include/c++/ 下
+    - -isystem
+    - C:/msys64/mingw64/include/c++/16.2.0
+    - -isystem
+    - C:/msys64/mingw64/include/c++/16.2.0/x86_64-w64-mingw32
+    - -isystem
+    - C:/msys64/mingw64/include/c++/16.2.0/backward
+
+    # Win32 API 头：MSYS2 放在 mingw64/include，不是 x86_64-w64-mingw32/include
+    - -isystem
+    - C:/msys64/mingw64/include
+
+    # GCC 的告警开关 clang 不认识，静音掉，避免刷 "unknown warning option"
+    - -Wno-unknown-warning-option
+
+Diagnostics:
+  # 默认 Strict 会把大量 "unused include" 报成提示；语义正确性以工具链编译为准。
+  UnusedIncludes: None
+
+Index:
+  Background: Build
