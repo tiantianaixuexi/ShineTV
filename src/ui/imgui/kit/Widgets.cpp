@@ -626,7 +626,7 @@ std::string_view Tabs(ImDrawList* draw, Rect bounds, const std::vector<SegmentOp
         const bool on = tab.value == value;
         const ImU32 fg = on ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextSecondary());
         // 原来写死 `item.min.y + 8.0f` —— 那个 8 只在页签高 29（`8 + 13 + 8`）时
-        // 才对；实际调用方给的是 32（Shell.cpp:1279），偏上 1.5px。改按页签中心算。
+        // 才对；实际调用方给的是 32（外壳底栏页签条），偏上 1.5px。改按页签中心算。
         draw->AddText(font, 13.0f, ImVec2(item.min.x + 12.0f, CenterTextY(font, 13.0f, item.center().y)),
                       fg, tab.label.data(), tab.label.data() + tab.label.size());
         if (on) {
