@@ -42,12 +42,23 @@ struct HoverTarget {
     int novelMode = -1;
 };
 
-// 一整轮悬停探针的三个计数。**三个都进 manifest**（unstable / broken 仅在非 0 时
-// 追加后缀），但只有 ok 参与 overall 判定 —— 见 Session::hoverProbesPassed。
+// 一整轮悬停探针的计数。**全部进 manifest**（仅在非 0 时追加后缀），
+// 但只有 ok 参与 overall 判定 —— 见 Session::hoverProbesPassed。
+//
+// ⚠️ 原来只有 `unstable` / `broken` 两档，而 `unstable` 把**四种成因完全不同**的情况
+//    混成了一个数：注入没到位（宿主/后端层）、哨兵失效、页面在动、**探针坐标点空了**。
+//    它们在 manifest 上分不开，就等于把「去改坐标」「去查后端」「去改产品」写成同一句话 ——
+//    而这三件事的改法与风险完全不重叠。现在按**动作**分档：
 struct HoverTally {
     int ok = 0;
-    int unstable = 0;
-    int broken = 0;
+    int injectFailed = 0; // 鼠标覆盖没到位（帧内 ImGui 看到的坐标 != 注入的）→ 宿主/后端层
+    int sentinelDead = 0; // 静息帧（-FLT_MAX 哨兵）仍命中控件 → 哨兵失效，后续结论都不可信
+    int moving = 0;       // 静息两帧就不一致 → 页面在动，这一拍测不出 hover 的因果
+    int offTarget = 0;    // 注入到位、页面静止，却一个控件都没命中 → **探针坐标**要改
+    int broken = 0;       // 命中且静止，hover 前后像素却完全相同 → **产品**的 hover 缺陷
+    // 聚合值只为兼容既有的 manifest 读法（脚本按正则读 `unstable=`）。
+    [[nodiscard]] int unstable() const { return injectFailed + sentinelDead + moving + offTarget; }
+    [[nodiscard]] int failed() const { return unstable() + broken; }
 };
 
 // 悬停探针：把鼠标放到 (x, y) 拍一张，**再把鼠标放到窗外拍一张只取哈希**，

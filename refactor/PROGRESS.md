@@ -678,7 +678,12 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
   与 `hover-probes` 对齐 —— 有失败时该行带 `broken=N` 后缀，并**另起一行**
   `overlay-clicks-failed=<名>：<原因> | …`。只报一个数的坏处是：红了以后读 manifest 的人
   既不知道是哪两条、也不知道为什么，只能去翻 `.stdout.txt`，而脚本读的是 manifest。
-- `unstable=N` 与 `dead=N` 各自二义：同时表示「注入没到位」和「产品真的坏了」，manifest 层面没解。
+- ~~`unstable=N` 二义：同时表示「注入没到位」和「产品真的坏了」，manifest 层面没解。~~ → ✅ **已修（第四轮）**：
+  `unstable` 实际混了**四种**成因（注入没到位 / 哨兵失效 / 页面在动 / **探针坐标点空了**），
+  按**动作**拆成 `inject-failed` `sentinel-dead` `moving` `off-target` `hover-not-painted` 五档，
+  有失败时另起一行 `hover-probes-failed=…` 写明细。聚合值 `unstable=` 保留（脚本按正则读它）。
+  这么分的理由很实际：**「去改探针坐标」和「去查宿主后端」和「去改产品 hover 分支」
+  是三个完全不同的人干的三件不同的事**，挤在一个数里等于把三句话写成一句。
 - `tools/check-colors.ps1` 把 `kit/Views.cpp` 列为**按文件**的豁免区（`$Zones`），且文件不存在时直接 `exit 1`。
   ⇒ **`Views.cpp` 这个文件名是承重结构**：删掉或改名门禁就红（`check-colors.ps1:48` / `:229-232`）。
 - 本文早期按 `文件名:行号` 引用旧位置（`Review.cpp:1550`、`WorkspaceA.cpp` / `ProjectHub.cpp` 的半像素表与 ListCard 计数），

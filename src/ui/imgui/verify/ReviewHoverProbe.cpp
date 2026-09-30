@@ -164,20 +164,20 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
             "review: {} 鼠标覆盖**没到位**：要 ({:.1f},{:.1f})，帧内 ImGui 看到 ({:.1f},{:.1f})，"
             "视口 {:.0f}x{:.0f}。这是宿主/后端层的问题，与布局和 hover 分支都无关",
             name, clientX, clientY, sawX, sawY, sawW, sawH);
-        ++tally->unstable;
+        ++tally->injectFailed;
     } else if (restHovered > 0) {
         // 静息帧竟然命中了控件 ⇒ -FLT_MAX 哨兵没生效，后面所有比较都不可信。
         shine::log::Error("review: {} 静息帧（鼠标用 -FLT_MAX 哨兵）仍命中了 {} 个控件，"
                           "哨兵失效，本探针与后面全部悬停结论都不可信",
                           name, restHovered);
-        ++tally->unstable;
+        ++tally->sentinelDead;
     } else if (!stable) {
         // 页面在动，这一拍测不出 hover 的因果。**记成不稳定并让整轮红掉** ——
         // 放过去就等于「这个控件的 hover 链路没验过」却报 PASS，比误报红更坏：
         // 门禁一旦学会放过自己的不确定，后面所有 PASS 都不可信。
         // 修法通常是换坐标、或者给这一帧把动画时间钉住，不是改判据。
         shine::log::Error("review: {} 静息两帧就不一致（页面在动），本探针结论不可用", name);
-        ++tally->unstable;
+        ++tally->moving;
     } else if (hoveredPerFrame == 0) {
         // ⚠️ 像素没变有**两种**完全不同的原因，只看像素差分不开：
         //   · 坐标写偏了，鼠标没落进任何热区 —— 这是**探针**的问题，要改坐标；
@@ -187,7 +187,7 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
         shine::log::Error("review: {} 注入到位({:.0f},{:.0f})、页面静止，但鼠标**一个控件都没命中**"
                           " —— 探针坐标落在热区之外（布局变了），不是产品的 hover 缺陷。改坐标，别改产品",
                           name, sawX, sawY);
-        ++tally->unstable;
+        ++tally->offTarget;
     } else if (!changed) {
         // 命中了（hoveredPerFrame > 0，hover 分支确实被执行了）却一个像素都没变 ——
         // 这才是真的「hover 链路断在绘制侧」。
@@ -273,13 +273,36 @@ void RunHoverProbes(Session& session) {
     }
     session.hoverProbesPassed = tally.ok;
     const int hoverTotal = static_cast<int>(std::size(targets));
-    WriteManifest(manifest, std::string("hover-probes=") + std::to_string(tally.ok) + "/" +
-                                std::to_string(hoverTotal) + " changed-vs-rest" +
-                                (tally.broken > 0 ? "  broken=" + std::to_string(tally.broken)
-                                                  : std::string()) +
-                                (tally.unstable > 0
-                                     ? "  unstable=" + std::to_string(tally.unstable)
-                                     : std::string()));
+    std::string hoverLine = std::string("hover-probes=") + std::to_string(tally.ok) + "/" +
+                            std::to_string(hoverTotal) + " changed-vs-rest";
+    if (tally.unstable() > 0) {
+        hoverLine += "  unstable=" + std::to_string(tally.unstable());
+    }
+    if (tally.broken > 0) {
+        hoverLine += "  broken=" + std::to_string(tally.broken);
+    }
+    WriteManifest(manifest, hoverLine);
+    // 分档明细：**只在有失败时**另起一行。红的时候读 manifest 的人要能直接看出
+    // 「去改探针坐标」还是「去查宿主/后端」还是「去改产品的 hover 分支」——
+    // 这三个动作的改法与风险完全不重叠，而原来它们都挤在同一个 `unstable=` 里。
+    if (tally.failed() > 0) {
+        std::string detail;
+        const auto add = [&detail](const char* key, int n) {
+            if (n <= 0) {
+                return;
+            }
+            if (!detail.empty()) {
+                detail += "  ";
+            }
+            detail += std::string(key) + "=" + std::to_string(n);
+        };
+        add("inject-failed", tally.injectFailed);
+        add("sentinel-dead", tally.sentinelDead);
+        add("moving", tally.moving);
+        add("off-target", tally.offTarget);
+        add("hover-not-painted", tally.broken);
+        WriteManifest(manifest, "hover-probes-failed=" + detail);
+    }
     session.hoverProbeTotal = hoverTotal;
 }
 
