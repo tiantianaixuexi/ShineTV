@@ -163,3 +163,128 @@ INSERT INTO stage_artifacts(chapter_id,stage,scene_ord,shot_ord,payload_json,inp
  -- 第 3 章《尚未展开的一章》：0 场 0 镜 ⇒ 按「每镜每阶段一行」自然产出 0 行，不插。
  -- 这里不补占位行：UNIQUE 键是 (chapter_id,stage,scene_ord,shot_ord)，插 scene_ord=0 的
  -- 假行会让读方 `ORDER BY scene_ord,shot_ord` 把它排在真实场之前，是假数据。
+
+ -- ============================================================================
+ -- 第六轮扩充：**把数据面铺开**（2026-09-30）
+ -- ============================================================================
+ -- 为什么：接「图片位点 / 派生链 / 状态机」这类改动时，一处接线会牵到若干分支，而 fixture
+ -- 的数据面太窄 —— 窄到「页面拍到了」不等于「分支跑到了」。扩充前**数出来**的实际覆盖：
+ --
+ --   entities              3   （person×2 + item×1 ⇒ 只跑过 2/31 种 kind）
+ --   chapters/scenes/shots 3 / 3 / 7
+ --   volumes               2
+ --   foreshadowings        3 · scene_foreshadows 3 · stage_artifacts 45
+ --   visual_assets         2   （READY + STALE ⇒ 只跑过 2/8 种状态）
+ --   visual_artifacts      0   ← **一行都没有**
+ --
+ -- 由此产生的覆盖洞（都是「页面拍到了、分支没跑到」）：
+ --   · `visual_artifacts` 0 行 ⇒ 派生链（front→turnaround→base_body→wardrobe）、
+ --     `layers / layersDone / degraded`、以及「front+turnaround 都 DONE 才有一致性对比数据」
+ --     这几块在证据图里一次都跑不到；
+ --   · 资产状态只有 2/8 ⇒ 状态 Tag 的 8 种色调大部分没画过；
+ --   · 层状态只可能是 DONE/PENDING（`NovelAssetPipeline` 只写这两个）⇒ RUNNING / FAILED
+ --     两条分支在 UI 上等于死的；
+ --   · `entities.kind` 只有 2 种 ⇒ kind 筛选 chip、分组树、`AssetKindLabel` 的
+ --     **表外原样回显**那条分支没跑过。
+ --
+ -- 规矩照旧：`_fixture_data.sql` / `_fixture_schema.sql` 是留档，**不动**，一律追加到本文件。
+ -- 新行一律用 **100+ 号段**，与前面几轮的 1..N 不冲突。
+
+ -- ---- 1. 实体：把 kind 铺开 ----
+ -- `AssetKindLabel` 认得 6 类共 9 种：person/character=角色、location=地点、
+ -- item/prop/treasure=物品、clothing=服装、faction=势力、event=事件；
+ -- 其余**原样回显**。所以下面刻意混入 `creature` / `secret` / `mystery` / `resource` ——
+ -- 四个都在 `kind::` 的 31 个取值里（是合法产品数据），但**不在**那张映射表里，
+ -- 正好用来验回退分支。
+ -- 另外三条边界：空名字（UI 有 `name.empty() ? "—"` 这条分支）、重名（分组树两行同名）、
+ -- 超长名（省略号截断）。
+ INSERT INTO entities(id,kind,name,summary,status,created_chapter,updated) VALUES
+   (101,'location','阁楼层','二楼尽头那间没有窗的房间。','active',1,1756000200),
+   (102,'clothing','藏青呢大衣','林昭常穿的那件，右袖口有一道补线。','active',1,1756000250),
+   (103,'prop','铜制门牌','门牌上的字被磨掉了一半。','active',2,1756000300),
+   (104,'character','沈宛','邮局的夜班分拣员。','active',3,1756000350),
+   (105,'faction','雨夜邮局','只在夜里派件的邮局。','active',3,1756000400),
+   (106,'treasure','铁皮匣','匣子里装着前六封信。','active',2,1756000450),
+   (107,'event','第七封来信送达','整本书的起点。','active',1,1756000500),
+   (108,'creature','雨里的黑猫','总在门廊第三级台阶上。','active',2,1756000550),
+   (109,'secret','那三天的去向','没人知道那三天他在哪。','active',4,1756000600),
+   (110,'mystery','前六封信是谁寄的','贯穿全书的谜面。','active',1,1756000650),
+   (111,'resource','阁楼的煤油','只够点七个晚上。','active',2,1756000700),
+   (112,'person','','空名字：验 `name.empty()` 那条破折号分支。','active',6,1756000750),
+   (113,'person','周姨','重名实体：与 #2 同名但不是同一个人，验分组树里两行同名都画得出。','active',6,1756000800),
+   (114,'person','一个名字长到必须在界面上省略号截断的角色','验卡片与侧栏树的 ellipsis 截断。','active',7,1756000850);
+
+ -- ---- 2. 视觉资产：把 8 种状态铺满 ----
+ -- 状态机 8 值（`NovelVisual.h:27-30`）：PENDING | PROMPTING | REF_READY | SHEET_READY |
+ -- WARDROBE_READY | READY | FAILED | STALE。
+ -- `sheet_rel_path` 的几种情形各有：真文件 / **坏文件**（在盘上但不是 PNG ⇒ 解码失败）/
+ -- **文件不存在** / **中文文件名**（验路径 UTF-8 往返）/ 空（还没出图）。
+ -- ⚠️ 每张图都用**不同颜色**：取证的像素计数要求「数到某个色值只能来自某一张」。
+ INSERT INTO visual_assets(id,entity_id,kind,name,base_desc,materials_colors,permanent_tags_json,sheet_rel_path,canon_status,status,note) VALUES
+   (101,101,'location','阁楼层 · 场景基线','斜顶，唯一的窗朝内院。','木梁 / 煤油灯','["夜"]','assets/阁楼层_基线.png','DRAFT','READY',''),
+   (102,102,'clothing','藏青呢大衣 · 服装基线','右袖口补线，领口磨白。','厚呢 / 铜扣','["常服"]','','DRAFT','PENDING','还没开始'),
+   (103,103,'prop','铜制门牌 · 器物基线','铜绿斑驳。','铜','[]','','DRAFT','PROMPTING','提示词已发，等回图'),
+   (104,104,'character','沈宛 · 外观基线','邮局夜班，袖套上有墨点。','墨绿工装 / 白衬衫','["配角"]','assets/shenwan_ref.png','DRAFT','REF_READY','只有正脸'),
+   (105,105,'location','雨夜邮局 · 外景','只在夜里开的那扇小窗。','青砖 / 铁栅','["夜"]','assets/youju_sheet.png','DRAFT','SHEET_READY',''),
+   (106,106,'item','铁皮匣 · 器物基线','匣盖有六道划痕。','铁皮 / 锡','[]','','DRAFT','WARDROBE_READY',''),
+   (107,108,'character','雨里的黑猫 · 外观基线','湿透的黑毛，右耳缺一角。','黑毛 / 黄眼','[]','assets/broken_sheet.png','DRAFT','FAILED','文件在盘上，但不是 PNG ⇒ 解码失败'),
+   (108,114,'character','超长名角色 · 外观基线','用来验长名与失败回退。','——','[]','assets/missing_sheet.png','DRAFT','STALE','路径指向一个**不存在**的文件');
+
+ -- ---- 3. 派生链：`visual_artifacts`（扩充前**一行都没有**）----
+ -- 层的名字与顺序来自 `NovelAssetPipeline.cpp` 的 `kChain`
+ -- （front → turnaround → base_body → wardrobe；四层全 DONE 才是 READY）。
+ -- 层状态 4 值：PENDING | RUNNING | DONE | FAILED。
+ -- 资产 1（林昭，READY）：四层全 DONE ⇒ 与 `RecomputeAssetStatus` 的口径自洽
+ --                       （其中 wardrobe 带 `degraded=1`，验 K28「降级必须可见」的显示）
+ -- 资产 2（周姨，STALE）：DONE / RUNNING / PENDING 各一条 ⇒ 验「部分就绪」
+ -- 资产 107（黑猫，FAILED）：DONE + FAILED 各一条 ⇒ 验失败层
+ INSERT INTO visual_artifacts(id,asset_id,layer,chapter_scope,chapter_to,rel_path,parent_artifact_id,prompt_artifact_id,job_id,status,degraded,note,created,updated) VALUES
+   (101,1,'front',0,0,'assets/chain/front.png',0,0,'seed-job-A1-front','DONE',0,'',1750100000,1750100100),
+   (102,1,'turnaround',0,0,'assets/chain/turnaround.png',101,0,'seed-job-A1-turn','DONE',0,'',1750100200,1750100300),
+   (103,1,'base_body',0,0,'assets/chain/base_body.png',102,0,'seed-job-A1-body','DONE',0,'',1750100400,1750100500),
+   (104,1,'wardrobe',0,0,'assets/chain/wardrobe.png',103,0,'seed-job-A1-ward','DONE',1,'降级：超期未就绪，先用上一版服装出图（K28）',1750100600,1750100700),
+   (105,2,'front',0,0,'assets/chain/front_zhouyi.png',0,0,'seed-job-A2-front','DONE',0,'',1750101000,1750101100),
+   (106,2,'turnaround',0,0,'assets/chain/turnaround_zhouyi.png',105,0,'seed-job-A2-turn','DONE',0,'',1750101200,1750101300),
+   (107,2,'base_body',0,0,'',106,0,'seed-job-A2-body','RUNNING',0,'正在出图',1750101400,1750101500),
+   (108,2,'wardrobe',0,0,'',107,0,'','PENDING',0,'等 base_body',1750101600,1750101700),
+   (109,107,'front',0,0,'assets/chain/front.png',0,0,'seed-job-A7-front','DONE',0,'',1750102000,1750102100),
+   (110,107,'turnaround',0,0,'',109,0,'seed-job-A7-turn','FAILED',1,'降级也失败了：模型超时',1750102200,1750102300);
+
+ -- ---- 4. 规模：第 3 卷 + 第 4–12 章 ----
+ -- 为什么：3 章 7 镜时「章节选择条 / 侧栏树 / 时间线横滚」都**撑不满一屏**，
+ -- 于是滚动、溢出、分组这些分支跑不到。补到 12 章，其中第 7–12 章**刻意没有场**
+ -- （只验章节点本身），第 4–6 章各有场与镜。
+ INSERT INTO volumes(id,title,ord,summary) VALUES
+   (3,'第三卷 · 回声',3,'把前两卷的线索收进来的一卷');
+
+ INSERT INTO chapters(id,volume_id,ord,title,status,summary,body,words,updated) VALUES
+   (101,2,4,'门廊第三级台阶','draft','黑猫第一次出现。','正文省略',5200,1756001000),
+   (102,2,5,'分拣间的夜班','revised','沈宛交代了邮戳的事。','正文省略',8800,1756001100),
+   (103,3,6,'空名字的那一夜','draft','','',0,1756001200),
+   (104,3,7,'六个划痕','draft','铁皮匣被打开。','正文省略',7300,1756001300),
+   (105,3,8,'点灯的七晚','draft','煤油见底。','正文省略',4100,1756001400),
+   (106,3,9,'尚未展开的一章','draft','','',0,1756001500),
+   (107,3,10,'尚未展开的一章','draft','','',0,1756001600),
+   (108,3,11,'尚未展开的一章','draft','','',0,1756001700),
+   (109,3,12,'一个标题长到必须在章节条上省略号截断的收束章','draft','','',0,1756001800);
+
+ INSERT INTO scenes(id,chapter_id,ord,title,time_label) VALUES
+   (101,101,1,'门廊·第三级台阶','夜'),
+   (102,101,2,'门廊·雨停','夜'),
+   (103,102,1,'邮局·分拣间','夜'),
+   (104,104,1,'阁楼·铁皮匣','夜'),
+   (105,105,1,'阁楼·灯下','夜');
+
+ INSERT INTO shots(scene_id,ord,action,expression,mood,dialogue,narration,canon_status,timeline_json) VALUES
+   (101,1,'黑猫从台阶下探出头','警惕','压抑','','它右耳缺了一角。','APPROVED','{"duration_s":3.0}'),
+   (101,2,'他蹲下去伸手','迟疑','克制','你也在等第七封？','猫没有躲。','APPROVED','{"duration_s":4.0}'),
+   (101,3,'雨停了，水滴从檐角落下','平静','压抑','','屋檐把夜空切成一长条。','PROPOSED','{"duration_s":2.0}'),
+   (102,1,'他直起身看向邮局方向','警觉','紧绷','','远处有一盏灯还亮着。','PROPOSED','{"duration_s":3.5}'),
+   (103,1,'沈宛把一叠信推过来','疲惫','冷静','邮戳是三天后盖的。','分拣间的灯管在闪。','APPROVED','{"duration_s":5.0}'),
+   (103,2,'他一张一张翻信封','专注','紧绷','','编号是连续的，日期不是。','APPROVED','{"duration_s":6.5}'),
+   (103,3,'她把最后一封按住','犹豫','压抑','这封不该在这儿。','她的手停在信封上。','APPROVED','{"duration_s":4.5}'),
+   (103,4,'两个人同时沉默','复杂','压抑','','窗外有车经过，灯扫过墙面。','PROPOSED','{"duration_s":3.0}'),
+   (104,1,'匣盖被抬开一条缝','紧张','紧绷','','六道划痕对应六封信。','APPROVED','{"duration_s":4.0}'),
+   (104,2,'他从匣里取出第一封','克制','压抑','第一封是我写给自己的。','纸已经发脆。','APPROVED','{"duration_s":5.5}'),
+   (105,1,'煤油灯的火苗缩了一截','疲惫','压抑','','灯芯只剩最后一段。','PROPOSED','{"duration_s":3.0}'),
+   (105,2,'他把灯吹灭','决然','紧绷','不能再点了。','黑暗里只剩雨声。','PROPOSED','{"duration_s":2.5}');

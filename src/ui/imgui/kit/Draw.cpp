@@ -256,6 +256,15 @@ struct HitRect {
     float minY = 0.0f;
     float maxX = 0.0f;
     float maxY = 0.0f;
+    // 诊断用：登记这个热区的 id。**不参与判据** —— 判据只比矩形（理由见上面第 2 条），
+    // 这里纯粹是为了「报出来的时候能说出对方是谁」。没有它就得拿坐标去反推，
+    // 实测反推过一轮：`(296,742)-(538,934)` 这个 242×192 的盒子光看数字认不出来。
+    std::string id;
+    // 登记时所在的 draw list（一个窗口一个，指针一一对应）。**参与判据** —— 见
+    // `NoteDuplicateHit` 里那段（跨 list 不算）。用 draw list 而不是 ImGuiWindow：
+    // 后者是内部类型（要 imgui_internal.h），而**裁剪区本来就挂在 draw list 上**——
+    // 拿它判同一性，语义比「同一个窗口」还贴。
+    const ImDrawList* list = nullptr;
 };
 struct DuplicateHitBucket {
     int frame = -1;
@@ -306,8 +315,23 @@ void NoteDuplicateHit(float minX, float minY, float maxX, float maxY, const char
     if (declared) {
         bucket.declaredChild.clear();
     }
-    const HitRect r{minX, minY, maxX, maxY};
+    const HitRect r{minX, minY, maxX, maxY, std::string(id), ImGui::GetWindowDrawList()};
     for (const HitRect& seen : bucket.rects) {
+        // ⚠️ **只在同一个 draw list 里比**（= 同一个窗口）。跨 list 的「重叠」不是这个
+        //    自检要抓的东西：裁剪区按 draw list 生效，被裁掉的 item **根本不参与
+        //    hover**（`ItemHoverable` → `IsClippedEx`），所以「滚动区 / 子窗口里的内容
+        //    溢出到浮层或底栏上」**抢不走** hover —— 那只是绘制被裁、热区登记照旧。
+        //
+        //    早先这里不分 list，于是这一族被逐帧计成冲突：把 fixture 从 3 章铺到 12 章
+        //    之后一次报了 **425** 次，凶手两个**都是跨 list 的**：
+        //      · `side-tree` 的章行（侧栏）压到底栏；
+        //      · `asset-card-12`（资产网格的滚动内容）压到底栏报告行。
+        //    后者本来就是**合法的**（工作区是可滚动的，内容当然比视口长），前者是真溢出
+        //    （顺带修了，见 `Widget_Tree.cpp`）。判据把两种混在一起报，就会把「版式溢出」
+        //    与「合法的滚动内容」都误判成「控件点不动」。
+        if (seen.list != r.list) {
+            continue;
+        }
         // 有实际面积的交叠才算。相邻（贴边）或零面积不算。
         const float w = std::min(seen.maxX, r.maxX) - std::max(seen.minX, r.minX);
         const float h = std::min(seen.maxY, r.maxY) - std::max(seen.minY, r.minY);
@@ -325,14 +349,16 @@ void NoteDuplicateHit(float minX, float minY, float maxX, float maxY, const char
                 bucket.rects.push_back(r);
                 return;
             }
-            // ⚠️ 把**对方**的矩形也打出来。只报自己的坐标时，「跟谁撞的」得靠猜 ——
-            //    一次实测里报的是 `side-tree#t0##0 ... 交叠 14x1`，单看这一行既看不出
-            //    对方是谁，也看不出该不该声明。对方矩形的 y 才是定位它的钥匙。
+            // ⚠️ 把**对方**的矩形**和 id** 都打出来。只报自己的坐标时，「跟谁撞的」得靠猜：
+            //    第一次实测报 `side-tree#t0##0 ... 交叠 14x1`（看不出对方是谁），
+            //    补了矩形之后靠 y 认出了一处；第二次实测剩的是
+            //    `(296,742)-(538,934)` 这个 242×192 的盒子 —— 光看数字认不出来，
+            //    所以 id 也得带上。诊断信息不够，就要多花一整轮去反推。
             std::snprintf(bucket.last, sizeof(bucket.last),
-                          "%s min=(%.0f,%.0f) max=(%.0f,%.0f) 与 min=(%.0f,%.0f) max=(%.0f,%.0f) "
+                          "%s min=(%.0f,%.0f) max=(%.0f,%.0f) 与 %s min=(%.0f,%.0f) max=(%.0f,%.0f) "
                           "交叠 %.0fx%.0f",
-                          id, minX, minY, maxX, maxY, seen.minX, seen.minY, seen.maxX, seen.maxY, w,
-                          h);
+                          id, minX, minY, maxX, maxY, seen.id.c_str(), seen.minX, seen.minY,
+                          seen.maxX, seen.maxY, w, h);
             // 只报前 8 次：同一处每帧都会触发，不限量会把真正的「唯一一处」埋掉。
             // 判据读的是计数，不是条数。
             if (++bucket.overlaps <= 8) {

@@ -25,6 +25,25 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
     const float rowH = TreeNodeHeight();
     float y = bounds.min.y;
     for (std::size_t i = 0; i < nodes.size(); ++i) {
+        // ⚠️⚠️ **不许越过 `bounds.max.y`** —— 绘制与命中一起截断。
+        //
+        // 这里原来一行行往下铺、既不画也不判界，于是「树比可用高度长」时：
+        //   · 行被画到面板**外面**（侧栏的行压到底栏上）；
+        //   · 更要命的是**热区也登记在外面** —— `HitTestItem` 不看裁剪区，
+        //     而 ImGui 是**先注册者独占**，于是底栏那一带的控件（页签、报告行）
+        //     在那段 x 区间里**点不动**：控件画得出来、就是按不下去。
+        //
+        // 实测（2026-09-30，把 fixture 从 3 章铺到 12 章之后）：
+        //   `duplicate-hits` 从 **0 跳到 425**，诊断指名道姓 ——
+        //   `dock-report-0 min=(14,793) max=(574,819) 与 min=(66,786) max=(276,814) 交叠 210x21`，
+        //   对方那串 210×28、纵向步进 28 的矩形正是**侧栏树的章行**。
+        //   ⚠️ 而**截图上看不出来**：树被裁掉了（所以图上那片区域是干净的），
+        //      只有热区登记漏在外面。这正是「判据抓得住、眼睛看不出来」的那一类。
+        //
+        // 边界：完全放不下就整行不画也不登记（不画半行 —— 半个行高的可点区域比没有更糟）。
+        if (y + rowH > bounds.max.y) {
+            return y;
+        }
         TreeNode& node = nodes[i];
         const int index = counter++;
         const Rect row = RectAt(bounds.min.x + 20.0f * static_cast<float>(depth), y,

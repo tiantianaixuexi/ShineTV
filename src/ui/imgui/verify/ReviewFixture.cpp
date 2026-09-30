@@ -1,6 +1,7 @@
 #include "ui/imgui/verify/ReviewFixture.h"
 
 #include "paint/PngCodec.h"
+#include "util/Encoding.h" // PathFromUtf8：中文文件名那条分支要走它
 #include "util/File.h"
 
 #include <cstddef>
@@ -88,36 +89,70 @@ bool SeedReportFixture(const std::filesystem::path& root) {
     // （#FF2D55 / #7CFF00），免得和别的控件撞色导致计数分不清来源。
     struct SheetSeed {
         const char* rel;
-        std::uint8_t r;
-        std::uint8_t g;
-        std::uint8_t b;
+        std::uint32_t rgb;  // 0xRRGGBB
+        const char* covers; // 覆盖的是哪一条分支（写清楚，别让它变成随手加的素材）
     };
     // 颜色从 ReviewFixture.h 的常量来（取真的像素判据按同一份值数）——
     // 这里再写一遍字面量就多了一个「两处要对上」的同步点。
+    //
+    // ⚠️ 每一张都必须**只被一个位点用**，且颜色在五套主题调色板之外：取真的判据是
+    //    「数到某个色值有几个像素」，两张图共色就分不清是谁画上来的。
     const SheetSeed sheets[] = {
-        {"assets/linwan_base.png", static_cast<std::uint8_t>(kSheetColorA >> 16),
-         static_cast<std::uint8_t>(kSheetColorA >> 8), static_cast<std::uint8_t>(kSheetColorA)},
-        {"assets/zhouyi_base.png", static_cast<std::uint8_t>(kSheetColorB >> 16),
-         static_cast<std::uint8_t>(kSheetColorB >> 8), static_cast<std::uint8_t>(kSheetColorB)},
+        {"assets/linwan_base.png", kSheetColorA, "资产网格卡缩略图 + 详情页基线图（实体 1）"},
+        {"assets/zhouyi_base.png", kSheetColorB, "同上（实体 2，验切选中之后图跟着换）"},
+        // 下面几张是 2026-09-30 扩充数据面时补的：`visual_assets` 的 8 种状态里
+        // 「有真图」的那几种各给一张。
+        {"assets/shenwan_ref.png", 0x00A3FFu, "REF_READY（只有正脸，没有整版设定图）"},
+        {"assets/youju_sheet.png", 0xF97316u, "SHEET_READY"},
+        // ⚠️ **中文文件名**：验「UTF-8 字符串 → std::filesystem::path」这一趟往返。
+        //    这条路必须走 `util::PathFromUtf8`（用窄字符串直接构造 path 会按系统 ANSI
+        //    码页解释那些 UTF-8 字节，中文就成了乱码、文件打不开）。
+        {"assets/阁楼层_基线.png", 0xEC4899u, "非 ASCII 路径（UTF-8 往返）"},
+        // 派生链四层（`visual_artifacts` 挂在资产 1 上，四层全 DONE）。
+        {"assets/chain/front.png", kChainColorFront, "派生链 · front"},
+        {"assets/chain/turnaround.png", kChainColorTurn, "派生链 · turnaround"},
+        {"assets/chain/base_body.png", kChainColorBody, "派生链 · base_body"},
+        {"assets/chain/wardrobe.png", kChainColorWardrobe, "派生链 · wardrobe"},
+        {"assets/chain/front_zhouyi.png", 0x0EA5E9u, "派生链 · front（资产 2）"},
+        {"assets/chain/turnaround_zhouyi.png", 0xA855F7u, "派生链 · turnaround（资产 2）"},
     };
     for (const SheetSeed& sheet : sheets) {
         constexpr std::uint32_t kSide = 64;
         std::vector<std::byte> rgba(static_cast<std::size_t>(kSide) * kSide * 4);
+        const auto byteAt = [&sheet](int shift) {
+            return static_cast<std::byte>((sheet.rgb >> shift) & 0xFFu);
+        };
         for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {
-            rgba[i] = static_cast<std::byte>(sheet.r);
-            rgba[i + 1] = static_cast<std::byte>(sheet.g);
-            rgba[i + 2] = static_cast<std::byte>(sheet.b);
-            rgba[i + 3] = static_cast<std::byte>(0xFF);
+            rgba[i] = byteAt(16);     // R
+            rgba[i + 1] = byteAt(8);  // G
+            rgba[i + 2] = byteAt(0);  // B
+            rgba[i + 3] = std::byte{0xFF};
         }
         const auto png = paint::EncodePng(kSide, kSide, rgba);
         if (!png.has_value()) {
             return false;
         }
         const auto* raw = reinterpret_cast<const char*>(png->data());
-        if (!util::WriteFileEnsuredDir(root / std::filesystem::path(sheet.rel),
+        // 路径一律过 `util::PathFromUtf8`：上面那张中文名走的就是这条路。
+        if (!util::WriteFileEnsuredDir(root / util::PathFromUtf8(sheet.rel),
                                       std::string_view(raw, png->size()))) {
             return false;
         }
+    }
+
+    // ---- 一个**刻意做坏**的输入：让「解码失败」这条分支真的被跑到 ----
+    //
+    // `assets/broken_sheet.png`：文件在盘上、后缀也对，但**内容不是 PNG**。
+    // `visual_assets` #107（黑猫，status=FAILED）指着它 ⇒ 解码失败 ⇒ 回退占位画。
+    // 另外 `visual_assets` #108（STALE）指着 `assets/missing_sheet.png`，那个文件
+    // **刻意不造**（路径不存在）。
+    //
+    // 为什么非要造坏输入：「解码失败」「路径不存在」「压根没请求」「拍得太早」在截图里
+    // **长得一模一样**（都是「这张图没画」）。这一族已经栽过一次（见 PROGRESS 的 R8），
+    // 所以两种坏输入各有**一条真实数据行**指着 —— 这才谈得上「回退路径被验过」。
+    if (!util::WriteFileEnsuredDir(root / "assets/broken_sheet.png",
+                                   std::string_view("this-file-is-not-a-png\n"))) {
+        return false;
     }
     return true;
 }

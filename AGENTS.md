@@ -174,6 +174,11 @@ powershell -File out\_run_review.ps1 -OutDir "$PWD\build\shots" -Theme deepspace
   而这个空档正是「算式算出来了、但没人验过真到没到像素」长期混过去的地方）
 - **1:1 回归（首选）**：`out\_make_fixture.ps1` → `out\_run_review.ps1`（自带 fixture 步骤）
 - 回归（备选）：`scripts\run_reviews.ps1`（⚠️ 默认 `-Exe` 指向 `build\`，见上文假信号表）
+- **改 fixture**：`out\_fixture_{schema,data}.sql` 是 **UTF-8 留档，不要动**（PowerShell 的
+  `Set-Content/Out-File` 会按系统 ANSI 码页重编码，中文静默变乱码且脚本照跑成功）——
+  改动一律**追加**到 `out\_fixture_seed.sql`，新行用 **100+ id 号段**。
+  改完必须同步 `out\_make_fixture.ps1` 的硬门禁（行数 + **枚举覆盖度**：8 种资产状态 /
+  4 种层状态 / 4 个层名 / ≥1 条降级）。**枚举没铺满 = 对应分支永远没人验**。
 - 运行辅助：`scripts\studio.ps1` · `scripts\comfy.ps1`
 - 第三方库：`third/`（`imgui` **`ImAnim`** `VisualNodeSystem` `libhv` `sqlite` `yyjson`
   `spdlog` `fmt` `function2` `glaze` `mimalloc` `stdexec` `hiredis` `libpng` `libjpeg-turbo`

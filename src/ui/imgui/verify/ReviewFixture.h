@@ -28,4 +28,13 @@ bool SeedReportFixture(const std::filesystem::path& root);
 inline constexpr std::uint32_t kSheetColorA = 0xFF2D55u; // assets/linwan_base.png
 inline constexpr std::uint32_t kSheetColorB = 0x7CFF00u; // assets/zhouyi_base.png
 
+// 派生链四层的图（`visual_artifacts` 的 front / turnaround / base_body / wardrobe，
+// 挂在资产 1 上）。**四张各一色** ⇒ 「链上第几层有图、第几层没有」可以**逐层按像素判**，
+// 而不是只能看整体哈希 —— 层与层之间搞混了（比如 front 画到了 wardrobe 那格）
+// 在灰度上几乎看不出来，但数色值一眼就能分开。
+inline constexpr std::uint32_t kChainColorFront = 0x22C55Eu;    // assets/chain/front.png
+inline constexpr std::uint32_t kChainColorTurn = 0xEAB308u;     // assets/chain/turnaround.png
+inline constexpr std::uint32_t kChainColorBody = 0x8B5CF6u;     // assets/chain/base_body.png
+inline constexpr std::uint32_t kChainColorWardrobe = 0x14B8A6u; // assets/chain/wardrobe.png
+
 } // namespace shine::imguiverify::detail
