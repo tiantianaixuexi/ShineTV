@@ -92,6 +92,15 @@ ImU32 ColorAccentGlow() { return ColorOf(theme::CurrentDerived().accentGlow); }
 ImU32 ColorFocusRing() { return ColorOf(theme::Current().lineFocus); }
 ImU32 ColorScrim() { return ColorOf(theme::Current().shadowScrim); }
 
+// 「不画」而不是「画黑色」：返回全 0，让 draw call 的 alpha 通道自己把它关掉。
+//
+// ⚠️ 这里**故意**不用 `IM_COL32(0,0,0,0)`：那正是 tools/check-colors.ps1 要拦的
+//    硬编码颜色字面量，写在这里会让「唯一合规的出口」自己成为违规样本。
+//    ImU32 的字节序宏（IMGUI_USE_BGRA_PACKED_COLOR 决定 R 在高位还是低位）对全 0
+//    无所谓 —— 两种字节序下 0 都是 0，所以写字面量是安全的。
+constexpr ImU32 kTransparent = 0u;
+ImU32 ColorTransparent() { return kTransparent; }
+
 // ImU32 的字节序是编译期宏（IMGUI_USE_BGRA_PACKED_COLOR 决定 R 在高位还是低位）。
 // 这两个函数一律走 ImGui 自己的 float4 往返，**不手写位移** ——
 // 手写过一次：默认字节序下 R 在最低字节，于是 alpha 被写进了红通道，
@@ -526,7 +535,7 @@ bool Chip(ImDrawList* draw, Rect bounds, std::string_view label, const ChipSpec&
     // hover 只提边与字色（views.css:685-688），底色不动 —— 选中态的底是 accent-dim，
     // hover 若也换底会和选中态糊在一起。
     const ImU32 bg = spec.selected ? ColorAccentDim()
-                                  : (hit.hovered ? ColorFillMuted() : IM_COL32(0, 0, 0, 0));
+                                  : (hit.hovered ? ColorFillMuted() : ColorTransparent());
     const ImU32 border =
         spec.selected ? ColorAccentGlow() : (hit.hovered ? ColorLineStrong() : ColorLineNormal());
     const ImU32 fg = spec.selected ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextSecondary());

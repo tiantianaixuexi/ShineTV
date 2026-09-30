@@ -327,6 +327,13 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
         if (keyOverrideSet_ && keyOverride_ != 0) {
             ImGui::GetIO().AddKeyEvent(static_cast<ImGuiKey>(keyOverride_), keyOverrideDown_);
         }
+        // 鼠标**按键**覆盖：只有位置注入的话，`IsItemClicked()` 永远为假
+        // —— 悬停探针能跑（它读 hovered），点不动的东西测不出来。走 ImGui 的事件
+        // 队列，NewFrame 会把它折成按下沿。必须在后端 NewFrame **之后**：win32 后端
+        // 会按真实鼠标状态覆写 MouseDown。
+        if (mouseButtonOverrideSet_) {
+            ImGui::GetIO().AddMouseButtonEvent(0, mouseButtonOverrideDown_);
+        }
         ImGui::NewFrame();
         if (ctrlOverride_) {
             // ⚠️ 必须在 `NewFrame` **之后**再钉一次 `KeyCtrl`。

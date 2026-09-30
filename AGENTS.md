@@ -62,6 +62,19 @@ last_verified: 2026-09-30
 4. 外部服务变更：先做离线 mock/协议自检，再在 ComfyUI 或 LLM 可用时联调；报告未执行的部分，不把推断写成通过。
 5. 取证（多图）：跑完**先排 md5** —— 任意两张逐字节相同 = 有一张没拍到它承诺的状态。等待结果要写进 manifest，别丢返回值；每张图的前置动作显式写全，别依赖"默认状态恰好是我要的"。
 6. 像素差**不是**内容指标：离屏渲染跨进程约 2000px 噪声、跨构建约 40000px。小于它不必当回事，**大于它也不能**直接判成回归。判"内容有没有丢"用同一次运行内的对照页 + 无文字纯色区域的精确相同率。
+7. 门禁与扫描器**改完先跑自检**：`check-colors.ps1 -SelfTest` / `find-silent-truncation.ps1 -SelfTest` / `find-rect-wh-misuse.ps1 -Root <样本目录>`。一个"改完报 0"的扫描器和一个坏掉的没区别 —— 门禁报 PASS 与"没有违规"在结果里长得一模一样，而假绿比没有门禁更坏。
+
+## 静默失效扫描器
+
+前三个 `check-*.ps1` 是**硬门禁**（失败退出码 1）；下面三个是**人工复核工具**（只打印疑似，不改退出码）：
+
+| 脚本 | 抓什么 | 典型形态 |
+|---|---|---|
+| `tools\find-silent-truncation.ps1` | 列表按容器高度静默截断 | `if (y + 24.0f > body.max.y) break;`（含 `> body.max.y - 20.0f` 这种"给页脚留位"的变体） |
+| `tools\find-rect-wh-misuse.ps1` | `kit::Rect` 四参当成 (x,y,w,h) | `Rect{x, y, cardW, 192.0f}` ⇒ `max.x < min.x`，控件**整块不画也不可点**，编译不报错 |
+| `tools\check-colors.ps1` | 硬编码颜色字面量 | `IM_COL32(...)` / `ImVec4(数字×3~4)` / `"#rrggbb"` / `0xAARRGGBB`；豁免写 `// theme-ok <理由>` |
+
+「不画」用 `kit::ColorTransparent()`，别写 `IM_COL32(0,0,0,0)` —— 它是硬编码颜色里最常见的一种，豁免一旦多了门禁就等于没有。
 
 ## 常用入口
 
@@ -71,5 +84,6 @@ last_verified: 2026-09-30
 - **目标架构**：[`refactor/architecture.md`](refactor/architecture.md)
 - **webui 1:1 视觉规范**：[`refactor/design-spec.md`](refactor/design-spec.md)
 - 构建：`cmake --build build -j 8 --target ShineTVStudio`（工具链 MSYS2 MinGW64，`C:/msys64/mingw64`）
-- 分层门禁：`powershell -File tools\check-layers.ps1`
+- 门禁：`powershell -File tools\check-layers.ps1` / `check-colors.ps1` / `check-theme.ps1` / `check-i18n.ps1`
+- 静默失效扫描：`powershell -File tools\find-silent-truncation.ps1` / `tools\find-rect-wh-misuse.ps1`
 - 截图取证：`scripts\capture_window.ps1`

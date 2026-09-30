@@ -37,8 +37,24 @@ namespace shine::kit {
 class ScrollRegion {
 public:
     // bounds 是区域的外框。height <= 0 时用 ImGui 的「撑满剩余」语义。
+    //
+    // `noMouseInputs` = 给这个 child 加 `ImGuiWindowFlags_NoMouseInputs`，让它**退出
+    // 鼠标命中测试**。这不是「优化」，是本工程浮层能不能用的前提：
+    //
+    //   ImGui 先定 `g.HoveredWindow`（imgui.cpp:6573 从 `g.Windows` **末尾往前**扫、
+    //   6607 取第一个命中 ⇒ 最靠上的窗口赢），再在 `ItemHoverable` 第一句判
+    //   `if (g.HoveredWindow != window) return false;`（:5156）。child 是在根窗口之后
+    //   建的，所以只要鼠标在工作区范围内，HoveredWindow 恒是**工作区 child**，
+    //   根窗口里画的所有浮层 item（设置模态的 ×、报告模态的按钮、命令面板输入框、
+    //   主题菜单行）恒 hovered=false / clicked=false —— **按钮画得出来、点不动**。
+    //   而静息截图完全看不出来（不点击），80 张绿图对它零覆盖。
+    //
+    //   浮层打开时把 child 关掉，根窗口才拿得到 HoveredWindow；顺带这也实现了模态
+    //   语义：底下的侧栏 / 顶栏 / 工作区**点不动**，点击由浮层自己的遮罩接走。
+    //   ⚠️ 遮罩那边必须**真的注册一个全屏 HitTest** —— 只画不命中的话，点击既不
+    //   关闭浮层也不被任何人接住，就是「点了没反应」。
     ScrollRegion(std::string_view id, Rect bounds, bool borders = false,
-                 bool horizontalScroll = false);
+                 bool horizontalScroll = false, bool noMouseInputs = false);
     ~ScrollRegion();
 
     ScrollRegion(const ScrollRegion&) = delete;

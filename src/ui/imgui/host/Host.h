@@ -98,6 +98,15 @@ public:
     void SetFrameCtrlOverride(bool down) { ctrlOverride_ = down; }
     void ClearFrameCtrlOverride() { ctrlOverride_ = false; }
 
+    // 鼠标左键的按下 / 抬起覆盖。**光有位置注入是测不出「点不动」的** ——
+    // 悬停探针读的是 hovered，而 `IsItemClicked()` 还要 MouseDown 的按下沿。
+    // 判据里的用法：位置设好之后先注入 down 一帧、再注入 up 一帧。
+    void SetFrameMouseButtonOverride(bool down) {
+        mouseButtonOverrideDown_ = down;
+        mouseButtonOverrideSet_ = true;
+    }
+    void ClearFrameMouseButtonOverride() { mouseButtonOverrideSet_ = false; }
+
     [[nodiscard]] HWND window() const noexcept { return hwnd_; }
     [[nodiscard]] HGLRC glContext() const noexcept { return glContext_; }
 
@@ -120,6 +129,9 @@ private:
     bool keyOverrideDown_ = false;
     bool keyOverrideSet_ = false;
     bool ctrlOverride_ = false;    HGLRC glContext_ = nullptr;  // GL 上下文
+    // 鼠标左键覆盖（见 SetFrameMouseButtonOverride 的说明）
+    bool mouseButtonOverrideDown_ = false;
+    bool mouseButtonOverrideSet_ = false;
     bool imguiReady_ = false;
     bool quit_ = false;
 };

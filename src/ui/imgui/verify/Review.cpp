@@ -7,6 +7,7 @@
 #include "util/File.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <iomanip>
 #include <iterator>
@@ -398,6 +399,10 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     int hoverProbesPassed = -1;
     // 快捷键动作判据：几个快捷键按下去真的改变了界面状态。
     int shortcutsPassed = -1;
+    // 浮层点击探针的结果。**必须与 hover / shortcuts 同级**：它的效果不在像素上，
+    // 只打日志而 overall 仍 PASS 就是假绿（见下面 pass 的那条判据）。
+    int overlayClicksPassed = 0;
+    int kOverlayClickTotal = 4;
     int kShortcutTotal = 7;
     // 本轮探针总数（targets 数组长度）。写死 4 的话加探针时会忘了改判据，判据跟着目标数走。
     int kHoverProbeTotal = 4;
@@ -1009,6 +1014,117 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
         }
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
+        // ---- 浮层按钮点击探针 ----
+        //
+        // 为什么必须有这一段：浮层（设置模态 / 报告模态 / 命令面板 / 主题菜单）的 item
+        // 是在**根窗口**里提交的，而工作区是 `BeginChild`。ImGui 定 `g.HoveredWindow`
+        // 是「从 `g.Windows` 末尾往前扫、取第一个命中」（imgui.cpp:6573 / 6607），
+        // `ItemHoverable` 第一句又判 `if (g.HoveredWindow != window) return false;`
+        // （:5156）—— 只要鼠标在工作区范围内，浮层按钮恒 hovered=false / clicked=false。
+        //
+        // 这个缺陷**在像素上完全看不出来**：按钮照画不误，80 张静息绿图零覆盖，
+        // hover 探针也抓不到（它们只打根窗口控件和 child 内部的控件）。
+        // 所以判据只能读**产品自己的开态**：点完 `settingsOpen()` 变没变。
+        //
+        // 「按钮矩形」也必须取产品那份 `SettingsCloseRect()`：在判据里复算一遍
+        // `display.x * 0.5f + …` 的话，布局一改就会打在一个已经不存在的位置上，
+        // 而它报的仍然是「通过」。
+        {
+            struct OverlayClickProbe {
+                const char* name;
+                int key;  // 0 = × 按钮，1 = 点遮罩关闭，2/3 = 验「底下点不动」
+            };
+            const OverlayClickProbe overlayClicks[] = {
+                {"设置模态 ×", 0},
+                {"设置模态 点遮罩关闭", 1},
+                {"模态开着时点导航栏（不许穿透去切工作区）", 2},
+                {"模态开着时点工作区正文（不许穿透到页面控件）", 3},
+            };
+            for (const OverlayClickProbe& oc : overlayClicks) {
+                shell.SetSettingsOpen(true);
+                host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                const std::string before = shell.settingsOpen() ? "open" : "closed";
+                const int wsBefore = shell.workspace();
+                const ImVec2 d = ImGui::GetIO().DisplaySize;
+                ImVec2 target{0.0f, 0.0f};
+                switch (oc.key) {
+                case 0: {
+                    const kit::Rect r = shell.SettingsCloseRect();
+                    target = ImVec2((r.min.x + r.max.x) * 0.5f, (r.min.y + r.max.y) * 0.5f);
+                    break;
+                }
+                case 1:
+                    // 面板正下方偏左：确定落在遮罩里、且不在模态矩形内
+                    target = ImVec2(d.x * 0.5f - 420.0f, d.y * 0.5f + 300.0f);
+                    break;
+                case 2:
+                    // 导航栏第 3 格（小说）。它注册在**根窗口**里且排在浮层之前 ——
+                    // 「先注册者独占 HoveredId」时它会吃掉这次点击，模态开着也能切工作区。
+                    target = ImVec2(24.0f, 128.0f);
+                    break;
+                default:
+                    // 工作区正文中央：这里被 ScrollRegion(BeginChild) 覆盖，
+                    // child 退出命中测试之前，底下的页面 item 会照常收到这次点击。
+                    target = ImVec2(d.x * 0.5f, d.y * 0.5f);
+                    break;
+                }
+                host.SetFrameMouseOverride(target.x, target.y);
+                // 帧内自检：位置注入有没有真的到位。没到位就是**探针**的问题，
+                // 不能记成「产品的按钮是死的」—— 那会去改本来正确的代码。
+                bool sawMouse = false;
+                host.SetFrameMouseButtonOverride(true);
+                host.PumpFrames(1, [&](float dt) {
+                    shell.DrawFrame(dt);
+                    sawMouse = sawMouse ||
+                               (std::abs(ImGui::GetIO().MousePos.x - target.x) < 0.5f &&
+                                std::abs(ImGui::GetIO().MousePos.y - target.y) < 0.5f);
+                });
+                host.SetFrameMouseButtonOverride(false);
+                host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                host.ClearFrameMouseButtonOverride();
+                host.ClearFrameMouseOverride();
+                host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                const std::string after = shell.settingsOpen() ? "open" : "closed";
+                const int wsAfter = shell.workspace();
+                bool ok = true;
+                std::string why;
+                if (!sawMouse) {
+                    ok = false;
+                    why = "位置注入没到位（ImGui 看到的不是我们设的坐标）—— 判据不可用，不是产品的缺陷";
+                } else if (oc.key >= 2) {
+                    // 模态语义要验的是「**底下点不动**」= 工作区索引没变。
+                    //
+                    // ⚠️ 这里**不能**顺带要求「模态还开着」—— 那是判据自己写错的期望：
+                    //    点遮罩关闭本来就是模态的既定行为（DrawSettingsModal 末尾那段），
+                    //    第一次跑这条探针就是被它误判成 FAIL 的。症状与「判据有 bug」
+                    //    一样：一条永远红的判据和一条坏掉的判据没有区别。
+                    if (wsAfter != wsBefore) {
+                        ok = false;
+                        why = "点击穿透到了底下：workspace " + std::to_string(wsBefore) + " → " +
+                              std::to_string(wsAfter) + "（模态开着时底下不该点得动）";
+                    }
+                } else if (before == after) {
+                    // 点了却没反应 = 那个 item 压根没收到点击。
+                    ok = false;
+                    why = "点了没反应：" + before + " → " + after;
+                }
+                if (ok) {
+                    ++overlayClicksPassed;
+                } else {
+                    shine::log::Error("review: 浮层交互探针「{}」失败：{}", oc.name, why);
+                }
+                // 复位：按语义显式复位。**别用「再按一次」** —— 那是 toggle 动作才成立的写法。
+                shell.SetSettingsOpen(false);
+                if (shell.workspace() != wsBefore) {
+                    shell.SetWorkspace(wsBefore);
+                }
+                host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            }
+        }
+        WriteManifest(manifest, std::string("overlay-clicks=") +
+                                    std::to_string(overlayClicksPassed) + "/" +
+                                    std::to_string(kOverlayClickTotal));
+
         // toast：设计稿到处在用的 notify(...)。它只活 3.2s，所以必须**同一轮里**触发
         // 紧跟着抓 —— 跨轮再拍早就过期了，拍到的会是「没有 toast」，而图名还叫 toast。
         shell.Notify("分镜 · 上下文：第 1 章「雨夜里的第七封来信」", shine::theme::Tone::Ok);
@@ -1085,10 +1201,14 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
     //    不能因为「其它图都写出来了」就整轮报绿。
     //    scrollFailed 同理，而且**必须**进判据：第一版就是漏了它 —— 判据全绿，
     //    而 overview-vstages 拍的其实是右栏顶部，矩阵那张等于没拍。
+    //    overlayClicksPassed 同理：浮层按钮点不动这件事**在像素上看不出来**，
+    //    静息截图与 hover 探针对它零覆盖。漏进判据的话，那条正交信号就只是
+    //    一行日志，overall 照样 PASS —— 那是假绿，不是验证。
     const bool pass = result.failed == 0 && !result.scrollFailed && identicalPairs == 0 &&
                       drivenDuplicates == 0 && reportScanConverged && bookSnapshotConverged &&
                       assetSnapshotConverged && artifactsConverged && inverted == 0 &&
-                      hoverProbesPassed == kHoverProbeTotal && shortcutsPassed == kShortcutTotal;
+                      hoverProbesPassed == kHoverProbeTotal && shortcutsPassed == kShortcutTotal &&
+                      overlayClicksPassed == kOverlayClickTotal;
     WriteManifest(manifest, "# shots: " + std::to_string(result.captured) +
                                 "  failed: " + std::to_string(result.failed) +
                                 "  scroll-failed: " + (result.scrollFailed ? "1" : "0") +
@@ -1097,6 +1217,7 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                                 "  inverted-rects: " + std::to_string(inverted) +
                                 "  hover-probes: " + std::to_string(hoverProbesPassed) + "/" + std::to_string(kHoverProbeTotal) +
                                 "  shortcuts: " + std::to_string(shortcutsPassed) + "/" + std::to_string(kShortcutTotal) +
+                                "  overlay-clicks: " + std::to_string(overlayClicksPassed) + "/" + std::to_string(kOverlayClickTotal) +
                                 "  report-scan: " + (reportScanConverged ? "converged" : "TIMEOUT") +
                                 "  book-snapshot: " +
                                 (bookSnapshotConverged ? "converged" : "TIMEOUT") +

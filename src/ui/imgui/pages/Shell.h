@@ -104,6 +104,19 @@ public:
     // 动作判据要读**产品自己的状态读数**，不能自己复算一份。命令面板的开态
     // 早先只有写没有读 —— 探针只能去猜，于是判据一度整条失灵。
     [[nodiscard]] bool commandPaletteOpen() const { return paletteOpen_; }
+    // 浮层开态读数：给「浮层按钮到底点不点得动」那条判据用。
+    //
+    // 判据必须读**产品自己的**状态，不能自己复算一份或从像素反推 —— 上一轮
+    // 「两张图不一样」那种有二义性的信号已经吃过一次亏（滚到位 vs 别处在动）。
+    // 这里的具体理由更硬：浮层按钮点不动这件事**在像素上完全看不出来**（按钮照画
+    // 不误，80 张绿图对它零覆盖），只有「点完开态变没变」才能判。
+    [[nodiscard]] bool settingsOpen() const { return settingsOpen_; }
+    [[nodiscard]] bool themeMenuOpen() const { return themeMenuOpen_; }
+    [[nodiscard]] bool reportModalOpen() const { return reportDetail_ >= 0; }
+    // 「设置」模态右上角 × 按钮的矩形。**判据要用产品自己这份**，不要在 Review.cpp
+    // 里复算一遍 `display.x * 0.5f + 280 - 23` 之类的式子 —— 布局一改，判据就会
+    // 悄悄打在一个已经不存在的位置上，而它报的仍然是「通过」。
+    [[nodiscard]] kit::Rect SettingsCloseRect() const;
     void SetTheme(shine::theme::ThemeId id);
     void ToggleSidePanel();
     void ToggleDock();
@@ -225,6 +238,13 @@ private:
     void PushLog(std::string_view level, std::string_view message);
 
     // ---- P4.9 浮层：主题菜单 / 设置 / 项目中心 ----
+    // 外壳 chrome（顶栏 / 导航 / 侧栏 / 检查器 / 底栏 / 面包屑）的热区统一走这里。
+    // 浮层开着时**一个 item 都不提交**（模态语义：底下点不动，点击交给浮层的遮罩）。
+    // 机制与证据见 chromeInteractive_ 的注释。
+    kit::Hit ChromeHit(const kit::Rect& bounds, std::string_view id);
+    [[nodiscard]] bool ChromeClicked(const kit::Rect& bounds, std::string_view id) {
+        return ChromeHit(bounds, id).clicked;
+    }
     // 主题菜单锚在顶栏「主题」幽灵按钮下方（webui Shell.jsx:51-70）。
     void DrawThemeMenu(ImVec2 anchor, ImDrawList* draw);
     // 「设置 · 三步开工」模态：读 AppSettings 真值，不造假配置。
@@ -289,6 +309,24 @@ private:
     int reportDetail_ = -1;       // 底栏校验报告点开的条目下标，-1 = 未打开
     // 主题菜单锚点（顶栏「主题」按钮左下角），上一帧 DrawTopBar 写下。
     ImVec2 themeMenuAnchor_{0.0f, 0.0f};
+
+    // ---- 浮层打开时，外壳 chrome 让出鼠标 ----
+    //
+    // 两个独立的问题，同一个根：**工作区是 `BeginChild`，child 在 `g.Windows` 里排在
+    // 根窗口之后**，而 ImGui 定 `g.HoveredWindow` 是「从末尾往前扫、取第一个命中」
+    // （imgui.cpp:6573 / 6607），`ItemHoverable` 第一句又判
+    // `if (g.HoveredWindow != window) return false;`（:5156）。于是：
+    //   ① 只要鼠标在工作区范围内，根窗口里的浮层 item（设置模态 ×、报告模态按钮、
+    //      命令面板输入框、主题菜单行）**恒 hovered=false / clicked=false** ——
+    //      按钮画得出来、点不动。修法是 DrawWorkspace 给 child 加 NoMouseInputs。
+    //   ② 同一窗口内是「**先注册者独占** HoveredId」（:5161），外壳 chrome 先注册，
+    //      所以点遮罩关闭时这次点击被侧栏 / 顶栏先吃掉 —— 工作区被切走、浮层还开着。
+    //      修法是浮层开着时 chrome 走 ChromeHit()，不提交任何 item。
+    // 静息截图对这两条**零覆盖**（不点击），所以取证全绿也证明不了什么。
+    bool chromeInteractive_ = true;
+    // 主题菜单「点外面关闭」的全屏热区。必须在 chrome **之前**注册（理由同上），
+    // 所以单独抽出来在 DrawFrame 开头调，结果存在这里给 DrawThemeMenu 用。
+    kit::Hit themeOutsideHit_;
 
     // ---- 底栏「产物」页的真实文件列表 ----
     // IO 走 worker：UI 线程只读这个缓存。scanRoot_ 记上次扫的是哪个工程根，

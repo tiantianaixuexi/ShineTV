@@ -25,24 +25,36 @@
 # **已诚实标注**的降级，可以放过。脚本不判断这一点，请人眼看一眼。
 #
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tools\find-silent-truncation.ps1
+#       powershell ... -File tools\find-silent-truncation.ps1 -SelfTest
 #       powershell ... -File tools\find-silent-truncation.ps1 -Root <目录>
-# -Root 只为**自检**存在：改扫描逻辑后必须证明它还抓得到真样本（临时目录跑，
-# 期望命中数 = 真样本数）。一个「改完报 0」的扫描器和一个坏掉的没区别。
+# -SelfTest 是**内建**的（不是靠人工建临时目录）：改扫描逻辑之后跑一次，脚本自己
+#   建样本、跑扫描、对期望，样本里包含那条曾经漏掉的「给下边界留页脚」写法。
+#   早先自检要人手工在 %TEMP% 里铺文件，等于没有 —— 改完正则不跑自检也没人拦。
 param(
-    [string]$Root = ''
+    [string]$Root = '',
+    [switch]$SelfTest,
+    [string]$SelfTestDir = ''
 )
 $ErrorActionPreference = 'Continue'
 $root = if ($Root) { $Root } else { Join-Path $PSScriptRoot '..\src\ui\imgui' }
 
 # ① 逐条 break：if (y + 24.0f > body.max.y) {  break; }
-$rxBreak = [regex]'(?m)^[ \t]*if\s*\(\s*([A-Za-z_]\w*)\s*\+\s*[\d.]+f?\s*>\s*[A-Za-z_]\w*\.max\.y\s*\)'
+#
+# ⚠️ 右边**不能**只写 `\.max\.y\s*\)` —— 那样只能抓到最朴素的形态。实测漏掉的写法是
+#    「给下边界留出页脚」：`if (y + 26.0f > body.max.y - 20.0f) { break; }`
+#    （Shell.cpp 底栏报告列表）。那个 `- 20.0f` 让闭括号对不上，扫描器报 0，
+#    而列表照样在悄悄丢章节 —— **扫描器报 0 和「没有截断」长得一模一样**。
+#    所以右边放宽成 `[^;)]*`（到分号或闭括号为止），顺带认 `>=`。
+$rxBreak = [regex]'(?m)^[ \t]*if\s*\(\s*([A-Za-z_]\w*)\s*\+\s*[\d.]+f?\s*(?:>=|>)\s*[A-Za-z_]\w*\.max\.y[^;)]*\)'
+
 
 # ② 反推式砍行：int maxRows = ...(body.height() ...)/... 或 int shown = min(..., maxRows)
 $rxReverse = [regex]'(?m)^[ \t]*(?:const\s+)?int\s+(\w*(?:maxRows|shown|visibleRows|drawRows)\w*)\s*='
 
+function Invoke-Scan([string]$dir) {
 $hits = @()
 $suppressed = @()
-Get-ChildItem $root -Recurse -Include *.cpp,*.h | ForEach-Object {
+Get-ChildItem $dir -Recurse -Include *.cpp,*.h | ForEach-Object {
     $file = $_
     $text = [IO.File]::ReadAllText($file.FullName, [Text.Encoding]::UTF8)
     $lines = $text -split "`n"
@@ -88,6 +100,72 @@ Get-ChildItem $root -Recurse -Include *.cpp,*.h | ForEach-Object {
         if ($suppress -and $suppress -notlike '(*') { $suppressed += $entry } else { $hits += $entry }
     }
 }
+return @{ Hits = $hits; Suppressed = $suppressed }
+}
+
+# =====================================================================
+# 自检
+#
+# 6 份样本。最要紧的是 `true-footer` 那份 —— 它就是真实代码里漏掉过的形态
+# （`if (y + 26.0f > body.max.y - 20.0f) { break; }`，给下边界留页脚）。
+# 正则当年写成 `\.max\.y\s*\)`，只吃最朴素的写法，于是**扫描器在有真缺陷的树上
+# 报 0**。自检里没有这份样本，那次漏报就查不出来。
+# =====================================================================
+if ($SelfTest) {
+    $dir = if ($SelfTestDir) { $SelfTestDir } else { Join-Path $env:TEMP 'trunc-selftest' }
+    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $enc = New-Object System.Text.UTF8Encoding($false)
+
+    $samples = @(
+        @{ Name = 'true-plain.cpp'
+           Text = "for (const auto& row : rows) {`n    if (y + 24.0f > body.max.y) {`n        break;`n    }`n}"
+           Expect = 1 },
+        @{ Name = 'true-footer.cpp'
+           Text = "for (std::size_t i = 0; i < n; ++i) {`n    if (y + 26.0f > body.max.y - 20.0f) {`n        break;`n    }`n}"
+           Expect = 1 },
+        @{ Name = 'true-ge.cpp'
+           Text = "for (;;) {`n    if (cy + 22.0f >= body.max.y) {`n        break;`n    }`n}"
+           Expect = 1 },
+        @{ Name = 'true-reverse.cpp'
+           Text = "const int maxRows = static_cast<int>((body.height() - 4.0f) / 18.0f);`nint shown = std::min(total, maxRows);"
+           Expect = 1 },
+        @{ Name = 'false-nobreak.cpp'
+           Text = "if (y + 24.0f > body.max.y) {`n    return;`n}"
+           Expect = 0 },
+        @{ Name = 'false-comment.cpp'
+           Text = "// 原来写的是 if (y + 24.0f > body.max.y) { break; }，已经改成 ScrollRegion`nint real = 7;"
+           Expect = 0 }
+    )
+    foreach ($s in $samples) {
+        [IO.File]::WriteAllBytes((Join-Path $dir $s.Name), $enc.GetBytes($s.Text))
+    }
+
+    $r = Invoke-Scan $dir
+    $byFile = @{}
+    foreach ($h in $r.Hits) { $byFile[$h.File] = $byFile[$h.File] + 1 }
+
+    $fail = 0
+    foreach ($s in $samples) {
+        $got = 0
+        if ($byFile.ContainsKey($s.Name)) { $got = $byFile[$s.Name] }
+        $ok = ($got -eq $s.Expect)
+        if (-not $ok) { $fail++ }
+        Write-Output ("{0,-22} 期望{1}  实得{2}  {3}" -f $s.Name, $s.Expect, $got,
+            $(if ($ok) { 'OK' } else { '✗ 不符' }))
+    }
+    Remove-Item $dir -Recurse -Force
+    if ($fail -gt 0) {
+        Write-Output "find-silent-truncation 自检 FAILED：$fail 份样本与期望不符"
+        exit 1
+    }
+    Write-Output 'find-silent-truncation 自检 PASS（4 真含「留页脚」写法 + 2 假）'
+    exit 0
+}
+
+$scan = Invoke-Scan $root
+$hits = $scan.Hits
+$suppressed = $scan.Suppressed
 
 Write-Output "--- suspected silent truncation: $($hits.Count) ---"
 foreach ($h in $hits) {

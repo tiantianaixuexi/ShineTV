@@ -129,11 +129,40 @@ void Card_Tags(ImDrawList* draw, Rect area) {
 }
 
 void Card_SegmentedTabs(ImDrawList* draw, Rect area) {
+    // ⚠️ 早先这里是两条**裸语句**：
+    //     Segmented(draw, ..., options, "a",  "gal-seg");
+    //     Tabs(draw, ..., tabs,     "1",  "gal-tabs");
+    //   两个 value 都是**字面量**，返回值也直接丢弃。而 kit::Segmented / Tabs 的
+    //   实现（Widgets.cpp:451 / 568）是 `picked` 初值 = 传进去的 value，**只在**
+    //   `hit.clicked` 时被改 —— 返回值**必须由调用方存回**，否则下一帧又从字面量
+    //   重新开始。实际表现：点任意一项都弹回原项，控件完全点不动。
+    //
+    //   同一个文件 Card_Inputs 里 Switch / Checkbox 的同款问题已经判为
+    //   「组件画廊里按不动的开关比在业务页更不能接受」并修好了（见那里 154-164 的
+    //   注释）—— 这里是**同一张画布上漏改的另一半**：一页之内，开关能点、分段器
+    //   不能点，看起来像「这套控件有的能用有的不能用」，比全都不能用更容易误导。
+    //
+    // 修法照抄那边：用函数内 static 存跨帧状态（画廊卡是无实例的自由函数，
+    // 状态没地方挂，static 是本文件既有的手法，见 Card_Inputs）。
+    // 存回时**先拷成 std::string 再赋值**（不是 `segValue = segPicked`）：没点击时
+    // `Segmented` 返回的就是传进去的 value 本身，返回的 string_view 会**指向
+    // segValue 自己**，直接赋值等于自引用赋值。走临时对象这一步是本仓库既有口径
+    // （WorkspaceB.cpp 的 `std::to_string(panelTab_)` → `picked` → 存回）。
+    static std::string segValue = "a";
+    static std::string tabValue = "1";
     const std::vector<SegmentOption> options{{"a", "详情"}, {"b", "总览"}};
     const float w = SegmentedWidth(options);
-    Segmented(draw, RectAt(area.min.x, area.min.y, w, 32.0f), options, "a", "gal-seg");
+    const std::string_view segPicked =
+        Segmented(draw, RectAt(area.min.x, area.min.y, w, 32.0f), options, segValue, "gal-seg");
+    if (!segPicked.empty()) {
+        segValue = std::string(segPicked);
+    }
     const std::vector<SegmentOption> tabs{{"1", "章节"}, {"2", "设定"}, {"3", "评审"}};
-    Tabs(draw, RectAt(area.min.x, area.min.y + 42.0f, 260.0f, 30.0f), tabs, "1", "gal-tabs");
+    const std::string_view tabPicked = Tabs(
+        draw, RectAt(area.min.x, area.min.y + 42.0f, 260.0f, 30.0f), tabs, tabValue, "gal-tabs");
+    if (!tabPicked.empty()) {
+        tabValue = std::string(tabPicked);
+    }
 }
 
 void Card_Inputs(ImDrawList* draw, Rect area) {

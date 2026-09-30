@@ -87,6 +87,12 @@ struct Hit {
 [[nodiscard]] ImU32 ColorFocusRing();
 [[nodiscard]] ImU32 ColorScrim();
 
+// 全透明。**不是主题色，是「不画」** —— 之所以要有这个出口：`IM_COL32(0,0,0,0)`
+// 是源码里最常见的硬编码颜色字面量（透明滚动条底、hover 时「不画底」），而
+// `tools/check-colors.ps1` 按规则禁止硬编码颜色。没有这个函数，唯一的合规写法
+// 就是给每处加 `// theme-ok` 豁免 —— 豁免一旦多了就等于没有门禁。
+[[nodiscard]] ImU32 ColorTransparent();
+
 // 半透明**调制**：结果 alpha = 原 alpha × alpha。传 1.0 保持原样。
 // 这是给「已经在派生色里带了 alpha」的场景用的（tagBg 12% / gateBg 10% / accentGlow 30%），
 // 参数只用来做动画调制（脉冲、hover 渐变），不要用它把 12% 的淡底拉成 100% 实心。

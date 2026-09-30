@@ -65,7 +65,8 @@ void ScrollRegion::setContentHeight(float height) {
     LastContentHeight()[pendingKey_] = contentHeight_;
 }
 
-ScrollRegion::ScrollRegion(std::string_view id, Rect bounds, bool borders, bool horizontalScroll) {
+ScrollRegion::ScrollRegion(std::string_view id, Rect bounds, bool borders, bool horizontalScroll,
+                           bool noMouseInputs) {
     ImGui::SetCursorScreenPos(bounds.min);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ColorPanel());
     ImGui::PushStyleColor(ImGuiCol_Border, ColorLineSubtle());
@@ -76,7 +77,7 @@ ScrollRegion::ScrollRegion(std::string_view id, Rect bounds, bool borders, bool 
     //    直接用它自带的（自带点击拖拽与 hover/active 态），**不要自己手搓滑块** ——
     //    手搓一版没有拖拽的滑块，等于给用户一个看得见摸不着的假控件。
     //    颜色走主题，不用默认灰。
-    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ColorTransparent());
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ColorLineStrong());
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ColorAccent());
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ColorAccent());
@@ -87,6 +88,12 @@ ScrollRegion::ScrollRegion(std::string_view id, Rect bounds, bool borders, bool 
     ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoBackground;
     if (horizontalScroll) {
         windowFlags |= ImGuiWindowFlags_HorizontalScrollbar;
+    }
+    if (noMouseInputs) {
+        // 浮层开着的时候，工作区 child 必须退出命中测试，否则根窗口里那些浮层按钮
+        // 恒 hovered=false（机制见 Scroll.h 里那段）。副作用正是我们要的模态语义：
+        // 底下点不动。
+        windowFlags |= ImGuiWindowFlags_NoMouseInputs;
     }
 
     const ImVec2 size(bounds.width(), bounds.height() > 0.0f ? bounds.height() : 0.0f);

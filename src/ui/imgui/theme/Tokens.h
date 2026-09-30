@@ -121,9 +121,14 @@ struct Shadow {
 };
 
 namespace shadow {
-inline constexpr Shadow kSm{0, 1, 2, 0x00000099};  // theme-ok
-inline constexpr Shadow kMd{0, 2, 8, 0x00000033};  // theme-ok
-inline constexpr Shadow kLg{0, 8, 24, 0x0000004D}; // theme-ok
+// 这三档是设计稿 tokens.css 的 --shadow-1/2/3 原值（黑 60% / 20% / 30%），不带主题 —
+// 阴影是「叠在别的颜色上面」的一层黑，跟当前主题的底色无关，所以**故意**不走 token。
+// （对比 Derived::btnPrimaryInset / progShimmer：那两个也是主题无关叠层，但它们是
+//  白色高光，语义上属于控件，所以放进了 Derived 由主题统一算。）
+// theme-ok 后面必须写理由 —— tools/check-colors.ps1 把「有标记但没理由」判成无效豁免。
+inline constexpr Shadow kSm{0, 1, 2, 0x00000099};  // theme-ok 设计稿 --shadow-1（黑 60%）
+inline constexpr Shadow kMd{0, 2, 8, 0x00000033};  // theme-ok 设计稿 --shadow-2（黑 20%）
+inline constexpr Shadow kLg{0, 8, 24, 0x0000004D}; // theme-ok 设计稿 --shadow-3（黑 30%）
 } // namespace shadow
 
 namespace border {

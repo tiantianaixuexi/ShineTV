@@ -169,7 +169,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     // 品牌标整块可点：同样回项目中心（webui Shell.jsx:26 的 onHub）。
     {
         const Rect hit{area.min.x + 16.0f, area.min.y, x - 20.0f, area.max.y};
-        if (HitTest(hit, "tb-brand").clicked) {
+        if (ChromeHit(hit, "tb-brand").clicked) {
             ToggleProjectHub();
         }
     }
@@ -197,7 +197,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     DrawIcon(draw, "chevdown", ImVec2(capsule.max.x - 18.0f, capsule.center().y - 5.0f), 10.0f,
              ColorTextMuted());
     // 项目胶囊可点：回项目中心（webui Shell.jsx:31 的 onHub）。早先只是画了个带箭头的死胶囊。
-    if (HitTest(capsule, "tb-projchip").clicked) {
+    if (ChromeHit(capsule, "tb-projchip").clicked) {
         ToggleProjectHub();
     }
     x = capsule.max.x + 16.0f;
@@ -217,7 +217,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
     const float kbdW = KbdWidth("Ctrl K");
     Kbd(draw, RectAt(search.max.x - kbdW - 6.0f, search.center().y - 9.0f, kbdW, 18.0f), "Ctrl K");
     // 搜索框可点：开命令面板（webui Shell.jsx:36）。
-    if (HitTest(search, "tb-search").clicked) {
+    if (ChromeHit(search, "tb-search").clicked) {
         ToggleCommandPalette();
     }
 
@@ -251,7 +251,7 @@ void Shell::DrawTopBar(Rect area, ImDrawList* draw) {
             f->CalcTextSizeA(11.5f, 1e9f, 0.0f, text.data(), text.data() + text.size()).x;
         const float w = 8.0f + 11.0f + 6.0f + tw + 16.0f;
         const Rect item{rx - w, cy - 10.0f, rx, cy + 10.0f};
-        const Hit hit = HitTest(item, "tb-comfy");
+        const Hit hit = ChromeHit(item, "tb-comfy");
         if (hit.hovered) {
             DrawRoundRect(draw, item.min, item.max, 4.0f, ColorFillHover());
         }
@@ -382,7 +382,7 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
         // 再 Clicked("rail-ws-N") —— 两个 InvisibleButton 落在**同一矩形**上，
         // ImGui 的 ItemHoverable 只让先注册的那个拿到 HoveredId（HoveredAllowOverlap 默认 false），
         // 第二个永远 hovered=false / clicked=false，整个导航栏点不动。
-        const Hit hit = kit::HitTest(item, "rail-ws-" + std::to_string(i));
+        const Hit hit = ChromeHit(item, "rail-ws-" + std::to_string(i));
         DrawIconCentered(draw, WorkspaceIcon(i), center, 19.0f,
                          on ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextMuted()));
         if (hit.clicked) {
@@ -417,7 +417,7 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
         // ⚠️ 一帧里只 HitTest 一次。同一个 id 注册两个 InvisibleButton 会让 hover 整个
         //    失效（实测：hover-jump-btn 与静息态逐像素零差异）。hovered / clicked 从
         //    同一次命中测试里取。
-        const kit::Hit hit = kit::HitTest(item, "rail-tg-" + std::string(toggle.icon));
+        const kit::Hit hit = ChromeHit(item, "rail-tg-" + std::string(toggle.icon));
         if (hit.hovered) {
             DrawRoundRect(draw, ImVec2(item.min.x + 6.0f, item.min.y), ImVec2(item.max.x - 6.0f, item.max.y),
                           10.0f, ColorFillHover());
@@ -438,7 +438,7 @@ void Shell::DrawRail(Rect area, ImDrawList* draw) {
     }
     DrawIconCentered(draw, "grid", ImVec2(area.center().x, gallery.center().y), 19.0f,
                      layout_.workspace == 6 ? ColorAccent() : ColorTextMuted());
-    if (kit::Clicked(gallery, "rail-gallery")) {
+    if (ChromeClicked(gallery, "rail-gallery")) {
         SetWorkspace(6);
     }
 }
@@ -652,7 +652,7 @@ void Shell::DrawJumpButtons(Rect bounds, ImDrawList* draw) {
         //    `Clicked(...)`，等于用**同一个 id** 注册了两个 InvisibleButton。实测后果：
         //    悬停态压根不亮（`hover-jump-btn` 与静息态逐像素零差异），按钮只是
         //    "点得到但看不出按下"。hovered / clicked 从同一次命中测试里取。
-        const kit::Hit hit = HitTest(box, hitId);
+        const kit::Hit hit = ChromeHit(box, hitId);
         DrawRoundRect(draw, box.min, box.max, 6.0f,
                       hit.hovered ? ColorOf(theme::CurrentDerived().jumpBtnBg) : ColorAccentDim(),
                       ColorAccentGlow(), 1.0f);
@@ -859,7 +859,7 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
     const Rect handle{area.max.x - 20.0f, area.center().y - 24.0f, area.max.x, area.center().y + 24.0f};
     DrawRoundRect(draw, handle.min, handle.max, 6.0f, ColorPanel(), ColorLineNormal(), 1.0f);
     DrawIconCentered(draw, "chevron", handle.center(), 12.0f, ColorTextMuted());
-    if (kit::Clicked(handle, "side-collapse")) {
+    if (ChromeClicked(handle, "side-collapse")) {
         ToggleSidePanel();
     }
 
@@ -1065,7 +1065,7 @@ void Shell::DrawInspector(Rect area, ImDrawList* draw) {
                       ColorText(), title, title + std::strlen(title));
         const std::string headId = "inspector-head-" + std::to_string(s);
         // 同上：一帧里只 HitTest 一次，双注册会让 hover 失效。
-        const kit::Hit headHit = HitTest(header, headId);
+        const kit::Hit headHit = ChromeHit(header, headId);
         if (headHit.hovered) {
             draw->AddRectFilled(header.min, header.max, ColorFillHover());
         }
@@ -1269,7 +1269,7 @@ void Shell::DrawDockQueue(Rect body, ImDrawList* draw) {
             const bool running = row.state == comfy::TaskState::Running;
             const bool failed = row.state == comfy::TaskState::Failed;
             const Rect line{inner.min.x, y, inner.max.x, y + 30.0f};
-            if (HitTest(line, "dock-q-" + row.promptId).hovered) {
+            if (ChromeHit(line, "dock-q-" + row.promptId).hovered) {
                 DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
             }
             StatusDot(ldraw, ImVec2(line.min.x + 4.0f, line.center().y),
@@ -1535,6 +1535,24 @@ void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
 }
 
 // ---------------------------------------------------------------- P4.9 命令面板
+//
+// 外壳 chrome 的热区统一入口（顶栏 / 导航 / 侧栏 / 检查器 / 面包屑 / 底栏都走它）。
+//
+// 浮层开着时**直接返回空 Hit、一个 item 都不提交**。理由是 ImGui 同窗口内
+// 「先注册者独占 HoveredId」（imgui.cpp:5161），而外壳先于浮层注册 ⇒ 点遮罩关闭的
+// 那一次点击会被侧栏 / 顶栏先吃掉，结果是「工作区被切走、浮层还开着」。
+// 不提交 item 就没有「被吃掉」这回事，点击由浮层自己的遮罩处理
+// （遮罩走 IsMouseClicked + IsMouseHoveringRect，那两个不看 HoveredId）。
+//
+// 代价：浮层开着时外壳连 hover 高亮都没有 —— 那正是模态该有的样子。
+// 配套的另一半在 DrawWorkspace（给工作区 child 加 NoMouseInputs），机制见 Scroll.h。
+kit::Hit Shell::ChromeHit(const kit::Rect& bounds, std::string_view id) {
+    if (!chromeInteractive_) {
+        return kit::Hit{};
+    }
+    return kit::HitTest(bounds, id);
+}
+
 void Shell::DrawCommandPalette() {
     if (!paletteOpen_) {
         return;
@@ -1542,8 +1560,7 @@ void Shell::DrawCommandPalette() {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float width = std::min(560.0f, display.x - 40.0f);
     const Rect bounds{(display.x - width) * 0.5f, display.y * 0.22f, (display.x + width) * 0.5f,
-                      display.y * 0.22f + 420.0f};
-    // 浮层必须画在 foreground：页面/底栏各自跑在 BeginChild 里，child 在父窗口那份
+                      display.y * 0.22f + 420.0f};    // 浮层必须画在 foreground：页面/底栏各自跑在 BeginChild 里，child 在父窗口那份
     // draw list **之后**渲染，画在父 list 上的浮层会被整片盖住（见 DrawReportModal 的注释）。
     ImDrawList* draw = ImGui::GetForegroundDrawList();
 
@@ -1663,7 +1680,7 @@ void Shell::DrawCommandPalette() {
     //    不裁的话末尾几行会画到面板外面、压在工作区上（实测：薄暮/纸墨/水墨/极夜 漏在外面）。
     const Rect listArea{bounds.min.x, input.max.y + 6.0f, bounds.max.x, bounds.max.y - 12.0f};
     const float listH = std::max(0.0f, listArea.height());
-    if (ImGui::IsMouseHoveringRect(listArea.min, listArea.max, true)) {
+    if (listArea.contains(ImGui::GetIO().MousePos)) {
         paletteScroll_ -= ImGui::GetIO().MouseWheel * 30.0f;
     }
     if (paletteSelected_ < static_cast<int>(rowTops.size()) && listH > 0.0f) {
@@ -2181,6 +2198,21 @@ void Shell::DrawFrame(float dt) {
     const float bodyTop = kTopBarHeight;
     const float bodyBottom = H - kStatusBarHeight - dockH;
 
+    // ---- 浮层闸门：先算「chrome 现在接不接受鼠标」，再登记主题菜单的外部关闭 ----
+    //
+    // 四个开态正好对应 DrawFrame 尾部那四个在**根窗口**里提交 item 的浮层
+    // （命令面板 / 设置模态 / 报告模态 / 主题菜单）。开着的时候 chrome 走
+    // ChromeHit()、工作区 child 带 NoMouseInputs，于是浮层按钮拿得到
+    // HoveredWindow，底下的侧栏 / 顶栏 / 工作区也点不动。
+    // 机制（imgui.cpp:6573 / 6607 / 5156 / 5161）写在 ChromeHit 的注释里。
+    chromeInteractive_ = !(paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 || themeMenuOpen_);
+    themeOutsideHit_ = kit::Hit{};
+    if (themeMenuOpen_) {
+        // 必须**先于** chrome 注册：同窗口内先注册者独占 HoveredId，晚了就抢不到。
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        themeOutsideHit_ = kit::HitTest(Rect{0.0f, 0.0f, d.x, d.y}, "theme-outside");
+    }
+
     DrawTopBar(RectAt(0, 0, W, kTopBarHeight), draw);
     DrawRail(RectAt(0, bodyTop, kRailWidth, bodyBottom - bodyTop), draw);
 
@@ -2216,7 +2248,15 @@ void Shell::DrawFrame(float dt) {
 void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     // ⚠️ 必须用 ImGui::BeginChild 当滚动区：自绘控件只出 draw call，不出裁剪也不出
     //    滚动，内容超出既不会被裁也不会滚，鼠标还会穿透。BeginChild 一次给全。
-    kit::ScrollRegion region("workspace-scroll", area);
+    // ⚠️ 浮层开着的时候必须让这个 child 退出命中测试，否则浮层按钮全是死的。
+    //    机制写在 Scroll.h 的构造注释里（`g.HoveredWindow` 归 child，根窗口 item
+    //    一律 hovered=false）。这里四个开态正好对应 DrawFrame 尾部那四个在**根窗口**
+    //    里提交 item 的浮层：命令面板 / 设置模态 / 报告模态 / 主题菜单。
+    //    项目中心不走这里（整屏替身，浮层在 hub-scroll child 内部提交，本来就能点）。
+    const bool overlayBlocksMouse = paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 ||
+                                    themeMenuOpen_;
+    kit::ScrollRegion region("workspace-scroll", area, /*borders=*/false, /*horizontal=*/false,
+                             /*noMouseInputs=*/overlayBlocksMouse);
     if (!region) {
         return;
     }
@@ -2333,33 +2373,48 @@ void Shell::DrawDockArtifacts(Rect body, ImDrawList* draw) {
         return;
     }
 
-    float y = body.min.y;
-    for (const ArtifactRow& row : artifacts_) {
-        if (y + 24.0f > body.max.y - 16.0f) {
-            break;
+    // ⚠️ 这里原来有一处**静默截断**，而且是扫描器长期漏掉的形态：
+    //        if (y + 24.0f > body.max.y - 16.0f) { break; }
+    //    `tools/find-silent-truncation.ps1` 的正则当年写成 `\.max\.y\s*\)`，只吃
+    //    「给下边界留页脚」之外的朴素写法，于是这个 `- 16.0f` 让它在**有真缺陷的树上
+    //    报 0** —— 扫描器报 0 和「没有截断」长得一模一样。产物一多，第 N+1 个之后的
+    //    文件**无声消失**，界面上看不出 output/ 里还有东西。
+    //    改成画**全部**条目，列表自己滚；页脚那一句留在滚动区**外面**。
+    constexpr float kArtRowH = 26.0f;
+    constexpr float kArtFootH = 18.0f;
+    const Rect listArea{body.min.x, body.min.y, body.max.x, body.max.y - kArtFootH};
+    kit::ScrollRegion list("dock-artifact-list", listArea);
+    if (list) {
+        // 内容必须画在 child 自己的 draw list 上，否则裁剪无效（见 Scroll.h）。
+        ImDrawList* ldraw = list.drawList();
+        const Rect inner = list.content();
+        float y = inner.min.y;
+        for (const ArtifactRow& row : artifacts_) {
+            const Rect line{inner.min.x, y, inner.min.x + 520.0f, y + 24.0f};
+            const Hit hit = ChromeHit(line, "dock-art-" + row.name);
+            if (hit.hovered) {
+                DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
+            }
+            DrawIcon(ldraw, "folder", ImVec2(line.min.x + 3.0f, line.center().y - 6.0f), 13.0f,
+                     ColorAccentHover());
+            DrawTextClipped(ldraw, MonoAt(11.5f), 11.5f, ImVec2(line.min.x + 22.0f, y + 5.0f),
+                            300.0f, ColorText(), row.name);
+            DrawTextClipped(ldraw, FontAt(10.5f), 10.5f, ImVec2(line.min.x + 330.0f, y + 5.0f),
+                            90.0f, ColorTextMuted(), row.kind);
+            DrawIcon(ldraw, "chevron", ImVec2(line.max.x - 14.0f, line.center().y - 5.0f), 10.0f,
+                     ColorTextMuted());
+            if (hit.clicked) {
+                const std::string err = util::ShellOpen(row.path);
+                PushLog(err.empty() ? "info" : "err",
+                        std::string("打开产物 ") + row.name + (err.empty() ? "" : " 失败：" + err));
+            }
+            y += kArtRowH;
         }
-        const Rect line{body.min.x, y, body.min.x + 520.0f, y + 24.0f};
-        const Hit hit = HitTest(line, "dock-art-" + row.name);
-        if (hit.hovered) {
-            DrawRoundRect(draw, line.min, line.max, 6.0f, ColorFillHover());
-        }
-        DrawIcon(draw, "folder", ImVec2(line.min.x + 3.0f, line.center().y - 6.0f), 13.0f,
-                 ColorAccentHover());
-        DrawTextClipped(draw, MonoAt(11.5f), 11.5f, ImVec2(line.min.x + 22.0f, y + 5.0f), 300.0f,
-                        ColorText(), row.name);
-        DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(line.min.x + 330.0f, y + 5.0f), 90.0f,
-                        ColorTextMuted(), row.kind);
-        DrawIcon(draw, "chevron", ImVec2(line.max.x - 14.0f, line.center().y - 5.0f), 10.0f,
-                 ColorTextMuted());
-        if (hit.clicked) {
-            const std::string err = util::ShellOpen(row.path);
-            PushLog(err.empty() ? "info" : "err",
-                    std::string("打开产物 ") + row.name + (err.empty() ? "" : " 失败：" + err));
-        }
-        y += 26.0f;
+        list.setContentHeight(y - inner.min.y);
     }
     const std::string foot =
-        "产物浏览器指向 " + util::PathToUtf8(artifactRoot_) + " · 点击条目用系统默认程序打开";
+        "共 " + std::to_string(artifacts_.size()) + " 个产物 · 指向 " +
+        util::PathToUtf8(artifactRoot_) + " · 点击条目用系统默认程序打开";
     draw->AddText(FontAt(10.5f), 10.5f, ImVec2(body.min.x, body.max.y - 14.0f), ColorTextMuted(),
                   foot.data(), foot.data() + foot.size());
 }
@@ -2621,38 +2676,51 @@ void Shell::DrawDockReports(Rect body, ImDrawList* draw) {
 
     // 行 = code(70) | name(90) | 结论 Tag | 尾部 chevron。设计稿这一组是 flex 行
     // （Shell.jsx:255-262）**没有列头**，所以这里不套 DataTable，也不加排序。
-    float y = body.min.y;
-    for (std::size_t i = 0; i < reports_.size(); ++i) {
-        if (y + 26.0f > body.max.y - 20.0f) {
-            break;
+    //
+    // ⚠️ 同 DrawDockArtifacts：原来这里是 `if (y + 26.0f > body.max.y - 20.0f) break;`
+    //    —— 又一处**静默截断**，第 N+1 章之后的报告无声消失，界面上看不出 work/ 下还有
+    //    v08_continuity.json。改成画**全部**行，列表自己滚；页脚留在滚动区**外面**。
+    constexpr float kRepRowH = 26.0f;
+    constexpr float kRepFootH = 18.0f;
+    const Rect listArea{body.min.x, body.min.y, body.max.x, body.max.y - kRepFootH};
+    kit::ScrollRegion list("dock-report-list", listArea);
+    if (list) {
+        // 内容必须画在 child 自己的 draw list 上，否则裁剪无效（见 Scroll.h）。
+        ImDrawList* ldraw = list.drawList();
+        const Rect inner = list.content();
+        float y = inner.min.y;
+        for (std::size_t i = 0; i < reports_.size(); ++i) {
+            const ChapterReport& report = reports_[i];
+            const Rect line{inner.min.x, y, inner.min.x + 560.0f, y + kRepRowH};
+            // 一个矩形只 HitTest 一次：hover 高亮与点击读同一个 Hit。
+            const Hit hit = ChromeHit(line, "dock-report-" + std::to_string(i));
+            if (hit.hovered) {
+                DrawRoundRect(ldraw, line.min, line.max, 6.0f, ColorFillHover());
+            }
+            std::string code = "ch" + std::to_string(report.chapterOrd);
+            while (code.size() < 5) {
+                code.insert(code.begin() + 2, '0');
+            }
+            DrawTextClipped(ldraw, MonoAt(10.5f), 10.5f, ImVec2(line.min.x + 4.0f, y + 8.0f),
+                            62.0f, ColorTextMuted(), code);
+            DrawTextClipped(ldraw, FontAt(12.5f), 12.5f, ImVec2(line.min.x + 74.0f, y + 6.0f),
+                            150.0f, ColorTextSecondary(), "连续性 C1-C12");
+            const std::string summary = ReportSummary(report);
+            Tag(ldraw, RectAt(line.min.x + 232.0f, y + 5.0f, TagWidth(summary, true, false),
+                              TagHeight(true)),
+                summary, ReportTone(report), /*small=*/true);
+            DrawIcon(ldraw, "chevron", ImVec2(line.max.x - 16.0f, line.center().y - 5.0f), 10.0f,
+                     ColorTextMuted());
+            if (hit.clicked) {
+                reportDetail_ = static_cast<int>(i);
+            }
+            y += kRepRowH;
         }
-        const ChapterReport& report = reports_[i];
-        const Rect line{body.min.x, y, body.min.x + 560.0f, y + 26.0f};
-        // 一个矩形只 HitTest 一次：hover 高亮与点击读同一个 Hit。
-        const Hit hit = HitTest(line, "dock-report-" + std::to_string(i));
-        if (hit.hovered) {
-            DrawRoundRect(draw, line.min, line.max, 6.0f, ColorFillHover());
-        }
-        std::string code = "ch" + std::to_string(report.chapterOrd);
-        while (code.size() < 5) {
-            code.insert(code.begin() + 2, '0');
-        }
-        DrawTextClipped(draw, MonoAt(10.5f), 10.5f, ImVec2(line.min.x + 4.0f, y + 8.0f), 62.0f,
-                        ColorTextMuted(), code);
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(line.min.x + 74.0f, y + 6.0f), 150.0f,
-                        ColorTextSecondary(), "连续性 C1-C12");
-        const std::string summary = ReportSummary(report);
-        Tag(draw, RectAt(line.min.x + 232.0f, y + 5.0f, TagWidth(summary, true, false),
-                         TagHeight(true)),
-            summary, ReportTone(report), /*small=*/true);
-        DrawIcon(draw, "chevron", ImVec2(line.max.x - 16.0f, line.center().y - 5.0f), 10.0f,
-                 ColorTextMuted());
-        if (hit.clicked) {
-            reportDetail_ = static_cast<int>(i);
-        }
-        y += 26.0f;
+        list.setContentHeight(y - inner.min.y);
     }
-    const std::string foot = "报告来自 work/ch<NNN>/v08_continuity.json · 点击任一行查看逐项结论（检查 / 级别 / 结论 / 详情）";
+    const std::string foot = "共 " + std::to_string(reports_.size()) +
+                             " 章有报告 · 来自 work/ch<NNN>/v08_continuity.json · "
+                             "点击任一行查看逐项结论（检查 / 级别 / 结论 / 详情）";
     DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(body.min.x, body.max.y - 14.0f),
                     body.width(), ColorTextMuted(), foot);
 }
@@ -2685,9 +2753,10 @@ void Shell::DrawReportModal() {
     DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
     // 点遮罩关闭。⚠️ 这里**不能**用 kit::HitTest：全屏遮罩若先注册成 InvisibleButton，
     // 它会先拿到 HoveredId，模态里所有按钮（同一帧、位置落在遮罩内）永远 hovered=false。
-    // 改用不注册 item 的 IsMouseHoveringRect。
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        !ImGui::IsMouseHoveringRect(bounds.min, bounds.max, true)) {
+    // 改成手算点在不在面板内：既不注册 item（所以不抢 HoveredId），
+    // 也避开了 ImGui::IsMouseHoveringRect —— 后者在**本工程**会 0xC0000005
+    // （fault offset 0x8b8597，见 refactor/PROGRESS.md 的那次记录）。
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !bounds.contains(ImGui::GetIO().MousePos)) {
         reportDetail_ = -1;
     }
 
@@ -2741,7 +2810,7 @@ void Shell::DrawReportModal() {
     const float contentH =
         18.0f + summaryH + headH + (rows.empty() ? rowH : static_cast<float>(rows.size()) * rowH) + 18.0f;
     const float maxScroll = std::max(0.0f, contentH - body.height());
-    if (ImGui::IsMouseHoveringRect(body.min, body.max, true)) {
+    if (body.contains(ImGui::GetIO().MousePos)) {
         reportScroll_ -= ImGui::GetIO().MouseWheel * 40.0f;
     }
     reportScroll_ = std::clamp(reportScroll_, 0.0f, maxScroll);
@@ -2787,7 +2856,7 @@ void Shell::DrawReportModal() {
     }
     for (const CheckRow& row : rows) {
         const Rect line{tableX, y, tableX + tableW, y + rowH};
-        if (ImGui::IsMouseHoveringRect(line.min, line.max, true)) {
+        if (line.contains(ImGui::GetIO().MousePos)) {
             draw->AddRectFilled(line.min, line.max, ColorFillHover());
         }
         DrawTextClipped(draw, MonoAt(11.5f), 11.5f, ImVec2(line.min.x + 8.0f, y + 7.0f), codeW - 16.0f,
@@ -2917,8 +2986,13 @@ void Shell::DrawThemeMenu(ImVec2 anchor, ImDrawList* draw) {
     }
 
     // 点菜单外面关掉（对应 webui 的 pointerdown 外部关闭）。
-    const Hit outside = HitTest(Rect{0.0f, 0.0f, display.x, display.y}, "theme-outside");
-    if (outside.clicked) {
+    //
+    // ⚠️ 这个全屏热区**不能在这里**注册，必须提前到 DrawFrame 开头、外壳 chrome
+    //    **之前**。同窗口内「先注册者独占 HoveredId」（imgui.cpp:5161）：注册在
+    //    chrome 之后的话，导航栏 / 顶栏 / 工作区任何一处都先抢到这次点击，于是
+    //    「点外面关菜单」变成「切了工作区、菜单还开着悬在新工作区上」。
+    //    结果由 DrawFrame 开头那次注册写进 themeOutsideHit_。
+    if (themeOutsideHit_.clicked) {
         themeMenuOpen_ = false;
     }
 }
@@ -2926,6 +3000,14 @@ void Shell::DrawThemeMenu(ImVec2 anchor, ImDrawList* draw) {
 // ---------------------------------------------------------------- P4.9b 设置模态
 // 「设置 · 三步开工」（Shell.jsx:74 的 IconBtn tip）。这里读 AppSettings 的真值，
 // 让用户看到程序**实际**连的是什么，而不是一份编出来的配置。
+// 「设置」模态右上角 × 的矩形。**绘制与判据共用这一份**（见 Shell.h 的说明）。
+Rect Shell::SettingsCloseRect() const {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    constexpr float kW = 560.0f;
+    constexpr float kH = 452.0f;
+    return RectAt((display.x + kW) * 0.5f - 34.0f, (display.y - kH) * 0.5f + 10.0f, 22.0f, 22.0f);
+}
+
 void Shell::DrawSettingsModal() {
     if (!settingsOpen_) {
         return;
@@ -2936,9 +3018,11 @@ void Shell::DrawSettingsModal() {
     const float w = 560.0f;
     const float h = 452.0f;
     const Rect bounds{(display.x - w) * 0.5f, (display.y - h) * 0.5f, (display.x + w) * 0.5f,
-                      (display.y + h) * 0.5f};
+                      (display.y - h) * 0.5f + h};
 
-    const Hit scrim;
+    // 遮罩**只画不命中**，靠函数末尾那段「点外面关闭」处理。不注册 item 是刻意的：
+    // 全屏 InvisibleButton 会先拿到 HoveredId，模态里所有按钮（同一帧、位置落在遮罩
+    // 内）就永远 hovered=false —— 见函数末尾的注释。
     DrawRoundRect(draw, ImVec2(0.0f, 0.0f), ImVec2(display.x, display.y), 0.0f, ColorScrim());
     DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
 
@@ -2947,8 +3031,7 @@ void Shell::DrawSettingsModal() {
     static constexpr char kSettingsTitle[] = "设置 · 三步开工";
     draw->AddText(FontBoldAt(14.0f), 14.0f, ImVec2(bounds.min.x + 40.0f, bounds.min.y + 14.0f),
                   ColorText(), kSettingsTitle, kSettingsTitle + sizeof(kSettingsTitle) - 1);
-    if (IconButton(draw, RectAt(bounds.max.x - 34.0f, bounds.min.y + 10.0f, 22.0f, 22.0f), "x",
-                   false, false, "settings-close")) {
+    if (IconButton(draw, SettingsCloseRect(), "x", false, false, "settings-close")) {
         settingsOpen_ = false;
     }
     draw->AddLine(ImVec2(bounds.min.x, bounds.min.y + 44.0f), ImVec2(bounds.max.x, bounds.min.y + 44.0f),
@@ -2986,8 +3069,11 @@ void Shell::DrawSettingsModal() {
 
     // 点遮罩关闭：同样不能用 kit::HitTest（全屏遮罩会先抢 HoveredId，
     // 把模态里的按钮变成死键）。用不注册 item 的 IsMouseHoveringRect。
+    // 点遮罩关闭。理由同 DrawReportModal：既不注册 item（免得遮罩先拿到 HoveredId
+    // 把模态里的按钮全变成死键），也不用 ImGui::IsMouseHoveringRect（本工程会
+    // 0xC0000005），改成手算点在不在面板内。
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        !ImGui::IsMouseHoveringRect(bounds.min, bounds.max, true)) {
+        !bounds.contains(ImGui::GetIO().MousePos)) {
         settingsOpen_ = false;
     }
 }

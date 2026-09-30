@@ -505,8 +505,10 @@ void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
 
     // ---- 滚轮以光标为锚缩放 ----
     // ⚠️ 必须先确认指针在本区域内，否则滚轮会同时把外层页面滚下去。
-    const bool hovered = ImGui::IsMouseHoveringRect(bounds.min, bounds.max, false);
+    //    手算而不是 ImGui::IsMouseHoveringRect —— 后者在**本工程**会 0xC0000005
+    //    （fault offset 0x8b8597），refactor/PROGRESS.md 有那次崩溃的记录。
     const ImVec2 mouse = ImGui::GetMousePos();
+    const bool hovered = bounds.contains(mouse);
     if (hovered) {
         if (const float wheel = ImGui::GetIO().MouseWheel; wheel != 0.0f) {
             const float z2 = std::clamp(view.z * std::exp(-wheel * 0.0014f), 0.35f, 2.0f);

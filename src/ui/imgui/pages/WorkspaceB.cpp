@@ -52,6 +52,22 @@ constexpr float kGap = 16.0f;
 //    （早先的「seed 42 · 28 step」「CLIP 0.918」「2× → 48fps」就是这么来的）。
 constexpr const char* kDash = "—";
 
+// ⚠️ `kit::Art()` 是**纯程序化绘制**（kit/Views.cpp）：调色板只按 `seed % 12` 取，
+//    形状是固定几何，跟 novel.db / Comfy 的任何字段都无关 —— 它画出来的图
+//    **不是这个工程的出图结果**，只是一块占位色块。
+//
+//    所以每一处画了它的地方都必须有一句**可见**标注，否则读者会把占位插画当成
+//    真实渲染。`Shell.cpp` 的设计稿区早就标注了同一句（那处的 Art 同样是占位），
+//    本文件早先三处（图评审 / 结果 / 胶片条）漏了 ——
+//    「同一件事有的地方标了有的地方没标」比「都不标」更糟：它让人以为没标的那
+//    几张是真的。
+//
+//    **全仓统一这一句，不各写各的**：措辞一分裂，日后就没人说得清哪句才是标准。
+//    需要更短的形式（格子太小放不下）时用 kArtNoticeShort，但要在注释里说明它是
+//    同一句话的缩写。
+constexpr const char* kArtNotice = "示意插画 · 非本工程出图结果";
+constexpr const char* kArtNoticeShort = "示意";
+
 float LabelWidth(ImFont* font, float size, const char* text) {
     return font->CalcTextSizeA(size, 1e9f, 0.0f, text, text + std::strlen(text)).x;
 }
@@ -107,6 +123,17 @@ int ReadyAssetCount(const BookSideView& book) {
         }
     }
     return false;
+}
+
+// 面板头状态词用的读数 —— 语义与 ComfyHasRunning() **完全一致**（有没有 Running 行），
+// 只是走 `CountsSnapshot()`：上面那个要 `Snapshot()` 整表 vector 拷贝（每行带 label /
+// error / traceback 几个 std::string，还要进出两把锁），而面板头是**每帧**画的，
+// 为一个 bool 付整表拷贝不值当。`running > 0` 就是「有 Running 行」。
+//
+// ⚠️ 口径**必须**与 ComfyHasRunning() 一致：这两个头一个字说「运行中」、另一个说
+//    「空闲」，界面就在自相矛盾。所以改口径时要同时改两个。
+[[nodiscard]] bool ComfyRunningForBadge() {
+    return comfy::ComfySession::Instance().Queue().CountsSnapshot().running > 0;
 }
 
 std::vector<FlowNode> MakeImageFlowNodes() {
@@ -1876,9 +1903,22 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
                      area.min.y + 16.0f + panelHeight};
     DrawShadowed(draw, panel.min, panel.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
     DrawIcon(draw, "link", ImVec2(panel.min.x + 16.0f, panel.min.y + 16.0f), 15.0f, ColorAccent());
-    const float headTagW = TagWidth("运行中", false, true);
-    Tag(draw, RectAt(panel.max.x - 60.0f - headTagW, panel.min.y + 13.0f, headTagW, 20.0f), "运行中",
-        theme::Tone::Accent, false, true);
+    // ⚠️ 早先这里是 `Tag(..., "运行中", theme::Tone::Accent, ...)` —— 文本与色调**都写死**。
+    //    而这一行画在 `folded_` 提前 return **之前**、页签分发**之前**，上下文 30 行内没有
+    //    任何队列或 Runner 读数。后果：Comfy 队列是空的、甚至**根本没绑工程**时，
+    //    面板照样在断言「现在正在出图」。面板头是这一屏最容易被扫到的位置，
+    //    在这里放一个假的进行时状态 = 整屏的第一印象就是假的。
+    //
+    // 真值源：同文件的 Comfy 队列读数（`ComfyRunningForBadge()`，口径同
+    // `ComfyHasRunning()`）。**没在跑就不画这个 Tag** —— 不画假绿，也不用
+    // 「空闲」再占一个 tag 槽：面板头右侧是折叠按钮，槽位窄，「空闲」两个字
+    // 和一个 20px 的 tag 挤在那儿比空着更抢眼，而且「空闲」在折叠态下会被读成
+    // 「折叠起来了所以空闲」，反而引入第二层歧义。空着就是空着。
+    if (ComfyRunningForBadge()) {
+        const float headTagW = TagWidth("运行中", false, true);
+        Tag(draw, RectAt(panel.max.x - 60.0f - headTagW, panel.min.y + 13.0f, headTagW, 20.0f),
+            "运行中", theme::Tone::Accent, false, true);
+    }
     if (IconButton(draw, RectAt(panel.max.x - 48.0f, panel.min.y + 12.0f, 24.0f, 24.0f), "chevdown",
                    false, false, "if-fold")) {
         folded_ = !folded_;
@@ -2025,8 +2065,17 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
         // 实体就列出来（名字 + 生产状态），一条都没有就说明为什么没有。
         const BookSideView& rv = BookSide();
         Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 150.0f}, 6, true);
+        // ⚠️ 上面那块是 `Art()` 的**程序化占位画**（调色板只按 `seed % 12` 取、形状是固定
+        //    几何，与 novel.db / Comfy 任何字段都无关），早先这里**只有画、没有标注**。
+        //    `Shell.cpp` 的同一张占位画早就标了「示意插画 · 非本工程出图结果」，本文件
+        //    漏了 —— 漏标的那一张会被当成该工程的出图结果读。
+        //    标在插画**下方**（与 Shell.cpp 同一位置口径），字号 11.5 / muted。
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.min.y + 154.0f),
+                        body.width(), ColorTextMuted(), kArtNotice, true);
         // 插画 150 高之后留够落笔空间：Art 的实际下沿比 rect 略高一点，早先 +162 的
         // 间距会让第一行名字压在插画下沿上（截图里能直接看出来）。
+        // 现在多了一行 11.5 的标注（154 → 约 170），所以清单起点从 +180 起，标注不会
+        // 被清单压住。
         const float listTop = body.min.y + 180.0f;
         // 先把「真的列得出来」的实体收齐：有资产才进清单，否则空态才说得清。
         std::vector<const BookAssetView*> listed;
@@ -2083,6 +2132,12 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
         // 一条视觉资产都没有时说清楚为什么没有，不拿 Art 占位图 + 假参数撑场面。
         const BookSideView& rv = BookSide();
         Art(draw, Rect{body.min.x, body.min.y, body.max.x, body.min.y + 150.0f}, 6, true);
+        // ⚠️ 同样是 `Art()` 的程序化占位画，seed 还是**写死的 6**（每帧同一张）——
+        //    早先这里只画不标。`Shell.cpp` 的同一张占位画早就标注了，这处漏了。
+        //    这一页最容易骗人：页签名叫「结果」，读者会把占位插画当成出图结果本身。
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(body.min.x, body.min.y + 154.0f),
+                        body.width(), ColorTextMuted(), kArtNotice, true);
+        // 标注占了 154 → 约 170，清单从 +180 起，两者不重叠。
         const float listTop = body.min.y + 180.0f;
         std::vector<const BookAssetView*> listed;
         for (const BookAssetView& asset : rv.assets) {
@@ -2172,9 +2227,20 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
     const Rect panel{area.max.x - panelW - 16.0f, area.min.y + 16.0f, area.max.x - 16.0f,
                      area.min.y + 16.0f + std::min(520.0f, area.height() - 140.0f)};
     DrawShadowed(draw, panel.min, panel.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
-    const float headTagW = TagWidth("出片中", false, true);
-    Tag(draw, RectAt(panel.max.x - 16.0f - headTagW, panel.min.y + 13.0f, headTagW, 20.0f), "出片中",
-        theme::Tone::Accent, false, true);
+    // ⚠️ 与出图页同一个毛病：早先是 `Tag(..., "出片中", theme::Tone::Accent, ...)`，
+    //    文本与色调写死，绘制点在页签分发之前、上下文 30 行内没有任何读数。
+    //    队列空着、甚至没绑工程时，面板仍在说「出片中」。这里同样只画**真在跑**的情形。
+    //
+    // 判据用同一个 Comfy 队列读数（`ComfyRunningForBadge()`）：出片页的「视频任务」
+    // 页签本来就已经列的是 `comfy::ComfySession::Queue()` 的真实快照，所以面板头和
+    // 页签内容**指向同一份数据** —— 头说「没在跑」而页签列着任务行，那才是真的矛盾。
+    // 代价：这个头不区分「跑的是出图任务还是出片任务」（队列没给任务分类），
+    // 所以它只声称「Comfy 在跑」，不声称「在出片」—— 宁可少说，不可说错。
+    if (ComfyRunningForBadge()) {
+        const float headTagW = TagWidth("出片中", false, true);
+        Tag(draw, RectAt(panel.max.x - 16.0f - headTagW, panel.min.y + 13.0f, headTagW, 20.0f),
+            "出片中", theme::Tone::Accent, false, true);
+    }
 
     const std::vector<SegmentOption> tabs{{"0", "首尾帧链"}, {"1", "视频任务"}, {"2", "成片"}};
     const std::string value = std::to_string(panelTab_);
@@ -2325,7 +2391,17 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
     // 真值源：BookSide().shots（当前选中章的镜）。格数跟着镜数走，镜号 / 时长 / 设定
     // 状态都是真字段。**没有镜就整条不出**（保留容器与标题，写明为什么空），
     // 而不是拿 6 个编出来的格子撑场面。
-    const Rect strip{area.min.x + 16.0f, area.max.y - 92.0f, area.max.x - 384.0f, area.max.y - 16.0f};
+    //
+    // 高度从 76 提到 92（底边仍在 area.max.y-16，顶边上移）：多出来的 16px 是给
+    // 页脚那句「示意插画 · 非本工程出图结果」的。格子高度用**绝对值**钉死在 60
+    // （strip.min.y+8 → +68），所以格内所有文字的相对位置一字未动，改的只是容器
+    // 与新增的那行页脚。
+    // 为什么不省这 16px 硬塞：条里除了格子的 60px，只剩标题那 14px，左侧 38px 的
+    // 窄槽放不下那句（约 152px）—— 硬塞就得截断成「示意插画…」，反而读不出
+    // 「非出图结果」这半句，而那半句正是这句存在的全部理由。
+    // 面板在右、最上可达 area.min.y+16+min(520, h-140)，上移 16 不会与它相交。
+    const Rect strip{area.min.x + 16.0f, area.max.y - 108.0f, area.max.x - 384.0f,
+                     area.max.y - 16.0f};
     DrawShadowed(draw, strip.min, strip.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
     const char* stripTitle = "成片";
     draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(strip.min.x + 14.0f, strip.min.y + 12.0f),
@@ -2342,10 +2418,31 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
             if (x + 118.0f > strip.max.x - 8.0f) {
                 break;  // 放不下就不画，不压缩也不重叠
             }
-            const Rect cell{x, strip.min.y + 8.0f, x + 118.0f, strip.max.y - 8.0f};
+            // 格高用**绝对值**钉 60（不是 strip.max.y-8）：容器长高是为页脚腾的，
+            // 格内布局跟着容器长高会连带把缩略图和那三行真字段一起拉变形。
+            const Rect cell{x, strip.min.y + 8.0f, x + 118.0f, strip.min.y + 68.0f};
             DrawRoundRect(draw, cell.min, cell.max, 8.0f, ColorFillMuted(), ColorLineNormal(), 1.0f);
-            Art(draw, Rect{cell.min.x + 6.0f, cell.min.y + 6.0f, cell.min.x + 62.0f, cell.max.y - 6.0f},
-                shot.ord, true);
+            // ⚠️ 这块缩略图是 `Art(..., shot.ord, true)` —— **纯程序化绘制**，seed 只影响
+            //    取色与形状，与这一镜的真实画面无关（`novel.db` 里没有镜头级图像，
+            //    业务层也没有镜头缩略图的只读投影）。早先它跟旁边那三行真字段
+            //    （镜号 / durationSec / 设定状态）**并排同字号**排在一起，视觉上是等价信息，
+            //    于是缩略图被读成「这一镜的出图」。相邻的真数据反而给它做了背书 ——
+            //    这是这处比另外两处更隐蔽的原因。
+            //
+            // 一格只有 118×60，缩略图 56 宽放不下整句（kArtNotice 是 13 个汉字 + 一个
+            // 间隔号，10.5px 下约 152px 宽，是 56 的近三倍），所以分两处写：
+            //   * 每格缩略图**下方**标「示意」两字（kArtNoticeShort，kArtNotice 的缩写），
+            //     为此把缩略图高度从 48 收到 34 让出标注行 —— 标注贴在**它说的那张图
+            //     正下方**，这是三处里唯一能做到这一点的（另两处图宽 316，标注在图下沿
+            //     之下、文字左对齐，读起来是同一组）；
+            //   * 整条胶片条的页脚再写一遍**完整那句**（kArtNotice）。
+            // 两处都要：只写页脚的话，格内的图仍然是「看起来像出图」，而胶片条一屏能
+            // 并排七八格，读者多半不会逐格往下看到页脚。
+            Art(draw, Rect{cell.min.x + 6.0f, cell.min.y + 6.0f, cell.min.x + 62.0f,
+                           cell.min.y + 40.0f}, shot.ord, true);
+            draw->AddText(FontAt(10.5f), 10.5f, ImVec2(cell.min.x + 6.0f, cell.min.y + 42.0f),
+                          ColorTextMuted(), kArtNoticeShort,
+                          kArtNoticeShort + std::strlen(kArtNoticeShort));
             const std::string code = ShotCode(shot.ord);
             draw->AddText(MonoAt(10.5f), 10.5f, ImVec2(cell.min.x + 70.0f, cell.min.y + 12.0f),
                           ColorAccent(), code.data(), code.data() + code.size());
@@ -2361,6 +2458,14 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
             x += 124.0f;
         }
     }
+    // 页脚：格内那两个字（kArtNoticeShort = 「示意」）在这里还原成**完整那句**
+    // （kArtNotice，与 Shell.cpp / 图评审 / 结果三处逐字一致，不另创新文案）。
+    // 「每格都是示意」这个意思由**每格都各标了一个「示意」**来承担，不靠页脚措辞 ——
+    // 页脚只负责把缩写展开成整句：读者在格内看到「示意」想知道指什么，往下就能看到。
+    // 画在 if/else **之外**：没镜的那条分支没有占位画，这句仍然成立（说明这批格子
+    // 将来长什么样），也让这句不随镜数忽隐忽现。
+    DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(strip.min.x + 52.0f, strip.max.y - 18.0f),
+                    strip.width() - 64.0f, ColorTextMuted(), kArtNotice, true);
 }
 
 // ================================================================ P4.11 项目中心
@@ -2698,12 +2803,28 @@ std::vector<int> DrawModalFooter(ImDrawList* draw, Rect footer,
 // 返回 true = 本帧通过整卡或「打开」按钮触发了打开。
 bool DrawHubCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect bounds,
                  float bodyWidth) {
-    // 整卡命中先登记：页脚按钮后登记，ImGui 里后命中的 item 优先，
-    // 效果等价于 webui 的 e.stopPropagation()（点「移除」不会顺手打开项目）。
-    const Hit hit = HitTest(bounds, "hub-card-" + card.entry.id);
+    // ⚠️ 整卡热区在**页脚四个按钮之后**才注册，方向不能反。
+    //
+    //    ImGui 同一窗口内是「**先注册者独占** HoveredId / ActiveId」：
+    //    `ItemHoverable` 里 `if (g.HoveredId != 0 && g.HoveredId != id && !AllowOverlap)
+    //    return false;`（imgui.cpp:5161），随后 `SetHoveredID(id)`。所以先注册整卡
+    //    ⇒ 页脚四个按钮**永远 hovered=false / clicked=false**，而整卡在它们的像素上
+    //    照样 clicked=true —— 症状是「点『…』不是弹移除确认，而是直接把项目打开」，
+    //    另外三个键连 hover 底色都不出。**这里原来的注释断言「后命中的 item 优先」，
+    //    与 ImGui 的规则正好相反**，所以那个 bug 一直没人看出来。
+    //
+    //    先注册按钮之后，落在页脚像素上的那次点击归按钮，落在卡片正文的归整卡 ——
+    //    效果等价于 webui 里 pfoot 上的 e.stopPropagation()，而且是 ImGui 自己做的，
+    //    不依赖下面那串 `!openPressed && …` 兜底（兜底仍保留，双保险）。
+    //
+    //    代价：边框的高亮要手算鼠标位置，不能用 hit.hovered（那时还没注册）。
+    //    ⚠️ 只能用 bounds.contains() 手算，**不要**用 ImGui::IsMouseHoveringRect ——
+    //    本工程调它会 0xC0000005（fault offset 0x8b8597），已改成手算比较。
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const bool cardHovered = bounds.contains(mouse);
     constexpr float radius = 10.0f;
     DrawShadowed(draw, bounds.min, bounds.max, radius, ColorPanel(),
-                 hit.hovered ? ColorAccentGlow() : ColorLineSubtle(), 1.0f);
+                 cardHovered ? ColorAccentGlow() : ColorLineSubtle(), 1.0f);
 
     // 封面满幅（views.css:82 .cover 无内缩）。这版 ImGui 没有 PushClipPath，
     // 卡片顶部的两个圆角用同色三角补掉。
@@ -2772,9 +2893,13 @@ bool DrawHubCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect boun
         draw, RectAt(bounds.max.x - 14.0f - iconSize, y, iconSize, iconH), "palette", false, false,
         "hub-theme-" + card.entry.id, "切换主题");
 
+    // ⚠️ 整卡热区**必须排在页脚四个按钮之后**（理由见函数开头那段）。
+    const Hit hit = HitTest(bounds, "hub-card-" + card.entry.id);
+
     // 整卡点击要扣掉页脚按钮：ImGui 的 IsItemClicked 只看「光标在本 item 矩形内」，
     // 页脚按钮压在卡片上，不扣掉的话点「移除」会顺手把项目也打开
     // （等价 webui 里 pfoot 上的 e.stopPropagation）。
+    // 改成「按钮先注册」之后 ImGui 自己就把这两次点击分开了，这串判定是双保险。
     open = hit.clicked && !openPressed && !revealPressed && !morePressed && !themePressed;
 
     if (revealPressed) {
