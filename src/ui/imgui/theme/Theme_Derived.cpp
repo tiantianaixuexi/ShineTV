@@ -84,7 +84,12 @@ void ComputeDerived(ThemeRecord& record, ThemeId id) {
         }
     }
 
-    // 实色预混（color-mix 两端都是不透明基色 → 结果不透明）。
+    // 预混（color-mix）。
+    // ⚠️ 「两端都是不透明基色 ⇒ 结果不透明」这句在**纸墨 / 水墨下不成立**：
+    //    那两套的 `fill.muted` 是 CSS 原文的 rgba（tokens.css:142 / :183），
+    //    于是这里出来的三个底色**带 alpha** —— 那正是 CSS `color-mix` 的答案
+    //    （输出 alpha = 0.1×1 + 0.9×0.04 ≈ 0.14）。`MixSrgb` 按 spec 走预乘公式，
+    //    所以半透明输入也是对的。见 Tokens.h 里 ColorToken 的 `line.* / fill.*` 那段。
     d.crumbBg = MixSrgb(c.bgVoid, c.bgSurface, 60.0f);
     d.stageDoneBg = MixSrgb(c.statusOk, c.fillMuted, 10.0f);
     d.stageFailBg = MixSrgb(c.statusDanger, c.fillMuted, 10.0f);

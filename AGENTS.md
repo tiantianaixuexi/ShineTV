@@ -154,7 +154,9 @@ powershell -File out\_run_review.ps1 -OutDir "$PWD\build\shots" -Theme deepspace
 - 构建：`Build.bat`（Debug 默认）/ `Build.bat --release`
 - 门禁：`powershell -File tools\check-layers.ps1` / `check-colors.ps1` / `check-theme.ps1` / `check-i18n.ps1`
 - 静默失效扫描：`powershell -File tools\find-silent-truncation.ps1` / `find-draw-arg-order.ps1` / `find-rect-wh-misuse.ps1`
-- 截图取证：`scripts\capture_window.ps1`
+- 截图取证：`scripts\capture_window.ps1` · 逐像素差异 `out\_pixdiff.ps1` ·
+  **指定颜色的像素计数** `out\_colorcount.ps1`（`_pixdiff` 只说差了多少像素、不说变成了什么色，
+  而这个空档正是「算式算出来了、但没人验过真到没到像素」长期混过去的地方）
 - **1:1 回归（首选）**：`out\_make_fixture.ps1` → `out\_run_review.ps1`（自带 fixture 步骤）
 - 回归（备选）：`scripts\run_reviews.ps1`（⚠️ 默认 `-Exe` 指向 `build\`，见上文假信号表）
 - 运行辅助：`scripts\studio.ps1` · `scripts\comfy.ps1`

@@ -40,19 +40,30 @@ namespace shine::theme {
 // 同上，档位取自 Tokens.h 的 alpha::Step（页面层不要自己写 0.18f）。
 [[nodiscard]] std::uint32_t MixAlpha(std::uint32_t rgb, alpha::Step step);
 
-// color-mix(in srgb, A N%, B)：**两色真混合**，结果是实色（不透明）。
+// color-mix(in srgb, A N%, B)：**两色真混合**。
 //
 // gamma 提醒：CSS Color 5 对 in srgb 的定义是在**预乘 alpha 后的 gamma 编码 sRGB
-// 通道**上插值，不是线性光插值。A、B 都不透明时退化成通道直线 lerp；本项目所有
-// 调用点（crumbs / 阶段节点底 / 闸门底）的两端都是不透明基色，所以用直线即可，
-// 但函数按 spec 走预乘公式，以免将来有人传半透明色进来时静默算错。
+// 通道**上插值，不是线性光插值。A、B 都不透明时退化成通道直线 lerp；函数按 spec
+// 走预乘公式，所以传半透明色进来也不会静默算错。
+//
+// ⚠️ 2026-09-30 起 `fill.muted` **在纸墨 / 水墨下是半透明的**（那两套主题的 CSS
+//    原文就是 `rgba(...)`，见 Tokens.h 的 ColorToken 注释），于是
+//    `MixSrgb(statusOk, fillMuted, 10)` 的结果也带 alpha —— 这正是 CSS 的答案
+//    （`color-mix` 的输出 alpha = 0.1×1 + 0.9×0.04 ≈ 0.14，不是 1）。
+//    下面 Theme_Derived.cpp 那几处「实色预混」的注释写着「两端都是不透明基色」，
+//    那句话在深空/薄暮/极夜成立、在浅色两套**不成立**，已按实际改写。
 // 用法：MixSrgb(c.statusOk, c.fillMuted, 10.0f)  ≡ ui.css:852 的
 //      color-mix(in srgb, var(--ok) 10%, var(--fill-muted))
 [[nodiscard]] std::uint32_t MixSrgb(std::uint32_t a, std::uint32_t b, float percentOfA);
 
 // 裸 rgba(R,G,B,N) 压到不透明底色上（CSS 的 source-over 直通混合，非预乘）。
 //
-// 存在的理由：themes/*.json 里的 line.* / fill.* **已经是这么压平的实色**，
+// ⚠️ 现在**没有调用点了**（2026-09-30 起）。原因见下面 Tokens.h 里 ColorToken 的
+//    「中性色阶」那段：`line.*` / `fill.*` 已经改回**原始 rgba**，由渲染器在画的时候
+//    按实际底色混合，不再需要事先压平。留着它是为了将来真需要「离线算一个不透明
+//    等效色」时有个 spec 正确的实现，别再手写一遍。
+//
+// 历史：themes/*.json 里的 line.* / fill.* 一度**已经是这么压平的实色**，
 // 探针反证 21/21 吻合 —— 例如深空 line.strong = #414853 恰是
 // rgba(234,240,247,0.22) 压 bg.surface #111825。压平时 percent 必须用 CSS 的
 // **标称** 0.22，不是量化后的 56/255=0.2196（差 1/255 会让整档偏一格）。

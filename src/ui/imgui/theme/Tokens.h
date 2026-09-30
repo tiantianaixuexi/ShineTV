@@ -28,6 +28,33 @@ inline constexpr std::array<ThemeId, 5> kAllThemes = {
 [[nodiscard]] bool ThemeIdFromKey(std::string_view key, ThemeId& out);
 
 // ---- §2.1 + §2.2 颜色 token（字段顺序 = kColorTokenNames）----
+//
+// ⚠️⚠️ **`line.*` 与 `fill.*` 存的是 CSS 原文的 rgba，可能是半透明的 ——
+//      不要把它们当成不透明实色去参与运算。**
+//
+// 2026-09-30 之前不是这样：themes/*.json 里这几个字段存的是「CSS 的 rgba **叠在
+// `--bg-surface` 上**」压平出来的实色（例：深空的 `line.subtle` 存 `#202734`）。
+// 那个做法自洽、也确实是 CSS 在 `bg-surface` 上的答案，但**叠在别的底上就错**：
+//   `.card` 自己的底是 `--bg-panel`，它的 1px 边框是画在**自己的底**上的
+//   ⇒ 深空卡片边应为 `#29303E`，而压平值给的是 `#202734`（暗 9/9/10）。
+// 这属于「一个数据层决定了一个不该由数据层决定的事」：底色是**画的时候**才知道的。
+//
+// 现在存原文 rgba（如 `#EAF0F712` = rgba(234,240,247,0.07)），渲染器在绘制时按
+// 实际已画内容做 source-over 混合，于是**每处自动拿到正确的合成色**：
+//   `FlattenOver(raw, bg-surface)` ≡ `#202734`（与旧值逐通道相等）
+//   `FlattenOver(raw, bg-panel)`   ≡ `#29303E`（设计稿要的那个）
+// 后者正是 `design-spec.md` §2.0.3 记了很久的那个偏差，一次性解决，
+// 且**不需要**给 `DrawRoundRect` 加底色参数、也不需要按底色准备多套变体。
+//
+// 判据：`line.*` 五套主题的 CSS 原文**全是 rgba**（tokens.css:39-41 / 81-83 /
+// 122-124 / 163-165 / 216-218）；`fill.*` 只有**纸墨 / 水墨**是 rgba
+// （:140-142 / :181-183），深空 / 薄暮 / 极夜本来就是实色 hex（:57-59 / 99-101 /
+// 234-236）—— 所以后三套的 `fill.*` 没有变化，改动只落在浅色两套。
+//
+// 连带影响（已核对）：`MixSrgb(tone, fillMuted, N)` 在浅色两套下的结果会**带 alpha**
+// —— 那是 CSS `color-mix` 的正确答案（输出 alpha = 0.1×1 + 0.9×0.04 ≈ 0.14）。
+// 而 `ImGuiCol_*` 拿到半透明值也没问题：ImGui 的绘制本来就是混合的。
+// 唯一**不能**再做的事：拿这些字段当「不透明基色」去算一个必然不透明的结果。
 struct ColorToken {
     // §2.1 中性色阶
     std::uint32_t bgVoid = 0;
@@ -35,6 +62,7 @@ struct ColorToken {
     std::uint32_t bgPanel = 0;
     std::uint32_t bgElevated = 0;
     std::uint32_t bgOverlay = 0;
+    // ↓ 三者在五套主题下都是 rgba（可能是半透明），见上面那段
     std::uint32_t lineSubtle = 0;
     std::uint32_t lineNormal = 0;
     std::uint32_t lineStrong = 0;
@@ -55,9 +83,11 @@ struct ColorToken {
     std::uint32_t statusIdle = 0;
     // §2.4 交互态专用色 + 焦点环 + 遮罩 + 阴影
     std::uint32_t statusPending = 0;
+    // ↓ 纸墨 / 水墨 是 rgba，其余三套是实色
     std::uint32_t fillHover = 0;
     std::uint32_t fillSelected = 0;
     std::uint32_t fillMuted = 0;
+    // ↓ line.focus 五套都是实色 hex，不用当半透明看待
     std::uint32_t lineFocus = 0;
     std::uint32_t shadowScrim = 0;
     std::uint32_t shadow1 = 0;

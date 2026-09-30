@@ -50,7 +50,7 @@ last_verified: 2026-09-30
 
 **整体：51 / 51 步完成。** 重构主干已结束；剩下的是**产品缺口**，见「下一步」与「没做的」。
 
-### 当前取证结论（2026-09-30 第二轮，实测）
+### 当前取证结论（2026-09-30 第三轮，实测）
 
 ```
 # shots: 80  failed: 0  scroll-failed: 0  identical-theme-pairs: 0  identical-driven-pairs: 0
@@ -489,7 +489,7 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
 | 1 | ~~`--dur-1/2/3` 零读点~~ | — | ✅ **已接**：`kit/Anim.{h,cpp}`（third/ImAnim）+ `TransitionTo` / `TransitionColorTo`。另订正 `kEaseOut` 对齐 `webui/src/styles/tokens.css:28`、删掉凭印象编的 `kExit`。CSS 里实际是 43 处 `transition`（不是 60+） |
 | 2 | ~~面包屑整条底色 + 下边框缺失~~ | — | ✅ **已接**：底色 + 下边框 + padding 24→16 + 字号 12.5→12.0（12.5 不在 `kSizes` 里 ⇒ 实际渲染 13px）+ flex `gap:7px`。✅ 第二轮补上：第一段从写死的「项目」改成**真实工程名**（回退串 `无项目`，与顶栏胶囊的 `未打开项目` 是**两个**串，别统一），并接上 `Shell.jsx:128` 的「第 2 段 == 第 3 段就只画两段」折叠规则 |
 | 8 | ~~面包屑左内边距、顶栏 padding、活动栏行距与选中底、dock 左右内边距、检查器段头、底栏页签字号~~ | 页面层 | ✅ **第二轮已全部接完**（逐条对着 `shell.css:19-30 / 157-211 / 382-403`）：顶栏 `padding 0 12`（左右都是 12，不是 16）、`.brand` gap 8、顶栏子项 gap 10、搜索框边是 `line-subtle`（**不是** `line-normal`）+ 内边距 12/图标 14/gap 8/Kbd 右贴 12、`.rail` 行距 44（40 按钮 + 4 gap，原 48）、行盒 40×40（原 44×44）、**补上缺失的 `.rail-btn:hover` 底色**、`.dock-tabs` 页签 12px / pad 5-12-7 / gap 2 / 下划线满宽 / 容器 1px 下边框 + 关闭钮 22×22 与 `收起 · Ctrl+J` tooltip、dock-body `padding 10 14` |
-| 3 | 15 个 `line.*` / `fill.*` 的 alpha 被压平成不透明实色 | 主题层 | ⚠️ 仍在。JSON 存的是 CSS `rgba` 叠在 `--bg-surface` 上的结果，算法自洽，但叠在哪个底上都一样（例：深空卡片边应为 `#29303E`，实现画的是 `#202734`，暗 9/9/10）。口径已写成 `design-spec.md` §2.0.3 |
+| 3 | ~~15 个 `line.*` / `fill.*` 的 alpha 被压平成不透明实色~~ | 主题层 | ✅ **已修（第三轮）**。原记录说「口径已写成 design-spec §2.0.3」——**口径本身就该改**：JSON 存的是「CSS 的 rgba 叠在 `--bg-surface` 上」的实色，而底色是**画的时候**才知道的事，压在数据层等于让一个未知量提前失参。改法只有一步：**JSON 原样存 CSS 的 rgba**，由渲染器在绘制时按实际已画内容做 source-over 混合。于是不需要给 `DrawRoundRect` 加底色参数、也不需要按底色准备多套 `Derived` 变体。⚠️ 记录里的 `#29303E` 是按标称 0.07 手算的；实测是 **`#29313E`**（alpha 存成字节后是 18/255，G 通道高 1/255）—— 见 `design-spec.md` §2.0.3 的实测表 |
 | 4 | ~~15 处字号取不到档~~ | 字体层 | ✅ **已接**。⚠️ 记录本身过期了一半：`kUiSizes` 早已含 12.5 / 14.5 / 17 / 26，真正缺的只有 **9.5** 与 **16.0** 两档，而这两档都**有调用点**（`OverviewRightRail.cpp` 的矩阵表头与行首、`Page_Novel.cpp` 的「设定集」标题），缺档时被向上取成 10.5 / 17。**判据是「有没有调用点」，不是「CSS 里写过没有」** —— 已补进 `kUiSizes` / `kMonoSizes` |
 | 5 | ~~`font-weight: 500` 无字面~~ | 字体层 | ✅ **已判断清楚，且不需要新字面**。CSS 字重匹配规则：请求 **500 时先找 ≤500 的档**，只有 400/700 的字体族上落到 **400**。微软雅黑没有 Medium，浏览器画出来就是常规字重 ⇒ ImGui 侧**该用 `FontAt`**。真正错的是 `KeyValues` 的**值列**用了 `FontBoldAt`（等于比键列重两档，检查器/报告卡/章节详情共用这条路径）。⚠️ **不要**为了「更像 500」去加载一档 Medium：字体里没有，浏览器也不会合成 |
 | 6 | ~~`.card.hoverable:hover` 的 `translateY(-2px)` 未接~~ | 页面层 | ✅ **已接**（第二轮）。`kit::Card()` 早就接了；缺的是**没走 `kit::Card()` 的页面级卡片**。已抽出 `kit::CardHoverLift(hovered, hoverable)` 并把两处**有 hover 的**手写卡接上：资产总览网格卡（`Page_Assets.cpp`）、项目中心项目卡（`HubCard.cpp`）。另两处（项目中心空态卡、向导汇总卡）**静止态无 hover**，设计稿也没有 `:hover` 规则 ⇒ 不接（接了反而是发明的效果） |
@@ -530,6 +530,26 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
 | `Page_Storyboard.cpp` `.tl-card` | 选中环画成「2px、半径+2」；选中边框画成「accent 1.5px」 | JSX 的 inline style 是 `box-shadow: 0 0 0 3px var(--accent-dim)`（**3px 扩展环**，spread 会把外圆角一并放大 3px）+ `border-color: accent-glow`。且 inline 的 `box-shadow` 会**盖掉** `:hover` 的 shadow-1 ⇒ 选中项 hover 时没有 shadow-1、但依然吃 `transform: translateY(-2px)` |
 | 全树 4 处 | 「图标 + gap + 文字」整体居中的算式抄了四份（`Button` / `Tag` / `DrawJumpButtons` / `CenterTextX`） | 代价不是 4 行代码，而是**改对齐规则要找齐四处** —— 上轮把按钮里的图标字号从 14 改成 13 时只有 `Button` 那份跟着动。已抽成 `kit::PlaceIconText()`（居中 / 贴左两个入口），四处共用 |
 | `HubCard.cpp` / `Page_Assets.cpp` | 手写卡片的 hover 位移要么没接、要么**接错位置** | 位移必须在 `HitTest` **之后**（`kit::Card` 的既有约定）：热区跟着位移会让鼠标停在卡片下缘 2px 内时 `hovered` 反复推出/落回。`HubCard` 还多一条：`bounds` 同时喂给绘制与整卡热区，所以要**另存位移前的矩形**给热区 |
+
+#### 第三轮：审计 #3（`line.*` / `fill.*` 的 alpha）—— 口径错了，不是算法错了
+
+一条**被自己的记录带偏过**的偏差。原口径是「按 `--bg-surface` 摊平成实色，已知偏差，
+按明暗顺序判而不是按像素判」。那个口径把问题定性成「只能二选一」——其实不用选：
+**底色是画的时候才知道的，就不该在数据层定死**。
+
+- 改法只有一步：5 套主题 JSON 的 `line.*`（五套都是 CSS 原文的 rgba）与
+  `fill.*`（只有纸墨/水墨是 rgba）**原样存 8 位 rgba**，由渲染器按实际已画内容做
+  source-over 混合。ImGui 本来就是 alpha 混合的，**什么都不用加**。
+- 于是不需要给 `DrawRoundRect` 加底色参数，也不需要按底色准备多套 `Derived` 变体 ——
+  原先评估的「三层都要改」其实是「只需要改数据层」。
+- 改动前逐主题交叉验算五套：旧 JSON 值**恰好等于** `FlattenOver(raw, bg-surface)`
+  （逐通道相等）⇒ 落在 `bg-surface` 上的元素视觉不变，改动只影响非 surface 底。
+- 实测复核（`out/_colorcount.ps1`，深空 `ws-grid.png`）：旧边色 `#202734` **4902 → 38**，
+  新边色 `#29313E` **7 → 3987**，对照组 `bg-panel` 底色 333107 不变。
+- 连带影响已核对：`MixSrgb(tone, fillMuted, N)` 在浅色两套下结果**带 alpha** ——
+  那是 CSS `color-mix` 的答案（≈0.14），不是 bug。
+- 新增工具 `out/_colorcount.ps1`：`_pixdiff` 只说「差了多少像素」，不说「变成了什么色」，
+  而这个空档正是「算式算出来了、但没人验过真到没到像素」长期混过去的地方。
 
 **怎么跑基线（别跳这一步）**：`Build.bat --release` → `out\_run_review.ps1 -Theme deepspace`。
 ⚠️ **`novel.db` fixture 是必须的输入**：没有它，侧栏树 / 检查器 / 资产树全部退化成诚实空态，
