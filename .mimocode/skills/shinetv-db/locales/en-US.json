@@ -1,4 +1,0 @@
-{
-  "displayName": "src/db data layer usage",
-  "brief": "ShineTV data layer: Redis pool / compile-time commands / reflection Hash + SQLite wrappers"
-}
