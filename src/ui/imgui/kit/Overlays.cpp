@@ -45,48 +45,6 @@ bool Scrim(ImDrawList* draw, Rect screen, std::string_view id) {
     return HitTest(screen, id).clicked;
 }
 
-// ------------------------------------------------------------------ Modal
-Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
-           float width) {
-    ScrimPaint(draw, screen);
-    // width: min(560, 100vw - 48)（ui.css:948）；0 = 用默认值。
-    const float w = width > 0.0f ? width : std::min(560.0f, screen.width() - 48.0f);
-    // max-height: min(640, 100vh - 64)（ui.css:949）。这里按内容自适应，
-    // 只把上限当硬约束 —— 内容少的时候不该留一块空白。
-    const float maxH = std::min(640.0f, screen.height() - 64.0f);
-    const float headerH = title.empty() ? 0.0f : kModalHeaderH;
-    // 内容高度：调用方在返回的矩形里画，所以这里给一个「尽量高但不超过上限」
-    // 的值，让 Modal 变成一个占位式 API（内容画完可能不满，实际以内容为准）。
-    const float bodyH = std::max(0.0f, maxH - headerH - 18.0f * 2.0f);
-    const float h = std::min(maxH, headerH + bodyH);
-    const Rect frame = RectAt(screen.center().x - w * 0.5f, screen.center().y - h * 0.5f, w, h);
-    // ui.css:947 `.modal` 的 box-shadow: var(--shadow-2) —— 常驻，不是 hover 才有的。
-    OverlayPanel(draw, frame);
-
-    float top = frame.min.y;
-    if (!title.empty()) {
-        // .modal-h（ui.css:955-965）：padding 14/18 + gap 10 + 1px 下边；标题 15/700。
-        const float iconSize = 17.0f;
-        float x = frame.min.x + 18.0f;
-        if (!icon.empty()) {
-            DrawIcon(draw, icon, ImVec2(x, top + 15.0f), iconSize, ColorAccent());
-            x += iconSize + 10.0f;
-        }
-        ImFont* font = FontBoldAt(15.0f);
-        // 原来写死 `top + 14.0f` —— 那个 14 是 `.modal-h` 的 **padding**，被当成了
-        // 文字偏移：头高 `headerH` = 14*2 + 18 + 1 = 47，15px 字该落在
-        // `top + 23.5 - 7.5`，原值偏上 2.0px。改按头部中心算（不写死 23.5）。
-        DrawTextClipped(draw, font, 15.0f, ImVec2(x, CenterTextY(font, 15.0f, top + headerH * 0.5f)),
-                        frame.max.x - x - 18.0f, ColorText(), title);
-        top += headerH;
-        draw->AddLine(ImVec2(frame.min.x, top - 0.5f), ImVec2(frame.max.x, top - 0.5f),
-                      ColorLineSubtle(), 1.0f);
-    }
-    // .modal-b（ui.css:966-969）：padding 18 + overflow-y auto（滚动由 ScrollRegion 负责）。
-    return RectAt(frame.min.x + 18.0f, top + 18.0f, w - 36.0f,
-                  std::max(0.0f, frame.max.y - 18.0f - (top + 18.0f)));
-}
-
 // --------------------------------------------------------------- ModalFrame
 ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
                           std::string_view icon, float width, float height,

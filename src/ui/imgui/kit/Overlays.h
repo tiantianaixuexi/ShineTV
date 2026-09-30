@@ -46,31 +46,24 @@ void OverlayPanel(ImDrawList* draw, Rect frame, float radius = 14.0f);
 // 「点外面关闭」自己拿 frame 手算点击是否落在面板外即可。
 bool Scrim(ImDrawList* draw, Rect screen, std::string_view id);
 
-// ---- Modal（ui.css:943-976 .modal）----
-// 居中面板：bg-overlay + 1px line-normal + r-lg14 + shadow-2；
-// 默认宽 min(560, 100vw-48)，高 max min(640, 100vh-64)。
-// 返回**内容区**（modal-b 的 padding 18 之内）。title 非空才画 modal-h；
-// 否则直接是内容区（Overlays.jsx:163 的 ConfirmModal 就是无头弹层）。
-// ⚠️ 面板**盖不住**后面画的东西：它和页面共用一条 draw list，所以调用方必须
-// 在一帧的**最后**才画浮层（外壳的 onFrame 收尾处）。只有 Tooltip 走了前景
-// draw list —— 那个是在绘制途中随控件冒出来的，没法等到帧尾。
+// ---- ModalFrame（模态；ui.css:943-976 .modal）----
 //
-// 遮罩只画不注册（「点外面关闭」自己手算），所以这里**没有** scrim id 参数
-// —— 原来那个 `id` 只服务于 `Scrim` 注册的全屏热区，遮罩改成只画后它就没人用了。
-Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
-           float width = 0.0f);
-
-// ---- ModalFrame（Modal 的完整分块形式）----
+// 居中面板：bg-overlay + 1px line-normal + r-lg14 + shadow-2；默认宽
+// min(560, 100vw-48)，高 max min(640, 100vh-64)。把 **面板框 / 头部 / 内容区 /
+// 页脚** 四块一次交出来。
 //
-// 有些模态要自己摆页脚（ProjectHub 的向导 / 打开 / 确认三个对话框都有按钮条），
-// 只拿到内容区不够用。这一个把 **面板框 / 头部 / 内容区 / 页脚** 四块一次交出来，
-// 几何与 Modal **同源**（同一份 headerH / padding 常量），不是另算一遍。
+// ⚠️ 早先这里还有一个只返回内容区的 `Modal`。它**全树零调用**，而它的头部绘制
+//    与本函数逐行重复（图标 17px@+15、标题 15px 按头高中心落字、头底 1px 分隔、
+//    body 内缩 18），`ModalFrameRect(...).body` 就是它返回的那个矩形 —— 同一个
+//    模态在 kit 内部写了两遍，正是本轮要消灭的那类重复。零调用点下没有保留理由，
+//    已删除。需要「按内容自适应高度」时把 `height` 传 0。
 //
 // `footerButtons > 0` 才切出页脚带（`.modal-f`，ui.css:970-975）：
 // 12/18 内边距 + 1px 上边 + 按钮高。footerOut 给按钮可摆的矩形。
 //
-// ⚠️ 与 Modal 一样：面板画在**当前 draw list** 上，调用方必须在一帧的**最后**
-// 画它（外壳 onFrame 收尾处），否则会被后面画的内容盖住。
+// ⚠️ 面板**盖不住**后面画的东西：它和页面共用一条 draw list，所以调用方必须
+// 在一帧的**最后**才画浮层（外壳的 onFrame 收尾处）。只有 Tooltip 走了前景
+// draw list —— 那个是在绘制途中随控件冒出来的，没法等到帧尾。
 //
 // ⚠️ 遮罩**只画不注册命中**：注册全屏 InvisibleButton 会先拿到 HoveredId，
 // 模态里每一个按钮就永远点不动（ImGui 先注册者独占）。「点外面关闭」由调用方
