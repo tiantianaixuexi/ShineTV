@@ -216,10 +216,112 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
                {"形象层", layers},
                {"设定图", asset.sheetRelPath.empty() ? kDash : asset.sheetRelPath},
                {"降级", asset.degraded ? "有降级产物" : "无"}});
+
+    // ---- V0 派生链（Assets.jsx:217-234 + views.css:849-895）----
+    //
+    // ⚠️ 这一整块以前**没画**：`visual_artifacts` 只被投影成 `layers / layersDone`
+    //    两个计数，链上每一层的图与层状态都到不了界面。fixture 一铺开就露出来了 ——
+    //    那几层的图（`assets/chain/*.png`）在**所有**截图里的颜色计数都是 0。
+    //
+    // 几何逐条对着 CSS —— ⚠️ **JSX 内联会覆盖 CSS，两处都要看**：
+    //   `.derive`   flex / gap 0 / overflow-x auto / padding 6px 2px
+    //   `.dnode`    宽 **92**（CSS 写 108，被 JSX 内联覆盖）/ r-md=10 /
+    //               1px line-normal 边 / fill-muted 底 / overflow hidden
+    //   `.dthumb`   高 **50**（CSS 写 64）
+    //   `.dlabel`   pad 6 8 / 11px **700** / text-secondary / gap 5
+    //   `.dlink`    22×1.5 line-normal；`.fill::after` 盖 accent
+    //               （JSX 的条件是 `d.state !== 'todo'`，即**这一层**不是待生成）
+    constexpr float kChainNodeW = 92.0f;
+    constexpr float kChainThumbH = 50.0f;
+    constexpr float kChainLinkW = 22.0f;
+    constexpr float kChainPadY = 6.0f;    // `.derive` 的 padding 6px 2px
+    constexpr float kChainPadX = 8.0f;    // `.dlabel` 的左右内边距
+    constexpr float kChainFont = 11.0f;   // `.dlabel` 11/700；同一个小字也用于说明行
+    // 链的层名与中文标签。层名来自 `NovelAssetPipeline.cpp` 的 `kChain`
+    // （stage / shot 两层属分镜侧，不在 V0 派生链里，这里不画）。
+    static constexpr const char* kChainLayers[4] = {"front", "turnaround", "base_body", "wardrobe"};
+    static constexpr const char* kChainLabels[4] = {"正脸", "四视图", "基础身体", "服装"};
+    const float chainLineH = kChainFont * 1.6f;              // base.css 的全局行高
+    const float chainLabelH = chainLineH + 6.0f * 2.0f;      // `.dlabel` padding 6px 8px
+    const float chainNodeH = kChainThumbH + chainLabelH;
+
+    const float captionTop = y + 164.0f;  // KV 之后（沿用这一列原来的占高口径）
+    constexpr char kChainCaption[] = "V0 派生链 · 正脸 → 四视图 → 基础身体 → 服装";
+    DrawTextClipped(draw, FontBoldAt(kChainFont), kChainFont, ImVec2(rightCol.min.x, captionTop),
+                    rightCol.width(), ColorTextSecondary(), kChainCaption, true);
+    const float nodeTop = captionTop + chainLineH + 6.0f + kChainPadY;  // 说明行 + margin 6 + `.derive` padding
+    float nx = rightCol.min.x + 2.0f;                                   // `.derive` padding 横向 2
+    for (int i = 0; i < 4; ++i) {
+        const BookArtifact* art = nullptr;
+        for (const BookArtifact& a : asset.artifacts) {
+            if (a.layer == kChainLayers[i]) {
+                art = &a;
+                break;
+            }
+        }
+        if (i > 0) {
+            // `.dlink` 排在**节点之前**：它连的是「上一层 → 这一层」，填不填 accent
+            // 按**这一层**的状态判（JSX 的 `d.state !== 'todo'`）。
+            const ImU32 link =
+                (art != nullptr && art->status != "PENDING") ? ColorAccent() : ColorLineNormal();
+            const float linkY = nodeTop + kChainThumbH * 0.5f;
+            draw->AddRectFilled(ImVec2(nx, linkY - 0.75f), ImVec2(nx + kChainLinkW, linkY + 0.75f),
+                                link);
+            nx += kChainLinkW;
+        }
+        const Rect node{nx, nodeTop, nx + kChainNodeW, nodeTop + chainNodeH};
+        // `.dnode:hover`（views.css:867-870）：accent-glow 边 + shadow-1。
+        // ⚠️ hover 只看鼠标位置、**不注册热区** —— 「点击查看该层」这个动作还没接
+        //    （要看该层大图，需要查看器），注册了就是「画得出来、点不动」，
+        //    而那正是本仓库反复强调、并且专门有判据在抓的一类缺陷。
+        const bool hovered = node.contains(ImGui::GetIO().MousePos);
+        DrawShadowed(draw, node.min, node.max, 10.0f, ColorFillMuted(),
+                     hovered ? ColorAccentGlow() : ColorLineNormal(), 1.0f,
+                     hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
+        const Rect thumb{node.min.x, node.min.y, node.max.x, node.min.y + kChainThumbH};
+        // `.dthumb`：真图优先，没有就画设计稿那张 `Art`（`seed={5+i}`）。
+        const ImageSlot slot =
+            RequestImage(AssetImagePath(s.root, art != nullptr ? art->relPath : std::string{}));
+        if (slot.ready()) {
+            DrawImage(draw, thumb, slot, 0.0f, ImageFit::Cover);
+        } else {
+            Art(draw, thumb, 5 + i, /*cover=*/true);
+        }
+        // `.dlabel`：状态点 + 层名。三态映射到 7 色调 ——
+        //   DONE → ok；RUNNING → busy（带脉冲）；FAILED → danger；其余（含没有该层）→ idle。
+        theme::Tone tone = theme::Tone::Idle;
+        bool running = false;
+        if (art != nullptr) {
+            if (art->status == "DONE") {
+                tone = theme::Tone::Ok;
+            } else if (art->status == "RUNNING") {
+                tone = theme::Tone::Busy;
+                running = true;
+            } else if (art->status == "FAILED") {
+                tone = theme::Tone::Danger;
+            }
+        }
+        const float labelCy = thumb.max.y + chainLabelH * 0.5f;
+        const float dotCx = node.min.x + kChainPadX + 3.5f;
+        StatusDot(draw, ImVec2(dotCx, labelCy), tone, running);
+        ImFont* chainFont = FontBoldAt(kChainFont);
+        const std::string_view chainLabel = kChainLabels[i];
+        draw->AddText(chainFont, kChainFont,
+                      ImVec2(dotCx + 3.5f + 5.0f, CenterTextY(chainFont, kChainFont, labelCy)),
+                      ColorTextSecondary(), chainLabel.data(), chainLabel.data() + chainLabel.size());
+        nx += kChainNodeW;
+    }
+    // `.tiny dim`：派生起点说明（margin-top 4）。
+    constexpr char kChainNote[] = "派生起点：文生图 · 缺层时：生成这一层";
+    DrawTextClipped(draw, FontAt(kChainFont), kChainFont,
+                    ImVec2(rightCol.min.x, nodeTop + chainNodeH + kChainPadY + 4.0f),
+                    rightCol.width(), ColorTextMuted(), kChainNote, true);
+
     // 两列取较高者推进 y —— CSS 网格就是这个行为（`align-items:start` 只影响对齐，
-    // 网格区的行高仍由最高的那一格撑开）。
+    // 网格区的行高仍由最高的那一格撑开）。右列 = KV(164) + 说明行 + 链 + 脚注。
     constexpr float kBaseCaptionH = 8.0f + 11.0f * 1.6f;  // 8 间距 + tiny 行盒
-    y += std::max(220.0f + kBaseCaptionH, 164.0f);
+    const float chainBlockH = chainLineH + 6.0f + kChainPadY * 2.0f + chainNodeH + 4.0f + chainLineH;
+    y += std::max(220.0f + kBaseCaptionH, 164.0f + chainBlockH);
     draw->AddLine(ImVec2(body.min.x, y), ImVec2(body.max.x, y), ColorLineSubtle(), 1.0f);
     y += 14.0f;
 

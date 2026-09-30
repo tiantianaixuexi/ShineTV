@@ -96,6 +96,8 @@ void RebuildBookSide(const BookState& s) {
         row.layers = asset.layers;
         row.layersDone = asset.layersDone;
         row.degraded = asset.degraded;
+        // 逐层产物（派生链要按层画图）—— 与上面三个计数同源，不是另一份查询。
+        row.artifacts = asset.artifacts;
         // 色调与中文标签都复用资产页那份 AssetTone（唯一的状态→颜色映射）。
         // label 也存进视图：AssetTone() 在本文件的匿名命名空间里，Shell 的检查器
         // 够不着，让它自己再映射一遍就是第二份状态词表。

@@ -94,6 +94,9 @@ struct BookAsset {  // 资产页一行（实体 + 它的主视觉资产 + 形象
     int layers = 0;      // visual_artifacts 行数
     int layersDone = 0;  // 其中 status == DONE
     bool degraded = false;
+    // 逐层产物（派生链要按层画图与状态点）。与上面三个计数**同源**：
+    // 计数是这条列表的派生量，不是另一份查询。
+    std::vector<BookArtifact> artifacts;
 };
 
 struct BookContinuity {  // V8 的真实三态结论（pass / fail / unverified）

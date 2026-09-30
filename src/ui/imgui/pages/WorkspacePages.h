@@ -134,6 +134,19 @@ struct BookChapterView {
     std::string volumeTitle;
 };
 
+// 形象层的一行产物（`visual_artifacts`，V0 派生链的承载表）。
+//
+// 为什么要把整行投影上来，而不是只留两个计数：派生链那一块要**逐层显示该层的图**
+// （`rel_path`）与状态点（`status`）。早先只投影了 `layers / layersDone` 两个数,
+// 于是「链上哪一层有图、哪一层失败」在界面上根本表达不出来 —— 而 fixture 一铺开
+// 就发现那几层的图**从来没有被任何位点画过**（颜色计数恒为 0）。
+struct BookArtifact {
+    std::string layer;    // front | turnaround | base_body | wardrobe（+ stage/shot 属分镜侧）
+    std::string relPath;  // visual_artifacts.rel_path：产出图（相对工程根）
+    std::string status;   // PENDING | RUNNING | DONE | FAILED
+    bool degraded = false;  // 走了降级（`04` §2.4「降级必须可见」）
+};
+
 // 资产工作区侧栏的一行。kind 是**实体 kind 的英文原文**（entities.kind，
 // `namespace kind` 里有 30 个取值，库里无 CHECK 约束）——不要在这里翻成中文，
 // 分类由消费者按 AssetKindLabel() 走，侧栏与资产页共用那一份映射。
@@ -148,6 +161,9 @@ struct BookAssetView {
     int layers = 0;              // visual_artifacts 行数
     int layersDone = 0;          // 其中 status == "DONE"
     bool degraded = false;       // 任一产物走过降级
+    // 逐层产物本身（派生链按层画图与状态点用）。与上面三个计数**同源**：
+    // 计数是这条列表的派生量。只有计数时，链上「哪一层有图 / 哪一层失败」表达不出来。
+    std::vector<BookArtifact> artifacts;
     // 色调与中文标签都由 AssetTone() 从 assetStatus 映射，**在重建时算好存进来**。
     // 不让消费者各自映射一遍：侧栏的状态点、检查器的状态行、资产页的 Tag 三处要同一份，
     // 而 AssetTone() 定义在 BookData.cpp 的匿名命名空间里，Shell 够不着。

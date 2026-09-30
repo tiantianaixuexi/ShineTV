@@ -143,6 +143,10 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
                 row.sheetRelPath = found->sheet_rel_path;
                 if (auto arts = visual.ListArtifacts(found->id)) {
                     row.layers = static_cast<int>(arts->size());
+                    // 逐层带出去（派生链要按层画图与状态点）：**同一趟循环里**顺手带上，
+                    // 而不是为了拿 rel_path 再查一次 —— 两张表一次查询就够，
+                    // 计数与列表也就不会出现「数对了但层对不上」的偏差。
+                    row.artifacts.reserve(arts->size());
                     for (const novelcore::VisualArtifactRow& art : *arts) {
                         if (art.status == "DONE") {
                             ++row.layersDone;
@@ -150,6 +154,8 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
                         if (art.degraded) {
                             row.degraded = true;
                         }
+                        row.artifacts.push_back(BookArtifact{art.layer, art.rel_path, art.status,
+                                                             art.degraded});
                     }
                 }
             }
