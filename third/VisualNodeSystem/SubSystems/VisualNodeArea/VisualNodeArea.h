@@ -1,0 +1,507 @@
+#pragma once
+#include <unordered_set>
+#include "../../GroupComment.h"
+#include "../../StandardNodes/BoundaryNodes/LinkNode/LinkNode.h"
+#include "../../StandardNodes/BoundaryNodes/SubAreaNode/SubAreaNode.h"
+#include "../TextInputPopup.h"
+
+#ifdef VISUAL_NODE_SYSTEM_BUILD_EXECUTION_FLOW_NODES
+#include "../StandardNodes/ExecutionFlowNodes/BaseExecutionFlowNode.h"
+// Literal Nodes.
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/BoolLiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/FloatLiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/IntegerLiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/Vec2LiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/BoolVec2LiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/Vec3LiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/BoolVec3LiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/Vec4LiteralNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/LiteralsNodes/BoolVec4LiteralNode.h"
+
+// Variable Nodes.
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/BoolVariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/FloatVariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/IntegerVariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/Vec2VariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/BoolVec2VariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/Vec3VariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/BoolVec3VariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/Vec4VariableNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/VariablesNodes/BoolVec4VariableNode.h"
+
+// Control Flow Nodes.
+#include "../StandardNodes/ExecutionFlowNodes/ControlFlowNodes/BranchNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/ControlFlowNodes/SequenceNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/ControlFlowNodes/LoopNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/ControlFlowNodes/WhileLoopNode.h"
+
+// Arithmetic Operator Nodes.
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/BaseArithmeticOperatorNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/ArithmeticAddNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/ArithmeticSubtractNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/ArithmeticMultiplyNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/ArithmeticDivideNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/ArithmeticPowerNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Arithmetic/ArithmeticModulusNode.h"
+
+// Comparison Operator Nodes.
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/BaseComparisonOperatorNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/EqualNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/NotEqualNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/LessThanOrEqualNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/GreaterThanOrEqualNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/GreaterThanNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Comparison/LessThanNode.h"
+
+// Logical Operator Nodes.
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Logical/BaseLogicalOperatorNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Logical/LogicalANDOperatorNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Logical/LogicalNOTOperatorNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Logical/LogicalOROperatorNode.h"
+#include "../StandardNodes/ExecutionFlowNodes/OperatorNodes/Logical/LogicalXOROperatorNode.h"
+
+#endif
+
+namespace VisNodeSys
+{
+#define NODE_GRID_STEP 15.0f
+
+	class NodeSystem;
+
+	// Type of events for general callbacks.
+	enum NODE_EVENT
+	{
+		REMOVED = 0,
+		DESTROYED = 1,
+		BEFORE_CONNECTED = 2,
+		AFTER_CONNECTED = 3,
+		BEFORE_DISCONNECTED = 4,
+		AFTER_DISCONNECTED = 5
+	};
+
+	struct NodeAreaGeneralConnectionStyle
+	{
+		int LineSegments = 16;
+		float LineXTangentMagnitude = 80.0f * 2.0f;
+		float LineYTangentMagnitude = 0.0f;
+
+		ImVec4 SelectionOutlineColor = ImVec4(55.0f / 255.0f, 1.0f, 55.0f / 255.0f, 1.0f);
+		ImVec4 HoveredOutlineColor = ImVec4(55.0f / 255.0f, 55.0f / 255.0f, 250.0f / 255.0f, 1.0f);
+	};
+
+	struct NodeAreaGridStyle
+	{
+		float GRID_SIZE = 10000.0f;
+		int BOLD_LINE_FREQUENCY = 10;
+		float DEFAULT_LINE_WIDTH = 1;
+		float BOLD_LINE_WIDTH = 3;
+
+		ImVec4 GridBackgroundColor = ImVec4(32.0f / 255.0f, 32.0f / 255.0f, 32.0f / 255.0f, 1.0f);
+		ImVec4 GridLinesColor = ImVec4(53.0f / 255.0f, 53.0f / 255.0f, 53.0f / 255.0f, 0.5f);
+		ImVec4 GridBoldLinesColor = ImVec4(27.0f / 255.0f, 27.0f / 255.0f, 27.0f / 255.0f, 1.0f);
+	};
+
+	struct NodeAreaStyle
+	{
+		NodeAreaGridStyle Grid;
+		NodeAreaGeneralConnectionStyle GeneralConnection;
+
+		ImVec4 NodeBackgroundColor = ImVec4(75.0f / 255.0f, 75.0f / 255.0f, 75.0f / 255.0f, 125.0f / 255.0f);
+		ImVec4 HoveredNodeBackgroundColor = ImVec4(60.0f / 255.0f, 60.0f / 255.0f, 60.0f / 255.0f, 125.0f / 255.0f);
+		ImVec4 NodeSelectionColor = ImVec4(175.0f / 255.0f, 255.0f / 255.0f, 175.0f / 255.0f, 1.0f);
+
+		ImVec4 MouseSelectRegionColor = ImVec4(175.0f / 255.0f, 175.0f / 255.0f, 1.0f, 125.0f / 255.0f);
+
+		ImVec4 GroupCommentDefaultBackgroundColor = ImVec4(75.0f / 255.0f, 75.0f / 255.0f, 135.0f / 255.0f, 185.0f / 255.0f);
+	};
+
+	struct NodeAreaSettings
+	{
+		NodeAreaStyle Style;
+		float ZoomSpeed = 0.15f;
+		bool bRequireFullOverlapToSelect = false;
+		bool bShowDefaultMainContextMenu = true;
+		bool bReduceTransparencyForUnconnectableSockets = true;
+#ifdef VISUAL_NODE_SYSTEM_BUILD_EXECUTION_FLOW_NODES
+		bool bSaveExecutedNodes = false;
+#endif
+	};
+
+	class NodeArea;
+	struct NodeAreaContextMenuOpenState
+	{
+		ImVec2 MousePositionRecorded = ImVec2(0, 0);
+
+		void Reset();
+		void CaptureState(NodeArea* ParentNodeArea);
+
+		std::string GetNodeID() const;
+		std::string GetGroupCommentID() const;
+		std::string GetSocketID() const;
+
+		Node* GetNode();
+		GroupComment* GetGroupComment();
+		NodeSocket* GetSocket();
+	private:
+		std::string NodeAreaID;
+
+		std::string NodeID;
+		std::string GroupCommentID;
+		std::string SocketID;
+	};
+
+	class VISUAL_NODE_SYSTEM_API NodeArea
+	{
+		friend class GroupComment;
+		friend NodeSystem;
+	public:
+		NodeArea(std::string ID = "");
+		NodeArea(const NodeArea& Other) = delete;
+		NodeArea& operator=(const NodeArea& Other) = delete;
+
+		std::string GetID() const;
+
+		std::string GetName() const;
+		void SetName(std::string NewValue);
+
+		std::string ToJson() const;
+		bool SaveToFile(std::string FilePath) const;
+		bool LoadFromJson(std::string JsonText);
+		bool LoadFromFile(std::string FilePath);
+		bool SaveNodesToFile(std::string FilePath, std::vector<Node*> Nodes);
+
+		ImVec2 GetPosition() const;
+		void SetPosition(ImVec2 NewValue);
+
+		ImVec2 GetSize() const;
+		void SetSize(ImVec2 NewValue);
+
+		ImVec2 GetRenderOffset() const;
+		void SetRenderOffset(ImVec2 Offset);
+
+		float GetZoomFactor() const;
+		void SetZoomFactor(float NewValue);
+
+		Node* GetHovered() const;
+		NodeSocket* GetHoveredSocket() const;
+		std::vector<Node*> GetSelected();
+		void UnSelectAll();
+
+		bool IsFocused() const;
+		void SetFocused(bool NewValue);
+
+		bool AddSelected(Node* Node);
+		bool IsSelected(const Node* Node) const;
+		bool UnSelect(const Node* Node);
+		void UnSelectAllNodes();
+
+		bool AddSelected(Connection* Connection);
+		bool IsSelected(const Connection* Connection) const;
+		bool UnSelect(const Connection* Connection);
+		void UnSelectAllConnections();
+
+		bool AddSelected(RerouteNode* RerouteNode);
+		bool IsSelected(const RerouteNode* RerouteNode) const;
+		bool UnSelect(const RerouteNode* RerouteNode);
+		void UnSelectAllRerouteNodes();
+
+		bool AddSelected(GroupComment* GroupComment);
+		bool IsSelected(const GroupComment* GroupComment) const;
+		bool UnSelect(GroupComment* GroupComment);
+		void UnSelectAllGroupComments();
+
+		bool IsMouseHovered() const;
+		bool IsFillingWindow();
+		void SetIsFillingWindow(bool NewValue);
+		
+		void Update();
+		void Clear();
+		void Reset();
+
+		void SetMainContextMenuFunction(const std::function<void()>& Function);
+		NodeAreaContextMenuOpenState GetContextMenuOpenState() const;
+
+		void GetAllElementsAABB(ImVec2& Min, ImVec2& Max) const;
+		ImVec2 GetAllElementsAABBCenter() const;
+		ImVec2 GetRenderedViewCenter() const;
+
+		bool CenterViewOnAllElements();
+
+		bool DeleteByID(std::string ID);
+
+		// *********************** Nodes ************************
+		Node* GetNodeByID(std::string NodeID) const;
+		std::vector<Node*> GetNodesByName(std::string NodeName) const;
+		std::vector<Node*> GetNodesByStringType(std::string NodeType) const;
+		template<typename T>
+		std::vector<T*> GetNodesByType() const;
+
+		bool AddNode(Node* NewNode);
+		bool Delete(const Node* NodeToDelete);
+		size_t GetNodeCount() const;
+		void AddNodeEventCallback(std::function<void(Node*, NODE_EVENT)> Func);
+		void RunOnEachNode(const std::function<void(Node*)>& Function);
+		void RunOnEachConnectedNode(Node* StartNode, const std::function<void(Node*)>& Function);
+		void PropagateUpdateToConnectedNodes(const Node* CallerNode) const;
+
+		bool TriggerSocketEvent(NodeSocket* CallerNodeSocket, NodeSocket* TriggeredNodeSocket, NODE_SOCKET_EVENT EventType);
+		bool TriggerOrphanSocketEvent(Node* Node, NODE_SOCKET_EVENT EventType);
+
+		// *********************** Group Comments ************************
+		GroupComment* GetGroupCommentByID(std::string GroupCommentID) const;
+		std::vector<GroupComment*> GetGroupCommentsByName(std::string GroupCommentName) const;
+
+		bool AddGroupComment(GroupComment* NewGroupComment);
+		bool Delete(GroupComment* GroupComment);
+		size_t GetGroupCommentCount() const;
+
+		std::vector<Node*> GetNodesInGroupComment(GroupComment* GroupCommentToCheck) const;
+		std::vector<RerouteNode*> GetRerouteNodesInGroupComment(GroupComment* GroupCommentToCheck) const;
+		std::vector<GroupComment*> GetGroupCommentsInGroupComment(GroupComment* GroupCommentToCheck) const;
+
+		GroupComment* GetHoveredGroupComment() const;
+		void MoveGroupComment(GroupComment* GroupComment, ImVec2 Delta);
+		// Number of nodes currently captured in a group comment's move-with-comment cache.
+		size_t GetGroupCommentAttachedNodeCount(const GroupComment* GroupComment) const;
+		// *********************** Connections ************************
+		size_t GetConnectionCount() const;
+
+		bool TryToConnect(const Node* OutNode, size_t OutNodeSocketIndex, const Node* InNode, size_t InNodeSocketIndex);
+		bool TryToConnect(const Node* OutNode, std::string OutSocketID, const Node* InNode, std::string InSocketID);
+
+		bool TryToDisconnect(const Node* OutNode, size_t OutNodeSocketIndex, const Node* InNode, size_t InNodeSocketIndex);
+		bool TryToDisconnect(const Node* OutNode, std::string OutSocketID, const Node* InNode, std::string InSocketID);
+		bool TryToDisconnect(const Node* Node, std::string SocketID);
+
+		bool IsConnected(const Node* OutNode, size_t OutNodeSocketIndex, const Node* InNode, size_t InNodeSocketIndex);
+		bool IsConnected(const Node* OutNode, std::string OutSocketID, const Node* InNode, std::string InSocketID);
+		bool IsConnected(const Node* FirstNode,  const Node* SecondNode);
+
+		std::vector<std::pair<ImVec2, ImVec2>> GetConnectionSegments(const Node* OutNode, size_t OutNodeSocketIndex, const Node* InNode, size_t InNodeSocketIndex) const;
+		std::vector<std::pair<ImVec2, ImVec2>> GetConnectionSegments(const Node* OutNode, std::string OutSocketID, const Node* InNode, std::string InSocketID) const;
+		RerouteNode* AddRerouteNodeToConnection(const Node* OutNode, size_t OutNodeSocketIndex, const Node* InNode, size_t InNodeSocketIndex, size_t SegmentToDivide, ImVec2 Position);
+		RerouteNode* AddRerouteNodeToConnection(const Node* OutNode, std::string OutSocketID, const Node* InNode, std::string InSocketID, size_t SegmentToDivide, ImVec2 Position);
+		RerouteNode* GetRerouteNodeByID(std::string ID) const;
+		bool DeleteRerouteNodeByID(std::string RerouteNodeID);
+
+		bool GetConnectionStyle(Node* Node, bool bOutputSocket, size_t SocketIndex, ConnectionStyle& Style) const;
+		void SetConnectionStyle(Node* Node, bool bOutputSocket, size_t SocketIndex, ConnectionStyle NewStyle);
+
+		ImVec2 SocketToPosition(Node* Node, const std::string& SocketID) const;
+
+		size_t GetRerouteConnectionCount() const;
+
+#ifdef VISUAL_NODE_SYSTEM_BUILD_EXECUTION_FLOW_NODES
+		Node* GetExecutionEntryNode() const;
+		bool SetExecutionEntryNode(Node* NewEntryNode);
+		bool SetExecutionEntryNodeByID(std::string NewEntryNodeID);
+		bool ExecuteNodeNetwork();
+		std::vector<Node*> GetLastExecutedNodes() const;
+
+		bool IsSaveExecutedNodes() const;
+		void SetSaveExecutedNodes(bool NewValue);
+#endif
+		NodeArea* GetParent() const;
+
+		bool IsChildOf(const NodeArea* PotentialParent) const;
+		bool IsParentOf(const NodeArea* PotentialChild) const;
+
+		size_t GetImediateChildrenCount() const;
+		size_t GetRecursiveChildCount() const;
+
+		std::vector<NodeArea*> GetImediateChildren() const;
+		std::vector<NodeArea*> GetRecursiveChildren() const;
+	private:
+		std::string ID;
+		std::string Name = "New Node Area";
+
+		~NodeArea();
+
+		struct SocketEvent
+		{
+			NodeSocket* TriggeredNodeSocket;
+			NodeSocket* CallerNodeSocket;
+			NODE_SOCKET_EVENT EventType;
+		};
+
+		NodeAreaSettings Settings;
+
+		float Zoom = 1.0f;
+		void ApplyZoom(float Delta);
+		float MAX_ZOOM_LEVEL = 5.0f;  // Max zoom 500%
+		float MIN_ZOOM_LEVEL = 0.2f;  // Min zoom 20%
+		float GetNodeSocketSize() const { return NODE_SOCKET_SIZE * Zoom; }
+		float GetRerouteNodeSize() const { return NODE_SOCKET_SIZE * Zoom * 1.5f; }
+		float GetNodeTitleHeight(Node* NodeToRender) const
+		{
+			if (NodeToRender != nullptr && NodeToRender->TitleBarHeight > 0)
+				return NodeToRender->TitleBarHeight * Zoom;
+
+			return NODE_TITLE_HEIGHT * Zoom;
+		}
+
+		ImVec2 GetMouseDragDelta() const { return ImGui::GetMouseDragDelta(0) * Zoom; }
+		ImVec2 GetMouseDelta() const { return ImGui::GetIO().MouseDelta / Zoom; }
+		float GetConnectionThickness() const { return 3.0f * Zoom; }
+
+		bool bClearing = false;
+		bool bFillWindow = false;
+		bool bFocused = false;
+		void SetFocusedInternal(bool NewValue);
+		bool bMouseHovered = false;
+		ImDrawList* CurrentDrawList = nullptr;
+		ImGuiWindow* NodeAreaWindow = nullptr;
+		std::vector<Node*> Nodes;
+		int GetNodeIndex(const Node* Node) const;
+
+#ifdef VISUAL_NODE_SYSTEM_BUILD_EXECUTION_FLOW_NODES
+		std::string ExecutionEntryNodeID;
+		std::vector<Node*> LastExecutedNodes;
+#endif
+
+		std::string HoveredNodeID;
+		NodeSocket* SocketLookingForConnection = nullptr;
+		Connection* HoveredConnection = nullptr;
+		NodeSocket* SocketHovered = nullptr;
+		RerouteNode* RerouteNodeHovered = nullptr;
+		GroupComment* GroupCommentHovered = nullptr;
+
+		ImVec4 ColorPickerStartValue = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+		bool bShowGroupCommentColorPicker = false;
+
+		std::vector<GroupComment*> GroupComments;
+
+		std::vector<Node*> SelectedNodes;
+		std::vector<Connection*> SelectedConnections;
+		std::vector<RerouteNode*> SelectedRerouteNodes;
+		std::vector<GroupComment*> SelectedGroupComments;
+
+		ImVec2 MouseCursorPosition;
+		NodeAreaContextMenuOpenState ContextMenuOpenState;
+		ImVec2 MouseCursorSize = ImVec2(1, 1);
+		ImVec2 MouseSelectRegionMin = ImVec2(FLT_MAX, FLT_MAX);
+		ImVec2 MouseSelectRegionMax = ImVec2(FLT_MAX, FLT_MAX);
+		ImGuiWindow* MouseDownIn = nullptr;
+		bool bOpenMainContextMenu = false;
+		std::vector<Connection*> Connections;
+
+		ImVec2 Position;
+		ImVec2 Size;
+		ImVec2 RenderOffset = ImVec2(0.0, 0.0);
+		std::function<void()> MainContextMenuFunction = nullptr;
+		void RenderDefaultMainContextMenu();
+
+		std::vector<std::function<void(Node*, NODE_EVENT)>> NodeEventsCallbacks;
+		std::queue<SocketEvent> SocketEventQueue;
+
+		void DeleteNodeInternal(const Node* Node, int Index = -1);
+
+		void RemoveStaleSelectionAndHoverReferences();
+
+		void PropagateNodeEventsCallbacks(Node* Node, NODE_EVENT EventToPropagate) const;
+		ImVec2 SocketToPosition(const NodeSocket* Socket) const;
+		std::vector<Connection*> GetAllConnections(const NodeSocket* Socket) const;
+		std::vector<Connection*> GetAllConnections(const Node* Node) const;
+		Connection* GetConnection(const NodeSocket* FirstSocket, const NodeSocket* SecondSocket) const;
+		bool Delete(Connection* Connection);
+
+		bool IsThisAreaResponsibleFor(const Node* NodeToCheck) const;
+		bool IsThisAreaResponsibleFor(const Node* OutNode, const Node* InNode) const;
+		bool ValidateSocketPair(const Node* OutNode, const std::string& OutSocketID, const Node* InNode, const std::string& InSocketID) const;
+
+		static bool IsEmptyOrFilledByNulls(const std::vector<Node*> Vector);
+
+		void InputUpdate();
+
+		void MouseInputUpdate();
+		void MouseInputUpdateNodes();
+		void MouseInputUpdateGroupComments();
+
+		void LeftMouseClick();
+		void LeftMouseClickNodesUpdate();
+		void LeftMouseClickConnectionsUpdate();
+		void LeftMouseClickRerouteUpdate();
+		void LeftMouseClickGroupCommentsUpdate();
+
+		void RightMouseClick();
+		void RightMouseClickNodesUpdate();
+		void RightMouseClickConnectionsUpdate();
+		void RightMouseClickRerouteUpdate();
+
+		void DoubleMouseClick();
+
+		bool ShouldDragGrid();
+
+		void MouseDragging();
+		void MouseDraggingNodesUpdate();
+		void MouseDraggingConnectionsUpdate();
+		void MouseDraggingRerouteUpdate();
+		void MouseDraggingGroupCommentUpdate();
+
+		void LeftMouseDown();
+		void LeftMouseReleased();
+		void LeftMouseReleasedGroupCommentUpdate();
+
+		void KeyboardInputUpdate();
+		void InputUpdateNode(Node* Node);
+		void InputUpdateSocket(NodeSocket* Socket);
+		void MouseInputUpdateConnections();
+		void InputUpdateReroute(RerouteNode* Reroute);
+	
+		bool IsMouseAboveSomethingSelected() const;
+
+		void ConnectionsDoubleMouseClick();
+		std::vector<ConnectionSegment> GetConnectionSegments(const Connection* Connection) const;
+		RerouteNode* AddRerouteNode(Connection* Connection, size_t SegmentToDivide, ImVec2 Position);
+		bool IsRerouteNodeValid(const RerouteNode* RerouteNode);
+		bool IsMouseOverConnection(Connection* Connection, const int Steps, const float MaxDistance, ImVec2* CollisionPoint = nullptr);
+		bool IsMouseOverSegment(ImVec2 Begin, ImVec2 End, const int Steps, const float MaxDistance, ImVec2* CollisionPoint = nullptr);
+		bool IsPointInRegion(const ImVec2& Point, const ImVec2& RegionMin, const ImVec2& RegionMax);
+		bool IsSegmentInRegion(ImVec2 Begin, ImVec2 End, const int Steps);
+		bool IsConnectionInRegion(Connection* Connection, const int Steps);
+
+		bool IsRectsOverlapping(ImVec2 FirstRectMin, ImVec2 FirstRectSize, ImVec2 SecondRectMin, ImVec2 SecondRectSize);
+		bool IsSecondRectInsideFirstOne(ImVec2 FirstRectMin, ImVec2 FirstRectSize, ImVec2 SecondRectMin, ImVec2 SecondRectSize) const;
+		bool IsRectInMouseSelectionRegion(ImVec2 RectMin, ImVec2 RectSize);
+		bool IsRectUnderMouse(ImVec2 RectMin, ImVec2 RectSize);
+		
+		bool IsGroupCommentCaptionUnderMouse(GroupComment* GroupComment);
+		bool IsGroupCommentRightPartUnderMouse(GroupComment* GroupComment);
+		bool IsGroupCommentBottomPartUnderMouse(GroupComment* GroupComment);
+		bool IsAnyGroupCommentInResizeMode();
+
+		void SelectFontSettings() const;
+
+		void GroupCommentDoubleMouseClick();
+		void AttachElementsToGroupComment(GroupComment* GroupComment);
+		void MoveGroupCommentInternal(GroupComment* GroupComment, ImVec2 Delta, std::unordered_set<std::string>& MovedElementIDs);
+
+		void Render();
+		void RenderGrid(ImVec2 CurrentPosition) const;
+		void RenderNode(Node* Node) const;
+		void RenderNodeSockets(const Node* Node) const;
+		void RenderNodeSocket(NodeSocket* Socket) const;
+		std::vector<ImVec2> GetTangentsForLine(const ImVec2 P1, const ImVec2 P2) const;
+		ImVec2 EvaluateHermiteSpline(float NormalizedParameter, ImVec2 Begin, ImVec2 End, const std::vector<ImVec2>& Tangents) const;
+		void DrawHermiteLine(ImVec2 P1, ImVec2 P2, int Steps, ImVec4 Color, const ConnectionStyle* Style) const;
+		void DrawHermiteLine(const ImVec2 P1, const ImVec2 P2, const int Steps, const ImVec4 Color, const float Thickness) const;
+		void RenderConnection(const Connection* Connection) const;
+		void RenderReroute(const RerouteNode* RerouteNode) const;
+		ConnectionStyle* GetConnectionStyle(const NodeSocket* ParticipantOfConnection) const;
+
+		void RenderGroupComment(GroupComment* GroupComment);
+
+		bool IsMouseRegionSelectionActive() const;
+
+		ImVec2 ScreenToLocal(ImVec2 ScreenPosition) const;
+		ImVec2 LocalToScreen(ImVec2 LocalPosition) const;
+
+		// FE_TO_DO: Here I am using internal ImGui functions. Need to find a way to avoid it.
+		ImGuiWindow* GetCurrentWindowImpl() const;
+
+		// Scans the connection list to find a pair requiring reordering based on dependencies.
+		std::pair<int, int> FindOutOfOrderConnectionPair(Json::Value& Root, std::vector<Json::String>& ConnectionList, std::unordered_map<std::string, Node*>& LoadedNodes);
+		bool WorkOnLoadedConnection(Json::Value& Root, const Json::Value& ConnectionData, std::unordered_map<std::string, Node*>& LoadedNodes);
+	};
+#include "VisualNodeArea.inl"
+}

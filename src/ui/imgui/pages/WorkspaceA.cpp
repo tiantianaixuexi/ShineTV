@@ -550,7 +550,11 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     float gy = ganttBody.min.y + 20.0f;
     for (int i = 0; i < ganttRows; ++i) {
         const auto& def = s.chain[static_cast<std::size_t>(i)];
-        draw->AddText(MonoAt(10.5f), 10.5f, ImVec2(ganttBody.min.x, gy + 5.0f), ColorTextSecondary(),
+        // 原来写死 `gy + 5.0f`：甘特行高 22，正确中心是 gy + 11，字盒中心落在 10.25，
+        // **偏上 0.75px**。改成按行中心算（行高变了也不会再算错）。
+        draw->AddText(MonoAt(10.5f), 10.5f,
+                      ImVec2(ganttBody.min.x, kit::CenterTextY(MonoAt(10.5f), 10.5f, gy + 11.0f)),
+                      ColorTextSecondary(),
                       def.code.data(), def.code.data() + def.code.size());
         const bool done = std::find(s.doneChain.begin(), s.doneChain.end(), def.code) != s.doneChain.end();
         const bool running = s.running && def.id == s.runningStage;

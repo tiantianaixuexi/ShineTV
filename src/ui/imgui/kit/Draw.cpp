@@ -1,6 +1,7 @@
 #include "ui/imgui/kit/Draw.h"
 
 #include "core/Log.h"
+#include "im_anim.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -13,6 +14,8 @@ namespace {
 
 bool g_reduceMotion = false;
 float g_now = 0.0f;
+// 上一帧的时间步，pinned 时为 0。过渡补间要它（见 kit/Anim.h）。
+float g_lastDelta = 0.0f;
 // 取证用：钉住时钟后 TickAnimation 不再推进（见 PinAnimation）。
 bool g_animationPinned = false;
 
@@ -133,6 +136,10 @@ void SetReduceMotion(bool on) { g_reduceMotion = on; }
 bool ReduceMotion() { return g_reduceMotion; }
 
 void TickAnimation(float deltaSeconds) {
+    // ImAnim 的每帧泵。**即使钉住时钟也要调**：否则在飞的补间不推进，
+    // 解钉后会带着一大段欠账一次性跳完。
+    iam_update_begin_frame();
+    g_lastDelta = g_animationPinned ? 0.0f : deltaSeconds;
     // 减少动效只压缩**过渡时长**，不冻结时间轴：脉冲/进度仍要走完，
     // 否则「运行中」的呼吸感全没了，验收截图会看起来像卡住。
     if (g_animationPinned) {
@@ -141,9 +148,17 @@ void TickAnimation(float deltaSeconds) {
     g_now += deltaSeconds;
 }
 
+float LastFrameDelta() { return g_lastDelta; }
+
+bool AnimationPinned() { return g_animationPinned; }
+
 void PinAnimation(float seconds) {
     g_animationPinned = true;
     g_now = seconds;
+    // ⚠️ 清一次补间池：钉住期间 `Anim.h` 的过渡函数会**直接返回 target**，
+    //    而 ImAnim 池里那些在飞的补间还停在中间值。不清的话，解钉那一帧它们会
+    //    从中间值继续走，视觉上就是「取证结束后界面突然闪一下」。
+    iam_pool_clear();
 }
 
 void UnpinAnimation() { g_animationPinned = false; }
@@ -451,6 +466,30 @@ float DrawTextClipped(ImDrawList* draw, ImFont* font, float fontSize, ImVec2 pos
         start = end;
     }
     return y - pos.y;
+}
+
+// 撤回过一版「按 Ascent+Descent 算」的写法，**那版是错的**，留个记录：
+//
+//   ImGui 的 `ImFont::RenderText` 里 `const float line_height = size;` —— 行盒高度
+//   **就等于请求字号**，基线落在 `pos.y + Ascent*scale`（`imgui_draw.cpp:4858`）。
+//   所以 `pos.y = centerY - fontSize/2` 居中的正是 ImGui 的行盒，**是 ImGui 的原生
+//   约定、也是对的**。按 `Ascent + Descent` 算反而错：这一版 ImGui 的 `Descent` 是
+//   **负数**（本机实测 size=13 时 asc=11 / desc=-3，合计只有 8），用它会把字往下
+//   推 2.5px —— 方向正好和「字偏高」相反。
+//
+// 那 0.5px 的真实来源（顶栏「运行」按钮实测：墨迹中心 23.0 / 按钮中心 23.5）：
+//   CJK 的墨迹盒约跨基线 −0.88em ~ +0.12em，中心在基线上方 0.38em。代入
+//   `基线 = centerY - 6.5 + 11`，墨迹中心 = `centerY - 0.44` —— 与实测吻合。
+//   也就是说**「居中」这件事本身在 ImGui 里是近似的**（Latin 与 CJK 的光学中心
+//   不同，一个公式同时伺候不了），0.5px 量级不值得为它改 40 处。真正要找的是
+//   「明显不在中间」的那类，量级差两个数量级。
+float CenterTextY(ImFont* font, float fontSize, float centerY) {
+    (void)font;
+    return centerY - fontSize * 0.5f;
+}
+
+float CenterTextX(float minX, float maxX, float textWidth) {
+    return minX + (maxX - minX - textWidth) * 0.5f;
 }
 
 float MeasureClipped(ImFont* font, float fontSize, float maxWidth, std::string_view text) {

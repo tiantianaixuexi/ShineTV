@@ -316,8 +316,26 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
         if (mouseOverrideSet_) {
-            // 后端可能又把位置写回真实光标了，再钉一次，保证 NewFrame 看到的是覆盖值。
-            ImGui::GetIO().MousePos = ImVec2(mouseOverrideX_, mouseOverrideY_);
+            // ⚠️ 这里**必须走事件队列**（`AddMousePosEvent`），不能只把 `io.MousePos`
+            //    这个**字段**再写一遍。理由是 `ImGui::NewFrame()` 里的 `UpdateMouseData`
+            //    会用 `g.InputEventsMouse.MousePos[source]` 覆盖 `io.MousePos` ——
+            //    字段上的值活不过 NewFrame。
+            //
+            //    而 win32 后端**一定会往队列里塞一个事件**：
+            //    `ImGui_ImplWin32_UpdateMouseData`（imgui_impl_win32.cpp:389-398）在
+            //    「窗口有焦点 + `bd->MouseTrackedArea == 0`」时调 `AddMousePosEvent`
+            //    把**真实光标**推进去。字段写两遍挡不住它。
+            //
+            //    排在后端 NewFrame **之后**，我们的事件是队列里最后一个；同一 source
+            //    上 `AddMousePosEvent` 直接覆盖 ⇒ NewFrame 读到的就是覆盖值。
+            //    这也正是下面 Key / MouseButton 覆盖一直用的方式 —— 唯独鼠标位置
+            //    当初写成了字段赋值，于是**只有窗口恰好没有焦点时**才生效。
+            //
+            //    症状极具迷惑性：实测 r90/r91 帧内 `io.MousePos` 恒为 (3146,50)
+            //    （用户真实光标在第二块屏幕上），11 个悬停探针的坐标各不相同却全都
+            //    hit=0，浮层探针同时报「位置注入没到位」；而 r88 同样这份代码 11/11
+            //    全过 —— 差别只是当时取证窗口没拿到焦点。
+            ImGui::GetIO().AddMousePosEvent(mouseOverrideX_, mouseOverrideY_);
         }
         // 按键覆盖同理，走 ImGui 的事件队列（`NewFrame` 会把它折进按下沿）。
         // ⚠️ 必须排在后端 NewFrame **之后**：win32 后端会按真实键盘状态覆写 Key*Map。

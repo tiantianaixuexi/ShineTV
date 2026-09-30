@@ -414,14 +414,114 @@ last_verified: 2026-09-30
 
 | # | 偏差 | 归因 | 说明 |
 |---|---|---|---|
-| 1 | `--dur-1/2/3` 三个常量**零读点** | 页面层 | 三个时长常量一个都没被读过 ⇒ hover / 选中 / 展开 / 切视图全无过渡，而设计稿有 60+ 处 `transition`。改这个要逐个控件接，不是单点 |
-| 2 | 面包屑条**整条底色 + 下边框缺失** | 页面层 | `shell.css:232-233` 有，`Shell.cpp:1497-1535` 只 `AddText` |
+| 1 | ~~`--dur-1/2/3` 三个常量**零读点**~~ **已接** | — | `kit/Anim.h` + `kit/Anim.cpp`（third/ImAnim）已建，`kit::TransitionTo` / `kit::TransitionColorTo` 走 ImAnim 补间。另订正：`kEmphasized{0.3,0.05,0.15,1}` 与设计稿对不上（`tokens.css:28` 是 `--ease-out: cubic-bezier(0.16,1,0.3,1)`），已按 CSS 改成 `kEaseOut`；凭印象编的 `kExit` 已删。**注**：CSS 里实际是 43 处 `transition`（不是 60+），其中 56 个槽位是颜色类、18 个 transform、仅 1 处 width |
+| 2 | ~~面包屑条**整条底色 + 下边框缺失**~~ **已接** | — | `Shell.cpp` `DrawBreadcrumbs` 已按 `shell.css:223-234` 补齐底色（`theme::CurrentDerived().crumbBg`，这个派生色自 `Theme.cpp:99` 算好却**零绘制消费点**，只有 check-theme 自检在读）、下边框、padding 24→16、字号 12.5→12.0（12.5 不在 `kSizes` 里，`LookupNearest` 向上取档 ⇒ 实际渲染 13px）、分隔符按 flex `gap:7px` 真量字宽 |
+| 8 | ~~面包屑 12.5→12px、左内边距 +24→16~~；顶栏左内边距 +16→12、品牌→胶囊 +20→10；活动栏行距 +48→44、选中底 44×44→40×40；dock 左右内边距各 −2px；~~检查器段头 12.5→12px 且 `ColorText()`→`ColorTextSecondary()`、箭头 10→11px~~；底栏页签字号 `Tabs` 13px→`.dock-tabs > button` 12px | 页面层 | 面包屑与检查器段头本轮已改。检查器段头另外三处：高度 24→**39.2**（`padding:10px 14px` + 行盒 `12×1.6`，见下节）、分隔线从段头下方移到**整段底部**（`.sect` 的 `border-bottom`）、hover 去掉底色只改文字色 |
 | 3 | 15 个 `line.*` / `fill.*` 的 alpha 被压平成不透明实色 | 主题层 | JSON 存的是 CSS `rgba` 叠在 `--bg-surface` 上的结果，算法自洽，但叠在哪个底上都一样（例：深空卡片边应为 `#29303E`，实现画的是 `#202734`，暗 9/9/10） |
 | 4 | 15 处字号取不到档：`FontBoldAt(9.5f)` / `(16.0f)` 等 | 字体层 | 两侧都无此档，向上取档到 10.5 / 17px。设计稿有 9.5 / 12.5 / 14.5 / 16px |
 | 5 | `font-weight: 500` 无字面 | 字体层 | `Fonts.cpp` 只加载 400 / 600 两档 |
-| 6 | `.card.hoverable:hover` 的 `translateY(-2px)` 未接 | 页面层 | 边框与投影本轮接了，位移没有。影响面很广（几乎所有 hoverable 卡片） |
+| 6 | ~~`.card.hoverable:hover` 的 `translateY(-2px)` 未接~~ **这条记录是错的，已订正** | — | `kit::Card()` 早就接了（`kit/Widgets.cpp:393-396`，`lift = hovered && hoverable ? -2.0f : 0.0f`）。真正缺的是**没走 `kit::Card()` 的页面级卡片**：资产卡、项目卡、向导行等手写 `DrawShadowed` 的地方。要补的是「把手写卡片换成 `kit::Card()`」，不是「给 `kit::Card` 加位移」 |
 | 7 | `[data-theme="inkwash"]` 下 `.brand .mark` / `.hub-logo` 被 `tokens.css:206` 的 `box-shadow: none` 覆盖 | 页面层 | 水墨主题下这两个 logo 应当**没有**投影，ImGui 侧未按主题特判 |
-| 8 | 面包屑 12.5→12px、左内边距 +24→16；顶栏左内边距 +16→12、品牌→胶囊 +20→10；活动栏行距 +48→44、选中底 44×44→40×40；dock 左右内边距各 −2px；检查器段头 12.5→12px 且 `ColorText()`→`ColorTextSecondary()`、箭头 10→11px；底栏页签字号 `Tabs` 13px→`.dock-tabs > button` 12px | 页面层 | 逐条独立的小数值偏差，改起来便宜但琐碎，适合打包一次 |
 | 9 | `.tl-card` 宽 96→128、圆角 8→10；项目中心卡片名 `FontBoldAt(17.0f)`→14.5px | 页面层 | 同上 |
 
 **未接投影档位、且需要先补 `HitTest` 的两处**（不是漏接，是顺序问题）：`pages/WorkspaceA.cpp:36` 总览 KPI 卡（`.card.kpi.hoverable` → hover 该走 Card 档，但 `KpiCard` 整个没有命中测试）、`pages/WorkspaceB.cpp:3024` 向导确认卡（`.card.glow` → hover 该走 Accent 档，同理无 `HitTest`；且它是只读汇总卡，hover 反馈价值低，建议只补 `HitTest` 不接档）。**`pages/WorkspaceB.cpp:1571` 在设计稿里找不到对应元素**（设计稿该页是表格而非卡片栅格），代码注释自称抄「资产总览网格」，其真实原型是 `Assets.jsx:151`。按纪律不硬套档位，注释里的原型出处待订正。
+
+---
+
+## 文字垂直居中（2026-09-30）
+
+用户报「很多按钮的字不在中间」。全树 `AddText` / `DrawTextClipped` 共 **216 处**，逐个归类。
+
+### 度量口径（先定死，否则每次量出来的数都不一样）
+
+`ImFont::RenderText` 里 `const float line_height = size;` —— **ImGui 的行盒高度就等于请求字号**，行盒顶就是 `pos.y`。所以
+
+```
+行盒中心 = pos.y + fontSize / 2
+Δ = (pos.y + fontSize/2) − 容器中心Y
+```
+
+正确写法 `pos.y = 容器中心Y − fontSize/2`，已封装成 `kit::CenterTextY(font, size, centerY)`（`kit/Draw.h`）。
+
+⚠️ **两条已踩过的坑，别再走**：
+
+1. **不要**改成「按字体真实 Ascent/Descent 算」。这一版 ImGui 的 `Descent` 是**负数**（本机 size=13 时 asc=11 / desc=−3，合计只有 8），照它算会把字往下推 2.5px —— 方向与「字偏高」正好相反。已撤回过一次，`Draw.h` 里留了记录。
+2. `min.y + (h − size) * 0.5f` 与 `center().y − size * 0.5f` **代数恒等**。曾经有一条注释说前者「假设 Ascent+Descent==fontSize、逐字号各偏各的」—— **那句是错的**，两式数值一样，注释在骗人。已撤回。
+
+残留的 −0.45px 光学偏差（CJK 墨迹盒中心在基线上方 0.38em）**已知且接受**。量级判据：`|Δ| ≤ 0.5` 不动，`|Δ| ≥ 1` 才算缺陷。
+
+### 推翻我自己写错的一个数
+
+上一轮我在 `Shell.cpp` 注释和本文档里都写过「检查器段头偏上 **6.2px**」。**这个数是错的**，按上面的口径重算：文字 `min.y+5.0f`、字号 12.5 ⇒ 行盒中心 `min.y+11.25`，框中心 `min.y+12`，**Δ = −0.75px**，落在已接受的光学偏差带里。段头真正的毛病是**整段高度差 15.2px**（24 vs 39.2），三段合计检查器比设计稿短 45.6px —— 是**布局短**，不是字没居中。注释已改。
+
+### 本轮修掉的（按偏差排序）
+
+| 位置 | 内容 | 偏差 | 说明 |
+|---|---|---|---|
+| `kit/Widgets.cpp` `Chip()` | 主标签画在 `cy`（中心线，一个字都没减）、`.cnt` 同 | **低 5.25~6.0px** | 全树最严重的一处，而且是 **kit 小组件自身**；被资产侧栏筛选 chip 实际调用 |
+| `pages/Shell.cpp` 队列行 | 任务名 `y+3.0f`、进度 `y+4.0f` | **高 5.75~6.0px** | 同一行里居中的 Tag 是正的，旁边两段字比它高 6px，最扎眼 |
+| `pages/Shell.cpp` 报告模态页脚 | 说明句 `max.y−12−14` | **低 6.25px** | 同一页脚里左边说明、右边按钮差 6px |
+| `kit/Widgets.cpp` `Tabs()` | `item.min.y + 8.0f` | 高 1.5px | 这个 8 只在容器高 29 时成立，实际调用给 32（dock 四个页签） |
+| `kit/Widgets.cpp` `Tree()` | `-7.5f` / `-7.0f` | 高 1.0~1.25px | 两侧栏在用 |
+| `kit/Overlays.cpp` `Modal`/`Drawer` 标题 | `top + 14.0f` | 高 2.0~2.5px | **潜伏缺陷**：`Modal`/`Drawer`/`Toast`/`Menu`/`DataTable` 全树零调用 |
+| `kit/Widgets.cpp` `DataTable()` | 表头 / 单元格写死 `+7`~`+9` | 高 1.5~2.75px | 同样零调用 |
+| `pages/WorkspaceB.cpp` | 模式页签 / 章选择 chip / 最近项目计数 ×2 | 高 1.0~1.75px | |
+| `pages/WorkspaceA.cpp` | 甘特行标 | 高 0.75px | |
+| `pages/Shell.cpp` 检查器段头 | 高度 24→39.2、文字改 `CenterTextY`、分隔线移到整段底部、箭头 10→11、颜色→`text-secondary`、hover 去掉底色 | — | 见上 |
+
+### 还没做：kit 小组件覆盖缺口（用户要求「小组件请封装，不要重复写」）
+
+按重复次数排序：
+
+| # | 重复模式 | 重复处 | 现状 |
+|---|---|---|---|
+| 1 | 列表行（行框 + hover 底 + 左图标 + 主文字 + 右侧次要文字 + chevron） | **8 处**（队列 / palette / 产物 / 报告 / 模板 / 打开列表 / 胶片格 / WorkspaceA 产物），**每一处都各自算错了一次 Y** | 无 kit 函数。应抽 `kit::ListRow` |
+| 2 | 对话框外壳（scrim + 圆角 + 投影 + 头 + 体 + 脚） | **4 处** | `kit::Modal` **已实现、零调用**；另有页面层私有副本 `DrawModalTitle` |
+| 3 | Toast | 1 处，且低 2.25px | `kit::Toast` **已实现、算得对、零调用** |
+| 4 | 分段页签条 | 3 处、2 套实现 | `kit::Tabs` 存在（偏差已修） |
+| 5 | 下拉菜单 | 1 处 | `kit::Menu` **已实现、零调用** |
+| 6 | 数据表格 | 2 处（报告表 4 列 / 甘特 8 列） | `kit::DataTable` **已实现、零调用** |
+| 7 | 「图标 + 文字」居中胶囊 | 3 处 | 无 |
+
+**零调用的 5 个（`Modal` / `Drawer` / `Toast` / `Menu` / `DataTable`）是最优先的**：它们既写好了、位置也算对，页面层却又手写了一份还写错 —— 同一份逻辑两处实现，是所有偏差的温床。
+
+---
+
+## 取证基建：鼠标坐标注入（2026-09-30）
+
+**症状**：r89 / r90 / r91 连续三轮 `hover-probes 0/11`、`overlay-clicks 0/4`、`unstable=11`，而 r88 同样这套代码是 11/11 与 4/4。
+
+**归错了两次**：
+
+- r89 我归因为「`CenterTextY` 里的一次性自检日志刷屏冲掉了驱动协议」。**错的** —— 删掉那条日志重跑，11/11 照旧红。
+- 浮层探针同时报「位置注入没到位」，这条信号当时就在日志里，是我没去读。
+
+**真因**（加自证读数后一次定位）：`Host::PumpFrames` 用 `io.MousePos = 覆盖值` 这个**字段赋值**来注入坐标，但 `ImGui::NewFrame()` 里的 `UpdateMouseData` 会用 `g.InputEventsMouse.MousePos[source]` **覆盖这个字段** —— 字段上的值活不过 `NewFrame`。而 win32 后端**一定**会往队列里塞一个事件：`ImGui_ImplWin32_UpdateMouseData`（`imgui_impl_win32.cpp:389-398`）在「窗口有焦点 + `bd->MouseTrackedArea == 0`」时调 `AddMousePosEvent` 把**真实光标**推进去。
+
+实测帧内读数恒为 **`(3146, 50)`**（用户真实光标在第二块屏上），视口 `1600×960` 正常，11 个探针坐标各不相同却全都 `hit=0`。r88 能过只是因为当时取证窗口**恰好没拿到焦点**。
+
+**修法**：排在后端 `NewFrame` **之后**调 `io.AddMousePosEvent(覆盖值)` —— 走事件队列而不是字段，同一 source 上后写的覆盖先写的。这与下面键盘 / 鼠标按键覆盖一直用的方式一致；唯独鼠标位置当初写成了字段赋值，于是**只有窗口恰好没有焦点时**才生效。
+
+**判据自证（这条更重要）**：悬停探针现在每条都打 `landed` / `saw` / 视口三个读数。`hit = 0` 至少对应三种完全不同的原因 —— 注入没落地、视口塌成 0×0、坐标落在热区外 —— 只看命中数必然改错地方（我前面两次就都是这么错的）。浮层探针的报错也改成打出**实际看到**的坐标，而不是只说「没到位」。
+
+修完 r92：`overall=PASS`，80/80 saved、`hover-probes 11/11`、`overlay-clicks 4/4`、`identical-driven-pairs 0`。
+
+---
+
+## 第三方库注册（2026-09-30）
+
+| 库 | 目标 | 接法 | 备注 |
+|---|---|---|---|
+| `third/ImAnim` | `shine_imanim` | **只编 `im_anim.cpp`**，链 `shine_imgui_third` | 它的 `CMakeLists.txt` 是 CI 脚本，依赖 `examples/extern/ImPlatform`（会 fetch SDL3/Vulkan/Metal）并建 9 个 demo exe —— 照搬进来配置阶段就要外网 |
+| `third/VisualNodeSystem` | `shine_vns` | 6 个根 `.cpp` + 3 个 jsoncpp `.cpp`，链 `shine_imgui_third` | 它的 `CMakeLists.txt` 要两个 CACHE 变量 + SHARED/STATIC 分支，是给独立仓库用的。源码侧有**一处本地补丁**（变量遮蔽，GCC 判 redeclaration，MSVC 接受），见 `third/VisualNodeSystem/LOCAL_PATCHES.md` |
+
+**选 ImAnim 的理由**：本工程控件全自绘（只往 `ImDrawList` 塞 draw call，不产生 ImGui item），基于 item 生命周期的动画引擎完全用不上。ImAnim 的 C 接口 `iam_tween_float(id, channel, target, dur, ease, policy, dt)` 直接返回当前值、不依赖任何 item，正好对得上。
+
+### `PinAnimation` 语义变更（接过渡的前置条件）
+
+`kit/Draw.h` 原来断言「本工程所有 hover 样式都是直接状态切换，没有基于时间的插值（这是钉时钟能用的前提）」。**接了 ImAnim 之后这句不成立了**，改成：
+
+- 钉住时，**连续动画**（`Now()` 驱动：脉冲 / 旋转 / 呼吸）冻结在给定时刻；
+- 钉住时，**过渡**（`Anim.h` 的 `TransitionTo` / `TransitionColorTo`）**直接落终值**。
+
+为什么不能冻过渡：冻在半路 ⇒ 52 张静息态截图拍到的是随机中间色，每轮 md5 都变；落终值 ⇒ 截图确定，且 hover 探针照样测得到（终态色 ≠ 静息态色）。`PinAnimation` 另外调一次 `iam_pool_clear()`，让在飞的补间重建时以终值起步，避免解钉瞬间闪一下。

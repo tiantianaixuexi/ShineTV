@@ -42,8 +42,11 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
             x += iconSize + 10.0f;
         }
         ImFont* font = FontBoldAt(15.0f);
-        DrawTextClipped(draw, font, 15.0f, ImVec2(x, top + 14.0f), frame.max.x - x - 18.0f,
-                        ColorText(), title);
+        // 原来写死 `top + 14.0f` —— 那个 14 是 `.modal-h` 的 **padding**，被当成了
+        // 文字偏移：头高 `headerH` = 14*2 + 18 + 1 = 47，15px 字该落在
+        // `top + 23.5 - 7.5`，原值偏上 2.0px。改按头部中心算（不写死 23.5）。
+        DrawTextClipped(draw, font, 15.0f, ImVec2(x, CenterTextY(font, 15.0f, top + headerH * 0.5f)),
+                        frame.max.x - x - 18.0f, ColorText(), title);
         top += headerH;
         draw->AddLine(ImVec2(frame.min.x, top - 0.5f), ImVec2(frame.max.x, top - 0.5f),
                       ColorLineSubtle(), 1.0f);
@@ -77,9 +80,14 @@ Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_v
         x += iconSize + 10.0f;
     }
     ImFont* font = FontBoldAt(14.0f);
-    DrawTextClipped(draw, font, 14.0f, ImVec2(x, top + 14.0f), frame.max.x - x - 16.0f,
-                    ColorText(), title);
-    top += 14.0f * 2.0f + 18.0f + 1.0f;
+    // 头高抽成常量（值与原来 `top += 14*2 + 18 + 1` 完全相同，不是改几何），
+    // 这样标题按中心算时可以引用它，而不是写死 23.5。
+    const float headerH = 14.0f * 2.0f + 18.0f + 1.0f;
+    // 原来写死 `top + 14.0f` —— 那个 14 是 `.drawer-h` 的 **padding**，被当成了
+    // 文字偏移：头高 47、14px 字该落在 `top + 23.5 - 7.0`，原值偏上 2.5px。
+    DrawTextClipped(draw, font, 14.0f, ImVec2(x, CenterTextY(font, 14.0f, top + headerH * 0.5f)),
+                    frame.max.x - x - 16.0f, ColorText(), title);
+    top += headerH;
     draw->AddLine(ImVec2(frame.min.x, top - 0.5f), ImVec2(frame.max.x, top - 0.5f),
                   ColorLineSubtle(), 1.0f);
 

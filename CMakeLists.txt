@@ -496,7 +496,65 @@ if(SHINE_UI_IMGUI)
 
   add_library(shine_imgui STATIC ${SHINE_IMGUI_LIB_SRC})
   target_include_directories(shine_imgui PUBLIC ${CMAKE_SOURCE_DIR}/src)
-  target_link_libraries(shine_imgui PUBLIC shine_core shine_imgui_third)
+  target_link_libraries(shine_imgui PUBLIC shine_core shine_imgui_third shine_imanim shine_vns)
+
+  # --- third/ImAnim：过渡动画引擎 ------------------------------------------------
+  #
+  # ⚠️ **不 add_subdirectory**。third/ImAnim/CMakeLists.txt 是它自己的 CI 构建脚本：
+  #    依赖 `examples/extern/ImPlatform`（会 fetch 一整套 SDL3/Vulkan/Metal 变体）、
+  #    并把 9 个 demo 可执行文件全建出来。照搬进来会让配置阶段就依赖外网。
+  #    跟 shine_jpeg / shine_hiredis 一个路子：只取引擎那一个 .cpp，源码自己编。
+  #
+  #    只编 im_anim.cpp：im_anim_demo.cpp / im_anim_doc.cpp / im_anim_usecase.cpp
+  #    是 demo 与文档实现，头文件里没有必须由它们定义的符号（145 个 IM_ANIM_API
+  #    声明的实现都在 im_anim.cpp）。真缺符号时链接器会指名道姓地报出来。
+  #
+  #    选它的理由：设计稿的 `transition` 一律是「状态 → 0..1 进度」的补间，
+  #    而这个前端的控件是**全自绘**的（只往 ImDrawList 塞 draw call，不产生
+  #    ImGui item）。ImAnim 的 C 接口 `iam_tween_float(id, channel, target, dur,
+  #    ease, policy, dt)` 直接返回当前动画值、不依赖任何 item，正好对得上；
+  #    原来的自写时间插值只有 kit 自己的 LerpColorTo 一条，且零调用点。
+  add_library(shine_imanim STATIC ${THIRD}/ImAnim/im_anim.cpp)
+  target_include_directories(shine_imanim PUBLIC ${THIRD}/ImAnim)
+  # im_anim.h 只 include "imgui.h" + 标准头，ImGui 由本工程那一份提供
+  # （第三方 ImAnim 自带的那份会让链接里出现两套 ImGui）。
+  target_link_libraries(shine_imanim PUBLIC shine_imgui_third)
+  # 与 shine_core / shine_imgui_third 保持同一组 Win32 宏，否则同一份头在两侧
+  # 宏不一致 → 结构体布局不同。
+  target_compile_definitions(shine_imanim PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+
+  # --- third/VisualNodeSystem：流程画布的节点库 --------------------------------
+  #
+  # ⚠️ 同样**不 add_subdirectory**：它的 CMakeLists 要 EXTERNAL_IMGUI_LIBRARY 与
+  #    VISUAL_NODE_SYSTEM_GLFW_* 两个 CACHE 变量，还得开 SHARED/STATIC 分支，
+  #    整条路径就是给独立仓库用的。自己编更短也更可控。
+  #
+  #    include 路径是照源码里真实的 include 写法反推的，两种基准都得给：
+  #      #include "jsoncpp/json/json.h"  ⇒ 要有 ThirdParty/
+  #      #include <json/config.h>       ⇒ 还要有 ThirdParty/jsoncpp
+  #        （json_tool.h:10 用尖括号 + json/ 前缀，与上面的写法基准不同，
+  #          少这一条就是 fatal error: json/config.h: No such file）
+  #      glm 装在 ThirdParty/glm/<...>  ⇒ 要有 ThirdParty/glm
+  #      #include "imgui_internal.h"     ⇒ 复用 shine_imgui_third 的 PUBLIC 路径
+  #    源码侧只有一处本地补丁（变量遮蔽，GCC 判 redeclaration），
+  #    见 third/VisualNodeSystem/LOCAL_PATCHES.md。
+  add_library(shine_vns STATIC
+    ${THIRD}/VisualNodeSystem/GroupComment.cpp
+    ${THIRD}/VisualNodeSystem/VisualNode.cpp
+    ${THIRD}/VisualNodeSystem/VisualNodeCore.cpp
+    ${THIRD}/VisualNodeSystem/VisualNodeFactory.cpp
+    ${THIRD}/VisualNodeSystem/VisualNodeSocket.cpp
+    ${THIRD}/VisualNodeSystem/VisualNodeSystem.cpp
+    ${THIRD}/VisualNodeSystem/ThirdParty/jsoncpp/json_reader.cpp
+    ${THIRD}/VisualNodeSystem/ThirdParty/jsoncpp/json_value.cpp
+    ${THIRD}/VisualNodeSystem/ThirdParty/jsoncpp/json_writer.cpp)
+  target_include_directories(shine_vns PUBLIC
+    ${THIRD}/VisualNodeSystem
+    ${THIRD}/VisualNodeSystem/ThirdParty
+    ${THIRD}/VisualNodeSystem/ThirdParty/jsoncpp
+    ${THIRD}/VisualNodeSystem/ThirdParty/glm)
+  target_link_libraries(shine_vns PUBLIC shine_imgui_third)
+  target_compile_definitions(shine_vns PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 
   # AppEnvironment.{h,cpp} 原在 src/ui/app/（与 Qt 前端同目录）。P7 删掉那棵树时
   # 把它搬到了 src/ui/imgui/host/ —— 它是零 Qt 的宽字符环境变量读取器，ImGui 侧
@@ -504,7 +562,7 @@ if(SHINE_UI_IMGUI)
   add_executable(ShineTVStudio
     src/ui/imgui/app/main.cpp)
   target_include_directories(ShineTVStudio PRIVATE ${CMAKE_SOURCE_DIR}/src)
-  target_link_libraries(ShineTVStudio PRIVATE shine_imgui)
+  target_link_libraries(ShineTVStudio PRIVATE shine_imgui shine_imanim shine_vns)
 
   # 主题 JSON 随程序分发：拷到 <exe目录>/themes（5 套主题，见 P2.1）。
   # 启动时由 AppEntry 的 LoadStartupTheme 从那里读（SHINE_THEME_DIR 可覆盖）。

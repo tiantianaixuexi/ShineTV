@@ -23,6 +23,12 @@ void SetReduceMotion(bool on);
 void TickAnimation(float deltaSeconds);
 [[nodiscard]] float Now();
 
+// 上一帧的时间步（秒）。过渡补间要它；pinned 时返回 0。
+[[nodiscard]] float LastFrameDelta();
+
+// 动画时钟当前是否被钉住。过渡模块据此决定「走补间」还是「直接落终值」。
+[[nodiscard]] bool AnimationPinned();
+
 // ---- 取证用：钉住动画时钟 ----
 //
 // 用途只有一个：让「像素变化的唯一变量」可以被指定。资产页与总控页有**永不静止**的
@@ -31,8 +37,19 @@ void TickAnimation(float deltaSeconds);
 // 「页面正好在闪」，实测 8 个探针里 4 个是这种假信号。
 //
 // 钉住之后帧与帧之间唯一变的是鼠标位置，A==B 才真的说明页面静止。
-// 这不会掩盖 hover 的过渡动画：本工程所有 hover 样式都是 `hit.hovered ? A : B`
-// 的**直接状态切换**，没有基于时间的插值（这是钉时钟能用的前提，改样式时别破坏）。
+//
+// ⚠️ 更正一条已经不成立的断言（原来就写在这里）：
+//    「本工程所有 hover 样式都是 `hit.hovered ? A : B` 的直接状态切换，没有基于
+//    时间的插值」—— **接了 third/ImAnim 之后这句就不成立了**，过渡已经是真的
+//    时间插值。改成新语义：
+//
+//    钉住时，**连续动画**（`Now()` 驱动：脉冲 / 旋转 / 呼吸）冻结在给定时刻；
+//    **过渡**（`Anim.h` 的 `TransitionTo` / `TransitionColorTo`）**直接落终值**。
+//
+//    为什么不冻结过渡：冻在半路 ⇒ 52 张静息态截图拍到的是随机中间色，每轮 md5 都变；
+//    落终值 ⇒ 截图确定，hover 探针也照样测得到（终态色 ≠ 静息态色）。
+//    所以 `PinAnimation` 还会顺手清一次补间池（`iam_pool_clear`），让在飞的
+//    过渡重建时直接以终值起步。
 void PinAnimation(float seconds);
 void UnpinAnimation();
 
@@ -101,6 +118,27 @@ float DrawTextClipped(ImDrawList* draw, ImFont* font, float fontSize, ImVec2 pos
 // 量一段文本的宽度（含截断处理后），不绘制。
 [[nodiscard]] float MeasureClipped(ImFont* font, float fontSize, float maxWidth,
                                    std::string_view text);
+
+// ⚠️ 这两个是**文字居中的唯一入口**，页面层与组件层都不该再写
+//    `centerY - fontSize * 0.5f` 或 `- 6.25f` 这类算式。
+//
+//    语义要说准，否则很容易被「优化」掉：`ImFont::RenderText` 里
+//    `const float line_height = size;` —— **ImGui 的行盒高度就等于请求字号**，
+//    基线落在 `pos.y + Ascent*scale`。所以 `centerY - fontSize/2` 居中的正是
+//    ImGui 的行盒，**是对的，别改**。
+//
+//    ⚠️ 别改成「按字体真实 Ascent/Descent 算」：这一版 ImGui 的 `Descent` 是
+//    **负数**（本机实测 size=13 时 asc=11 / desc=-3，合计只有 8 而不是 14），
+//    照它算会把字往下推 2.5px，方向与「字偏高」正好相反。踩过，已撤回。
+//
+//    残留的 0.5px 光学偏差（顶栏「运行」按钮实测：墨迹中心比按钮中心高 0.5px）
+//    来源是 CJK 墨迹盒中心在基线上方 0.38em，而 Latin 的光学中心不同 —— 一个
+//    公式伺候不了两种文字，0.5px 量级不值得为它动 40 处调用点。
+[[nodiscard]] float CenterTextY(ImFont* font, float fontSize, float centerY);
+[[nodiscard]] float CenterTextX(float minX, float maxX, float textWidth);
+
+// `DrawTextCentered(…, Rect, …)` 需要 `kit::Rect`，而 `Rect` 声明在 Widgets.h
+//（Widgets.h 依赖 Draw.h，反过来就成循环包含），所以那个重载放在 Widgets.h。
 
 // ---- 杂项 ----
 // 点阵背景：radial-gradient(circle at 1px 1px, line-normal 1px, transparent 0) 0 0 / 22px 22px

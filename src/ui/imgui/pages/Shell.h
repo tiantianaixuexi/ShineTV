@@ -297,6 +297,8 @@ private:
     float paletteScroll_ = 0.0f;
     float paletteContentH_ = 0.0f;
     float lastDelta_ = 0.0f;
+    // ImAnim 补间池只预分配一次（第一帧）。见 DrawFrame。
+    bool animPoolReserved_ = false;
     kit::DebugWindows debug_;
     // 当前字体图集是不是衬线族。Host 初始化时已按启动主题建过一次，
     // 这里存同一份状态，SetTheme 只在**族变了**时重建图集。

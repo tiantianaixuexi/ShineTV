@@ -221,9 +221,17 @@ struct Ease {
     float x2;
     float y2;
 };
-inline constexpr Ease kStandard{0.2f, 0.0f, 0.0f, 1.0f};
-inline constexpr Ease kEmphasized{0.3f, 0.05f, 0.15f, 1.0f};
-inline constexpr Ease kExit{0.4f, 0.0f, 1.0f, 1.0f};
+inline constexpr Ease kStandard{0.2f, 0.0f, 0.0f, 1.0f};     // --ease
+// ⚠️ 订正：这里原来写的是 `kEmphasized{0.3, 0.05, 0.15, 1}`，**设计稿里根本没有这条**。
+//    tokens.css:28 只定义了 `--ease-out: cubic-bezier(0.16, 1, 0.3, 1)`，而
+//    `fade-up var(--dur-2) var(--ease-out)`（shell.css:369/380 等）用的就是它。
+//    照抄 CSS 才是 1:1，凭印象写一个「看起来也像缓动」的曲线不是。
+inline constexpr Ease kEaseOut{0.16f, 1.0f, 0.3f, 1.0f};      // --ease-out
+// ⚠️ 原来还有一个 `kExit{0.4, 0, 1, 1}` —— tokens.css 里**没有** `--ease-exit`，
+//    全树零引用。已删：编一个设计稿里不存在的缓动，比不编更糟 —— 它看起来像是
+//    「有依据的」，下一个人会直接拿去用。
+//
+// 这三条目前零消费点；接过渡时（kit/Anim.h）从这里取，不要另写数字。
 } // namespace motion
 
 } // namespace shine::theme

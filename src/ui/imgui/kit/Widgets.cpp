@@ -254,7 +254,14 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
         DrawIcon(draw, spec.icon, ImVec2(x, y), iconSize, fg);
     }
     if (textWidth > 0.0f) {
-        const float textY = body.min.y + (body.height() - fontSize) * 0.5f;
+        // ⚠️ 这里**保持代数恒等**：`body.min.y + (body.height() - fontSize) * 0.5f`
+        //    与 `CenterTextY(font, fontSize, body.center().y)` 完全等价（都是
+        //    `中心 - 字号/2`），换成函数只是为了让全树只有一处算式。
+        //    ⚠️ 早先这里写过一版注释说「旧算式假设 Ascent+Descent==fontSize、逐字号各偏各的」
+        //    —— **那句是错的**，两条式子数值上一样，注释在骗人，已撤回。
+        //    真正让字「看着不在中间」的是写死偏移（检查器段头的 `min.y + 5.0f`
+        //    配 24px 框 = 偏上 6.2px），量级差两个数量级，不是 0.7px 那种。
+        const float textY = CenterTextY(font, fontSize, body.center().y);
         draw->AddText(font, fontSize, ImVec2(x + iconWidth + gap, textY), fg, label.data(),
                       label.data() + label.size());
     }
@@ -411,22 +418,38 @@ Rect Card(ImDrawList* draw, Rect bounds, std::string_view title, std::string_vie
     const bool hasHeader = !title.empty() || !icon.empty();
     float y = min.y + 16.0f;
     if (hasHeader) {
-        // 头：padding 12/16
-        const float headerY = min.y + 12.0f;
+        // `.card-h`（ui.css:182-188）：display:flex + align-items:center + gap 8 +
+        // padding 12px 16px + border-bottom 1px；`.card-title` 13.5px/600。
+        // 头高 = 12 + 行盒(13.5 × 1.6 = 21.6) + 12 + 1（border-box，border 算在里头）
+        //        = **46.6px**。原来按 43px 画，短了 3.6px。
+        //
+        // ⚠️ 但**文字位置 `headerY = min.y + 12` 本来就是对的**：内容盒从
+        //    min.y+12 起，行盒顶就在那儿（`line_height = fontSize`），
+        //    不该「修正」成按头高居中 —— 那是把一个对的式子改成另一个。
+        //    真正错的是**图标**：`align-items:center` ⇒ 图标中心要与行盒中心
+        //    `min.y + 12 + 10.8` 齐平 ⇒ 顶边 `min.y + 15.3`；原来画在
+        //    `headerY + 1.0f`，比文字高 2.3px。同一行里图标与字错开，一眼可见。
+        constexpr float kCardHeadPadY = 12.0f;
+        constexpr float kCardHeadH = 46.6f;  // 12 + 21.6 + 12 + 1
+        const float headerY = min.y + kCardHeadPadY;
         const float iconSize = 15.0f;
+        const float iconY = headerY + (kCardHeadH - 1.0f - iconSize) * 0.5f;
         float x = min.x + 16.0f;
         if (!icon.empty()) {
-            DrawIcon(draw, icon, ImVec2(x, headerY + 1.0f), iconSize, ColorAccent());
+            DrawIcon(draw, icon, ImVec2(x, iconY), iconSize, ColorAccent());
             x += iconSize + 8.0f;
         }
         ImFont* font = FontBoldAt(13.5f);
         DrawTextClipped(draw, font, 13.5f, ImVec2(x, headerY), max.x - min.x - 32.0f,
                         ColorText(), title);
-        y = min.y + 12.0f + 20.0f;
-        // 头下边框
-        draw->AddLine(ImVec2(min.x, y + 11.0f), ImVec2(max.x, y + 11.0f),
+        // 头下边框落在头底（border-box：含那 1px）。
+        const float headBottom = min.y + kCardHeadH;
+        draw->AddLine(ImVec2(min.x, headBottom - 0.5f), ImVec2(max.x, headBottom - 0.5f),
                       ColorLineSubtle(), 1.0f);
-        y += 12.0f;
+        // ⚠️ 有头时正文起点原来给的是 `min.y + 44`，**比无头时的 `min.y + 16` 少算**：
+        //    无头走的就是 `.card-b { padding: 16px }` 的 16，有头却没加。
+        //    统一成「头底 + 16」，与无头情形同一条规则。
+        y = headBottom + 16.0f;
     }
     return Rect{ImVec2(min.x + 16.0f, y), ImVec2(max.x - 16.0f, max.y - 16.0f)};
 }
@@ -552,7 +575,12 @@ bool Chip(ImDrawList* draw, Rect bounds, std::string_view label, const ChipSpec&
         font->CalcTextSizeA(fontSize, 1e9f, 0.0f, label.data(), label.data() + label.size()).x;
     float x = bounds.min.x + pad;
     const float cy = 0.5f * (bounds.min.y + bounds.max.y);
-    draw->AddText(font, fontSize, ImVec2(x, cy), fg, label.data(), label.data() + label.size());
+    // ⚠️ 原来直接画在 `cy`（容器垂直中心，**一个字都没减**）⇒ ImGui 行盒整个
+    //    掉到中心线以下 6.0px（12px 字）/ 5.5px（11px 字）。这是全树最明显的一处
+    //    「字不在中间」，而 Chip 是资产侧栏筛选器在用的 kit 小组件。
+    //    `ImFont::RenderText` 里 `line_height = size`，所以行盒中心 = pos.y + 字号/2。
+    draw->AddText(font, fontSize, ImVec2(x, CenterTextY(font, fontSize, cy)), fg, label.data(),
+                  label.data() + label.size());
     x += text;
 
     if (!spec.count.empty()) {
@@ -563,9 +591,10 @@ bool Chip(ImDrawList* draw, Rect bounds, std::string_view label, const ChipSpec&
                       spec.selected ? ColorAccentDim() : ColorFillMuted());
         // .cnt 只覆盖 font-size，font-weight 600 从 .chip 继承下来，所以用粗体。
         ImFont* cfont = FontBoldAt(10.5f);
+        // 原来画在 `countBox.center().y` ⇒ 行盒比中心低 5.25px（10.5 / 2）。
         draw->AddText(cfont, 10.5f,
-                      ImVec2(countBox.min.x + 6.0f, countBox.center().y), fg, spec.count.data(),
-                      spec.count.data() + spec.count.size());
+                      ImVec2(countBox.min.x + 6.0f, CenterTextY(cfont, 10.5f, countBox.center().y)),
+                      fg, spec.count.data(), spec.count.data() + spec.count.size());
     }
     return hit.clicked;
 }
@@ -589,8 +618,10 @@ std::string_view Tabs(ImDrawList* draw, Rect bounds, const std::vector<SegmentOp
         }
         const bool on = tab.value == value;
         const ImU32 fg = on ? ColorAccent() : (hit.hovered ? ColorText() : ColorTextSecondary());
-        draw->AddText(font, 13.0f, ImVec2(item.min.x + 12.0f, item.min.y + 8.0f), fg, tab.label.data(),
-                      tab.label.data() + tab.label.size());
+        // 原来写死 `item.min.y + 8.0f` —— 那个 8 只在页签高 29（`8 + 13 + 8`）时
+        // 才对；实际调用方给的是 32（Shell.cpp:1279），偏上 1.5px。改按页签中心算。
+        draw->AddText(font, 13.0f, ImVec2(item.min.x + 12.0f, CenterTextY(font, 13.0f, item.center().y)),
+                      fg, tab.label.data(), tab.label.data() + tab.label.size());
         if (on) {
             // 2px 下划线，左右各内缩 10px
             draw->AddLine(ImVec2(item.min.x + 10.0f, item.max.y - 1.0f),
@@ -856,8 +887,14 @@ void KeyValues(ImDrawList* draw, Rect bounds,
     const float rowHeight = 20.0f;
     float y = bounds.min.y;
     for (const auto& [key, value] : rows) {
-        DrawTextClipped(draw, font, 12.5f, ImVec2(bounds.min.x, y), keyWidth, ColorTextMuted(), key);
-        DrawTextClipped(draw, bold, 12.5f, ImVec2(bounds.min.x + keyWidth + 14.0f, y),
+        // ⚠️ 原来 key / value 都直接画在 `y`（游标），而 rowHeight 是 20 ——
+        //    行盒中心在 `y + 10`，字却从 `y` 起步 ⇒ **偏上 3.75px**（12.5px 字）。
+        //    这是检查器「属性」段、报告卡等一堆键值表共用的路径，偏一次全偏。
+        //    按行盒高 = 字号，居中即 `y + (rowHeight - 12.5) / 2`。
+        const float ty = CenterTextY(font, 12.5f, y + rowHeight * 0.5f);
+        DrawTextClipped(draw, font, 12.5f, ImVec2(bounds.min.x, ty), keyWidth, ColorTextMuted(),
+                        key);
+        DrawTextClipped(draw, bold, 12.5f, ImVec2(bounds.min.x + keyWidth + 14.0f, ty),
                         bounds.width() - keyWidth - 14.0f, ColorText(), value);
         y += rowHeight;
     }
@@ -1050,7 +1087,10 @@ float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& c
         // 排序中的表头转 accent（设计稿没有这条，但排序列不给任何视觉反馈的话
         // 点完看不出排到哪去了 —— 用的是 .tabs > button.on 的既有语义，不新增颜色档）。
         const ImU32 fg = sorted ? ColorAccent() : ColorTextMuted();
-        const float textY = y + (compact ? 7.0f : 8.0f);
+        // 原来写死 `y + (compact ? 7.0f : 8.0f)` —— 那个值是 `.table th` 的
+        // **padding**，被当成了文字偏移。表头高 31（compact 29）时偏上 1.75px。
+        // 下面的排序小三角取 `textY + 6.0f`，会跟着一起下移，与文字的相对关系不变。
+        const float textY = CenterTextY(headFont, 11.5f, y + headH * 0.5f);
         // 只量一次（MeasureClipped 不绘制）。之前这里用 DrawTextClipped 拿宽度，
         // 标题就被画了两遍 —— 第二遍还带三角占位，裁剪宽度和第一遍不一致。
         const float textWidth = MeasureClipped(headFont, 11.5f, cellWidth, column.title);
@@ -1100,7 +1140,6 @@ float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& c
                 continue;
             }
             const std::string& cell = row.cells[c];
-            const float textY = y + (compact ? 7.0f : 9.0f);
             // .table .num（ui.css:760-764）：等宽 11.5 muted。
             // 选中行的 td 转 text-primary（ui.css:757），但 .num 保持 muted ——
             // 数字列的低对比是刻意的，等宽小字转正色会和主文本抢层级。
@@ -1108,6 +1147,12 @@ float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& c
             const float size = column.numeric ? 11.5f : fontSize;
             ImU32 fg = column.numeric ? ColorTextMuted()
                                       : (row.selected ? ColorText() : ColorTextSecondary());
+            // 原来写死 `y + (compact ? 7.0f : 9.0f)` —— 同样是 `.table td` 的
+            // **padding** 而不是文字偏移，行高 35（compact 29）时按实际字号
+            // 13 / 12 / 11.5 分别偏上 2.0 / 1.5 / 2.75px。
+            // ⚠️ 必须排在 font/size 之后：数字列字号是 11.5，用外层 fontSize
+            //    居中会把等宽小字再推低 0.25px。
+            const float textY = CenterTextY(font, size, rowRect.center().y);
             if (column.centered) {
                 const float w = font->CalcTextSizeA(size, 1e9f, 0.0f, cell.data(),
                                                     cell.data() + cell.size())
@@ -1205,12 +1250,16 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
                                                node.trailing.data() + node.trailing.size())
                           .x;
         ImFont* font = FontAt(12.5f);
-        DrawTextClipped(draw, font, 12.5f, ImVec2(x, row.center().y - 7.5f),
+        // 原来写死 `row.center().y - 7.5f` —— 12.5px 字该减 6.25，偏上 1.25px。
+        DrawTextClipped(draw, font, 12.5f, ImVec2(x, CenterTextY(font, 12.5f, row.center().y)),
                         row.max.x - x - 8.0f - trailingWidth, fg, node.label);
         if (!node.trailing.empty()) {
             // 右侧计数用 .tiny dim（12px muted）。
-            DrawTextClipped(draw, FontAt(12.0f), 12.0f,
-                            ImVec2(row.max.x - 8.0f - trailingWidth, row.center().y - 7.0f),
+            // 原来写死 `row.center().y - 7.0f` —— 12px 字该减 6.0，偏上 1.0px。
+            ImFont* tfont = FontAt(12.0f);
+            DrawTextClipped(draw, tfont, 12.0f,
+                            ImVec2(row.max.x - 8.0f - trailingWidth,
+                                   CenterTextY(tfont, 12.0f, row.center().y)),
                             trailingWidth, ColorTextMuted(), node.trailing);
         }
         y += rowH;
@@ -1332,9 +1381,15 @@ int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::s
                                                                       : ColorTextSecondary());
         ImFont* font = FontAt(12.5f);
         float x = item.min.x + 10.0f;
-        const float ty = y + 7.0f;
+        // `.menu-pop .mi`（shell.css:114-120）：display:flex + **align-items:center** +
+        // gap 9 + padding 7px 10px + 12.5px。行盒中心 = 条目中心 ⇒ 文字按条目中心
+        // 居中。原来写死 `y + 7.0f`（当成了 padding-top），而 `h` 是
+        // `MenuRowHeightOf(Item)` = 14+15+1 = 30 ⇒ **偏上 1.75px**。
+        // 图标 15px 同样按 align-items 居中，和文字共用同一个中心。
+        const float centerY = item.center().y;
+        const float ty = CenterTextY(font, 12.5f, centerY);
         if (!row.icon.empty()) {
-            DrawIcon(draw, row.icon, ImVec2(x, ty + 1.0f), 15.0f,
+            DrawIcon(draw, row.icon, ImVec2(x, centerY - 7.5f), 15.0f,
                      row.disabled ? WithAlpha(fg, 0.45f) : fg);
             x += 15.0f + 9.0f; // .mi gap 9
         }

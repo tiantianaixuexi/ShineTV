@@ -6,6 +6,7 @@
 #include "core/Settings.h"
 #include "pipeline/StageMachine.h"
 #include "ui/imgui/host/AppEnvironment.h"
+#include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Scroll.h"
 #include "ui/imgui/pages/Gallery.h"
@@ -1038,13 +1039,28 @@ void Shell::DrawSidePanel(Rect area, ImDrawList* draw) {
 }
 
 // ---------------------------------------------------------------- P4.5 检查器
+// `.inspector .sect { border-bottom: 1px solid var(--line-subtle) }`
+// （shell.css:343-345）—— 分隔线在**整段底部**，不在段头正下方。
+//
+// ⚠️ 原实现把它画在 `header.max.y`，于是每段都多出一条设计稿里不存在的线，
+//    而段底（`.sect-b` 的 padding-bottom 之后）反而没有线。展开段和折叠段
+//    的收尾都要用到，抽出来免得两处各写一遍又走样。
+void DrawSectionDivider(const Rect& area, float y, ImDrawList* draw) {
+    // 满宽：`.sect` 是 `.inspector` 的直接子元素，没有左右内边距。
+    draw->AddLine(ImVec2(area.min.x, y), ImVec2(area.max.x, y), ColorLineSubtle(), 1.0f);
+}
+
 void Shell::DrawInspector(Rect area, ImDrawList* draw) {
     DrawRoundRect(draw, area.min, area.max, 0.0f, ColorSurface());
     draw->AddLine(ImVec2(area.min.x + 0.5f, area.min.y), ImVec2(area.min.x + 0.5f, area.max.y),
                   ColorLineSubtle(), 1.0f);
 
-    const float x = area.min.x + 16.0f;
-    const float w = area.width() - 32.0f;
+    // 左右内边距 = 14px。段头 `.sect-h { padding:10px 14px }` 与段内
+    // `.sect-b { padding:2px 14px 14px }` **同宽**，所以段头文字与段内正文左对齐
+    // （原来的 16px 也是对齐的，只是整体宽了 2px）。
+    constexpr float kSectPadX = 14.0f;
+    const float x = area.min.x + kSectPadX;
+    const float w = area.width() - kSectPadX * 2.0f;
     float y = area.min.y + 12.0f;
 
     // 3 段可折叠：属性 / 预览 / 关联。展开态在 sectionOpen_（成员）上。
@@ -1055,29 +1071,69 @@ void Shell::DrawInspector(Rect area, ImDrawList* draw) {
     //    的 {a:true, b:true, c:false}），但这次是真能点的。
     static constexpr char kSectionTitles[3][8] = {"属性", "预览", "关联"};
     const BookSideView& book = BookSide();
+
+    // ⚠️ 段头几何照 shell.css:346-357 的 `.inspector .sect-h` 重算过：
+    //
+    //   display:flex; align-items:center; gap:7px; padding:10px 14px;
+    //   font-size:12px; font-weight:700; color:var(--text-secondary)
+    //
+    // 段头高 = 10 + 行盒 + 10，行盒 = font-size × line-height = 12 × **1.6** = 19.2
+    // ⇒ **39.2px**。（`base.css:16` 的 `line-height:1.6` 来自 `body`，经
+    // `base.css:23-29` 的 `button { font: inherit }` 带进这个 `<button>`。）
+    //
+    // 原实现画的是 24px，而且把文字**钉死**在 `header.min.y + 5.0f`。
+    // ⚠️ 更正一条我自己写错的注释：这里曾经写着「墨迹中心在 y+5.8、偏上 6.2px」。
+    //    那是**错的** —— 按行盒重算：文字 y = min.y+5、字号 12.5 ⇒ 行盒中心
+    //    `min.y + 5 + 6.25 = min.y + 11.25`，框中心 `min.y + 12`，只偏 **0.75px**，
+    //    落在已接受的光学偏差带里。真正的毛病是**整段高度差 15.2px**（24 vs 39.2），
+    //    三段加起来检查器比设计稿短了 45.6px —— 是布局短，不是字没居中。
+    //    「字没居中」量级最大的几处在别处（kit::Chip 低 6px、队列行高 6px），
+    //    记在 refactor/PROGRESS.md 的「文字垂直居中」一节。
+    //
+    // 还有三处顺带订正：
+    //   · 颜色：设计是 `text-secondary`，原来用的是 `ColorText()`（primary）。
+    //   · 箭头：Shell.jsx:150 是 11×11，原来写 10。
+    //   · hover：设计 `.sect-h:hover` **只改文字颜色**（`text-primary`），
+    //     没有背景色；原来给整条段头铺了 `ColorFillHover()`。
+    //     hover 探针仍会变色（文字），判据不受影响。
+    //
+    // 段头内边距也是 14px，与 `.sect-b`（`padding: 2px 14px 14px`）一致 ⇒
+    // 段头文字与段内正文左对齐。原先两处都是 16px（对齐是对的，只是整体宽了 2px）。
+    constexpr float kSectHeadH = 39.2f;
+    constexpr float kSectIconSize = 11.0f;
+    constexpr float kSectGap = 7.0f;
+    constexpr float kSectBodyPadTop = 2.0f;     // .sect-b padding-top
+    constexpr float kSectBodyPadBottom = 14.0f; // .sect-b padding-bottom
+    constexpr float kSectFont = 12.0f;           // 写 12.5f 会被 LookupNearest 顶到 13px
+
     for (int s = 0; s < 3; ++s) {
         const char* title = kSectionTitles[s];
         const bool open = sectionOpen_[s];
-        const Rect header{x, y, x + w, y + 24.0f};
-        DrawIcon(draw, open ? "chevdown" : "chevron", ImVec2(header.min.x, header.center().y - 5.0f),
-                 10.0f, ColorTextMuted());
-        draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(header.min.x + 16.0f, header.min.y + 5.0f),
-                      ColorText(), title, title + std::strlen(title));
+        const Rect header{x, y, x + w, y + kSectHeadH};
         const std::string headId = "inspector-head-" + std::to_string(s);
         // 同上：一帧里只 HitTest 一次，双注册会让 hover 失效。
         const kit::Hit headHit = ChromeHit(header, headId);
-        if (headHit.hovered) {
-            draw->AddRectFilled(header.min, header.max, ColorFillHover());
-        }
-        draw->AddLine(ImVec2(header.min.x, header.max.y), ImVec2(header.max.x, header.max.y),
-                      ColorLineSubtle(), 1.0f);
-        y += 26.0f;
+        // hover 底色**故意不画**：设计稿这一条只有 `:hover { color: text-primary }`。
+        const ImU32 headFg = headHit.hovered ? ColorText() : ColorTextSecondary();
+        // align-items:center ⇒ 图标中心与文字行盒中心同一水平线。
+        DrawIcon(draw, open ? "chevdown" : "chevron",
+                 ImVec2(x, header.center().y - kSectIconSize * 0.5f), kSectIconSize,
+                 headHit.hovered ? ColorText() : ColorTextMuted());
+        draw->AddText(FontBoldAt(kSectFont), kSectFont,
+                      ImVec2(x + kSectIconSize + kSectGap,
+                             kit::CenterTextY(FontBoldAt(kSectFont), kSectFont, header.center().y)),
+                      headFg, title, title + std::strlen(title));
+        y += kSectHeadH;
         if (headHit.clicked) {
             sectionOpen_[s] = !open;
         }
         if (!sectionOpen_[s]) {
+            // 折叠：Shell.jsx:153 只在 open 时才渲染 .sect-b ⇒ 段头下面直接就是分隔线。
+            DrawSectionDivider(area, y, draw);
+            y += 1.0f;
             continue;
         }
+        y += kSectBodyPadTop;
         if (s == 0) {
             // ⚠️ 这里原先写死 {代码:S012, 动作:转身, 时长:6.0s, 情绪:克制} —— 一组
             //    编出来的镜头属性，在任何工程、任何项目下都长这样，点了也不跟着选中项变。
@@ -1204,6 +1260,9 @@ void Shell::DrawInspector(Rect area, ImDrawList* draw) {
                 y = ty + th + 6.0f;
             }
         }
+        y += kSectBodyPadBottom;
+        DrawSectionDivider(area, y, draw);
+        y += 1.0f;
     }
 }
 
@@ -1275,8 +1334,14 @@ void Shell::DrawDockQueue(Rect body, ImDrawList* draw) {
             StatusDot(ldraw, ImVec2(line.min.x + 4.0f, line.center().y),
                       failed ? theme::Tone::Danger : (running ? theme::Tone::Busy : theme::Tone::Idle),
                       running);
-            DrawTextClipped(ldraw, FontAt(12.0f), 12.0f, ImVec2(line.min.x + 16.0f, y + 3.0f), 220.0f,
-                            ColorTextSecondary(),
+            // ⚠️ 这两处原来写死 `y + 3.0f` / `y + 4.0f`，与**同一行**里居中的
+            //    Tag（下方 `y + 6.0f` 起、高 17、中心 y+14.5）并排看时，字比 Tag
+            //    高出 6px —— 这就是「很多按钮的字不在中间」最扎眼的一处。
+            //    行框高 30 ⇒ 中心 `line.center().y`，按各自身号取半高。
+            DrawTextClipped(ldraw, FontAt(12.0f), 12.0f,
+                            ImVec2(line.min.x + 16.0f,
+                                   kit::CenterTextY(FontAt(12.0f), 12.0f, line.center().y)),
+                            220.0f, ColorTextSecondary(),
                             row.label.empty() ? row.promptId : row.label);
             // 细进度 + 百分比：走 QueueModel 的真实 progress，不是写死的 42。
             const float pct = row.progress * 100.0f;
@@ -1287,7 +1352,9 @@ void Shell::DrawDockQueue(Rect body, ImDrawList* draw) {
                                       std::to_string(row.progressMax) + " · " +
                                       std::to_string(static_cast<int>(pct)) + "%";
                 DrawTextClipped(ldraw, MonoAt(10.5f), 10.5f,
-                                ImVec2(line.min.x + 416.0f, y + 4.0f), 180.0f, ColorTextMuted(), p);
+                                ImVec2(line.min.x + 416.0f,
+                                       kit::CenterTextY(MonoAt(10.5f), 10.5f, line.center().y)),
+                                180.0f, ColorTextMuted(), p);
             }
             const Rect tagBox = RectAt(line.max.x - TagWidth("", true, false) - 6.0f, y + 6.0f,
                                        TagWidth("", true, false), TagHeight(true));
@@ -1495,8 +1562,31 @@ std::string Shell::DerivedViewLabel() const {
 }
 
 void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
-    const float cy = area.center().y;
-    float x = area.min.x + 24.0f;
+    // shell.css:223-234 `.crumbs`：height 34 / padding 0 16 / gap 7 / font-size 12 /
+    // color text-muted / border-bottom 1px solid line-subtle /
+    // background color-mix(in srgb, var(--bg-void) 60%, var(--bg-surface))。
+    // 内容与 JSX 逐项对得上（Shell.jsx:124-139）：`.c`(text-secondary / 500) ·
+    // `.sep`(opacity .55) · `.c.here`(text-primary / 600) · `.spacer` · `.tiny.dim` 提示。
+    //
+    // ⚠️ 底色与下边框原先**整条都没有**：这个函数原来只 AddText，于是面包屑在界面上
+    //    是「浮在 bg-void 上的一串字」，而设计稿里它是一条独立的浅色横条。
+    //    而底色**早就算好了** —— `theme::Derived::crumbBg`（`Theme.cpp:99` 的
+    //    `MixSrgb(c.bgVoid, c.bgSurface, 60.0f)`，字段注释直接写着 shell.css:233），
+    //    此前**零绘制消费点**，只有 `check-theme` 的自检在读它。
+    //    派生色算出来没人用，和没算一样 —— 门禁也管不到（它不是硬编码颜色）。
+    draw->AddRectFilled(area.min, area.max, ColorOf(theme::CurrentDerived().crumbBg));
+    // border-box（`base.css:2-6` 的 `*` 全局）⇒ 这 1px 边框**含在 34px 高度里**，
+    // 内容区少 1px，文字的垂直中心跟着上移 0.5px。
+    draw->AddLine(ImVec2(area.min.x, area.max.y - 0.5f), ImVec2(area.max.x, area.max.y - 0.5f),
+                  ColorLineSubtle(), 1.0f);
+    const float cy = area.center().y - 0.5f;
+    // ⚠️ 字号原先写 12.5f，而 12.5 **不在字体档位里**（`Tokens.h:110` 的 kSizes 只有
+    //    12/13/14/16/20/28），`LookupNearest` 又**向上**取档 ⇒ 实际渲染在 13px，
+    //    比设计稿大一号。写 12.0f 才真的落在 xs 档上。
+    constexpr float kCrumbsFont = 12.0f;  // shell.css:230 / base.css:120 的 .tiny
+    constexpr float kCrumbsGap = 7.0f;    // shell.css:228 的 flex gap
+    // padding: 0 16px（原先左边 24px）
+    float x = area.min.x + 16.0f;
     // ⚠️ 第三段以前恒为 "总览"：`SetWorkspace` 无条件写 `lastViewLabel = "总览"`，
     // 而 `lastViewLabel` 全仓没有任何别的地方会改它 ⇒ 切到小说页，面包屑照样是
     // 「项目 › 小说 › 总览」。状态字段没跟动作走，和「只显示不联动」是同一类。
@@ -1505,13 +1595,12 @@ void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
     const char* crumbs[] = {"项目", WorkspaceLabel(layout_.workspace), viewLabel.c_str()};
     for (int i = 0; i < 3; ++i) {
         const bool current = (i == 2);
-        draw->AddText(current ? FontBoldAt(12.5f) : FontAt(12.5f), 12.5f, ImVec2(x, cy - 6.25f),
-                      current ? ColorText() : ColorTextSecondary(), crumbs[i],
-                      crumbs[i] + std::strlen(crumbs[i]));
-        x += FontAt(12.5f)->CalcTextSizeA(12.5f, 1e9f, 0.0f, crumbs[i],
-                                           crumbs[i] + std::strlen(crumbs[i]))
-                  .x +
-             8.0f;
+        ImFont* face = current ? FontBoldAt(kCrumbsFont) : FontAt(kCrumbsFont);
+        const std::size_t len = std::strlen(crumbs[i]);
+        const float w = face->CalcTextSizeA(kCrumbsFont, 1e9f, 0.0f, crumbs[i], crumbs[i] + len).x;
+        draw->AddText(face, kCrumbsFont, ImVec2(x, cy - kCrumbsFont * 0.5f),
+                      current ? ColorText() : ColorTextSecondary(), crumbs[i], crumbs[i] + len);
+        x += w + kCrumbsGap;
         if (i < 2) {
             // ⚠️ 长度用 sizeof() - 1，**不要**写死字节数。
             //    这里原来写的是一个单角引号 U+203A 加 "+ 3"：它在 UTF-8 里正好 3 字节，
@@ -1520,18 +1609,26 @@ void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
             //    （? 后面跟的是字符串池里恰好相邻的字节，纯属巧合，不报错、不崩，
             //    只是永远画不对）。
             static constexpr char kSep[] = "›";
-            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(x, cy - 6.25f),
-                          WithAlpha(ColorTextMuted(), 0.55f), kSep, kSep + sizeof(kSep) - 1);
-            x += 12.0f;
+            const std::size_t sepLen = sizeof(kSep) - 1;
+            ImFont* sepFace = FontAt(kCrumbsFont);
+            // 分隔符的步进原先写死 12.0f（≈ 7px gap + 5px 字宽，碰巧接近），
+            // 现在按设计稿的 flex 语义真去量它的宽度。
+            const float sw =
+                sepFace->CalcTextSizeA(kCrumbsFont, 1e9f, 0.0f, kSep, kSep + sepLen).x;
+            draw->AddText(sepFace, kCrumbsFont, ImVec2(x, cy - kCrumbsFont * 0.5f),
+                          WithAlpha(ColorTextMuted(), 0.55f), kSep, kSep + sepLen);
+            x += sw + kCrumbsGap;
         }
     }
 
-    // 右侧提示串
+    // 右侧提示串：JSX 是 `<span className="tiny dim">`（Shell.jsx:138），
+    // `.tiny`=12px、`.dim`=text-muted（base.css:118/120）。
     const char* hint = "Ctrl+B 侧栏 · Ctrl+J 底栏 · Ctrl+I 检查器 · Ctrl+K 命令";
-    ImFont* font = FontAt(11.5f);
-    const float w = font->CalcTextSizeA(11.5f, 1e9f, 0.0f, hint, hint + std::strlen(hint)).x;
-    draw->AddText(font, 11.5f, ImVec2(area.max.x - 24.0f - w, cy - 5.75f), ColorTextMuted(), hint,
-                  hint + std::strlen(hint));
+    ImFont* font = FontAt(kCrumbsFont);
+    const float w =
+        font->CalcTextSizeA(kCrumbsFont, 1e9f, 0.0f, hint, hint + std::strlen(hint)).x;
+    draw->AddText(font, kCrumbsFont, ImVec2(area.max.x - 16.0f - w, cy - kCrumbsFont * 0.5f),
+                  ColorTextMuted(), hint, hint + std::strlen(hint));
 }
 
 // ---------------------------------------------------------------- P4.9 命令面板
@@ -2153,6 +2250,14 @@ bool Shell::LoadLayout() {
 // ---------------------------------------------------------------- 帧
 void Shell::DrawFrame(float dt) {
     lastDelta_ = dt;
+    // 过渡补间池只在第一次进来时预分配一次。放在这里而不是 AppEntry：
+    // Shell 构造完成、主题 JSON 也加载完之后才开始画，预分配跟着第一帧走最自然。
+    if (!animPoolReserved_) {
+        animPoolReserved_ = true;
+        // 容量按「一屏里可能同时在飞的补间数」估：每页几十个 hover 通道，
+        // 加上列表行长尾，给到几百条，避免第一次划过列表时才扩容。
+        kit::ReserveTweenPool(512, 128, 256, 64, 512);
+    }
     kit::TickAnimation(dt);
     ApplyShortcuts();
 
@@ -2899,7 +3004,14 @@ void Shell::DrawReportModal() {
     // ---- .modal-f（ui.css:970-975）：padding 12/18 + 1px 上边 ----
     draw->AddLine(ImVec2(bounds.min.x, bounds.max.y - footerH + 0.5f),
                   ImVec2(bounds.max.x, bounds.max.y - footerH + 0.5f), ColorLineSubtle(), 1.0f);
-    DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(bounds.min.x + 18.0f, bounds.max.y - 12.0f - 14.0f),
+    // ⚠️ 原来这行写 `bounds.max.y - 12.0f - 14.0f`，比**同一页脚里**的「关闭」按钮
+    //    （`max.y - 12 - ButtonHeight(Medium=30)`，中心 `max.y - 27`）低 6.25px
+    //    —— 页脚左边一句说明、右边一个按钮，两个东西差了 6px，一眼可见。
+    //    页脚高 footerH、行盒按自身 10.5px 取半高。
+    DrawTextClipped(draw, FontAt(10.5f), 10.5f,
+                    ImVec2(bounds.min.x + 18.0f,
+                           kit::CenterTextY(FontAt(10.5f), 10.5f,
+                                            bounds.max.y - 12.0f - footerH * 0.5f)),
                     w - 120.0f, ColorTextMuted(),
                     "校验只比较状态，不让 LLM 自行猜测连续性 · Esc 关闭");
     ButtonSpec closeSpec;

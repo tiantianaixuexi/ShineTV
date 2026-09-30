@@ -1440,7 +1440,10 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
         if (hit.hovered) {
             DrawRoundRect(draw, tab.min, tab.max, 6.0f, ColorFillHover());
         }
-        draw->AddText(tabFont, 12.5f, ImVec2(tab.min.x + 16.0f, tab.min.y + 14.0f),
+        // 原来写死 `tab.min.y + 14.0f`：页签高 44，正确中心是 +22，字盒中心落在
+        // 20.25，**偏上 1.75px**。改成按容器中心算。
+        draw->AddText(tabFont, 12.5f,
+                      ImVec2(tab.min.x + 16.0f, kit::CenterTextY(tabFont, 12.5f, tab.center().y)),
                       i == mode_ ? ColorAccent()
                                  : (hit.hovered ? ColorText() : ColorTextSecondary()),
                       modes[i], modes[i] + std::strlen(modes[i]));
@@ -1464,7 +1467,10 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
             DrawRoundRect(draw, chip.min, chip.max, 12.0f,
                           on ? ColorOf(theme::CurrentDerived().accentDim) : ColorFillMuted(),
                           on ? ColorAccent() : ColorLineSubtle(), 1.0f);
-            draw->AddText(FontAt(12.0f), 12.0f, ImVec2(cx + 11.0f, body.min.y + 5.0f),
+            // 原来写死 `body.min.y + 5.0f`：chip 高 24，正确中心是 +12，字盒中心落在
+            // 11，**偏上 1.0px**。改成按容器中心算（chip 随 cx 走，中心取 chip 自己的）。
+            draw->AddText(FontAt(12.0f), 12.0f,
+                          ImVec2(cx + 11.0f, kit::CenterTextY(FontAt(12.0f), 12.0f, chip.center().y)),
                           on ? ColorAccent() : ColorTextSecondary(), label.data(), label.data() + label.size());
             if (Clicked(chip, "novel-ch-" + std::to_string(i))) {
                 s.selectedChapter = i;
@@ -3323,12 +3329,18 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
     // ---- 计数行：搜索结果条数 + 上一次操作的结果 ----
     const Rect count{column.min.x, barY + 30.0f + 22.0f, column.max.x, barY + 30.0f + 22.0f + 16.0f};
     const std::string countText = "最近项目 · 共 " + std::to_string(hub.shown.size()) + " 个项目";
-    draw->AddText(FontBoldAt(12.0f), 12.0f, ImVec2(count.min.x, count.min.y + 1.0f),
+    // 原来写死 `count.min.y + 1.0f`：计数行高 16，正确中心是 +8，字盒中心落在 7，
+    // **偏上 1.0px**。计数与右侧状态共用同一个 Rect，一起按容器中心算。
+    draw->AddText(FontBoldAt(12.0f), 12.0f,
+                  ImVec2(count.min.x, kit::CenterTextY(FontBoldAt(12.0f), 12.0f, count.center().y)),
                   ColorTextMuted(), countText.data(), countText.data() + countText.size());
     if (!hub.status.empty()) {
         const float maxW = column.width() * 0.5f;
         const float statusW = std::min(LabelWidth(FontAt(12.0f), 12.0f, hub.status.c_str()), maxW);
-        DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(count.max.x - statusW, count.min.y + 1.0f),
+        // 同上：原来 `count.min.y + 1.0f`，**偏上 1.0px**。右对齐但 Y 走同一个中心线。
+        DrawTextClipped(draw, FontAt(12.0f), 12.0f,
+                        ImVec2(count.max.x - statusW,
+                               kit::CenterTextY(FontAt(12.0f), 12.0f, count.center().y)),
                         statusW, hub.statusError ? ToneColor(theme::Tone::Danger) : ColorTextMuted(),
                         hub.status);
     }

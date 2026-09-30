@@ -135,9 +135,33 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
     // 注入点换成宿主的 `SetFrameMouseOverride`（在 NewFrame **之前**）。原先写在
     // onFrame 里只改到 `IsMouseHoveringRect` 用的那份，`g.HoveredId` 早按真实光标
     // 算好了 ⇒ 每帧恒有 1 个 item 报 hovered，诊断信号整个是噪声。
-    const auto frameWithMousePinned = [&shell, &host](float x, float y) {
+    //
+    // ⚠️ 这里同时记下**帧内 ImGui 实际看到**的 MousePos / DisplaySize，判据自证。
+    //    「命中数 = 0」这一个信号至少对应三种完全不同的原因，光看它必然改错地方：
+    //      · 覆盖没落地（`io.MousePos` 压根不是我们设的值）—— 宿主/后端层；
+    //      · 视口塌成 0×0 —— 前面所有坐标一起失效；
+    //      · 坐标落在热区外 —— 布局变了。
+    //    r90 实测 11/11 全红、浮层探针同时报「位置注入没到位」，说明是前两种；
+    //    而 r89 我把原因归到「CenterTextY 的日志刷屏冲掉了驱动协议」是**错的** ——
+    //    删掉那条日志重跑，11/11 照旧红。没有这条自证就会一直猜错。
+    float sawX = 0.0f;
+    float sawY = 0.0f;
+    float sawW = 0.0f;
+    float sawH = 0.0f;
+    bool sawAny = false;
+    const auto frameWithMousePinned = [&shell, &host, &sawX, &sawY, &sawW, &sawH,
+                                       &sawAny](float x, float y) {
         host.SetFrameMouseOverride(x, y);
-        host.PumpFrames(kSettleFrames, [&shell](float dt) { shell.DrawFrame(dt); });
+        host.PumpFrames(kSettleFrames, [&shell, &sawX, &sawY, &sawW, &sawH, &sawAny](float dt) {
+            shell.DrawFrame(dt);
+            if (!sawAny) {
+                sawX = ImGui::GetIO().MousePos.x;
+                sawY = ImGui::GetIO().MousePos.y;
+                sawW = ImGui::GetIO().DisplaySize.x;
+                sawH = ImGui::GetIO().DisplaySize.y;
+                sawAny = true;
+            }
+        });
         host.ClearFrameMouseOverride();
     };
     struct Unpin {
@@ -160,6 +184,7 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
 
     // 悬停帧：同样每帧单独归零，取最大那一帧。
     int hoveredPerFrame = 0;
+    sawAny = false;  // 只记**悬停**那一拍的读数，静息拍的 -FLT_MAX 没有诊断价值
     for (int i = 0; i < kSettleFrames; ++i) {
         kit::ResetHoveredItemCount();
         frameWithMousePinned(clientX, clientY);
@@ -182,10 +207,22 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
     ++*captured;
     const bool stable = restHash == HashPixels(restB);
     const bool changed = restHash != hash;
-    shine::log::Info("review: probe {} at ({:.0f},{:.0f}) rest-stable={} rest-hovered={} hit={} last={}",
-                     name, clientX, clientY, stable ? 1 : 0, restHovered, hoveredPerFrame,
-                     hoveredId);
-    if (restHovered > 0) {
+    // 判据自证：ImGui 帧内看到的坐标是不是我们注入的那个。
+    const bool landed = sawAny && std::abs(sawX - clientX) < 0.5f && std::abs(sawY - clientY) < 0.5f;
+    shine::log::Info(
+        "review: probe {} at ({:.0f},{:.0f}) rest-stable={} rest-hovered={} hit={} last={} "
+        "注入: landed={} saw=({:.0f},{:.0f}) 视口={:.0f}x{:.0f}",
+        name, clientX, clientY, stable ? 1 : 0, restHovered, hoveredPerFrame, hoveredId,
+        landed ? 1 : 0, sawX, sawY, sawW, sawH);
+    if (!landed) {
+        // 注入没到位 ⇒ 后面「命中数 / 像素变化」全部不可用，**不要再往下解读**。
+        // 这一条排在最前面就是为了掐死「看到 hit=0 就去改产品的 hover 分支」这条路。
+        shine::log::Error(
+            "review: {} 鼠标覆盖**没到位**：要 ({:.1f},{:.1f})，帧内 ImGui 看到 ({:.1f},{:.1f})，"
+            "视口 {:.0f}x{:.0f}。这是宿主/后端层的问题，与布局和 hover 分支都无关",
+            name, clientX, clientY, sawX, sawY, sawW, sawH);
+        ++*hoverUnstable;
+    } else if (restHovered > 0) {
         // 静息帧竟然命中了控件 ⇒ -FLT_MAX 哨兵没生效，后面所有比较都不可信。
         shine::log::Error("review: {} 静息帧（鼠标用 -FLT_MAX 哨兵）仍命中了 {} 个控件，"
                           "哨兵失效，本探针与后面全部悬停结论都不可信",
@@ -204,9 +241,9 @@ bool ProbeHover(Host& host, Shell& shell, const std::filesystem::path& dir,
         //   · 命中了，但这个控件的 hover 分支什么都不画 —— 这是**产品**的缺陷。
         // 少一次命中计数时，我一度把后者当成了前者去改产品。命中自检就是为了
         // 在两者之间给出确定的答案：现在直接报「探针坐标点空了」。
-        shine::log::Error("review: {} 页面静止但鼠标**一个控件都没命中** —— 探针坐标 (%.0f,%.0f) "
-                          "落在热区之外（布局变了），不是产品的 hover 缺陷。改坐标，别改产品",
-                          name, clientX, clientY);
+        shine::log::Error("review: {} 注入到位({:.0f},{:.0f})、页面静止，但鼠标**一个控件都没命中**"
+                          " —— 探针坐标落在热区之外（布局变了），不是产品的 hover 缺陷。改坐标，别改产品",
+                          name, sawX, sawY);
         ++*hoverUnstable;
     } else if (!changed) {
         // 命中了（hoveredPerFrame > 0，hover 分支确实被执行了）却一个像素都没变 ——
@@ -1071,13 +1108,20 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                 host.SetFrameMouseOverride(target.x, target.y);
                 // 帧内自检：位置注入有没有真的到位。没到位就是**探针**的问题，
                 // 不能记成「产品的按钮是死的」—— 那会去改本来正确的代码。
+                // ⚠️ 报「没到位」时必须把**实际看到**的坐标一起打出来：光一句
+                //    「没到位」分不清是后端覆写了、还是视口塌了。r90 就是靠
+                //    「注入到位 + 命中数 0」和浮层探针的「没到位」两条并起来
+                //    才定位到宿主层，之前一直误判成布局变了。
                 bool sawMouse = false;
+                float sawX = 0.0f;
+                float sawY = 0.0f;
                 host.SetFrameMouseButtonOverride(true);
                 host.PumpFrames(1, [&](float dt) {
                     shell.DrawFrame(dt);
-                    sawMouse = sawMouse ||
-                               (std::abs(ImGui::GetIO().MousePos.x - target.x) < 0.5f &&
-                                std::abs(ImGui::GetIO().MousePos.y - target.y) < 0.5f);
+                    sawX = ImGui::GetIO().MousePos.x;
+                    sawY = ImGui::GetIO().MousePos.y;
+                    sawMouse = sawMouse || (std::abs(sawX - target.x) < 0.5f &&
+                                            std::abs(sawY - target.y) < 0.5f);
                 });
                 host.SetFrameMouseButtonOverride(false);
                 host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
@@ -1090,7 +1134,10 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                 std::string why;
                 if (!sawMouse) {
                     ok = false;
-                    why = "位置注入没到位（ImGui 看到的不是我们设的坐标）—— 判据不可用，不是产品的缺陷";
+                    why = "位置注入没到位（要 " + std::to_string(static_cast<int>(target.x)) +
+                          "," + std::to_string(static_cast<int>(target.y)) + "，帧内看到 " +
+                          std::to_string(static_cast<int>(sawX)) + "," +
+                          std::to_string(static_cast<int>(sawY)) + "）—— 判据不可用，不是产品的缺陷";
                 } else if (oc.key >= 2) {
                     // 模态语义要验的是「**底下点不动**」= 工作区索引没变。
                     //
