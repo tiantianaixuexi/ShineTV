@@ -611,6 +611,11 @@ void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
         const Rect box{topLeft, ImVec2(topLeft.x + w, topLeft.y + h)};
         const bool isSel = node.id == selected;
 
+        // views.css:1035 `.fnode { box-shadow: var(--shadow-1) }` —— **常驻**，不是
+        // hover 才出现。早先这里只画本体，投影整个缺失，画布上的节点是平的。
+        // 投影随缩放一起缩放（CSS 里节点是固定 150px，ImGui 侧 view.z 缩放的是
+        // 整个坐标系，所以偏移与模糊半径乘 view.z 才与本体保持同一比例）。
+        DrawShadow(draw, box.min, box.max, 10.0f * view.z, theme::ShadowTier::Card, 1.0f, view.z);
         DrawRoundRect(draw, box.min, box.max, 10.0f * view.z, ColorPanel(),
                       isSel ? ColorAccent() : FlowStateColor(node.state), 1.5f * view.z);
         // .fnode.sel / .fnode.run 的 `0 0 0 3px <淡色>` 外圈（box-shadow 近似，R5）
@@ -654,7 +659,7 @@ void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
     // `.canvas-tools.bl`（fill 模式）挪到左下，这里只实现右上定位。
     const Rect tools{bounds.max.x - 12.0f - 92.0f, bounds.min.y + 12.0f, bounds.max.x - 12.0f,
                      bounds.min.y + 12.0f + 32.0f};
-    DrawShadowed(draw, tools.min, tools.max, 10.0f, GlassColor(), ColorLineSubtle(), 1.0f);
+    DrawShadowed(draw, tools.min, tools.max, 10.0f, GlassColor(), ColorLineSubtle(), 1.0f, theme::ShadowTier::Card);
     if (IconButton(draw, RectAt(tools.min.x + 4.0f, tools.min.y + 4.0f, 24.0f, 24.0f), "plus", false,
                    false, "flow-zoom-in")) {
         view.z = std::min(2.0f, view.z * 1.2f);

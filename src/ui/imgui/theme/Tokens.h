@@ -113,23 +113,67 @@ inline constexpr int kRegular = 400;
 inline constexpr int kSemibold = 600;
 } // namespace font
 
-struct Shadow {
-    int offsetX;
-    int offsetY;
-    int blur;
-    std::uint32_t color; // RRGGBBAA
+// ---- 阴影 ----
+//
+// ⚠️ 这里原来是一组 `struct Shadow { x, y, blur, color }` 加三个常量
+//    `shadow::kSm/kMd/kLg`，全树**零引用**，而且值与设计稿对不上（三个 alpha 全错，
+//    少了 CSS 里的第二层，命名把 --shadow-accent 写成了 --shadow-3）。**它从来没
+//    生效过** —— 当时 `DrawShadowed()` 也没画阴影，只画了矩形加一条 1px 上沿高光。
+//
+// 现在改成**描述**而不是预乘好的常量：CSS 的 `box-shadow` 是「几何 + 半透明色」，
+// 两者都随主题变（纸墨的阴影是暖色低 alpha，极夜是黑色高 alpha；模糊半径也不同：
+// 深空 16px 而纸墨 14px），所以几何必须逐主题，见 Theme.cpp 的 kShadowSpecs。
+struct ShadowLayer {
+    float dx = 0.0f;
+    float dy = 0.0f;
+    // CSS 的 blur **半径**（不是直径）。ImGui 没有 blur API，渲染侧用它当
+    // 「可见扩散范围」，画若干层同心圆角矩形逼近高斯。见 Draw.cpp 的 DrawShadow。
+    float blur = 0.0f;
+    // 该层 alpha 占该档基准色的比例。CSS 同一档里两层的 alpha 本来就不同
+    // （深空 --shadow-1 是 0.35 与 0.3），而主题 JSON 里的 shadow.1 只有一个值，
+    // 所以逐层比例记在这里，颜色（色相）仍然取 JSON 的 shadow.1 / 2 / accent。
+    float alpha = 1.0f;
+};
+
+// 哪一档。决定去 JSON 取哪个色值。
+//
+// ⚠️ `None` 是**默认档**，而且它才是对的：设计稿的 `.card` 基线规则
+// （ui.css:175）只有 background / border / radius / transition，**没有 box-shadow** ——
+// 投影是 `.card.hoverable:hover`（ui.css:196-199）才加的，还配了 translateY(-2px)。
+// 所以「卡片 = 有投影」是一个想当然的读法；照着读会给 28 个调用点无脑加上设计稿
+// 在静止态根本没有的投影，比不做还偏离。
+//
+// 真正**常驻**有投影的是这些（逐条对过 CSS）：
+//   ui.css:947   .modal          --shadow-2
+//   ui.css:998   .toast          --shadow-2
+//   ui.css:655   .drawer         --shadow-2
+//   shell.css:101 .menu-pop      --shadow-2
+//   shell.css:494 .cmdk          --shadow-2
+//   views.css:216 .float-panel   --shadow-2
+//   views.css:1035 .fnode        --shadow-1   ← 流式画布节点，**常驻**（不是 hover）
+//   views.css:195 .float-toolbar --shadow-1
+//   views.css:261 .float-strip   --shadow-1
+// 而 hover 才有的是：.card.hoverable:hover(ui.css:198) / .proj-card:hover(views.css:119)
+//   / .tl-card:hover(views.css:969) / .gantt .gcell:hover(views.css:494)
+//   / .derive .dnode:hover(views.css:869) / .jump-btn:hover(shell.css:648)。
+enum class ShadowTier {
+    None = 0,   // 不画投影
+    Card = 1,   // --shadow-1（两层）
+    Overlay = 2,// --shadow-2（一层）
+    Accent = 3, // --shadow-accent（一层）
+    kCount = 4
+};
+
+// 一个 box-shadow 档位（最多两层，CSS 的 --shadow-1 就是两层）。
+struct ShadowSpec {
+    ShadowLayer layers[2]{};
+    int count = 0;
 };
 
 namespace shadow {
-// 这三档是设计稿 tokens.css 的 --shadow-1/2/3 原值（黑 60% / 20% / 30%），不带主题 —
-// 阴影是「叠在别的颜色上面」的一层黑，跟当前主题的底色无关，所以**故意**不走 token。
-// （对比 Derived::btnPrimaryInset / progShimmer：那两个也是主题无关叠层，但它们是
-//  白色高光，语义上属于控件，所以放进了 Derived 由主题统一算。）
-// theme-ok 后面必须写理由 —— tools/check-colors.ps1 把「有标记但没理由」判成无效豁免。
-inline constexpr Shadow kSm{0, 1, 2, 0x00000099};  // theme-ok 设计稿 --shadow-1（黑 60%）
-inline constexpr Shadow kMd{0, 2, 8, 0x00000033};  // theme-ok 设计稿 --shadow-2（黑 20%）
-inline constexpr Shadow kLg{0, 8, 24, 0x0000004D}; // theme-ok 设计稿 --shadow-3（黑 30%）
+inline constexpr int kMaxLayers = 2;
 } // namespace shadow
+
 
 namespace border {
 inline constexpr int kNormal = 1;

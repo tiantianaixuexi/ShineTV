@@ -1565,7 +1565,7 @@ void Shell::DrawCommandPalette() {
     ImDrawList* draw = ImGui::GetForegroundDrawList();
 
     DrawRoundRect(draw, bounds.min, bounds.max, 14.0f, ColorScrim());
-    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
 
     // 输入
     const Rect input{bounds.min.x + 18.0f, bounds.min.y + 18.0f, bounds.max.x - 18.0f,
@@ -1853,6 +1853,9 @@ void Shell::DrawOverlays(ImDrawList* draw) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const Rect box{display.x - 16.0f - w, display.y - 40.0f - 46.0f, display.x - 16.0f,
                    display.y - 40.0f};
+    // .toast（ui.css:987-1000）：bg-overlay + line-normal + **--shadow-2**。
+    // 投影连同 0.4s 尾部淡出一起淡（alphaScale），否则本体没了影子还挂着。
+    DrawShadow(front, box.min, box.max, 8.0f, theme::ShadowTier::Overlay, alpha);
     DrawRoundRect(front, box.min, box.max, 8.0f, WithAlpha(ColorOf(theme::Current().bgOverlay), alpha),
                   WithAlpha(ColorLineNormal(), alpha), 1.0f);
     // 左侧 3px 色调条（.toast 的 border-left-color；默认 info，ok/warn/err 各一色）。
@@ -2750,7 +2753,7 @@ void Shell::DrawReportModal() {
     const Rect bounds{(display.x - w) * 0.5f, (display.y - h) * 0.5f, (display.x + w) * 0.5f,
                       (display.y + h) * 0.5f};
     DrawRoundRect(draw, ImVec2(0.0f, 0.0f), ImVec2(display.x, display.y), 0.0f, ColorScrim());
-    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
     // 点遮罩关闭。⚠️ 这里**不能**用 kit::HitTest：全屏遮罩若先注册成 InvisibleButton，
     // 它会先拿到 HoveredId，模态里所有按钮（同一帧、位置落在遮罩内）永远 hovered=false。
     // 改成手算点在不在面板内：既不注册 item（所以不抢 HoveredId），
@@ -2924,7 +2927,7 @@ void Shell::DrawThemeMenu(ImVec2 anchor, ImDrawList* draw) {
     float y = std::min(anchor.y, display.y - h - 8.0f);
     const Rect bounds{x, y, x + w, y + h};
 
-    DrawShadowed(draw, bounds.min, bounds.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, bounds.min, bounds.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
 
     static constexpr char kThemeLabel[] = "内置主题";
     draw->AddText(FontBoldAt(10.5f), 10.5f, ImVec2(bounds.min.x + 12.0f, bounds.min.y + 10.0f),
@@ -3024,7 +3027,7 @@ void Shell::DrawSettingsModal() {
     // 全屏 InvisibleButton 会先拿到 HoveredId，模态里所有按钮（同一帧、位置落在遮罩
     // 内）就永远 hovered=false —— 见函数末尾的注释。
     DrawRoundRect(draw, ImVec2(0.0f, 0.0f), ImVec2(display.x, display.y), 0.0f, ColorScrim());
-    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
 
     DrawIcon(draw, "settings", ImVec2(bounds.min.x + 16.0f, bounds.min.y + 15.0f), 16.0f,
              ColorAccent());

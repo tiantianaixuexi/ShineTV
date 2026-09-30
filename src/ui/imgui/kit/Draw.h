@@ -65,10 +65,32 @@ void DrawDiagGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
 void DrawHGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 from,
                    ImU32 to);
 
-// box-shadow 的近似：只有「上边框高光 + 一圈 scrim 描边」，
-// 不做真正的模糊。验收按「有没有浮起来」判，不按阴影像素判（design-spec §2.2）。
+// box-shadow。ImGui 没有 blur API，所以按「若干层同心圆角矩形 + 高斯权重 alpha」
+// 逼近；逐主题的几何与逐层 alpha 取自 design tokens（见 theme/Theme.cpp 的
+// kShadowSpecs 与 Tokens.h 的 theme::ShadowTier）。
+//
+// ⚠️ `tier` 默认 **None**，这不是偷懒，是设计稿就这样：ui.css:175 的 `.card` 基线
+// 规则只有 background / border / radius / transition，**没有 box-shadow**；投影是
+// `.card.hoverable:hover`（:196）才加的，还配了 translateY(-2px)。给卡片默认加
+// 投影等于凭空发明一个设计稿在静止态根本没有的效果，比不做还偏离。
+// 请按 CSS 选择器逐个对：
+//   ui.css:947 .modal / :998 .toast / :655 .drawer          → Overlay（常驻）
+//   shell.css:101 .menu-pop / :494 .cmdk                     → Overlay（常驻）
+//   views.css:1035 .fnode                                     → Card（**常驻**，不是 hover）
+//   ui.css:198 .card.hoverable:hover / views.css:969 .tl-card:hover → Card（hover 才有）
+//   views.css:725 .asset-card.on / ui.css:861 .snode.run     → Accent
+// 完整清单见 Tokens.h 的 theme::ShadowTier 注释。
 void DrawShadowed(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 fill,
-                  ImU32 border, float borderWidth = 1.0f);
+                  ImU32 border, float borderWidth = 1.0f, theme::ShadowTier tier = theme::ShadowTier::None);
+
+// 只画投影，不画本体。
+// `alphaScale` 给「本体带淡入淡出」的场合（toast：设计稿 ui.css:998 的 .toast 有
+// --shadow-2，而它的 0.4s 尾部淡出应当**连投影一起淡**，否则影子会在本体消失后还
+// 挂一会儿）。1.0 = 不缩放。
+// `scale` 给「本体本身被缩放」的场合（FlowCanvas 的节点随 view.z 缩放：投影的
+// 偏移与模糊半径必须乘同一个系数，否则缩小后影子会比节点还大）。
+void DrawShadow(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, theme::ShadowTier tier,
+                float alphaScale = 1.0f, float scale = 1.0f);
 
 // ---- 文本 ----
 // CSS text-overflow: ellipsis 的等价：超宽时尾部出省略号。

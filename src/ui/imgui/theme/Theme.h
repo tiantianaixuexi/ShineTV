@@ -125,6 +125,15 @@ struct Derived {
 [[nodiscard]] const Derived& ThemeDerivedOf(ThemeId id);
 [[nodiscard]] bool ThemesLoaded();
 
+// 某一档阴影的几何规格（逐主题）。**色相**不在这里 —— 取 ColorToken 的
+// shadow1 / shadow2 / shadowAccent；这里只给「几何 + 逐层 alpha」，因为
+// CSS 的 box-shadow 两者都随主题变，而主题 JSON 只存了色值。
+[[nodiscard]] const ShadowSpec& ShadowSpecOf(ThemeId id, ShadowTier tier);
+[[nodiscard]] const ShadowSpec& CurrentShadowSpec(ShadowTier tier);
+// 色相取主题 JSON 的 shadow.1 / 2 / accent（已逐条核对过五套主题与 CSS 一致）。
+[[nodiscard]] std::uint32_t ShadowTokenOf(ThemeId id, ShadowTier tier);
+[[nodiscard]] std::uint32_t CurrentShadowToken(ShadowTier tier);
+
 [[nodiscard]] ThemeId CurrentThemeId() noexcept;
 void SetCurrentTheme(ThemeId id) noexcept;
 [[nodiscard]] const ColorToken& Current();

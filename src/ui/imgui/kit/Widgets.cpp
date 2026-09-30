@@ -400,7 +400,13 @@ Rect Card(ImDrawList* draw, Rect bounds, std::string_view title, std::string_vie
         // glow 用 accent-glow 边，普通 hoverable 用 line-strong（ui.css:197/202）
         border = glow ? ColorAccentGlow() : ColorLineStrong();
     }
-    DrawShadowed(draw, min, max, radius, ColorPanel(), border, 1.0f);
+    // ui.css:196-204：投影与边框是**同两条规则**给的，别只接一半。
+    //   .card.hoverable:hover → border-color: var(--line-strong) + box-shadow: var(--shadow-1)
+    //   .card.glow:hover       → border-color: var(--accent-glow) + box-shadow: var(--shadow-accent)
+    // 特异度上 glow 那条更高（0,3,0 对 0,3,0 里类名更多），一个元素同时带两个类时按 glow 走。
+    DrawShadowed(draw, min, max, radius, ColorPanel(), border, 1.0f,
+                 hit.hovered ? (glow ? theme::ShadowTier::Accent : theme::ShadowTier::Card)
+                             : theme::ShadowTier::None);
 
     const bool hasHeader = !title.empty() || !icon.empty();
     float y = min.y + 16.0f;
@@ -945,7 +951,12 @@ void Tooltip(Rect anchor, std::string_view text, bool below) {
     const float s = 0.94f + 0.06f * t;
     const ImVec2 smin(c.x - width * 0.5f * s, c.y - height * 0.5f * s);
     const ImVec2 smax(c.x + width * 0.5f * s, c.y + height * 0.5f * s);
-    DrawShadowed(draw, smin, smax, 6.0f, bg, border, 1.0f);
+    // `[data-tip]::after`（ui.css:476-494）：参数与这里逐项吻合（11.5px 字、
+    // padding 4/9、--bg-overlay、--line-normal、scale .94→1、z-index 90），
+    // 其中 :494 是 `box-shadow: var(--shadow-1)` 且**不在 :hover 里** ——
+    // 提示气泡一出现就该有投影，不是 hover 才有的。这是全仓唯一一处
+    // 「静止态就该有投影、此前却落回默认 None」的浮层。
+    DrawShadowed(draw, smin, smax, 6.0f, bg, border, 1.0f, theme::ShadowTier::Card);
     draw->AddText(font, 11.5f, ImVec2(smin.x + padX, smin.y + padY + 1.0f), fg, text.data(),
                   text.data() + text.size());
 }
@@ -1277,7 +1288,7 @@ int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::s
     const float width = MenuWidth(rows);
     // top: calc(100% + 6px); right: 0（shell.css:103-104）—— 面板右边缘对齐锚点右边缘。
     const Rect panel = RectAt(anchor.max.x - width, anchor.max.y + 6.0f, width, MenuHeight(rows));
-    DrawShadowed(draw, panel.min, panel.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, panel.min, panel.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
 
     int picked = -1;
     float y = panel.min.y + 5.0f;

@@ -62,7 +62,8 @@ last_verified: 2026-09-30
 4. 外部服务变更：先做离线 mock/协议自检，再在 ComfyUI 或 LLM 可用时联调；报告未执行的部分，不把推断写成通过。
 5. 取证（多图）：跑完**先排 md5** —— 任意两张逐字节相同 = 有一张没拍到它承诺的状态。等待结果要写进 manifest，别丢返回值；每张图的前置动作显式写全，别依赖"默认状态恰好是我要的"。
 6. 像素差**不是**内容指标：离屏渲染跨进程约 2000px 噪声、跨构建约 40000px。小于它不必当回事，**大于它也不能**直接判成回归。判"内容有没有丢"用同一次运行内的对照页 + 无文字纯色区域的精确相同率。
-7. 门禁与扫描器**改完先跑自检**：`check-colors.ps1 -SelfTest` / `find-silent-truncation.ps1 -SelfTest` / `find-rect-wh-misuse.ps1 -Root <样本目录>`。一个"改完报 0"的扫描器和一个坏掉的没区别 —— 门禁报 PASS 与"没有违规"在结果里长得一模一样，而假绿比没有门禁更坏。
+7. 门禁与扫描器**改完先跑自检**：`check-colors.ps1 -SelfTest` / `find-silent-truncation.ps1 -SelfTest` / `find-draw-arg-order.ps1 -SelfTest` / `find-rect-wh-misuse.ps1 -Root <样本目录>`。一个"改完报 0"的扫描器和一个坏掉的没区别 —— 门禁报 PASS 与"没有违规"在结果里长得一模一样，而假绿比没有门禁更坏。
+8. **构建失败就别接着跑取证**。改了头文件成员名之类的东西（比如 `ImVector::Size` 是字段不是方法）会让编译挂掉，而取证脚本照样跑出一份**旧二进制**的图 —— 数字看着正常，结论全错。判据只认「构建成功**且**取证 PASS」，构建那一步的退出码要单独判。
 
 ## 静默失效扫描器
 
@@ -73,8 +74,11 @@ last_verified: 2026-09-30
 | `tools\find-silent-truncation.ps1` | 列表按容器高度静默截断 | `if (y + 24.0f > body.max.y) break;`（含 `> body.max.y - 20.0f` 这种"给页脚留位"的变体） |
 | `tools\find-rect-wh-misuse.ps1` | `kit::Rect` 四参当成 (x,y,w,h) | `Rect{x, y, cardW, 192.0f}` ⇒ `max.x < min.x`，控件**整块不画也不可点**，编译不报错 |
 | `tools\check-colors.ps1` | 硬编码颜色字面量 | `IM_COL32(...)` / `ImVec4(数字×3~4)` / `"#rrggbb"` / `0xAARRGGBB`；豁免写 `// theme-ok <理由>` |
+| `tools\find-draw-arg-order.ps1` | ImGui 绘制原语的**颜色 / 圆角参数错位** | `AddRectFilled(a, b, radius + grow, col)` ⇒ 颜色位收到几何量，**全透明黑、画了等于没画**，编译不报错也不崩 |
 
 「不画」用 `kit::ColorTransparent()`，别写 `IM_COL32(0,0,0,0)` —— 它是硬编码颜色里最常见的一种，豁免一旦多了门禁就等于没有。
+
+`AddRectFilled` 的签名是 `(p_min, p_max, col, rounding)`，**颜色在圆角前面**。写反的三个信号全是骗人的：编译过、不崩、同一帧别的图元照常出图。只有读渲染结果（或者看 `_VtxCurrentIdx` 有没有推进）才发现。
 
 ## 常用入口
 

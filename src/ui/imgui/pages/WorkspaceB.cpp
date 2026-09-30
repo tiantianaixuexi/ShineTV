@@ -1743,10 +1743,20 @@ void AssetsPage::Draw(Rect area, ImDrawList* draw) {
             //    「帧内注入 MousePos + 钉住动画时钟」才逼出来：坐标在热区内、
             //    页面静止，两帧像素却逐字节相同。
             const Hit hit = HitTest(card, "asset-card-" + std::to_string(i));
+            // ui.css:196-200 `.card.hoverable:hover` → border 提到 **--line-strong**
+            // + `box-shadow: var(--shadow-1)`；views.css:723-725 `.asset-card.on` →
+            // `box-shadow: var(--shadow-accent)`。JSX 那边 class 是
+            // `card asset-card hoverable`（Assets.jsx:151），两条规则都命中。
+            //
+            // ⚠️ 这里的 hover 边框原来用的是 accent-glow —— 那是「让 hover 看得出来」
+            //    时自己挑的颜色，设计稿写的是 line-strong。两者差得很远，1:1 以 CSS 为准。
+            //    （`.card.hoverable:hover` 还带 translateY(-2px)，那条还没接，见
+            //    refactor/PROGRESS.md 的缺口表。）
             DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
-                         on ? ColorAccent()
-                            : (hit.hovered ? ColorAccentGlow() : ColorLineSubtle()),
-                         1.0f);
+                         on ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle()),
+                         1.0f, on ? theme::ShadowTier::Accent
+                                  : (hit.hovered ? theme::ShadowTier::Card
+                                                 : theme::ShadowTier::None));
             // ⚠️ 缩略图：真实设定图要经 gpu 纹理链路解码（出图页才接）。没有就显示
             //    "无产出图"，不拿 Art() 占位画冒充这个角色的设定图。
             const Rect thumb{card.min.x + 8.0f, card.min.y + 8.0f, card.max.x - 8.0f, card.min.y + 158.0f};
@@ -1869,7 +1879,7 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
     const float barW = 520.0f;
     const Rect bar{area.min.x + 16.0f, area.min.y + 16.0f, area.min.x + 16.0f + barW,
                    area.min.y + 56.0f};
-    DrawShadowed(draw, bar.min, bar.max, 10.0f, GlassColor(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, bar.min, bar.max, 10.0f, GlassColor(), ColorLineNormal(), 1.0f, theme::ShadowTier::Card);
     DrawIcon(draw, "image", ImVec2(bar.min.x + 12.0f, bar.center().y - 7.0f), 14.0f, ColorAccent());
     // ⚠️ 早先是 `const char* barTitle = "出图流程 · 分镜图_v3"` —— 「分镜图_v3」是
     //    **设计稿的 mock 字符串**，照抄等于把一个不存在的资产名写死在界面上
@@ -1901,7 +1911,7 @@ void ImageFlowPage::Draw(Rect area, ImDrawList* draw) {
     const float panelHeight = folded_ ? 48.0f : std::min(560.0f, area.height() - 32.0f);
     const Rect panel{area.max.x - panelW - 16.0f, area.min.y + 16.0f, area.max.x - 16.0f,
                      area.min.y + 16.0f + panelHeight};
-    DrawShadowed(draw, panel.min, panel.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, panel.min, panel.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
     DrawIcon(draw, "link", ImVec2(panel.min.x + 16.0f, panel.min.y + 16.0f), 15.0f, ColorAccent());
     // ⚠️ 早先这里是 `Tag(..., "运行中", theme::Tone::Accent, ...)` —— 文本与色调**都写死**。
     //    而这一行画在 `folded_` 提前 return **之前**、页签分发**之前**，上下文 30 行内没有
@@ -2218,7 +2228,7 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
     FlowCanvas(draw, canvas, flowNodes_, flowLinks_, flowView_, flowSelected_, 0.0f);
 
     const Rect bar{area.min.x + 16.0f, area.min.y + 16.0f, area.min.x + 460.0f, area.min.y + 56.0f};
-    DrawShadowed(draw, bar.min, bar.max, 10.0f, GlassColor(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, bar.min, bar.max, 10.0f, GlassColor(), ColorLineNormal(), 1.0f, theme::ShadowTier::Card);
     DrawIcon(draw, "film", ImVec2(bar.min.x + 12.0f, bar.center().y - 7.0f), 14.0f, ColorAccent());
     const char* barTitle = "出片流程 · H3 视频";
     draw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(bar.min.x + 32.0f, bar.center().y - 6.25f),
@@ -2226,7 +2236,7 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
 
     const Rect panel{area.max.x - panelW - 16.0f, area.min.y + 16.0f, area.max.x - 16.0f,
                      area.min.y + 16.0f + std::min(520.0f, area.height() - 140.0f)};
-    DrawShadowed(draw, panel.min, panel.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, panel.min, panel.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
     // ⚠️ 与出图页同一个毛病：早先是 `Tag(..., "出片中", theme::Tone::Accent, ...)`，
     //    文本与色调写死，绘制点在页签分发之前、上下文 30 行内没有任何读数。
     //    队列空着、甚至没绑工程时，面板仍在说「出片中」。这里同样只画**真在跑**的情形。
@@ -2402,7 +2412,7 @@ void VideoFlowPage::Draw(Rect area, ImDrawList* draw) {
     // 面板在右、最上可达 area.min.y+16+min(520, h-140)，上移 16 不会与它相交。
     const Rect strip{area.min.x + 16.0f, area.max.y - 108.0f, area.max.x - 384.0f,
                      area.max.y - 16.0f};
-    DrawShadowed(draw, strip.min, strip.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, strip.min, strip.max, 14.0f, GlassColor(), ColorLineNormal(), 1.0f, theme::ShadowTier::Card);
     const char* stripTitle = "成片";
     draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(strip.min.x + 14.0f, strip.min.y + 12.0f),
                   ColorTextMuted(), stripTitle, stripTitle + std::strlen(stripTitle));
@@ -2747,7 +2757,7 @@ ModalBox DrawModal(ImDrawList* draw, Rect area, float width, float height) {
     const float top = area.height() * 0.15f;
     const Rect frame{(area.width() - width) * 0.5f, top, (area.width() + width) * 0.5f, top + height};
     DrawRoundRect(draw, area.min, area.max, 0.0f, ColorScrim());
-    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
     constexpr float headerH = 52.0f;
     constexpr float footerH = 60.0f;
     ModalBox box;
@@ -2823,8 +2833,13 @@ bool DrawHubCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect boun
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool cardHovered = bounds.contains(mouse);
     constexpr float radius = 10.0f;
+    // `.card.proj-card.hoverable.glow`（ProjectHub.jsx:167）。命中的是
+    // `.card.glow:hover`（ui.css:201-203 → border accent-glow + shadow-accent）；
+    // `views.css:117` 的 `.proj-card:hover`（shadow-2）在**本元素上是死规则** ——
+    // 特异度 0,2,0 输给 glow 的 0,3,0，与 CSS 引入顺序无关。
     DrawShadowed(draw, bounds.min, bounds.max, radius, ColorPanel(),
-                 cardHovered ? ColorAccentGlow() : ColorLineSubtle(), 1.0f);
+                 cardHovered ? ColorAccentGlow() : ColorLineSubtle(), 1.0f,
+                 cardHovered ? theme::ShadowTier::Accent : theme::ShadowTier::None);
 
     // 封面满幅（views.css:82 .cover 无内缩）。这版 ImGui 没有 PushClipPath，
     // 卡片顶部的两个圆角用同色三角补掉。
@@ -2937,9 +2952,13 @@ void DrawHubWizard(HubState& hub, Rect area, ImDrawList* draw) {
             const Rect row{body.min.x, y, body.max.x, y + 62.0f};
             const Hit hit = HitTest(row, "hub-tpl-" + tpl.id);
             const bool on = hub.tpl == tpl.id;
+            // 向导模板行是 `.card.hoverable`（ProjectHub.jsx:39）→ hover 走
+            // ui.css:196-199 的 shadow-1。**选中态不要折成投影档**：设计稿那一态
+            // 用的是内联 `0 0 0 3px var(--accent-dim)` 描边环（ProjectHub.jsx:40），
+            // 不是 box-shadow，两者视觉形态不同。
             DrawShadowed(draw, row.min, row.max, 10.0f, on ? ColorFillMuted() : ColorPanel(),
                          on ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle()),
-                         1.0f);
+                         1.0f, hit.hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
             DrawIconCentered(draw, TemplateIcon(tpl.id), ImVec2(row.min.x + 28.0f, row.center().y),
                              20.0f, on ? ColorAccent() : ColorTextMuted());
             draw->AddText(FontBoldAt(13.0f), 13.0f, ImVec2(row.min.x + 60.0f, row.min.y + 14.0f),
@@ -3143,8 +3162,10 @@ void DrawHubOpenDialog(HubState& hub, Rect area, ImDrawList* draw) {
         for (const HubCard& card : hub.cards) {
             const Rect row{box.body.min.x + 12.0f, y, box.body.max.x - 12.0f, y + 62.0f};
             const Hit hit = HitTest(row, "hub-open-" + card.entry.id);
+            // 「打开…」列表行是 `.card.hoverable`（ProjectHub.jsx:226）→ ui.css:196-199。
             DrawShadowed(draw, row.min, row.max, 10.0f, ColorPanel(),
-                         hit.hovered ? ColorLineStrong() : ColorLineSubtle(), 1.0f);
+                         hit.hovered ? ColorLineStrong() : ColorLineSubtle(), 1.0f,
+                         hit.hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
             Art(draw, Rect{row.min.x + 10.0f, row.min.y + 10.0f, row.min.x + 74.0f, row.min.y + 52.0f},
                 card.artSeed, false);
             const float nameX = row.min.x + 86.0f;

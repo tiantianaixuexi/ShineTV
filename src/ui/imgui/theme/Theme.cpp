@@ -378,6 +378,112 @@ bool ThemesLoaded() { return g_loaded; }
 const ColorToken& ThemeColorsOf(ThemeId id) { return g_themes[IndexOf(id)].colors; }
 const Derived& ThemeDerivedOf(ThemeId id) { return g_themes[IndexOf(id)].derived; }
 
+// ---- 阴影几何（逐主题）----
+//
+// 色相取主题 JSON 的 `shadow.1` / `shadow.2` / `shadow.accent`（逐条核对过，五套
+// 主题的 RGBA 与 CSS 原值一致，误差 ≤ 1/255 的取整）；**几何与逐层 alpha** 记在
+// 这里，因为 JSON 存不下 —— CSS 的 `--shadow-1` 是**两层**，而 JSON 里的
+// `shadow.1` 只有一个 alpha，逐条核对下来它等于**第二层（柔和层）**的值，
+// 第一层（1px/2px 的接触阴影）那个 alpha 被丢掉了。所以：
+//
+//   层 0 = 接触阴影（紧、浅）  alpha 取 CSS 原文
+//   层 1 = 环境阴影（松、深）  alpha 取 CSS 原文（与 JSON 的值一致）
+//
+// CSS 原文（webui/src/styles/tokens.css，行号见下）：
+//   深空   :67  --shadow-1: 0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.3)
+//                 --shadow-2: 0 12px 40px rgba(0,0,0,.45)
+//                 --shadow-accent: 0 4px 20px rgba(53,208,180,.28)
+//   薄暮  :108  0 1px 2px .40, 0 4px 16px .32 / 0 12px 40px .50 / 0 4px 20px rgba(242,166,90,.28)
+//   纸墨  :149  0 1px 2px rgba(60,50,30,.1), 0 4px 14px rgba(60,50,30,.1)
+//                 0 12px 36px rgba(60,50,30,.16) / 0 4px 18px rgba(12,133,119,.25)
+//   水墨  :190  0 1px 2px rgba(50,44,36,.12), 0 4px 14px rgba(50,44,36,.1)
+//                 0 12px 36px rgba(50,44,36,.18) / 0 4px 18px rgba(47,44,40,.22)
+//   极夜  :243  0 1px 2px .6, 0 4px 16px .5 / 0 12px 40px .7 / 0 4px 20px rgba(62,207,178,.26)
+//
+// ⚠️ 浅色主题的模糊半径**也不同**（14px / 36px，深色是 16px / 40px），照抄深空的
+//    数字会让纸墨的阴影虚一圈 —— 这类「逐主题不同」的细节正是抄一份固定值最容
+//    易漏掉的地方。
+namespace {
+struct ThemeShadow {
+    ShadowSpec card;    // --shadow-1（两层）
+    ShadowSpec overlay; // --shadow-2（一层）
+    ShadowSpec accent;  // --shadow-accent（一层）
+};
+constexpr std::array<ThemeShadow, 5> kShadowSpecs{{
+    // 深空 tokens.css:67-69
+    {{ShadowLayer{0.0f, 1.0f, 2.0f, 0.35f}, ShadowLayer{0.0f, 4.0f, 16.0f, 0.30f}, 2},
+     {ShadowLayer{0.0f, 12.0f, 40.0f, 0.45f}, {}, 1},
+     {ShadowLayer{0.0f, 4.0f, 20.0f, 0.28f}, {}, 1}},
+    // 薄暮 tokens.css:108-110
+    {{ShadowLayer{0.0f, 1.0f, 2.0f, 0.40f}, ShadowLayer{0.0f, 4.0f, 16.0f, 0.32f}, 2},
+     {ShadowLayer{0.0f, 12.0f, 40.0f, 0.50f}, {}, 1},
+     {ShadowLayer{0.0f, 4.0f, 20.0f, 0.28f}, {}, 1}},
+    // 纸墨 tokens.css:149-151（浅色：模糊更小、alpha 极低）
+    {{ShadowLayer{0.0f, 1.0f, 2.0f, 0.10f}, ShadowLayer{0.0f, 4.0f, 14.0f, 0.10f}, 2},
+     {ShadowLayer{0.0f, 12.0f, 36.0f, 0.16f}, {}, 1},
+     {ShadowLayer{0.0f, 4.0f, 18.0f, 0.25f}, {}, 1}},
+    // 水墨 tokens.css:190-192
+    {{ShadowLayer{0.0f, 1.0f, 2.0f, 0.12f}, ShadowLayer{0.0f, 4.0f, 14.0f, 0.10f}, 2},
+     {ShadowLayer{0.0f, 12.0f, 36.0f, 0.18f}, {}, 1},
+     {ShadowLayer{0.0f, 4.0f, 18.0f, 0.22f}, {}, 1}},
+    // 极夜 tokens.css:243-245（OLED：alpha 最高）
+    {{ShadowLayer{0.0f, 1.0f, 2.0f, 0.60f}, ShadowLayer{0.0f, 4.0f, 16.0f, 0.50f}, 2},
+     {ShadowLayer{0.0f, 12.0f, 40.0f, 0.70f}, {}, 1},
+     {ShadowLayer{0.0f, 4.0f, 20.0f, 0.26f}, {}, 1}},
+}};
+
+const ShadowSpec& EmptySpec() {
+    static const ShadowSpec kEmpty{};
+    return kEmpty;
+}
+} // namespace
+
+const ShadowSpec& ShadowSpecOf(ThemeId id, ShadowTier tier) {
+    if (!ThemesLoaded()) {
+        return EmptySpec();
+    }
+    const ThemeShadow& s = kShadowSpecs[IndexOf(id)];
+    switch (tier) {
+    case ShadowTier::Overlay:
+        return s.overlay;
+    case ShadowTier::Accent:
+        return s.accent;
+    case ShadowTier::Card:
+        return s.card;
+    case ShadowTier::None:
+    case ShadowTier::kCount:
+    default:
+        return EmptySpec();
+    }
+}
+
+// 某一档的**颜色 token**（原始 std::uint32_t RGBA，不是 ImU32）。
+//
+// ⚠️ 返回原始值而不是 ImU32：RGBA → ImU32 的转换是 `kit::ColorOf`，住在 kit 层。
+//    theme 反过来去 include kit 是**倒置依赖**（Widgets.h 依赖 Theme.h）。
+std::uint32_t ShadowTokenOf(ThemeId id, ShadowTier tier) {
+    if (!ThemesLoaded()) {
+        return 0u;
+    }
+    const ColorToken& c = ThemeColorsOf(id);
+    switch (tier) {
+    case ShadowTier::Card:
+        return c.shadow1;
+    case ShadowTier::Overlay:
+        return c.shadow2;
+    case ShadowTier::Accent:
+        return c.shadowAccent;
+    case ShadowTier::None:
+    case ShadowTier::kCount:
+    default:
+        return 0u;
+    }
+}
+
+std::uint32_t CurrentShadowToken(ShadowTier tier) { return ShadowTokenOf(g_current, tier); }
+
+const ShadowSpec& CurrentShadowSpec(ShadowTier tier) { return ShadowSpecOf(g_current, tier); }
+
 ThemeId CurrentThemeId() noexcept { return g_current; }
 void SetCurrentTheme(ThemeId id) noexcept { g_current = id; }
 const ColorToken& Current() { return ThemeColorsOf(g_current); }

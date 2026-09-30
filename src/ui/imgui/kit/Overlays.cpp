@@ -28,7 +28,9 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
     const float bodyH = std::max(0.0f, maxH - headerH - 18.0f * 2.0f);
     const float h = std::min(maxH, headerH + bodyH);
     const Rect frame = RectAt(screen.center().x - w * 0.5f, screen.center().y - h * 0.5f, w, h);
-    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    // ui.css:947 `.modal` 的 box-shadow: var(--shadow-2) —— 常驻，不是 hover 才有的。
+    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
+                 theme::ShadowTier::Overlay);
 
     float top = frame.min.y;
     if (!title.empty()) {
@@ -62,7 +64,9 @@ Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_v
     Scrim(draw, screen, std::string(id) + "#scrim");
     const float w = std::min(DrawerWidth(), screen.width());
     const Rect frame = RectAt(screen.max.x - w, screen.min.y, w, screen.height());
-    DrawShadowed(draw, frame.min, frame.max, 0.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    // ui.css:655 `.drawer` 的 box-shadow: var(--shadow-2)。
+    DrawShadowed(draw, frame.min, frame.max, 0.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
+                 theme::ShadowTier::Overlay);
 
     // .drawer-h（ui.css:664-672）：padding 14/16 + gap 10 + 1px 下边，标题 14/700。
     const float iconSize = 17.0f;
@@ -115,7 +119,10 @@ float Toast(ImDrawList* draw, Rect screen, std::string_view text, theme::Tone to
     // right 16 / bottom 40（ui.css:980-981）；above 用来往上叠多条。
     const Rect frame = RectAt(screen.max.x - kToastRight - w,
                               screen.max.y - kToastBottom - above - h, w, h);
-    DrawShadowed(draw, frame.min, frame.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f);
+    // ui.css:998 `.toast` 的 box-shadow: var(--shadow-2)。这里只画本体；淡出时投影
+    // 一起淡走的是 Shell.cpp:1858 那处（`DrawShadow(..., alphaScale = alpha)`）。
+    DrawShadowed(draw, frame.min, frame.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
+                 theme::ShadowTier::Overlay);
     // border-left: 3px <status>（ui.css:996 + .ok/.warn/.err 覆盖 ui.css:1003-1005）。
     // 画成一个 3px 宽的圆角矩形：Toast 左角是 r10 的圆，直接画直角条会戳出弧外，
     // 所以把条的上下各内缩 2px 让它落在圆角以内。

@@ -291,8 +291,108 @@ void DrawHGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU
     FillRoundedBands(draw, min, max, rounding, from, to, /*vertical=*/false);
 }
 
+namespace {
+// 一个 CSS box-shadow 单层的近似。
+//
+// ⚠️ ImGui 的 draw list **没有 blur**：没有 filter、不能画高斯。所以这里用
+//    「K 层同心圆角矩形」逼近，扩散范围取 CSS 的 blur 半径。
+//
+// ⚠️⚠️ 这几层的 alpha 只能按**增量**给，不能每层各带一份：
+//    CSS 的模糊是**同一个轮廓**被高斯糊开，所以距离本体边 d 处的 alpha 是
+//    单调衰减的一条曲线。如果把第 i 环画成「只覆盖 [g_i, g_{i+1}] 这一圈」并
+//    各带 alpha·w_i，那各环**互不重叠**、互不累加，边缘处的可见 alpha 反而
+//    只有 w_0/Σw —— 6 环时 Σw≈3.2，峰值被摊到 31%，投影等于淡了三分之二，
+//    而且「看起来加了、实际几乎看不见」，是最难发现的一类偏差。
+//    正确做法：第 i 环铺满 [本体边, g_i]，自带**增量** alpha·(w_i − w_{i+1})，
+//    由外向内叠。任意 d 处的累计 = Σ(增量) = w_{i(d)}·alpha，边最浓、往外渐隐。
+constexpr int kShadowSteps = 6;
+// 权重 exp(-k·t²)，t = d / blur。k=3.0 时最外圈剩 4.9%，硬边落在 8 位色差
+// 约 5/255，看不出来；再大就会让中段偏薄。
+constexpr float kShadowFalloff = 3.0f;
+
+// 改 alpha，保留 RGB。⚠️ **必须走 ImGui 自己的 float4 往返，不能手写位移**：
+// ImU32 的字节序是编译期宏（IMGUI_USE_BGRA_PACKED_COLOR 决定 R 在高位还是低位），
+// 手写过一次 —— 默认字节序下 R 在最低字节，于是 alpha 被写进了红通道。
+// 这里用与 kit::WithAlphaSet 同一套做法，只是就地实现，免得为此把 Widgets.h
+// 拉进 Draw.cpp（那是循环包含：Widgets.h 依赖 Draw.h）。
+ImU32 WithShadowAlpha(ImU32 color, float alpha) {
+    const ImVec4 c = ImGui::ColorConvertU32ToFloat4(color);
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, alpha));
+}
+}  // namespace
+
+void DrawShadow(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, theme::ShadowTier tier,
+                float alphaScale, float scale) {
+    if (draw == nullptr || tier == theme::ShadowTier::None || tier >= theme::ShadowTier::kCount) {
+        return;
+    }
+    if (alphaScale <= 0.0f || scale <= 0.0f) {
+        return;
+    }
+    if (max.x <= min.x || max.y <= min.y) {
+        return;
+    }
+    const theme::ShadowSpec& spec = theme::CurrentShadowSpec(tier);
+    if (spec.count <= 0) {
+        return;
+    }
+    // ⚠️ 颜色 token 在这里**只提供色相（RGB）**，alpha 一律取 ShadowLayer 里的
+    //    绝对值（逐字来自 tokens.css）。两个原因：
+    //      1. 主题 JSON 的 `shadow.1` 存的就是 CSS **第二层**的 alpha（深空
+    //         0x4D ≈ 0.30 对应 CSS 的 0.3），再乘一遍就只剩 45%；
+    //      2. CSS 的 --shadow-1 是**两层**、两层 alpha 不同（深空是 0.35 与
+    //         0.30），而 JSON 只有一个值，接触阴影那层根本无处可取。
+    //    所以逐层绝对 alpha 记在 Theme.cpp 的 kShadowSpecs 里。
+    //
+    //    RGBA→ImU32 是 theme 层的事（theme::ToImU32；kit::ColorOf 只是转发），
+    //    这里不引 kit::ColorOf —— Widgets.h 依赖 Draw.h，引了就是循环包含。
+    const ImU32 base = theme::ToImU32(theme::CurrentShadowToken(tier));
+    const float radius = std::max(0.0f, std::min(rounding, 0.5f * (max.x - min.x)));
+
+    // ⚠️⚠️ `AddRectFilled` 的签名是 `(p_min, p_max, col, rounding)` —— **颜色在圆角前面**。
+    //    写反了不报编译错，也不崩：col 位收到一个半径（14），于是颜色变成
+    //    0x0000000E（全透明黑），圆角变成 0xFF000000 被截成巨大值。半径为 0 的那次
+    //    更彻底 —— col 正好是 0，被 `if (col == 0) return;` 整块丢掉。
+    //    症状是「函数明明调用了、顶点也涨了（同一帧别的图元），但屏幕上什么都没有」。
+    //    这类错误编译期完全沉默，**只能靠读渲染结果发现**，所以这里写死注释。
+    //
+    // 逆序：CSS 里先写的层画在上面，所以**先画大模糊那层**（环境阴影在底，
+    // 接触阴影压在上面），两层的叠加才和浏览器一致。
+    for (int li = spec.count - 1; li >= 0; --li) {
+        const theme::ShadowLayer& layer = spec.layers[li];
+        const float alpha = layer.alpha * alphaScale;
+        if (alpha <= 0.0f) {
+            continue;
+        }
+        const ImVec2 off(layer.dx * scale, layer.dy * scale);
+        const float reach = layer.blur * scale;
+        if (reach <= 0.5f) {
+            // 无模糊（0 或 CSS 的 0.5px 舍入）：直接一块实心。
+            draw->AddRectFilled(min + off, max + off, WithShadowAlpha(base, alpha), radius);
+            continue;
+        }
+        // 由外向内叠：第 i 环铺满 [本体边, g_i]，只带增量 alpha·(w_i − w_{i+1})。
+        // 最外环先画（范围最大），最内环最后画（压在本体边上）。
+        for (int i = kShadowSteps - 1; i >= 0; --i) {
+            const float t = static_cast<float>(i + 1) / static_cast<float>(kShadowSteps);
+            const float grow = t * reach;
+            const float wHere = std::exp(-kShadowFalloff * t * t);
+            const float wNext =
+                std::exp(-kShadowFalloff * (t + 1.0f / kShadowSteps) * (t + 1.0f / kShadowSteps));
+            const float stepAlpha = alpha * std::max(0.0f, wHere - wNext);
+            if (stepAlpha <= 0.0f) {
+                continue;
+            }
+            draw->AddRectFilled(min + off - ImVec2(grow, grow), max + off + ImVec2(grow, grow),
+                                WithShadowAlpha(base, stepAlpha), radius + grow);
+        }
+    }
+}
+
 void DrawShadowed(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 fill,
-                  ImU32 border, float borderWidth) {
+                  ImU32 border, float borderWidth, theme::ShadowTier tier) {
+    // 投影必须**先于**本体画，否则会被本体盖掉（本体是实心的）。
+    DrawShadow(draw, min, max, rounding, tier);
     DrawRoundRect(draw, min, max, rounding, fill, border, borderWidth, /*topHighlight=*/true);
 }
 
