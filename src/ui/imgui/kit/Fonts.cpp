@@ -3,11 +3,9 @@
 #include "core/Log.h"
 #include "ui/imgui/theme/Tokens.h"
 
-// ImFontGlyphRangesBuilder 在 imgui_internal.h 里；GetModuleFileNameW 需要 Win32。
-#include <windows.h>
-
-#include <imgui_internal.h>
-
+// 这里只需要公开的 ImGui API。曾经 include 的 <windows.h>（为 GetModuleFileNameW
+// 回溯仓库根做字形集扫描）和 <imgui_internal.h>（为 ImFontGlyphRangesBuilder）
+// 都随 1.92 的按需字形加载一起删掉了 —— 源码扫描那条路已经不存在。
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -65,8 +63,8 @@ const std::vector<float> kMonoSizes = {10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f,
 //    `baked->Size` 都没变（都是 kUiSizes 里的原值），`scale` 恒为 1.0，
 //    布局与排版数值**一个都不动** —— 只有位图分辨率变了。
 //
-// 代价：位图面积约 4 倍。图集显存由下面的 LogFontAtlasIfNeeded 打日志并按
-// 64 MB 硬判据校验（超了会 log::Error），不要凭感觉改这个数，改完看日志。
+// 代价：位图面积约 4 倍。预算不按总量卡（按需加载下没有固定上限），只看单帧
+// 增量与增长速率，见下面 AtlasGuard 那段注释与 LogFontAtlasIfNeeded。
 constexpr float kRasterizerDensity = 2.0f;
 
 struct FontPaths {
@@ -92,10 +90,42 @@ std::unordered_map<float, ImFont*> g_fonts;
 std::unordered_map<float, ImFont*> g_mono;
 std::unordered_map<float, ImFont*> g_bold;
 std::size_t g_atlasBytes = 0;
+std::size_t g_atlasFrameDelta = 0;
+int g_atlasBytesPerPixel = 0; // 实际格式（RGBA32=4；Alpha8=1，但见下面：OpenGL3 后端不支持）
 int g_textureCount = 0;
 bool g_atlasLogged = false;
 std::string g_familyName;
 bool g_hasBold = false;
+
+// ---- 图集预算告警 ----
+//
+// 1.92 的按需字形加载**没有固定上限**：图集随用户实际读到的汉字增长，读多少取
+// 决于用户。所以原先那个「总量 > 64MB 就 log::Error」是错的设计：
+// ① 把一个正常且可预期的现象标成 Error；② 它量的是 **CPU 侧**暂存缓冲却打印成
+// "vram="，让人误以为在拿显存做预算；③ 长阅读下会**每帧**重复刷屏。
+//
+// 改成三件事：一次性快照（仍然要有数字）、单帧增量告警（图集重排/抖动）、
+// 增长速率告警（持续暴涨）。去重按「事件」而不是全局一次性 —— 全局一次性标志的
+// 毛病是启动时报一次，之后真的开始暴涨也不吭声。
+constexpr std::size_t kMiB = 1024u * 1024u;
+// 沿用原来的 64MB 数字，但从 Error 降为 Warn：它是「值得看一眼」而不是「出了故障」。
+// 按需加载下超过它只说明用户读了很多字。
+constexpr std::size_t kAtlasSoftCapBytes = 64u * kMiB;
+// 单帧多出 8MB = 一次大规模重打包（新增字号档 / 触发 repack），值得知道。
+constexpr std::size_t kAtlasFrameDeltaWarn = 8u * kMiB;
+// 每秒 32MB 持续增长 = 要么在快速翻页，要么有字号在抖。
+constexpr std::size_t kAtlasRateWarn = 32u * kMiB;
+constexpr int kSampleEveryFrames = 60; // ≈1s @60fps
+
+struct AtlasGuard {
+    bool warnedCap = false;
+    bool warnedDelta = false;
+    bool warnedRate = false;
+    std::size_t lastBytes = 0;
+    std::size_t sampleBytes = 0;
+    int framesSinceSample = 0;
+};
+AtlasGuard g_guard;
 
 // ---------------------------------------------------------------- TTC 解析
 struct Reader {
@@ -219,182 +249,6 @@ bool ReadFile(const std::string& path, std::vector<std::uint8_t>& out) {
     return !out.empty();
 }
 
-// ---- 业务字形集（P2.5 硬判据：不能有豆腐块）----
-//
-// GetGlyphRangesChineseSimplifiedCommon() 只有 2500 常用字，而本项目的
-// 业务名（"章节"/"提示词"/"一致性校验"/"降级策略"…）大半**不在其中**——
-// 图集里没有的字形会被画成 '?'，而且不报任何错。
-//
-// 这里扫源码里出现的中文字符，合并进常用字集。扫的是 UTF-8 字节里
-// >= 0xE0 的三字节序列（GBK 注释里的汉字同样会落进来，多烘焙一些无妨，
-// 相对于 2500 字只是零头）。字形集最终按 codepoint 去重排序。
-//
-// 为什么不走动态字形：ImGui 1.93 的动态路径要在每帧后重建图集并重传
-// 纹理，而取证通道要的是「同一帧内所有字形都已在图集里」的确定性。
-// 静态集合 + 源码扫描能同时满足这两个要求。
-const std::vector<std::string>& GlyphScanRoots() {
-    static const std::vector<std::string> roots = [] {
-        std::vector<std::string> found;
-        std::error_code ec;
-        // 扫的是整个 src/ 下有业务汉字的目录。
-        const std::vector<const char*> kSubs = {"ui/imgui", "novel", "pipeline", "visual",
-                                                "media",  "project", "flow", "core", "comfy",
-                                                "paint",  "mcp",     "llm"};
-
-        // ⚠️ 顺序很重要：**先从 exe 路径回溯**，再用 CWD。
-        //    程序常被从 build/ 或任意目录启动，CWD 未必是仓库根 —— 只认 CWD 时
-        //    扫描会一个文件都找不到，字形集退回 2500 常用字，节点副行里的
-        //    「雨夜」「转身」这类词就变 '?'（实测踩过）。
-        const auto tryRoot = [&](const std::filesystem::path& repoRoot) {
-            std::vector<std::string> hit;
-            for (const char* sub : kSubs) {
-                const std::filesystem::path dir = repoRoot / "src" / sub;
-                if (std::filesystem::exists(dir, ec)) {
-                    hit.emplace_back(dir.string());
-                }
-            }
-            return hit;
-        };
-
-        wchar_t buffer[MAX_PATH]{};
-        if (const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH); length > 0) {
-            std::filesystem::path dir = std::filesystem::path(buffer).parent_path();
-            for (int up = 0; up < 5; ++up) {
-                found = tryRoot(dir);
-                if (!found.empty()) {
-                    break;
-                }
-                const std::filesystem::path parent = dir.parent_path();
-                if (parent == dir) {
-                    break;
-                }
-                dir = parent;
-            }
-        }
-        if (found.empty()) {
-            found = tryRoot(std::filesystem::current_path(ec));
-        }
-        return found;
-    }();
-    return roots;
-}
-
-// 把一个 UTF-8 片段里的中文 codepoint 记进 builder
-void AddUtf8Cjk(std::string_view text, ImFontGlyphRangesBuilder& builder) {
-    for (std::size_t i = 0; i < text.size();) {
-        const auto byte = static_cast<unsigned char>(text[i]);
-        if (byte < 0x80) {
-            builder.AddChar(static_cast<ImWchar>(byte));
-            ++i;
-        } else if ((byte & 0xE0) == 0xC0 && i + 1 < text.size()) {
-            builder.AddChar(static_cast<ImWchar>(((byte & 0x1Fu) << 6) |
-                                                  (static_cast<unsigned char>(text[i + 1]) & 0x3Fu)));
-            i += 2;
-        } else if ((byte & 0xF0) == 0xE0 && i + 2 < text.size()) {
-            const auto cp = static_cast<ImWchar>(
-                ((byte & 0x0Fu) << 12) | ((static_cast<unsigned char>(text[i + 1]) & 0x3Fu) << 6) |
-                (static_cast<unsigned char>(text[i + 2]) & 0x3Fu));
-            // 只收 CJK 统一表意文字（U+4E00..U+9FFF）+ 扩展 A + 兼容表意
-            if ((cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) ||
-                (cp >= 0xF900 && cp <= 0xFAFF)) {
-                builder.AddChar(cp);
-            }
-            i += 3;
-        } else if ((byte & 0xF8) == 0xF0 && i + 3 < text.size()) {
-            i += 4; // 四字节序列（扩展 B+），本项目用不到，跳过
-        } else {
-            ++i;
-        }
-    }
-}
-
-// 常用 2500 字 ∪ 源码里出现的业务汉字。返回的数组由下面那个 static 持有到
-// 进程结束 —— 1.92+ 里 ImFontAtlas 并不接管这块内存，指针的所有权仍在我们。
-const ImWchar* BuildGlyphRanges(ImFontAtlas* atlas) {
-    ImFontGlyphRangesBuilder builder;
-    // 基线：ImGui 自带的 2500 常用字 + 拉丁 + 标点
-    for (const ImWchar* range = atlas->GetGlyphRangesChineseSimplifiedCommon(); range != nullptr &&
-                                range[0] != 0;) {
-        for (ImWchar c = range[0]; c <= range[1] && c != 0xFFFF; ++c) {
-            builder.AddChar(c);
-        }
-        if (range[1] == 0xFFFF) {
-            break;
-        }
-        range += 2;
-    }
-    // 叠加：源码扫描
-    std::error_code ec;
-    for (const std::string& root : GlyphScanRoots()) {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
-            if (!entry.is_regular_file(ec)) {
-                continue;
-            }
-            const std::string ext = entry.path().extension().string();
-            if (ext != ".cpp" && ext != ".h" && ext != ".hpp" && ext != ".json") {
-                continue;
-            }
-            std::ifstream stream(entry.path(), std::ios::binary);
-            if (!stream) {
-                continue;
-            }
-            const std::string content((std::istreambuf_iterator<char>(stream)),
-                                      std::istreambuf_iterator<char>());
-            AddUtf8Cjk(content, builder);
-        }
-    }
-    // 兜底基线：界面固定用到的标点 / 符号 / 箭头。
-    //
-    // ⚠️ 源码扫描（AddUtf8Cjk）**只收** 0x3400-0x9FFF、0xF900-0xFAFF 三段汉字，
-    //    所以 `›`（U+203A 单角引号）、`→`、`×`、`±`、`…` 这类**永远进不来**。
-    //    症状不是报错，是界面上某个符号变豆腐块：面包屑的 `›` 分隔符实测就是
-    //    画成了缺字形（Fonts.h 的硬规则是「无豆腐块」，靠扫描兜不住，只能显式列）。
-    //    这里按 codepoint 逐个登记，新增符号时改这一处即可。
-    static constexpr ImWchar kUiSymbols[] = {
-        0x00B7,  // ·
-        0x00D7,  // ×
-        0x00F7,  // ÷
-        0x00B1,  // ±
-        0x2013,  // –
-        0x2014,  // —
-        0x2018, 0x2019,  // ' '
-        0x201C, 0x201D,  // " "
-        0x2022,  // •
-        0x2026,  // …
-        0x2039,  // ‹
-        0x203A,  // ›
-        0x2190, 0x2191, 0x2192, 0x2193,  // ← ↑ → ↓
-        0x2212,  // −
-        0x25CF,  // ●
-        0x25CB,  // ○
-        0x2605,  // ★
-        0x2606,  // ☆
-    };
-    for (const ImWchar c : kUiSymbols) {
-        builder.AddChar(c);
-    }
-    // ⚠️ 范围数组的**生命周期必须覆盖字体**：1.92+ 的 ImFontConfig::GlyphRanges
-    //    文档原文是 "*LEGACY* THE ARRAY DATA NEEDS TO PERSIST AS LONG AS THE FONT
-    //    IS ALIVE"，图集在**后续帧**按需烘焙时才回读这个指针。
-    //    早先这里写的是局部 `ImVector<ImWchar> ranges;` 然后 `return ranges.Data` ——
-    //    函数一返回内存就还给分配器，指针悬垂。1.92 之前那样写没事，是因为
-    //    AddFontFromFileTTF 会在当场把范围拷走；1.92+ 不再当场拷。
-    //    症状不会报错：静态存储后读到的仍是同一批字节（分配器没复用那块内存），
-    //    所以"看起来一直是对的"，直到某次分配把它盖掉。
-    static ImVector<ImWchar> ranges;
-    ranges.clear();
-    builder.BuildRanges(&ranges);
-    // 补 NUL 结尾（BuildRanges 已保证，这里只是防御）
-    if (ranges.empty() || ranges.back() != 0) {
-        ranges.push_back(0);
-    }
-    // 字形集是 P2.5 的硬判据，扫不到根目录就必须吵：静默退回 2500 常用字时，
-    // 界面只表现为个别字变 '?'，不报错也不崩。
-    shine::log::Info("glyph ranges: {} roots, {} codepoints", GlyphScanRoots().size(),
-                     static_cast<std::size_t>(ranges.Size > 0 ? ranges.Size - 1 : 0));
-    return ranges.Data;
-}
-
 } // namespace
 
 int FindTtcIndex(const std::string& path, const std::string& familyName) {
@@ -419,12 +273,19 @@ int FindTtcIndex(const std::string& path, const std::string& familyName) {
 void TickAtlasStats() {
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
     g_textureCount = atlas->TexList.Size;
+    // ⚠️ 这里量的是 **CPU 侧**的像素暂存缓冲（ImTextureData::Pixels 是
+    //    `unsigned char*`），**不是显存** —— 1.92 之前这里打的是 "vram="，
+    //    标签是错的，害得人以为在拿显存预算。GPU 侧只留一个 TexID。
+    // 用 GetSizeInBytes() 而不是 Width*Height*4：它读 BytesPerPixel，而
+    // TexDesiredFormat 已经是 Alpha8（1 字节/像素），硬编码 4 会虚报 4 倍。
     g_atlasBytes = 0;
+    g_atlasBytesPerPixel = 0;
     for (int i = 0; i < atlas->TexList.Size; ++i) {
-        const ImTextureData* texture = atlas->TexList[i];
-        g_atlasBytes += static_cast<std::size_t>(texture->Width) *
-                        static_cast<std::size_t>(texture->Height) * 4u;
+        g_atlasBytes += static_cast<std::size_t>(atlas->TexList[i]->GetSizeInBytes());
+        g_atlasBytesPerPixel = atlas->TexList[i]->BytesPerPixel;
     }
+    g_atlasFrameDelta = g_atlasBytes > g_guard.lastBytes ? g_atlasBytes - g_guard.lastBytes : 0;
+    g_guard.lastBytes = g_atlasBytes;
 }
 
 bool BuildFontAtlas(bool serif) {
@@ -455,19 +316,51 @@ bool BuildFontAtlas(bool serif) {
     }
     g_familyName = activePath + "#" + std::to_string(activeFontNo);
 
+    // ---- 字形集：刻意不设 ImFontConfig::GlyphRanges ----
+    //
+    // 1.92 之前必须喂它，否则图集只烘那一份字形、其余全是豆腐块 —— 早期版本
+    // 扫 281 个源文件抽汉字再合并 2500 常用字，为的就是这个。
+    // 1.92 起那整套是 **legacy 路径**，源码链路闭合在 imgui_draw.cpp：
+    //     ImGui_ImplOpenGL3_Init:1097   io.BackendFlags |= RendererHasTextures
+    //     :2772 ImFontAtlasBuildUpdateRendererHasTexturesFromContext
+    //                                -> atlas->RendererHasTextures = true
+    //     :3514 if (atlas->RendererHasTextures == false)
+    //                                ImFontAtlasBuildLegacyPreloadAllGlyphRanges(atlas);
+    //     :3568 src->GlyphRanges 全工程**只在这一处**被读
+    // 本工程用 OpenGL3 后端 ⇒ 那条分支永不执行 ⇒ GlyphRanges 存下来后没人读。
+    // 真正在起作用的是**按需加载**：小说正文里任意汉字，只要 msyh.ttc 里有就
+    // 会被自动烘焙。所以「字形集够不够」这个问题根本不存在。
+    //
+    // 代价从「豆腐块」换成了「图集随阅读量增长」—— 见 LogFontAtlasIfNeeded 的
+    // 增长告警。ImGui 自己会多纹理打包（TexList 是数组），变大不会崩。
+    //
+    // ⚠️ 换回 legacy 后端（不声明 RendererHasTextures）时这段必须重新接上，
+    //    否则界面全是 '?'。那不是回归，是换了一种加载协议。
+    //
+    // 字体只要 alpha，1 字节/像素足够：1.92 给了这个开关（默认 RGBA32）。
+    // CPU 侧暂存缓冲直接省 4 倍，等于把图集预算放大 4 倍。
+    // ⚠️ 图集格式：**不能**设成 ImTextureFormat_Alpha8。
+    //
+    // core 侧是支持的（imgui_draw.cpp:4132 `new_tex->Create(atlas->TexDesiredFormat, …)`），
+    // 但 **imgui_impl_opengl3 后端把格式硬编码成 RGBA**：
+    //     :712  glTexImage2D(…, GL_RGBA, …, GL_RGBA, GL_UNSIGNED_BYTE, pixels)
+    //     :733  glTexSubImage2D(…, GL_RGBA, …)
+    //     :739  const int src_pitch = r.w * tex->BytesPerPixel;   ← 按 1B/px 算行跨度
+    // 最后一行按 Alpha8 的 1 字节/像素算跨度，却仍然用 GL_RGBA 上传（OpenGL 期望
+    // 每行 4 字节）⇒ 读越界 / 上传垃圾。实测：设了 Alpha8 之后图集根本烘不出来，
+    // `atlas->TexList` 一直是空，`LogFontAtlasIfNeeded` 永远等不到第一帧。
+    //
+    // 所以「字体只要 alpha，省 4 倍」这个想法在**这个后端上不成立**。等上游
+    // OpenGL3 后端支持了 ImTextureFormat_Alpha8 再开；开之前这里只能是 RGBA32。
+    // 下面的统计用 GetSizeInBytes()（读 BytesPerPixel）而不是硬编码 *4，
+    // 这样将来换格式时统计口径自动跟着变，不会又虚报 4 倍。
     atlas->Clear();
-
-    // 字形集 = 常用 2500 字 ∪ 源码里出现的业务汉字（见 BuildGlyphRanges 的说明）。
-    // ⚠️ 范围数组的生命周期归 ImFontAtlas 所有：AddFontFromFileTTF 会在
-    //    Build 时把字形烘焙进去，之后不再回读这个指针。
-    const ImWchar* cjkRanges = BuildGlyphRanges(atlas);
 
     g_fonts.clear();
     for (const float size : kUiSizes) {
         ImFontConfig config;
         config.FontNo = activeFontNo;
         config.SizePixels = size * io.DisplayFramebufferScale.x;
-        config.GlyphRanges = cjkRanges; // 静态数组，生命周期覆盖字体，1:1 限定可光栅化的字形集
         config.PixelSnapH = true;       // 对齐 AdvanceX，KV 列不错位；代价是 oversample 被压成 1，靠 kRasterizerDensity 补
         config.RasterizerDensity = kRasterizerDensity;
         ImFont* font = atlas->AddFontFromFileTTF(activePath.c_str(), config.SizePixels, &config);
@@ -489,7 +382,6 @@ bool BuildFontAtlas(bool serif) {
             ImFontConfig config;
             config.FontNo = boldNo;
             config.SizePixels = size * io.DisplayFramebufferScale.x;
-            config.GlyphRanges = cjkRanges;
             config.PixelSnapH = true;
             config.RasterizerDensity = kRasterizerDensity;
             if (ImFont* font =
@@ -534,7 +426,6 @@ bool BuildFontAtlas(bool serif) {
             fallback.SizePixels = config.SizePixels;
             fallback.PixelSnapH = true;
             fallback.RasterizerDensity = kRasterizerDensity; // 必须与主源一致，否则同一 ImFont 内两种密度的位图互相错位
-            fallback.GlyphRanges = cjkRanges;
             fallback.MergeMode = true; // 追加进上面那个 ImFont，不新建
             atlas->AddFontFromFileTTF(uiPath.c_str(), config.SizePixels, &fallback);
             g_mono[size] = monoFont;
@@ -553,20 +444,68 @@ bool BuildFontAtlas(bool serif) {
 }
 
 void LogFontAtlasIfNeeded() {
-    if (g_atlasLogged) {
-        return;
-    }
     ImFontAtlas* atlas = ImGui::GetIO().Fonts;
     if (atlas->TexList.Size == 0) {
         return; // 后端还没烘焙，下一帧再问
     }
-    g_atlasLogged = true;
     TickAtlasStats();
-    shine::log::Info("font atlas: {} sizes={} textures={} vram={:.1f} MB (hard limit 64 MB)",
-                     g_familyName, g_fonts.size(), g_textureCount,
-                     static_cast<double>(g_atlasBytes) / (1024.0 * 1024.0));
-    if (g_atlasBytes > 64u * 1024u * 1024u) {
-        shine::log::Error("font atlas exceeds the 64 MB budget: {} bytes", g_atlasBytes);
+
+    // ---- 一次性快照：仍然要有数字，但把「是什么」说准 ----
+    if (!g_atlasLogged) {
+        g_atlasLogged = true;
+        shine::log::Info(
+            "font atlas: {} sizes={} textures={} cpu-bytes={:.2f} MB ({} B/px, CPU 侧暂存；"
+            "按需加载，无固定上限)",
+            g_familyName, g_fonts.size(), g_textureCount,
+            static_cast<double>(g_atlasBytes) / static_cast<double>(kMiB), g_atlasBytesPerPixel);
+    }
+
+    // ---- 单帧增量：一帧多出 8MB = 一次大规模重打包 ----
+    if (g_atlasFrameDelta > kAtlasFrameDeltaWarn) {
+        if (!g_guard.warnedDelta) {
+            g_guard.warnedDelta = true;
+            shine::log::Warn("font atlas 单帧增长 {:.2f} MB（{} -> {}，{} 张纹理）：发生了一次"
+                             "大规模重打包。若持续出现，说明有字号在反复请求新档位。",
+                             static_cast<double>(g_atlasFrameDelta) / static_cast<double>(kMiB),
+                             g_guard.lastBytes / kMiB, g_atlasBytes / kMiB, g_textureCount);
+        }
+    } else if (g_guard.warnedDelta) {
+        g_guard.warnedDelta = false; // 恢复了，下次真的再涨还会报
+    }
+
+    // ---- 增长速率：按需加载下唯一真正值得盯的量 ----
+    if (++g_guard.framesSinceSample < kSampleEveryFrames) {
+        return;
+    }
+    g_guard.framesSinceSample = 0;
+    const std::size_t grew =
+        g_atlasBytes > g_guard.sampleBytes ? g_atlasBytes - g_guard.sampleBytes : 0;
+    g_guard.sampleBytes = g_atlasBytes;
+    if (grew > kAtlasRateWarn) {
+        if (!g_guard.warnedRate) {
+            g_guard.warnedRate = true;
+            shine::log::Warn("font atlas 每秒增长 {:.2f} MB，当前 {:.2f} MB / {} 张纹理：正在大量"
+                             "烘焙新字形。正常翻页也会有；持续不降才需要查是否有字号在抖。",
+                             static_cast<double>(grew) / static_cast<double>(kMiB),
+                             static_cast<double>(g_atlasBytes) / static_cast<double>(kMiB),
+                             g_textureCount);
+        }
+    } else if (g_guard.warnedRate) {
+        g_guard.warnedRate = false;
+    }
+
+    // ---- 软上限：超过只警告，且只在该「次」超过期间报一次 ----
+    if (g_atlasBytes > kAtlasSoftCapBytes) {
+        if (!g_guard.warnedCap) {
+            g_guard.warnedCap = true;
+            shine::log::Warn("font atlas CPU 侧暂存 {:.2f} MB 已超过软上限 {} MB。按需加载下这不是"
+                             "故障，只说明用户读了很多字；ImGui 会自动多纹理打包（TexList 是数组），"
+                             "不会崩。真要省就减少预烘焙字号档（kUiSizes / kMonoSizes）。",
+                             static_cast<double>(g_atlasBytes) / static_cast<double>(kMiB),
+                             kAtlasSoftCapBytes / kMiB);
+        }
+    } else if (g_guard.warnedCap) {
+        g_guard.warnedCap = false;
     }
 }
 

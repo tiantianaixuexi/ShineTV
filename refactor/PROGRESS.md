@@ -720,6 +720,60 @@ DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ...);            // ← 下一
 
 ---
 
+## 字形集扫描是死的，64MB 也不是显存（2026-09-30 补）
+
+上一节说「顺带修掉悬垂指针」——悬垂指针是真 bug，但**它悬在一条没人走的路上**。
+这一节把这件事查到底。
+
+### `ImFontConfig::GlyphRanges` 在当前后端下完全不生效
+
+源码链路闭合在 `imgui_draw.cpp`：
+
+| 位置 | 事实 |
+|---|---|
+| `imgui_impl_opengl3.cpp:1097` | `io.BackendFlags \|= ImGuiBackendFlags_RendererHasTextures` |
+| `imgui_draw.cpp:2772` | 抄进 `atlas->RendererHasTextures = true` |
+| `imgui_draw.cpp:3514` | `if (atlas->RendererHasTextures == false) ImFontAtlasBuildLegacyPreloadAllGlyphRanges(atlas);` → **跳过** |
+| `imgui_draw.cpp:3568` | `src->GlyphRanges` 全工程**只在这一处**被读 |
+
+所以扫 281 个源文件抽汉字、合并 2500 常用字、维护一整套「不许有豆腐块」的契约，
+实际产出只有一个日志数字 `glyph ranges: 12 roots, 3974 codepoints`。**既没换来确定性，
+也没防住豆腐块** —— 真正在起作用的是 1.92 的**按需加载**：小说正文里任意汉字，只要
+`msyh.ttc` 里有就会被自动烘焙。所以「字形集够不够」这个问题不存在。已整段删除
+（`GlyphScanRoots` / `AddUtf8Cjk` / `BuildGlyphRanges` / `kUiSymbols` 兜底表，以及
+`FindTtcIndex` 之外为它引入的 `<windows.h>` 与 `<imgui_internal.h>`）。
+
+⚠️ 换回不声明 `RendererHasTextures` 的 legacy 后端时必须重新接上，否则界面全是 `'?'`。
+那不是回归，是换了一种加载协议。
+
+### 64MB 那个数：既不是内存也不是显存，是**标签写错了**
+
+`ImTextureData::Pixels` 是 `unsigned char*`（**CPU 堆缓冲**，GPU 侧只留一个 `TexID`），
+而旧代码 `Width*Height*4` 求和后打成 `vram=`。**标签是错的**，害得人以为在拿显存做预算。
+而且 64MB 是项目自定的红线，超了只 `log::Error` —— 在按需加载下这会把一个正常现象
+标成故障，而且长阅读下**每帧**刷屏。已改成：一次性快照 + 单帧增量告警 + 增长速率告警，
+三档都是 `Warn`，且去重按「事件」而非全局一次性（全局一次性标志的毛病是启动时报一次，
+之后真的开始暴涨也不吭声）。
+
+### `ImTextureFormat_Alpha8`：core 支持，**但这个后端不支持，别开**
+
+字体只要 alpha，1.92 给了 `TexDesiredFormat`（默认 RGBA32，可改 Alpha8）——听起来是
+白捡的 4 倍。实测**开了图集就烘不出来**（`atlas->TexList` 恒空，第一帧统计永远等不到）。
+原因在上游后端，`imgui_impl_opengl3.cpp` 把格式**硬编码成 RGBA**：
+
+```
+:712  glTexImage2D(…, GL_RGBA, …, GL_RGBA, GL_UNSIGNED_BYTE, pixels)
+:733  glTexSubImage2D(…, GL_RGBA, …)
+:739  const int src_pitch = r.w * tex->BytesPerPixel;   ← 按 1B/px 算行跨度
+```
+
+最后一行按 Alpha8 的 1 字节/像素算跨度，却仍以 `GL_RGBA` 上传（OpenGL 期望每行 4 字节）
+⇒ 读越界 / 上传垃圾。**这是 vendored 1.93 WIP 的真实缺口，不是本侧代码问题。**
+保持 RGBA32；统计改用 `GetSizeInBytes()`（读 `BytesPerPixel`）而不是硬编码 `*4`，
+这样将来上游支持了、或换后端时，统计口径自动跟着变，不会又虚报。
+
+---
+
 ## 大文件拆分（2026-09-30）
 
 `src/ui/imgui` 从 45 个文件长到 127 个，最大的四个上帝文件按职责族拆开，**零行为变化**（每个族的等价性判据见下）。
