@@ -113,6 +113,42 @@ std::set<std::string> ScanHotspots(Host& host, Shell& shell, float x0, float y0,
     return found;
 }
 
+// 全屏扫一遍，返回**第一个**命中 `id` 的坐标。
+//
+// 为什么单独一个函数：`ScanHotspots` 只回 id **集合**，而「我要去点它」需要坐标。
+// 坐标必须**量**出来 —— 猜出来的坐标（`ImVec2(120, 24)` 之类）在布局一改就静默
+// 失效，判据却仍然报「通过」。项目中心的 hub-open 与命令面板的 tb-search 各写过
+// 一遍同样的双层循环，收在这里一份。
+bool FindHotspot(Host& host, Shell& shell, const char* id, ImVec2& out, float step = 12.0f,
+                 float x0 = 0.0f, float y0 = 0.0f, float x1 = -1.0f, float y1 = -1.0f) {
+    struct Unpin {
+        ~Unpin() { kit::UnpinAnimation(); }
+    } unpin;
+    kit::PinAnimation(kit::Now());
+    const ImVec2 d = ImGui::GetIO().DisplaySize;
+    if (x1 < 0.0f) {
+        x1 = d.x;
+    }
+    if (y1 < 0.0f) {
+        y1 = d.y;
+    }
+    for (float y = y0; y <= y1; y += step) {
+        for (float x = x0; x <= x1; x += step) {
+            host.SetFrameMouseOverride(x, y);
+            kit::ResetHoveredItemCount();
+            host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            host.ClearFrameMouseOverride();
+            const char* got = kit::LastHoveredItem();
+            if (kit::HoveredItemCount() > 0 && got != nullptr && std::string(got) == id) {
+                out = ImVec2(x, y);
+                return true;
+            }
+        }
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+    }
+    return false;
+}
+
 // 悬停探针：把鼠标放到 (x, y) 拍一张，**再把鼠标放到窗外拍一张只取哈希**，
 // 要求两者像素不同。对照那张不落盘（落盘会与已有静息态图逐字节撞上，把
 // 「受控图不许重样」那条判据变成噪声）。
@@ -1185,8 +1221,8 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                     shell.DrawFrame(dt);
                     sawX = ImGui::GetIO().MousePos.x;
                     sawY = ImGui::GetIO().MousePos.y;
-                    sawMouse = sawMouse || (std::abs(sawX - target.x) < 0.5f &&
-                                            std::abs(sawY - target.y) < 0.5f);
+                    sawMouse = sawMouse || (std::abs(sawX - target.x) < 1.0f &&
+                                            std::abs(sawY - target.y) < 1.0f);
                 });
                 host.SetFrameMouseButtonOverride(false);
                 host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
@@ -1199,10 +1235,14 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                 std::string why;
                 if (!sawMouse) {
                     ok = false;
-                    why = "位置注入没到位（要 " + std::to_string(static_cast<int>(target.x)) +
-                          "," + std::to_string(static_cast<int>(target.y)) + "，帧内看到 " +
-                          std::to_string(static_cast<int>(sawX)) + "," +
-                          std::to_string(static_cast<int>(sawY)) + "）—— 判据不可用，不是产品的缺陷";
+                    // ⚠️ 这里必须打**一位小数**。原来用 static_cast<int>，于是目标落在
+                    //    277.5、注入读到 277.0 时两条消息都印成「277」，输出一条
+                    //    **自相矛盾**的失败（要 277、看到 277，却说没到位）——
+                    //    而我第一反应是「判据在骗我」，实际是容差 0.5 卡在边界上。
+                    //    报错信息自相矛盾时，先怀疑信息本身：它比报错更可能是错的。
+                    why = "位置注入没到位（要 " + std::to_string(target.x) + "," +
+                          std::to_string(target.y) + "，帧内看到 " + std::to_string(sawX) + "," +
+                          std::to_string(sawY) + "）—— 判据不可用，不是产品的缺陷";
                 } else if (oc.key >= 2) {
                     // 模态语义要验的是「**底下点不动**」= 工作区索引没变。
                     //
@@ -1267,23 +1307,8 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
             } else {
                 const ImVec2 d = ImGui::GetIO().DisplaySize;
                 // 第 1 步：全屏扫，找 hub-open 的坐标（不猜）。
-                bool foundOpen = false;
                 ImVec2 openAt{0.0f, 0.0f};
-                for (float y = 0.0f; y <= d.y && !foundOpen; y += 12.0f) {
-                    for (float x = 0.0f; x <= d.x; x += 12.0f) {
-                        host.SetFrameMouseOverride(x, y);
-                        kit::ResetHoveredItemCount();
-                        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
-                        host.ClearFrameMouseOverride();
-                        const char* id = kit::LastHoveredItem();
-                        if (kit::HoveredItemCount() > 0 && id != nullptr &&
-                            std::string(id) == "hub-open") {
-                            openAt = ImVec2(x, y);
-                            foundOpen = true;
-                            break;
-                        }
-                    }
-                }
+                const bool foundOpen = FindHotspot(host, shell, "hub-open", openAt);
                 if (!foundOpen) {
                     why = "全屏扫不到工具条上的「打开项目」按钮（hub-open）";
                 } else {
@@ -1341,6 +1366,100 @@ ReviewResult RunReview(Host& host, Shell& shell, const std::filesystem::path& ou
                 shell.SetWorkspace(wsBefore);
             }
             host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        }
+        // ---- 命令面板：点外面关闭，且**不许同帧自毁**----
+        //
+        // 这两条对应本轮新加的行为。缺判据的新行为等于没实现 —— 下面第 ② 条就是
+        // 「点外面关闭」最可能踩的坑，而它在**只跑截图**的轮次里完全看不出来
+        // （面板开出来又当场关掉，截图序列里只多一张正常画面）。
+        {
+            const ImVec2 d = ImGui::GetIO().DisplaySize;
+            // 面板矩形：x 居中 ±280、y 从 0.22h 起共 420（见 DrawCommandPalette）。
+            // 判据不重算它来做「面板外」判定 —— 只挑一个**明显**在下面的点，
+            // 1600×960 下是 (800, 883)，而面板下沿在 y≈631。
+            const ImVec2 outside{d.x * 0.5f, d.y * 0.92f};
+            struct PaletteProbe {
+                const char* name;
+                bool openByClick;  // false = 判「点外面会关」，true = 判「点开不许自毁」
+            };
+            const PaletteProbe paletteProbes[] = {
+                {"命令面板 点遮罩关闭", false},
+                {"点顶栏搜索框打开命令面板（不许同帧自己关掉）", true},
+            };
+            for (const PaletteProbe& pp : paletteProbes) {
+                bool ok = true;
+                std::string why;
+                // 复位到「面板关着」的干净态（按语义复位，不是「再按一次」）。
+                if (shell.commandPaletteOpen()) {
+                    shell.SetCommandPaletteOpen(false);
+                    host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                }
+                if (pp.openByClick) {
+                    // ② **同帧开 + 同帧点外面 ⇒ 仍必须开着**。
+                    //
+                    // 本条要抓的缺陷是「点外面关闭」缺少「本帧之前就已打开」的前置
+                    // 条件。真实触发路径是**点顶栏搜索框**打开面板，而那一次点击的
+                    // 位置就在面板之外。
+                    //
+                    // ⚠️ 这里**不扫顶栏找 tb-search**，改用 `SetCommandPaletteOpen(true)`
+                    //    走同一个 `ToggleCommandPalette()`（它同样置 `paletteJustOpened_`），
+                    //    再在**同一帧**注入一次「面板外」的点击。验的是同一个守卫，
+                    //    但不依赖坐标 —— 而坐标扫描这条路现在**走不通**，见下面的注释。
+                    //
+                    // 先验前置条件：面板真的开着，且这一帧确实是「刚打开」的那一帧。
+                    shell.SetCommandPaletteOpen(true);
+                    if (!shell.commandPaletteOpen()) {
+                        ok = false;
+                        why = "命令面板开不起来，前置条件不成立";
+                    } else {
+                        host.SetFrameMouseOverride(outside.x, outside.y);
+                        host.SetFrameMouseButtonOverride(true);
+                        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                        host.SetFrameMouseButtonOverride(false);
+                        host.ClearFrameMouseButtonOverride();
+                        host.ClearFrameMouseOverride();
+                        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                        if (!shell.commandPaletteOpen()) {
+                            ok = false;
+                            why = "面板在**打开的那一帧**就被同一次点击关掉了（同帧自毁）——"
+                                  "「点外面关闭」缺少「本帧之前就已打开」的前置条件";
+                        }
+                    }
+                } else {
+                    // ① 点面板外关闭。开着是**前置条件**：没开就点外面，判据会在一个
+                    //    「压根没有遮罩」的状态下量一条不存在的路径，然后报通过。
+                    shell.SetCommandPaletteOpen(true);
+                    host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+                    if (!shell.commandPaletteOpen()) {
+                        ok = false;
+                        why = "命令面板开不起来，前置条件不成立";
+                    } else {
+                        host.SetFrameMouseOverride(outside.x, outside.y);
+                        host.SetFrameMouseButtonOverride(true);
+                        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                        host.SetFrameMouseButtonOverride(false);
+                        host.ClearFrameMouseButtonOverride();
+                        host.ClearFrameMouseOverride();
+                        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+                        if (shell.commandPaletteOpen()) {
+                            ok = false;
+                            why = "点了面板之外，面板还开着（点" +
+                                  std::to_string(static_cast<int>(outside.x)) + "," +
+                                  std::to_string(static_cast<int>(outside.y)) + "）";
+                        }
+                    }
+                }
+                ++kOverlayClickTotal;
+                if (ok) {
+                    ++overlayClicksPassed;
+                } else {
+                    shine::log::Error("review: 命令面板判据「{}」失败：{}", pp.name, why);
+                }
+                if (shell.commandPaletteOpen()) {
+                    shell.SetCommandPaletteOpen(false);
+                }
+                host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+            }
         }
         // ⚠️ manifest 行**必须写在两条浮层判据都跑完之后**：早先写在项目中心那条
         //    之前，于是它报 4/4 而 kOverlayClickTotal 已经是 5 —— 判据自己报的

@@ -116,7 +116,13 @@ public:
     // 「设置」模态右上角 × 按钮的矩形。**判据要用产品自己这份**，不要在 Review.cpp
     // 里复算一遍 `display.x * 0.5f + 280 - 23` 之类的式子 —— 布局一改，判据就会
     // 悄悄打在一个已经不存在的位置上，而它报的仍然是「通过」。
-    [[nodiscard]] kit::Rect SettingsCloseRect() const;
+    //
+    // 本函数直接返回上一帧 `DrawSettingsModal()` 写下的 `settingsClose_`，绘制侧
+    // 调用的**也是本函数**。原来它自己照着 `560 × 452` 又重算了一遍，于是
+    // 「绘制与判据共用同一份」只对了一半：判据确实没在 Review.cpp 里复算，但
+    // **产品内部就已经是两处各写一遍**。把 452 改成 480 就立刻分叉 —— × 停在老
+    // 位置，点它什么也不会发生，而判据仍会报「没关掉」。
+    [[nodiscard]] kit::Rect SettingsCloseRect() const { return settingsClose_; }
     void SetTheme(shine::theme::ThemeId id);
     void ToggleSidePanel();
     void ToggleDock();
@@ -319,6 +325,12 @@ private:
     int reportDetail_ = -1;       // 底栏校验报告点开的条目下标，-1 = 未打开
     // 主题菜单锚点（顶栏「主题」按钮左下角），上一帧 DrawTopBar 写下。
     ImVec2 themeMenuAnchor_{0.0f, 0.0f};
+    // 「设置」模态的几何，上一帧 DrawSettingsModal 写下，**只此一份**：
+    //   settingsFrame_  面板框（「点外面关闭」判定用）
+    //   settingsClose_  右上角 ×（绘制与判据共用）
+    // 判据在两帧之间取它们 —— 面板开着时每帧都刷新，取到的就是当前布局。
+    mutable kit::Rect settingsFrame_{};
+    mutable kit::Rect settingsClose_{};
 
     // ---- 浮层打开时，外壳 chrome 让出鼠标 ----
     //

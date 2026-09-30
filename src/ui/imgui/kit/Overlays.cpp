@@ -14,9 +14,31 @@ constexpr float kModalHeaderH = 14.0f * 2.0f + 18.0f + 1.0f;
 constexpr float kModalFooterPad = 12.0f * 2.0f + 1.0f;
 } // namespace
 
+// ------------------------------------------------------------ ScrimPaint
+void ScrimPaint(ImDrawList* draw, Rect screen) {
+    // `screen` 必须是**整个屏幕**。命令面板原来传的是面板自己的 bounds，
+    // 于是这张遮罩下一行就被 DrawShadowed 的面板底板整个盖住 —— 一次
+    // 完全被覆盖的死绘制：面板照常显示，而背后该压暗的界面一点没暗，
+    // 和其它所有模态都不一样。编译过、截图正常，只有「没生效」这一种表现。
+    draw->AddRectFilled(screen.min, screen.max, ColorScrim());
+}
+
+// ------------------------------------------------------------ OverlayPanel
+void OverlayPanel(ImDrawList* draw, Rect frame, float radius) {
+    // ui.css:943-946 `.modal` 的底板：bg-overlay + 1px line-normal + r-lg14 +
+    // box-shadow: var(--shadow-2)（**常驻**，不是 hover 才有的）。
+    // 抽屉用 radius 0（ui.css:652 的 .drawer 是直角）。
+    //
+    // 抽出来的理由：这段三行字面量原本在 Modal / ModalFrameRect / Drawer 与页面层
+    // 的命令面板里各写一遍，共四处。改一次圆角或描边色就有地方漏，而漏掉的那处
+    // 编译照过、截图正常，只有「和别的浮层差一点」这种说不清的观感。
+    DrawShadowed(draw, frame.min, frame.max, radius, ColorOverlay(), ColorLineNormal(), 1.0f,
+                 theme::ShadowTier::Overlay);
+}
+
 // ------------------------------------------------------------------ Scrim
 bool Scrim(ImDrawList* draw, Rect screen, std::string_view id) {
-    draw->AddRectFilled(screen.min, screen.max, ColorScrim());
+    ScrimPaint(draw, screen);
     // 点遮罩本体 = 关闭浮层（Overlays.jsx:35/162 的 `e.target === e.currentTarget`）。
     // id 交给调用方：同一帧里若有嵌套浮层（命令面板套在 modal 上），
     // 固定 ID 会让两个遮罩抢同一个 item。
@@ -25,8 +47,8 @@ bool Scrim(ImDrawList* draw, Rect screen, std::string_view id) {
 
 // ------------------------------------------------------------------ Modal
 Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
-           float width, std::string_view id) {
-    Scrim(draw, screen, std::string(id) + "#scrim");
+           float width) {
+    ScrimPaint(draw, screen);
     // width: min(560, 100vw - 48)（ui.css:948）；0 = 用默认值。
     const float w = width > 0.0f ? width : std::min(560.0f, screen.width() - 48.0f);
     // max-height: min(640, 100vh - 64)（ui.css:949）。这里按内容自适应，
@@ -39,8 +61,7 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
     const float h = std::min(maxH, headerH + bodyH);
     const Rect frame = RectAt(screen.center().x - w * 0.5f, screen.center().y - h * 0.5f, w, h);
     // ui.css:947 `.modal` 的 box-shadow: var(--shadow-2) —— 常驻，不是 hover 才有的。
-    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
-                 theme::ShadowTier::Overlay);
+    OverlayPanel(draw, frame);
 
     float top = frame.min.y;
     if (!title.empty()) {
@@ -70,22 +91,9 @@ Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_vi
 ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
                           std::string_view icon, float width, float height,
                           int footerButtons) {
-    // 遮罩：**只画，不注册命中**。
+    // 遮罩：`ScrimPaint` —— **只画，不注册命中**。
     //
-    // ⚠️ 这里绝不能用 `kit::Scrim`（它是 HitTest，会注册一个全屏 InvisibleButton）。
-    //    ImGui 同窗口内先注册者独占 HoveredId（imgui.cpp:5161）⇒ 遮罩先注册，
-    //    模态里**每一个**按钮（同一帧、位置落在遮罩内）就永远 hovered=false /
-    //    clicked=false —— 而遮罩和按钮的**外观都画得好好的**，编译过、截图正常、
-    //    manifest 记 saved，只有按钮按不动。
-    //    项目中心那三个对话框原来用页面层私有外壳，遮罩恰好不注册，所以它们的
-    //    按钮一直是好的；接到本函数时若顺手用 Scrim，就把这个「好」弄坏了。
-    //
-    //    「点遮罩关闭」由调用方**手算**：拿到返回的 frame，判断点击是否落在
-    //    面板之外。这样既不抢 HoveredId，也避开了 `ImGui::IsMouseHoveringRect`
-    //    （在**本工程**会 0xC0000005，见 refactor/PROGRESS.md 的记录）。
-    // 遮罩：**只画，不注册命中**。
-    //
-    // ⚠️ 这里绝不能用 `kit::Scrim`（它是 HitTest，会注册一个全屏 InvisibleButton）。
+    // ⚠️ 这里绝不能用 `kit::Scrim`（它在 ScrimPaint 之上还会注册一个全屏热区）。
     //    注册全屏热区会与面板内每一个控件的热区**重叠**，而 ImGui 同窗口内
     //    先注册者独占 HoveredId（imgui.cpp:5161）—— 于是**谁先注册谁活**：
     //      · 外壳先画、按钮后画的浮层（报告模态：ModalFrameRect 在前，
@@ -93,7 +101,9 @@ ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
     //      · 对话框最后画的（项目中心：卡片与工具条在前，ModalFrameRect 在后）
     //        ⇒ 遮罩自己拿不到 HoveredId，按钮仍然可点，但**重叠是真的**。
     //    两种都错，且「哪种」取决于绘制顺序 —— 靠读代码判断顺序极易搞反
-    //    （我第一版就以为项目中心也会中招，结果它不会）。
+    //    （第一版就以为项目中心也会中招，结果它不会）。
+    //    症状全程沉默：遮罩和按钮**外观都画得好好的**，编译过、截图正常、
+    //    manifest 记 saved，只有按钮按不动。
     //
     //    正确做法只有一条：**遮罩不参与命中**。「点外面关闭」由调用方拿返回的
     //    frame **手算**点击是否落在面板外 —— 既不抢 HoveredId，也避开了本工程
@@ -101,12 +111,11 @@ ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
     //
     //    判据：`kit::DuplicateHitCount`（进 overall）。把这一行换成 Scrim 实测
     //    duplicate-hits 从 0 变 6232 —— 这条兜底就是为它准备的。
-    draw->AddRectFilled(screen.min, screen.max, ColorScrim());
+    ScrimPaint(draw, screen);
     const float w = width > 0.0f ? width : std::min(560.0f, screen.width() - 48.0f);
     const float h = height > 0.0f ? height : std::min(640.0f, screen.height() - 64.0f);
     const Rect frame = RectAt(screen.center().x - w * 0.5f, screen.center().y - h * 0.5f, w, h);
-    DrawShadowed(draw, frame.min, frame.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
-                 theme::ShadowTier::Overlay);
+    OverlayPanel(draw, frame);
 
     float top = frame.min.y;
     const bool hasHeader = !title.empty();
@@ -152,13 +161,12 @@ float DrawerWidth() {
 }
 
 Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
-            int footerButtons, Rect* footerOut, std::string_view id) {
-    Scrim(draw, screen, std::string(id) + "#scrim");
+            int footerButtons, Rect* footerOut) {
+    ScrimPaint(draw, screen);
     const float w = std::min(DrawerWidth(), screen.width());
     const Rect frame = RectAt(screen.max.x - w, screen.min.y, w, screen.height());
     // ui.css:655 `.drawer` 的 box-shadow: var(--shadow-2)。
-    DrawShadowed(draw, frame.min, frame.max, 0.0f, ColorOverlay(), ColorLineNormal(), 1.0f,
-                 theme::ShadowTier::Overlay);
+    OverlayPanel(draw, frame, 0.0f);
 
     // .drawer-h（ui.css:664-672）：padding 14/16 + gap 10 + 1px 下边，标题 14/700。
     const float iconSize = 17.0f;

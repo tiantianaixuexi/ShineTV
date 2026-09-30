@@ -18,12 +18,32 @@
 
 namespace shine::kit {
 
-// ---- Scrim（ui.css:932-942 .scrim / ui.css:639-646 .drawer-scrim）----
-// 固定定位铺满 + var(--scrim) 底。design-spec §2.2 已把 backdrop-filter
-// 列为**已知降级**：ImGui 直绘没有背景合成，这里只铺实色。
-// 返回 true = 本帧点了遮罩本身（点内容区不算，Overlays.jsx:35/162 的
-// `e.target === e.currentTarget` 语义）—— 调用方据此关闭浮层。
+// ---- ScrimPaint（只画，不注册命中）----
+// `.scrim` 是 `position: fixed; inset: 0` —— **铺满整个屏幕**，不是铺满面板。
+// design-spec §2.2 已把 backdrop-filter 列为**已知降级**：ImGui 直绘没有背景
+// 合成，这里只铺实色。
+//
+// ⚠️ 模态的遮罩**只能用这个**，不能用下面的 `Scrim`：`Scrim` 会注册一个全屏
+// `HitTest`，而 ImGui 同窗口内先注册者独占 HoveredId（imgui.cpp:5161）⇒ 遮罩
+// 先注册时，面板里每一个按钮就永远 hovered=false，而遮罩和按钮**外观都画得好
+// 好的**。面板框本身用 `ModalFrameRect` / `Drawer`，本函数只负责背景。
+void ScrimPaint(ImDrawList* draw, Rect screen);
+
+// ---- OverlayPanel（浮层面板底板）----
+// bg-overlay + 1px line-normal + 常驻 shadow-2（ui.css:943-946 `.modal`）。
+// 圆角由调用方给：模态 14（r-lg），抽屉 0（.drawer 是直角）。
+//
+// 凡是「自己摆位置的浮层」（顶部下拉的命令面板那种，既不居中也没有 .modal-h）
+// 用 `ScrimPaint` + `OverlayPanel` 拼；居中且带标准头部的走 `ModalFrameRect`。
+void OverlayPanel(ImDrawList* draw, Rect frame, float radius = 14.0f);
+
+// ---- Scrim（只画 + 注册命中；仅在没有面板按钮的浮层上用）----
+// 在 ScrimPaint 之上再注册一个热区，返回 true = 本帧点了遮罩本身（点内容区
+// 不算，Overlays.jsx:35/162 的 `e.target === e.currentTarget` 语义）—— 调用方
+// 据此关闭浮层。
 // id 必传：同一帧里若有嵌套浮层，固定 ID 会让两个遮罩抢同一个 item。
+// ⚠️ 面板里有任何可点控件时**不要用这个**（见上面 ScrimPaint 的说明），
+// 「点外面关闭」自己拿 frame 手算点击是否落在面板外即可。
 bool Scrim(ImDrawList* draw, Rect screen, std::string_view id);
 
 // ---- Modal（ui.css:943-976 .modal）----
@@ -34,8 +54,11 @@ bool Scrim(ImDrawList* draw, Rect screen, std::string_view id);
 // ⚠️ 面板**盖不住**后面画的东西：它和页面共用一条 draw list，所以调用方必须
 // 在一帧的**最后**才画浮层（外壳的 onFrame 收尾处）。只有 Tooltip 走了前景
 // draw list —— 那个是在绘制途中随控件冒出来的，没法等到帧尾。
+//
+// 遮罩只画不注册（「点外面关闭」自己手算），所以这里**没有** scrim id 参数
+// —— 原来那个 `id` 只服务于 `Scrim` 注册的全屏热区，遮罩改成只画后它就没人用了。
 Rect Modal(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
-           float width = 0.0f, std::string_view id = "kit-modal");
+           float width = 0.0f);
 
 // ---- ModalFrame（Modal 的完整分块形式）----
 //
@@ -69,9 +92,11 @@ ModalFrame ModalFrameRect(ImDrawList* draw, Rect screen, std::string_view title,
 // 返回**内容区**（drawer-b 的 padding 16 之内）。footerOut 非空时画脚条
 // 并把按钮可摆的矩形写进去（Overlays.jsx:128-146 的 drawer-f）；
 // footerButtons 只作为「要不要画脚条」的开关保留给调用方读，组件不代画按钮。
+//
+// ⚠️ 遮罩只画不注册：页脚那排按钮是**调用方在返回之后**才画的，若遮罩注册了
+// 全屏热区，按钮就永远抢不到 HoveredId（先注册者独占）—— 外观全对、只有按不动。
 Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_view icon,
-            int footerButtons = 0, Rect* footerOut = nullptr,
-            std::string_view id = "kit-drawer");
+            int footerButtons = 0, Rect* footerOut = nullptr);
 [[nodiscard]] float DrawerWidth();
 
 // ---- Toast（ui.css:978-1012）----

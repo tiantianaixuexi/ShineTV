@@ -1662,8 +1662,8 @@ void Shell::DrawBreadcrumbs(Rect area, ImDrawList* draw) {
 // 浮层开着时**直接返回空 Hit、一个 item 都不提交**。理由是 ImGui 同窗口内
 // 「先注册者独占 HoveredId」（imgui.cpp:5161），而外壳先于浮层注册 ⇒ 点遮罩关闭的
 // 那一次点击会被侧栏 / 顶栏先吃掉，结果是「工作区被切走、浮层还开着」。
-// 不提交 item 就没有「被吃掉」这回事，点击由浮层自己的遮罩处理
-// （遮罩走 IsMouseClicked + IsMouseHoveringRect，那两个不看 HoveredId）。
+// 不提交 item 就没有「被吃掉」这回事，点击由浮层自己手算（IsMouseClicked +
+// 判断点在不在面板内，这两个都不看 HoveredId）。
 //
 // 代价：浮层开着时外壳连 hover 高亮都没有 —— 那正是模态该有的样子。
 // 配套的另一半在 DrawWorkspace（给工作区 child 加 NoMouseInputs），机制见 Scroll.h。
@@ -1680,13 +1680,20 @@ void Shell::DrawCommandPalette() {
     }
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float width = std::min(560.0f, display.x - 40.0f);
+    const kit::Rect screen{0.0f, 0.0f, display.x, display.y};
     const Rect bounds{(display.x - width) * 0.5f, display.y * 0.22f, (display.x + width) * 0.5f,
-                      display.y * 0.22f + 420.0f};    // 浮层必须画在 foreground：页面/底栏各自跑在 BeginChild 里，child 在父窗口那份
+                      display.y * 0.22f + 420.0f};
+    // 浮层必须画在 foreground：页面/底栏各自跑在 BeginChild 里，child 在父窗口那份
     // draw list **之后**渲染，画在父 list 上的浮层会被整片盖住（见 DrawReportModal 的注释）。
     ImDrawList* draw = ImGui::GetForegroundDrawList();
 
-    DrawRoundRect(draw, bounds.min, bounds.max, 14.0f, ColorScrim());
-    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
+    // ⚠️ 遮罩原来画的是**面板自己的 bounds**，下一行 DrawShadowed 的面板底板就把它
+    // 整个盖住了 —— 一次完全被覆盖的死绘制：面板照常显示，背后该压暗的界面一点没暗，
+    // 和其它所有浮层都不一样（`.scrim` 是 `position: fixed; inset: 0`，铺满屏幕）。
+    // 编译过、截图正常，只有「没生效」这一种表现。
+    // 现在走 kit 的原语：遮罩铺满屏幕，底板才是面板那块。
+    kit::ScrimPaint(draw, screen);
+    kit::OverlayPanel(draw, bounds);
 
     // 输入
     const Rect input{bounds.min.x + 18.0f, bounds.min.y + 18.0f, bounds.max.x - 18.0f,
@@ -1898,6 +1905,17 @@ void Shell::DrawCommandPalette() {
         paletteOpen_ = false;
         paletteQuery_[0] = '\0';
         paletteSelected_ = 0;
+    }
+    // 点面板外关闭：与其它浮层同一套做法 —— 遮罩不注册命中（见上面 ScrimPaint 的
+    // 说明），也不用本工程会 0xC0000005 的 IsMouseHoveringRect，手算点在不在面板内。
+    //
+    // ⚠️ 必须跳过「刚打开的那一帧」，和上面键盘那条同一个理由。顶栏搜索框是**点开**
+    //    本面板的（`tb-search`），而那一次点击的位置就在面板之外 —— 不加这个前置
+    //    条件，搜索框就成了死按钮：点一下，面板开出来又当场关掉，看上去毫无反应。
+    //    这是「同帧自毁」那一类，和项目中心的 `HubState::dismissArmed` 同源。
+    if (!openedThisFrame && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !bounds.contains(ImGui::GetIO().MousePos)) {
+        paletteOpen_ = false;
     }
 }
 
@@ -3177,47 +3195,46 @@ void Shell::DrawThemeMenu(ImVec2 anchor, ImDrawList* draw) {
 // ---------------------------------------------------------------- P4.9b 设置模态
 // 「设置 · 三步开工」（Shell.jsx:74 的 IconBtn tip）。这里读 AppSettings 的真值，
 // 让用户看到程序**实际**连的是什么，而不是一份编出来的配置。
-// 「设置」模态右上角 × 的矩形。**绘制与判据共用这一份**（见 Shell.h 的说明）。
-Rect Shell::SettingsCloseRect() const {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    constexpr float kW = 560.0f;
-    constexpr float kH = 452.0f;
-    return RectAt((display.x + kW) * 0.5f - 34.0f, (display.y - kH) * 0.5f + 10.0f, 22.0f, 22.0f);
-}
-
+//
+// 外壳是第 5 份「页面层私有浮层副本」，本轮收进 `kit::ModalFrameRect`。
+// 收掉的不只是壳，还有 `SettingsCloseRect()` 里那份**独立的 560 × 452 复算** ——
+// 原来「绘制与判据共用同一份几何」这句话只对了一半：判据没在 Review.cpp 里复算，
+// 但产品内部早就分叉成两处。几何现在只有 `mf` 一处算出来，写进 settingsFrame_
+// / settingsClose_，绘制与判据都读它。
 void Shell::DrawSettingsModal() {
     if (!settingsOpen_) {
         return;
     }
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-    // 同 DrawReportModal：浮层走 foreground，否则会被 BeginChild 里的页面内容盖住。
+    const kit::Rect screen{0.0f, 0.0f, display.x, display.y};
+    // 浮层走 foreground，否则会被 BeginChild 里的页面内容盖住。
     ImDrawList* draw = ImGui::GetForegroundDrawList();
-    const float w = 560.0f;
-    const float h = 452.0f;
-    const Rect bounds{(display.x - w) * 0.5f, (display.y - h) * 0.5f, (display.x + w) * 0.5f,
-                      (display.y - h) * 0.5f + h};
 
-    // 遮罩**只画不命中**，靠函数末尾那段「点外面关闭」处理。不注册 item 是刻意的：
-    // 全屏 InvisibleButton 会先拿到 HoveredId，模态里所有按钮（同一帧、位置落在遮罩
-    // 内）就永远 hovered=false —— 见函数末尾的注释。
-    DrawRoundRect(draw, ImVec2(0.0f, 0.0f), ImVec2(display.x, display.y), 0.0f, ColorScrim());
-    DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
-
-    DrawIcon(draw, "settings", ImVec2(bounds.min.x + 16.0f, bounds.min.y + 15.0f), 16.0f,
-             ColorAccent());
-    static constexpr char kSettingsTitle[] = "设置 · 三步开工";
-    draw->AddText(FontBoldAt(14.0f), 14.0f, ImVec2(bounds.min.x + 40.0f, bounds.min.y + 14.0f),
-                  ColorText(), kSettingsTitle, kSettingsTitle + sizeof(kSettingsTitle) - 1);
-    if (IconButton(draw, SettingsCloseRect(), "x", false, false, "settings-close")) {
+    // 遮罩 / 面板框 / 头部 / 内容区一次拿全。遮罩**只画不注册命中**：注册全屏热区
+    // 会先拿到 HoveredId，本模态里的按钮就永远按不动（先注册者独占）。
+    const kit::ModalFrame mf =
+        kit::ModalFrameRect(draw, screen, "设置 · 三步开工", "settings", 560.0f, 452.0f);
+    settingsFrame_ = mf.frame;
+    // × 落在头部右侧、垂直居中（22px 方钮）。位置在这里算一次就够了 ——
+    // 下面的绘制与判据的 SettingsCloseRect() 读的都是 settingsClose_。
+    //
+    // ⚠️ 纵向偏移**取整**：头部高 47 是奇数，减去 22 除 2 得 12.5，于是这个 22×22
+    //    的方钮两条边都会压在半像素上。半像素本身画得出来，但「× 的中心」于是
+    //    落在 277.5 —— 判据注入鼠标后按 0.5 的容差判「注入到位吗」，差正好卡在
+    //    边界上，报出来的是一条**自相矛盾**的消息（要 277、看到 277，却说没到位）。
+    //    一像素以内不该算「注入失败」，但产品这边也没必要制造半像素。
+    settingsClose_ = RectAt(mf.frame.max.x - 18.0f - 22.0f,
+                            mf.header.min.y + std::round((mf.header.height() - 22.0f) * 0.5f),
+                            22.0f, 22.0f);
+    if (IconButton(draw, settingsClose_, "x", false, false, "settings-close")) {
         settingsOpen_ = false;
     }
-    draw->AddLine(ImVec2(bounds.min.x, bounds.min.y + 44.0f), ImVec2(bounds.max.x, bounds.min.y + 44.0f),
-                  ColorLineSubtle(), 1.0f);
 
     const AppSettings& s = Settings();
-    float y = bounds.min.y + 58.0f;
-    const float ix = bounds.min.x + 20.0f;
-    const float iw = bounds.width() - 40.0f;
+    const Rect& body = mf.body;
+    float y = body.min.y;
+    const float ix = body.min.x;
+    const float iw = body.width();
 
     KeyValues(draw, Rect{ix, y, ix + iw, y + 96.0f},
               {{"当前工程", layout_.projectName.empty() ? "未打开项目" : layout_.projectName},
@@ -3244,13 +3261,11 @@ void Shell::DrawSettingsModal() {
     draw->AddText(FontAt(10.5f), 10.5f, ImVec2(ix, y), ColorTextMuted(), kSettingsNote,
                   kSettingsNote + sizeof(kSettingsNote) - 1);
 
-    // 点遮罩关闭：同样不能用 kit::HitTest（全屏遮罩会先抢 HoveredId，
-    // 把模态里的按钮变成死键）。用不注册 item 的 IsMouseHoveringRect。
-    // 点遮罩关闭。理由同 DrawReportModal：既不注册 item（免得遮罩先拿到 HoveredId
-    // 把模态里的按钮全变成死键），也不用 ImGui::IsMouseHoveringRect（本工程会
-    // 0xC0000005），改成手算点在不在面板内。
+    // 点遮罩关闭：既不注册 item（免得遮罩先拿到 HoveredId，把模态里的按钮全变成
+    // 死键），也不用 ImGui::IsMouseHoveringRect（本工程会 0xC0000005），
+    // 改成手算点击是否落在面板内。面板矩形用上面存下的 settingsFrame_。
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        !bounds.contains(ImGui::GetIO().MousePos)) {
+        !settingsFrame_.contains(ImGui::GetIO().MousePos)) {
         settingsOpen_ = false;
     }
 }
