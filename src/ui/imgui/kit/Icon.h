@@ -10,6 +10,20 @@
 // 有一次点变换 —— 对 24 网格的短线段来说可以忽略。
 //
 // 路径只解析一次（首次取用时惰性解析并缓存），每帧只做仿射变换 + 描边。
+//
+// 拆分后本文件是**门面**：导出面与拆分前逐字一致，下游（kit/Widgets.h、
+// pages/*、kit/Widget_Button.cpp、kit/Widget_Card.cpp）不需要改 include。
+// 四族实现在：
+//   * Icon_Glyph.h      —— 字形数据结构（IconSegment / IconSubPath / IconGlyph）
+//   * Icon_Path.h/.cpp  —— SVG `d` 属性解析器（圆弧按附录 F.6 升阶成三次贝塞尔）
+//   * Icon_Registry.h/.cpp —— 48 条路径表 + 惰性注册表 + 名字查找 + info 兜底
+//   * Icon_Draw.h/.cpp  —— 每帧的仿射变换 + 描边
+#pragma once
+
+#include "ui/imgui/kit/Icon_Draw.h"
+#include "ui/imgui/kit/Icon_Glyph.h"
+#include "ui/imgui/kit/Icon_Registry.h"
+
 #include <imgui.h>
 
 #include <string_view>
@@ -17,34 +31,7 @@
 
 namespace shine::kit {
 
-struct IconSegment {
-    char op;      // 'M' 起子路径 / 'L' 直线 / 'C' 三次贝塞尔 / 'Z' 闭合
-    float p[6];   // L: p[0..1]；C: p[0..5]（两个控制点 + 终点）
-};
-
-struct IconSubPath {
-    ImVec2 start;
-    std::vector<IconSegment> segments;
-};
-
-struct IconGlyph {
-    std::vector<IconSubPath> subPaths;
-};
-
-// 取图标。未知名字回落到 info（与 Icon.jsx:52 的兜底一致），但**不**照抄
-// Gallery.jsx:140 传未定义 flow 的 bug —— flow 是本实现补的真图标。
-[[nodiscard]] const IconGlyph* GetIcon(std::string_view name);
-
-// 图标名清单（46 + minus + flow），供画廊与自检遍历。
-[[nodiscard]] const std::vector<std::string_view>& IconNames();
-
-// 在 (pos.x, pos.y) 处画一个 size×size 的图标。
-// thickness 是 24 网格下的描边宽度（设计稿 1.6），实际像素按 size/24 缩放。
-void DrawIcon(ImDrawList* draw, std::string_view name, ImVec2 pos, float size, ImU32 color,
-              float thickness = 1.6f);
-
-// 以 (center.x, center.y) 为中心画。
-void DrawIconCentered(ImDrawList* draw, std::string_view name, ImVec2 center, float size,
-                      ImU32 color, float thickness = 1.6f);
+// 取图标 / 图标名清单见 Icon_Registry.h；
+// 绘制入口 DrawIcon / DrawIconCentered 见 Icon_Draw.h。
 
 } // namespace shine::kit

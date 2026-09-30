@@ -11,6 +11,19 @@
 //     用 ChineseFull()（21000 字）图集会直接爆显存。
 //  3. 图集显存占用必须打日志，硬判据 < 64 MB。
 //
+// 另一条 1.92 起才成立、且不照做就一定糊的：**ImFontConfig::RasterizerDensity
+// 必须 > 1**。本工程字号大量是半点（10.5/12.5/13.5…），而 `PixelSnapH = true`
+// 会把 OversampleH/V 强制压成 1、密度缺省又只有 1.0 ⇒ stb_truetype 按整数高度
+// 出位图再缩放到半点尺寸，必然重采样。细节与依据见 Fonts.cpp 里
+// kRasterizerDensity 上方那段注释。
+//
+// ⚠️ 字号「看起来是半点」不等于绘制尺寸就是半点：自绘路径
+//    `ImDrawList::AddText(font, size, ...)` **不取整**（`scale = size / baked->Size`），
+//    而上下文路径 `ImGui::PushFont` 走 `GetRoundedFontSize` = `IM_ROUND` 取整。
+//    同一个 `FontAt(12.5f)` 在两条路上会落到不同的 baked 尺寸上，后者是一次
+//    on-demand 重烘焙。预烘焙字号清单 `kUiSizes` 保持半点正是为了配合自绘路径，
+//    不要"顺手"把它改成整数。
+//
 // 水墨是唯一换字体的主题（衬线族，tokens.css:195）→ 切主题时重建图集。
 #pragma once
 

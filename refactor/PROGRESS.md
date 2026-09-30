@@ -686,3 +686,69 @@ DrawShadowed(draw, bounds.min, bounds.max, 14.0f, ...);            // ← 下一
 - 钉住时，**过渡**（`Anim.h` 的 `TransitionTo` / `TransitionColorTo`）**直接落终值**。
 
 为什么不能冻过渡：冻在半路 ⇒ 52 张静息态截图拍到的是随机中间色，每轮 md5 都变；落终值 ⇒ 截图确定，且 hover 探针照样测得到（终态色 ≠ 静息态色）。`PinAnimation` 另外调一次 `iam_pool_clear()`，让在飞的补间重建时以终值起步，避免解钉瞬间闪一下。
+
+---
+
+## 字体模糊的根因与修法（2026-09-30）
+
+**症状**：整个界面中文发糊，笔画糊成一团。密度是 1.92 字体系统带来的**结构性**问题，不是参数没调好。
+
+**根因（三条独立成立，缺一条就仍然糊）**：
+
+1. `ImFontConfig::RasterizerDensity` 缺省 `1.0f`。它是 1.92 起唯一能给字形**光栅化分辨率**加码的旋钮：`rasterizer_density = src->RasterizerDensity * baked->RasterizerDensity`，且只进光栅化侧、再由 `recip = 1/(oversample*rasterizer_density)` 缩回绘制侧。本工程 `io.DisplayFramebufferScale = (1,1)`（`host/Host.cpp`），OpenGL3/WGL 后端报不上更高密度 ⇒ `g.CurrentPixelDensity` 恒为 1。
+2. `PixelSnapH = true` 把 `OversampleH` 压成 1，而 **`OversampleV` 在 auto 模式下恒为 1**（`imgui_draw.cpp:3524-3525` 第二行没有 `raster_size > 36.0f` 分支）。CJK 糊的正是纵向笔画，所以横向超采样救不了，本工程又主动把横向也关了 ⇒ 两条路全堵。
+3. 本工程字号大量是**半点**（10.5/11.5/12.5/13.5/14.5，来自设计稿 CSS px）。stb_truetype 按整数高度出位图，1:1 光栅化后再按 `scale = size / baked->Size`（`imgui_draw.cpp:5791`）缩放到半点尺寸，必然重采样。浏览器能做次像素定位，ImGui 不能。
+
+**修法**：`kRasterizerDensity = 2.0f`（`kit/Fonts.cpp`），四处 `ImFontConfig` 全部设上。**不需要**按 `imgui.h` 那句警告反向缩放字号 —— `size` 与 `baked->Size` 都没变，`scale` 恒为 1.0，布局与排版数值一个不动，只有位图分辨率变了。
+
+**A/B 实测**（同机同状态，仅改这一个常量，各截一张放大 4×）：
+
+| | 平均边缘梯度 | 墨迹像素 |
+|---|---|---|
+| 密度 1.0（修复前） | 22.55 | 372 |
+| 密度 2.0（修复后） | 39.26 (**+74.1%**) | 379 (+1.9%) |
+
+图集显存 `vram=7.8 MB`（硬判据 64 MB）。目视曾以为修复后「变粗」，**测量否掉了这个印象** —— 墨迹只 +1.9%。
+
+### 顺带修掉的悬垂指针
+
+`BuildGlyphRanges()` 把**局部** `ImVector<ImWchar>` 的指针交出去就返回。那是 1.92 之前的契约（`AddFontFromFileTTF` 当场拷贝范围）。1.92+ 明确要求该数组**与字体同寿命**，图集在后续帧按需烘焙时才回读 ⇒ 指针悬垂。症状不会报错：静态存储后读到的仍是同一批字节（分配器没复用那块内存），所以「一直看起来是对的」。已改为函数内 `static`。
+
+### 判定「字体尺寸」时容易读反的一点
+
+`ImDrawList::AddText(font, size, ...)`（自绘路径，本工程绝大多数调用点）**不取整**；`ImGui::PushFont`（上下文路径）走 `GetRoundedFontSize` = `IM_ROUND` 取整。两条路落到不同的 baked 尺寸上，后者是一次 on-demand 重烘焙。预烘焙清单 `kUiSizes` 保持半点正是为了配合自绘路径，**不要**"顺手"改成整数。
+
+---
+
+## 大文件拆分（2026-09-30）
+
+`src/ui/imgui` 从 45 个文件长到 127 个，最大的四个上帝文件按职责族拆开，**零行为变化**（每个族的等价性判据见下）。
+
+| 原文件 | 行数 | 拆成 |
+|---|---|---|
+| `kit/Widgets.cpp` | 1578 | 12 个控件族（Core/Color/Button/Badge/Card/Choice/Input/Status/Overlay/List/Table/Tree）+ 34 行门面 |
+| `verify/Review.cpp` | 1533 | 8 个验收族（Pixel/Hotspot/Fixture/Hover/Shortcut/Overlay/Scene/Verdict）+ 55 行入口 |
+| `pages/WorkspaceA.cpp` | 1014 | 7 个子区域（State/Flow/Kpi/Tables/StopRules/RightRail）+ 72 行骨架 |
+| `pages/ProjectHub.cpp` | 1069 | 5 个子区域（State/Card/Wizard/Dialogs）+ 209 行骨架 |
+| `theme/Theme.cpp` | 750 | Color/Derived/Parse 三个专职模块 + 447 行编排 + 内部头 |
+| `kit/Views.cpp` + `kit/Icon.cpp` | 1102 | 3 个视图族 + 4 个图标族 |
+
+拆出的可复用小组件：`PageKpi`（KPI 卡）、`PageModal`（`ModalBox` / `ModalFooterHint`）、`kit::detail::HitTestItem`（8 个族共用）、`kit::detail::UniqueId`（5 处共用）、`BezierAt`/`DrawLink`（虚线三次贝塞尔连线）。
+
+**等价性判据**（不靠"编译过 + 看着没变"）：函数集合逐一对照零缺失、数值字面量多重集逐一对照零漂移、字符串字面量 279 个零丢失、manifest 表达式折叠空白后**逐字节相同**、`overall` 的 13 个合取项齐全、门禁"报告通过原因"与"本该抓的缺陷"不同形。
+
+### 门禁自身的三处盲区（本轮实测发现）
+
+1. **`find-rect-wh-misuse.ps1` 没有 `-SelfTest` 参数**。带上它会被静默忽略后照常扫默认根目录，打印 `0` —— 与真通过**字面完全一样**。这就是假绿的形状。它真正的自检方式是 `-Root <样本目录>`。
+2. **该扫描器漏掉 8 种真误用里的 6 种**：`$sizeLike`（`:100`）只认 `width|height|cardW|panelW|boxW`，裸 `w`/`h`、`colW`/`cellW`/`iconW`/`thumbH` 全部放过，与它自己头部注释（`:8`「变量名以 W/w/H/h 结尾」）矛盾。`Rect{x, y, w, 120.0f}` 正是它该抓的静默不画形态。
+3. **`check-colors.ps1` 抓不到 `ImU32(0x…)` 形态**（只认 `IM_COL32` / `ImVec4(数字×…)` / `"#rrggbb"` / `0xAARRGGBB`）。`kit/Widget_Status.cpp:56` 的 `ImU32(0x59FFFFFFu)` 就是漏网的真硬编码颜色。
+
+三处都**只记录未改**：改门禁会让本轮的「绿」失去可比基线，应单独一轮做，并且改完必须先跑它自己的 `-SelfTest` 证明仍能抓。
+
+### 本轮未修、留给后续的真缺陷
+
+- `kit::ResetInvertedRectCount()` / `ResetDuplicateHitCount()` **全仓零调用点**。今天还不是缺陷（`RunReview` 在 `RunLoop` 之前跑），但只要将来有任何代码在取证前泵帧，判据四会把交互会话的违规算进取证 ⇒ 整轮假红。
+- manifest 的 `overlay-clicks` 只有 `7/7` 一个数，**没有分项也没有原因**；而 `hover-probes` 至少有 `unstable=`/`broken=` 后缀。两者不对等。
+- `unstable=N` 与 `dead=N` 各自二义：同时表示「注入没到位」和「产品真的坏了」，manifest 层面没解。
+- `refactor/PROGRESS.md` 里若干处按 `文件名:行号` 引用旧位置（`Review.cpp:1550`、`WorkspaceA.cpp` / `ProjectHub.cpp` 的半像素表与 ListCard 计数），拆分后失效。历史条目按原样保留，需要在新条目里给新位置。
+- `tools/check-colors.ps1` 把 `kit/Views.cpp` 列为**按文件**的豁免区（`$Zones`，`:48`），且文件不存在时直接 `exit 1`（`:229-232`）。`Views.cpp` 这个文件名现在是承重结构：删掉或改名门禁就红。

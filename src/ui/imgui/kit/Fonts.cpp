@@ -29,6 +29,46 @@ const std::vector<float> kUiSizes = {10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f, 1
                                       14.5f, 15.0f, 17.0f, 18.0f, 20.0f, 24.0f, 26.0f, 28.0f};
 const std::vector<float> kMonoSizes = {10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f, 14.0f, 18.0f};
 
+// ---- 光栅化密度：字形模糊的根因开关（Dear ImGui 1.92 字体系统）----
+//
+// 为什么以前是糊的（三条链，每条都独立成立，缺一条就仍然糊）：
+//
+//  1. `RasterizerDensity` 缺省 1.0f。它才是 1.92 起**唯一**能提高字形光栅化
+//     分辨率的旋钮 —— `imgui_draw.cpp` 里
+//         rasterizer_density = src->RasterizerDensity * baked->RasterizerDensity
+//         scale_for_raster_y = ScaleFactor * baked->Size * rasterizer_density * oversample_v
+//         recip_v            = 1 / (oversample_v * rasterizer_density)
+//     即密度只进光栅化侧，再由 recip 缩回绘制侧。
+//     本工程 `io.DisplayFramebufferScale = (1,1)`（host/Host.cpp），OpenGL3/WGL
+//     后端也报不上更高的密度 ⇒ `g.CurrentPixelDensity` 恒为 1 ⇒ 光栅化 1:1。
+//
+//  2. `PixelSnapH = true` 会把 OversampleH **强制压成 1**，而 **OversampleV 在
+//     auto 模式下恒为 1**（imgui_draw.cpp:3524-3525 原文）：
+//         *out_oversample_h = (src->OversampleH != 0) ? src->OversampleH
+//                                : (raster_size > 36.0f || src->PixelSnapH) ? 1 : 2;
+//         *out_oversample_v = (src->OversampleV != 0) ? src->OversampleV : 1;
+//     注意第二行**没有** `raster_size > 36.0f` 那个分支 —— 也就是说这一版里
+//     纵向超采样永远不会自动开启。CJK 的糊恰恰是纵向笔画糊（小字号一个笔画
+//     只摊到 1 个像素高），所以横向超采样救不了，本项目又主动把横向也关了。
+//     ⇒ `RasterizerDensity` 不是「更好的旋钮」，是**唯一**能给字高加分辨率的旋钮。
+//
+//  3. 本工程字号大量是**半点**（10.5 / 11.5 / 12.5 / 13.5 / 14.5，来自设计稿
+//     的 CSS 像素）。stb_truetype 按整数高度出位图，1:1 光栅化后再按
+//     `scale = size / baked->Size`（imgui_draw.cpp:5791）缩放到半点尺寸 ⇒
+//     必然重采样。浏览器能用次像素定位，ImGui 不能。
+//
+// 修法是把密度抬到 2.0：字形按 2 倍分辨率出位图、绘制时缩回 1/2，由 GPU 做
+// 一次高质量双线性缩小 ⇒ 小字号 CJK 从「糊成一团」变成可读。
+//
+// ⚠️ 为什么**不需要**按 imgui.h:3796 那句警告反向缩放字号：那句针对的是
+//    旧式用法（同时把 `io.FontGlobalScale` 设成 1/N）。这里 `size` 与
+//    `baked->Size` 都没变（都是 kUiSizes 里的原值），`scale` 恒为 1.0，
+//    布局与排版数值**一个都不动** —— 只有位图分辨率变了。
+//
+// 代价：位图面积约 4 倍。图集显存由下面的 LogFontAtlasIfNeeded 打日志并按
+// 64 MB 硬判据校验（超了会 log::Error），不要凭感觉改这个数，改完看日志。
+constexpr float kRasterizerDensity = 2.0f;
+
 struct FontPaths {
     std::string ui = "C:/Windows/Fonts/msyh.ttc";
     std::string uiFallback = "C:/Windows/Fonts/simhei.ttf";
@@ -268,7 +308,8 @@ void AddUtf8Cjk(std::string_view text, ImFontGlyphRangesBuilder& builder) {
     }
 }
 
-// 常用 2500 字 ∪ 源码里出现的业务汉字。返回的数组由 ImFontAtlas 持有。
+// 常用 2500 字 ∪ 源码里出现的业务汉字。返回的数组由下面那个 static 持有到
+// 进程结束 —— 1.92+ 里 ImFontAtlas 并不接管这块内存，指针的所有权仍在我们。
 const ImWchar* BuildGlyphRanges(ImFontAtlas* atlas) {
     ImFontGlyphRangesBuilder builder;
     // 基线：ImGui 自带的 2500 常用字 + 拉丁 + 标点
@@ -332,7 +373,16 @@ const ImWchar* BuildGlyphRanges(ImFontAtlas* atlas) {
     for (const ImWchar c : kUiSymbols) {
         builder.AddChar(c);
     }
-    ImVector<ImWchar> ranges;
+    // ⚠️ 范围数组的**生命周期必须覆盖字体**：1.92+ 的 ImFontConfig::GlyphRanges
+    //    文档原文是 "*LEGACY* THE ARRAY DATA NEEDS TO PERSIST AS LONG AS THE FONT
+    //    IS ALIVE"，图集在**后续帧**按需烘焙时才回读这个指针。
+    //    早先这里写的是局部 `ImVector<ImWchar> ranges;` 然后 `return ranges.Data` ——
+    //    函数一返回内存就还给分配器，指针悬垂。1.92 之前那样写没事，是因为
+    //    AddFontFromFileTTF 会在当场把范围拷走；1.92+ 不再当场拷。
+    //    症状不会报错：静态存储后读到的仍是同一批字节（分配器没复用那块内存），
+    //    所以"看起来一直是对的"，直到某次分配把它盖掉。
+    static ImVector<ImWchar> ranges;
+    ranges.clear();
     builder.BuildRanges(&ranges);
     // 补 NUL 结尾（BuildRanges 已保证，这里只是防御）
     if (ranges.empty() || ranges.back() != 0) {
@@ -418,7 +468,8 @@ bool BuildFontAtlas(bool serif) {
         config.FontNo = activeFontNo;
         config.SizePixels = size * io.DisplayFramebufferScale.x;
         config.GlyphRanges = cjkRanges; // 静态数组，生命周期覆盖字体，1:1 限定可光栅化的字形集
-        config.PixelSnapH = true;
+        config.PixelSnapH = true;       // 对齐 AdvanceX，KV 列不错位；代价是 oversample 被压成 1，靠 kRasterizerDensity 补
+        config.RasterizerDensity = kRasterizerDensity;
         ImFont* font = atlas->AddFontFromFileTTF(activePath.c_str(), config.SizePixels, &config);
         if (font != nullptr) {
             g_fonts[size] = font;
@@ -440,6 +491,7 @@ bool BuildFontAtlas(bool serif) {
             config.SizePixels = size * io.DisplayFramebufferScale.x;
             config.GlyphRanges = cjkRanges;
             config.PixelSnapH = true;
+            config.RasterizerDensity = kRasterizerDensity;
             if (ImFont* font =
                     atlas->AddFontFromFileTTF(boldPath.c_str(), config.SizePixels, &config);
                 font != nullptr) {
@@ -471,6 +523,7 @@ bool BuildFontAtlas(bool serif) {
             ImFontConfig config;
             config.SizePixels = size * io.DisplayFramebufferScale.x;
             config.PixelSnapH = true;
+            config.RasterizerDensity = kRasterizerDensity;
             ImFont* monoFont =
                 atlas->AddFontFromFileTTF(monoPath.c_str(), config.SizePixels, &config);
             if (monoFont == nullptr) {
@@ -480,6 +533,7 @@ bool BuildFontAtlas(bool serif) {
             fallback.FontNo = uiFontNo;
             fallback.SizePixels = config.SizePixels;
             fallback.PixelSnapH = true;
+            fallback.RasterizerDensity = kRasterizerDensity; // 必须与主源一致，否则同一 ImFont 内两种密度的位图互相错位
             fallback.GlyphRanges = cjkRanges;
             fallback.MergeMode = true; // 追加进上面那个 ImFont，不新建
             atlas->AddFontFromFileTTF(uiPath.c_str(), config.SizePixels, &fallback);
