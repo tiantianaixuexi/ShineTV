@@ -85,8 +85,43 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     //    的 max.y < min.y 变成反向矩形 —— DrawShadowed / Card 会整块 return（内容
     //    静默消失）。给一个下限，宁可让时间轴压住卡片，也不产出反向矩形。
     const float contentBottom = ViewportBottom(area);
+    // ---- 时间线面板的几何：逐项来自 CSS，**不再是写死的 118** ----
+    //
+    // 设计稿这一块是一张 `<Card title="故事板时间线 · 拖拽重排" icon="film" extra=…>`
+    // （Storyboard.jsx:145），高度由内容撑开。逐项：
+    //   `.card-h` 头        46.6        （12 + 13.5×1.6 + 12 + 1，见 kit::Card）
+    //   `.card-b` padding   16 上 / 16 下
+    //   `.timeline`         padding 8px 2px 12px（views.css:955）
+    //   `.tl-card` 高       150.8       （见 kTlCardH 的逐项拆解）
+    // ⇒ 面板 ≈ 249.4。
+    //
+    // ⚠️ 原来写死 `contentBottom - 118`，而 118 < 头(46.6) + 上下 padding(32) = 78.6
+    //    加上时间线本身，实际可用的卡片区不足 40px —— 于是卡片被**拉伸**填满
+    //    （98px 高），缩略图也只能内缩 6px 画 60px。三个数字互相耦合，所以一起改。
+    constexpr float kTlCardW = 128.0f;       // .tl-card width（views.css:959）
+    constexpr float kTlCardR = 10.0f;        // --r-md（tokens.css:11）
+    constexpr float kTlGap = 10.0f;          // .timeline gap（views.css:953）
+    constexpr float kTlThumbH = 72.0f;       // .tthumb height（views.css:977）
+    constexpr float kTlInfoPadY = 7.0f;      // .tinfo padding 7px 9px 9px（views.css:980）
+    constexpr float kTlInfoPadX = 9.0f;
+    constexpr float kTlInfoPadB = 9.0f;
+    constexpr float kTlCodeH = 11.0f * 1.6f;      // .tcode mono 11/700 → 17.6
+    constexpr float kTlActionGap = 2.0f;          // .taction margin-top（views.css:991）
+    constexpr float kTlActionH = 11.5f * 1.6f;    // .taction 11.5 → 18.4
+    constexpr float kTlDurGap = 6.0f;             // .tdur margin-top（views.css:997）
+    constexpr float kTlDurH = 10.5f * 1.6f;       // .tdur 行盒 10.5 → 16.8（里面的 .prog.thin 只有 4px）
+    // 卡的外框是 border-box：上下各 1px 边 + 缩略图 + `.tinfo` 的三段
+    constexpr float kTlCardH = 2.0f + kTlThumbH + kTlInfoPadY + kTlCodeH + kTlActionGap +
+                               kTlActionH + kTlDurGap + kTlDurH + kTlInfoPadB;  // = 150.8
+    constexpr float kTlStripPadX = 2.0f;     // .timeline padding 左右 2
+    constexpr float kTlStripPadTop = 8.0f;   // .timeline padding 上 8
+    constexpr float kTlStripPadBottom = 12.0f;  // .timeline padding 下 12
+    constexpr float kCardHeadH = 46.6f;      // kit::Card 的 `.card-h`
+    constexpr float kCardBodyPad = 16.0f;    // `.card-b { padding: 16px }`
+    constexpr float kTimelinePanelH = kCardHeadH + kCardBodyPad + kTlStripPadTop + kTlCardH +
+                                      kTlStripPadBottom + kCardBodyPad;  // = 249.4
     const float timelineTop =
-        std::max(contentBottom - 118.0f, std::min(content.min.y + 120.0f, contentBottom));
+        std::max(contentBottom - kTimelinePanelH, std::min(content.min.y + 120.0f, contentBottom));
     const float detailW = (content.width() - kGap) * 1.2f / 2.2f;
     const float detailBottom = std::max(timelineTop - kGap, detailTop);
     const Rect detail{content.min.x, detailTop, content.min.x + detailW, detailBottom};
@@ -207,17 +242,34 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
         }
     }
 
-    // ---- 故事板时间线：真实镜头卡 ----
+    // ---- 故事板时间线：一张真 `<Card>`，里面是 `.timeline` 横条 ----
+    //
+    // ⚠️ 原来这里只画了一块 `DrawShadowed` 面板，**没有表头** —— 设计稿的标题
+    //    「故事板时间线 · 拖拽重排」与右侧提示「按住卡片拖动 · 时长条按比例」
+    //    （Storyboard.jsx:145 的 title / icon / extra）整组都没画，
+    //    高度也是写死的 118。改用 `kit::Card` 后，三件事一次对齐：
+    //    表头由 Card 画、正文区由 Card 返回、面板高度按内容算。
     const Rect timeline{content.min.x, timelineTop, content.max.x, contentBottom};
-    DrawShadowed(draw, timeline.min, timeline.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
+    Rect tlBody = Card(draw, timeline, "故事板时间线 · 拖拽重排", "film", false, false);
+    {
+        // 头右侧的 `extra`（`.tiny dim` = 12px muted），右对齐在标题行里。
+        static constexpr char kTlHint[] = "按住卡片拖动 · 时长条按比例";
+        ImFont* hintFont = FontAt(12.0f);
+        const float hintW = LabelWidth(hintFont, 12.0f, kTlHint);
+        const Rect headRow = CardHeaderRow(timeline, "故事板时间线 · 拖拽重排", "film");
+        draw->AddText(hintFont, 12.0f,
+                      ImVec2(headRow.max.x - hintW, CenterTextY(hintFont, 12.0f, headRow.center().y)),
+                      ColorTextMuted(), kTlHint, kTlHint + sizeof(kTlHint) - 1);
+    }
     // 本页最深就是这条时间轴（两张卡的下边界是 timelineTop - kGap，更浅）。
     // 自报它的高度，工作区的滚动范围从此跟着视口走 —— 不再是「滚到 2400 才看得见
     // 时间轴、而那 1400px 里什么都没有」（与总控页同一处治理，注释见那里）。
     pages::SetPageContentHeight(contentBottom - area.min.y + kGap);
     if (s.shots.empty()) {
         DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                        ImVec2(timeline.min.x + 14.0f, timeline.min.y + 14.0f), timeline.width() - 28.0f,
-                        ColorTextMuted(), "本章尚无镜头，时间线为空。", true);
+                        ImVec2(tlBody.min.x + kTlStripPadX, tlBody.min.y + kTlStripPadTop),
+                        tlBody.width() - 2.0f * kTlStripPadX, ColorTextMuted(),
+                        "本章尚无镜头，时间线为空。", true);
         return;
     }
     // 时长条按**本章最长镜头**归一（旧版写死 60% = 假装 6s）。
@@ -225,19 +277,22 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     for (const BookShot& row : s.shots) {
         longest = std::max(longest, row.durationSec);
     }
-    // `.tl-card { width: 128px }`（views.css:959）+ `.timeline { gap: 10px }`（views.css:953）
-    // ⇒ 步进 138。原来写的是宽 96 / 步进 104（96 + 8），**卡片比设计稿窄 32px**，
-    //   而 32px 在一张只有 96px 宽的卡上是三分之一的宽度，缩略图与文字全被挤。
-    constexpr float kTlCardW = 128.0f;
-    constexpr float kTlCardR = 10.0f;  // --r-md（tokens.css:11）
-    constexpr float kTlGap = 10.0f;
-    float x = timeline.min.x + 10.0f;
+    // `.timeline { padding: 8px 2px 12px }`（views.css:955）——
+    // ⚠️ 早先这里从面板左沿直接 +10 起画、卡片高度拉伸到面板底，那是「面板里没有
+    //    正文区概念」时的写法。现在有了 `tlBody`（Card 的正文盒），按 CSS 的
+    //    padding 与 .tl-card 的固定高度来。
+    const float stripTop = tlBody.min.y + kTlStripPadTop;
+    const float stripLeft = tlBody.min.x + kTlStripPadX;
+    const float stripRight = tlBody.max.x - kTlStripPadX;
+    float x = stripLeft;
     for (int i = 0; i < static_cast<int>(s.shots.size()); ++i) {
-        if (x + kTlCardW > timeline.max.x) {
-            break;  // 横向超出视口就不画（外壳的 ScrollRegion 负责滚动）
+        if (x + kTlCardW > stripRight) {
+            break;  // 横向超出视口就不画（横向滚动条未接，见 PROGRESS 的缺口表）
         }
         const BookShot& row = s.shots[static_cast<std::size_t>(i)];
-        const Rect card{x, timeline.min.y + 10.0f, x + kTlCardW, timeline.max.y - 10.0f};
+        // `.tl-card` 高度由内容定（缩略图 72 + `.tinfo` 三段 + 上下 1px 边框 = 150.8），
+        // **不是**拉伸填满面板 —— 那是面板高度不够时的连带写法。
+        const Rect card{x, stripTop, x + kTlCardW, stripTop + kTlCardH};
         const bool on = (i == s.selectedShot);
         // 一帧只命中**一次**，hovered / clicked 都从它取（同时注册两次会让
         // hover 恒假 —— 这条在全树踩过好几轮，见 kit/Widget_Core.h 的自检）。
@@ -263,32 +318,79 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
             DrawRoundRect(draw, ink.min - ImVec2(1.5f, 1.5f), ink.max + ImVec2(1.5f, 1.5f),
                           kTlCardR + 1.5f, 0, ColorOf(theme::CurrentDerived().accentDim), 3.0f);
         }
-        // ⚠️ 缩略图：真实分镜图要走 gpu 纹理链路（出图页才接），这里**不画假缩略图** ——
-        // 显示"待出图"占位，与 webui 自己在没有图时的状态一致。
-        // 卡内一律用 `ink`（位移后的矩形）—— 只抬背景不抬内容等于卡片在抖。
-        // ⚠️ CSS 的 `.tthumb` 是**满幅、无内缩**的 72px（views.css:976-978），
-        //    卡的 `overflow:hidden` 负责裁掉圆角。这里现在画的是「内缩 6px 的 60px 块」，
-        //    属时间线高度模型那一条已知缺口（见 refactor/PROGRESS.md），
-        //    与步进/宽度不是同一件事，没在这一轮一起动。
-        const Rect thumb{ink.min.x + 6.0f, ink.min.y + 6.0f, ink.max.x - 6.0f, ink.min.y + 66.0f};
-        DrawRoundRect(draw, thumb.min, thumb.max, 6.0f, ColorFillMuted(), ColorLineSubtle(), 1.0f);
-        DrawIconCentered(draw, "image", thumb.center(), 20.0f, ColorTextMuted());
-        // 镜码与侧栏树 / 检查器共用 WorkspacePages.h 的 ShotCode —— 同一个镜三处同名。
-        const std::string code = ShotCode(row.ord);
-        draw->AddText(MonoAt(11.5f), 11.5f, ImVec2(ink.min.x + 8.0f, ink.min.y + 70.0f),
-                      ColorAccent(), code.data(), code.data() + code.size());
-        // 时长条：按真实 durationSec / 本章最长。没有 duration 就画一条灰槽，不画 60%。
-        const float barY = ink.max.y - 10.0f;
-        const float barMaxW = ink.width() - 12.0f;
-        const float ratio =
-            (longest > 0.0 && row.durationSec > 0.0)
-                ? std::clamp(static_cast<float>(row.durationSec / longest), 0.08f, 1.0f)
-                : 0.0f;
-        DrawRoundRect(draw, ImVec2(ink.min.x + 6.0f, barY),
-                      ImVec2(ink.min.x + 6.0f + barMaxW, barY + 4.0f), 2.0f, ColorFillSelected());
-        if (ratio > 0.0f) {
-            DrawRoundRect(draw, ImVec2(ink.min.x + 6.0f, barY),
-                          ImVec2(ink.min.x + 6.0f + barMaxW * ratio, barY + 4.0f), 2.0f, ColorAccent());
+        // ---- `.tthumb`：满幅、72 高、**无自己的底色与边框** ----
+        //
+        // CSS 里 `.tthumb` 只有一个 `height: 72px`（views.css:976-978），底色来自
+        // `.tl-card { background: var(--fill-muted) }`；`overflow:hidden` 负责把
+        // 上面两个圆角裁掉。原来这里画的是「内缩 6px 的 60px 块 + 自己的边与底」，
+        // 那是面板高度不够、卡片被拉伸时的连带写法。
+        // ⚠️ 这版 ImGui 没有 push clip path，圆角裁不掉（顶角会有一点方）——
+        //    与 `HubCard` 封面的同一个降级，见那里的注释。
+        const float innerL = ink.min.x + 1.0f;  // 让开卡片自己的 1px 边框
+        const float innerR = ink.max.x - 1.0f;
+        const Rect thumb{innerL, ink.min.y + 1.0f, innerR, ink.min.y + 1.0f + kTlThumbH};
+        // 真实分镜图要走 gpu 纹理链路（出图页才接），所以这里**不画假缩略图**：
+        // 显示「待出图」占位，与 webui 自己没有图时的那一支一致（Storyboard.jsx:163-166
+        // 是 `image` 20px + gap 4 + `.tiny` 竖排居中）。
+        // ⚠️ webui 那一支按 `s.status === 'done'` 二选一，而 `BookShotView` **没有**
+        //    status 字段（WorkspacePages.h:102-113）—— 数据层给不出这个判断，
+        //    就不臆断成「已出图」去画插图。
+        {
+            static constexpr char kPending[] = "待出图";
+            ImFont* tinyFont = FontAt(12.0f);            // .tiny = 12px
+            const float tinyW = LabelWidth(tinyFont, 12.0f, kPending);
+            constexpr float kPendingIcon = 20.0f;
+            constexpr float kStackGap = 4.0f;
+            constexpr float kTinyLineH = 12.0f * 1.6f;   // = 19.2
+            const float stackH = kPendingIcon + kStackGap + kTinyLineH;
+            const float stackTop = thumb.center().y - stackH * 0.5f;
+            DrawIconCentered(draw, "image", ImVec2(thumb.center().x, stackTop + kPendingIcon * 0.5f),
+                             kPendingIcon, ColorTextMuted());
+            const float textTop = stackTop + kPendingIcon + kStackGap;
+            draw->AddText(tinyFont, 12.0f,
+                          ImVec2(thumb.center().x - tinyW * 0.5f,
+                                 CenterTextY(tinyFont, 12.0f, textTop + kTinyLineH * 0.5f)),
+                          ColorTextMuted(), kPending, kPending + sizeof(kPending) - 1);
+        }
+        // ---- `.tinfo { padding: 7px 9px 9px }`：镜码 / 动作 / 时长 三段 ----
+        const float infoX = innerL + kTlInfoPadX;
+        const float infoW = (innerR - kTlInfoPadX) - infoX;
+        float ty = thumb.max.y + kTlInfoPadY;
+        // `.tcode`：--font-mono 11px / **700** / accent
+        {
+            // 镜码与侧栏树 / 检查器共用 WorkspacePages.h 的 ShotCode —— 同一个镜三处同名。
+            const std::string code = ShotCode(row.ord);
+            ImFont* codeFont = MonoAt(11.0f);
+            draw->AddText(codeFont, 11.0f,
+                          ImVec2(infoX, CenterTextY(codeFont, 11.0f, ty + kTlCodeH * 0.5f)),
+                          ColorAccent(), code.data(), code.data() + code.size());
+            ty += kTlCodeH + kTlActionGap;
+        }
+        // `.taction`：11.5px / text-secondary / 单行省略
+        DrawTextClipped(draw, FontAt(11.5f), 11.5f,
+                        ImVec2(infoX, CenterTextY(FontAt(11.5f), 11.5f, ty + kTlActionH * 0.5f)),
+                        infoW, ColorTextSecondary(), row.action);
+        ty += kTlActionH + kTlDurGap;
+        // `.tdur`：flex / align-center / gap 6 / 10.5px muted ⇒ 左侧 `.prog.thin` 4px + 右侧时长
+        {
+            ImFont* durFont = FontAt(10.5f);
+            const std::string durText =
+                row.durationSec > 0.0 ? (std::to_string(row.durationSec) + "s") : std::string(kDash);
+            const float durW = LabelWidth(durFont, 10.5f, durText.c_str());
+            const float rowCy = ty + kTlDurH * 0.5f;  // `.tdur` 行盒中心
+            constexpr float kDurGap = 6.0f;
+            const float barW = std::max(30.0f, infoW - kDurGap - durW - kDurGap);  // min-width 30
+            // `.prog.thin` 高 4，在行盒里垂直居中；比例按**本章最长镜头**归一
+            // （没有 duration 就画一条空槽，不画 60%）。
+            const float barY = rowCy - 2.0f;
+            const float ratio =
+                (longest > 0.0 && row.durationSec > 0.0)
+                    ? std::clamp(static_cast<float>(row.durationSec / longest), 0.0f, 1.0f)
+                    : 0.0f;
+            Progress(draw, Rect{infoX, barY, infoX + barW, barY + 4.0f}, ratio, false, true);
+            draw->AddText(durFont, 10.5f,
+                          ImVec2(infoX + barW + kDurGap, CenterTextY(durFont, 10.5f, rowCy)),
+                          ColorTextMuted(), durText.data(), durText.data() + durText.size());
         }
         if (tlHit.clicked) {
             // 走 SelectBookShot 而不是就地写 `s.selectedShot` + RebuildBookSide：

@@ -497,19 +497,32 @@ r86/r87/r88 连续三轮同参数**均未复现**，无残留进程。**原因�
 | 9 | ~~`.tl-card` 宽 96→128、圆角 8→10；项目中心卡片名 17.0→14.5px~~ | 页面层 | ✅ **已接**（`Page_Storyboard.cpp` / `HubWizard.cpp`）。如实补齐了记录里没写全的三处：**步进 104→138**（宽 128 + `.timeline` gap 10）、选中态边框从「accent 1.5px」改成「**accent-glow** 1px」、选中环从「2px/半径+2」改成 **`0 0 0 3px accent-dim` 的 3px 扩展环**（Storyboard.jsx:154 的 inline style）。⚠️ 该卡的**高度模型**仍未接，单独记在下面 |
 | 10 | 本轮新发现（**审计里没记**） | 各层 | 见下面「第二轮新发现」表 |
 
-#### 仍未接：`.tl-card` 的高度/表头模型（第三轮发现的**结构**缺口）
+#### `.tl-card` 的高度/表头模型（第三轮发现、**第三轮已修**）
 
-上面只修了 `.tl-card` 的**尺寸与状态样式**，它所在的**时间线面板**还有一条结构缺口，改动面比前者大，单独记：
+上面先修了 `.tl-card` 的**尺寸与状态样式**，它所在的**时间线面板**当时还留着一条结构缺口。
+那一轮的记录把改动面判断成「本页版式重排，不该零敲碎打」——**那个判断对了一半**：
+确实只能一起改，但一起改并不大。逐项与现状：
 
-| 项 | 设计稿 | 现状 |
-|---|---|---|
-| 面板本体 | 是一张 `<Card title="故事板时间线 · 拖拽重排" icon="film" extra=…>`（Storyboard.jsx:145），**有表头** | `Page_Storyboard.cpp` 只用 `DrawShadowed` 画了一块面板，**没有表头**（标题与右侧提示都没画） |
-| 面板高度 | 由内容撑开：表头 46.6 + body pad 16 + `.timeline` pad 8/12 + 卡片高 ≈ 146 ⇒ **约 222** | 写死 `contentBottom - 118` |
-| 卡片高 | `tthumb` 72 + `tinfo`(pad 7/9/9 + code 17.6 + action 18.4+2 + tdur 6+~14) ⇒ **约 146** | 卡片拉伸填满面板 ⇒ **98** |
-| 缩略图 | `.tthumb { height: 72px }`，**满幅无内缩**（卡的 `overflow:hidden` 裁圆角） | 内缩 6px、高 60 |
-| 重排 | `draggable` + `onDragStart/onDragOver/onDrop`（Storyboard.jsx:155-158） | 无拖拽 |
+| 项 | 设计稿 | 改前 | 现在 |
+|---|---|---|---|
+| 面板本体 | 一张 `<Card title="故事板时间线 · 拖拽重排" icon="film" extra=…>`（Storyboard.jsx:145） | 只有 `DrawShadowed`，**无表头** | 走 `kit::Card`；`extra` 用 `CardHeaderRow` 右对齐画 |
+| 面板高度 | 内容撑开：46.6 + 16 + 8 + 卡高 + 12 + 16 | 写死 `contentBottom - 118` | `kTimelinePanelH` = **249.4**，逐项可核 |
+| 卡片高 | `tthumb` 72 + `.tinfo`(7 + 17.6 + 2 + 18.4 + 6 + 16.8 + 9) + 上下 1px 边 | 拉伸填满 ⇒ **98** | **150.8**（不再是「填满」） |
+| 缩略图 | `.tthumb { height:72px }`、**满幅无内缩无自己的底色**（卡的 `overflow:hidden` 裁圆角） | 内缩 6px、高 60、自带底色与边框 | 满幅 72、底色即卡的 `fill-muted` |
+| 占位图 | `image` 20px + gap 4 + `.tiny` 竖排居中 | 只有图标，缺「待出图」三字 | 图标 + 「待出图」都画 |
+| 卡内文字 | `.tcode` mono 11/**700** accent / `.taction` 11.5 secondary mt2 / `.tdur` 10.5 muted mt6（`prog thin` 4px + gap 6 + 时长） | 镜码 11.5、无动作行、时长条贴卡底 | 三段逐项按 CSS 排 |
+| 时长条 | `<div className="prog thin grow" style="minWidth:30">` + 时长文本 | 写死贴卡底、宽度 `card.width()-12` | 行盒内居中、宽 = 可用宽 − gap − 时长宽、`min-width 30` |
 
-这几项互相耦合（面板高度决定卡片高度决定缩略图高度），所以要和 `detailBottom = timelineTop - kGap` 一起改，属于「本页版式重排」，不该零敲碎打。
+实测复核（`storyboard-shot-1`，逐像素计数）：`fill-muted`（卡底）**106066 → 122810**，
+`bg-panel` **426496 → 418945** —— 后者恰好是「面板长高多少、上面两张卡就矮多少」的
+净额，两者一起印证了「面板由内容撑开」而不是「写死一个高度」。
+
+**仍未接（都属功能，不属 1:1 版式）**：
+
+- 横向滚动条：`.timeline { overflow-x:auto }`；现在是 `x + 卡宽 > 右界就 break`
+  （**这是一处静默截断**：本章镜多于视口能放下的数量时，后面的镜不画也不提示）。
+  fixture 的 7 个镜放得下，所以取景看不出来。
+- 拖拽重排：`draggable` + `onDragStart/onDragOver/onDrop`（Storyboard.jsx:155-158）。
 
 #### 第二轮新发现（都是「代码与自己的注释矛盾 / 尺寸算式缺项」一类）
 
