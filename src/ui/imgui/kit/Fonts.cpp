@@ -34,7 +34,7 @@ namespace {
 //    不值得占图集，但在用的却取不到档就是静默偏差。新增档位前先 grep 调用点。
 const std::vector<float> kUiSizes = {9.5f,  10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f, 13.5f,
                                      14.0f, 14.5f, 15.0f, 16.0f, 17.0f, 18.0f, 20.0f, 24.0f,
-                                     26.0f, 28.0f};
+                                     26.0f, 28.0f, 34.0f};
 const std::vector<float> kMonoSizes = {9.5f, 10.5f, 11.0f, 11.5f, 12.0f, 12.5f, 13.0f, 14.0f, 18.0f};
 
 // ---- 光栅化密度：字形模糊的根因开关（Dear ImGui 1.92 字体系统）----
@@ -99,6 +99,10 @@ std::string FirstExisting(const std::vector<std::string>& candidates) {
 std::unordered_map<float, ImFont*> g_fonts;
 std::unordered_map<float, ImFont*> g_mono;
 std::unordered_map<float, ImFont*> g_bold;
+// 全局字号缩放（R3）。token 值（设计稿 CSS 像素）永远不动，缩放只在这里乘：
+// 图集按 kUiSizes × scale 烘焙，FontAt 系按「请求值 × scale」取档。
+// scale=1.0 时与旧路径逐位一致 —— 这是 R3「收编前后像素不变」的依据。
+float g_fontScale = 1.0f;
 std::size_t g_atlasBytes = 0;
 std::size_t g_atlasFrameDelta = 0;
 int g_atlasBytesPerPixel = 0; // 实际格式（RGBA32=4；Alpha8=1，但见下面：OpenGL3 后端不支持）
@@ -261,6 +265,65 @@ bool ReadFile(const std::string& path, std::vector<std::uint8_t>& out) {
 
 } // namespace
 
+// ---------------------------------------------------------------- 字形 em 盒校正（R6）
+//
+// 为什么要有这个系数：ImGui 的「字号」是把 hhea.ascent − descent 这个**跨度**映射成
+// 那么多像素（stbtt_ScaleForPixelHeight 的定义），而 CSS 的 font-size 是 **em 盒**。
+// msyh 的 A−D ≈ 1.32em ⇒ 画出来的字只有请求值的 0.7577 —— 全仓文字比设计稿小 24%
+// （第十一轮实测：请求 24px 的 CJK 墨迹 18px/字；Chrome 同段 CSS 24px）。
+//
+// 修法 = `ImFontConfig::ExtraSizeScale`：`imgui_draw.cpp:4747` 把它乘进
+// `ScaleFactor`，而字形位图与 AdvanceX 都按 `ScaleFactor × baked->Size` 算（:4801）
+// ⇒ 字形与步进变成 E 倍；行高度量（Ascent/Descent，:4780）会除回 E 所以**不变**
+// ⇒ 基线体系不动，只有墨迹变大。
+//
+// ⚠️ 进度.md 第十一轮记的候选公式「upem/(A−D) = 0.7577」**方向反了**（那是
+//    缩小）：正确值是 **(A−D)/upem ≈ 1.32**，本轮已按源码核对并实测订正。
+// ⚠️ 逐字面不同（msyh / 宋体 / Cascadia 各自的 hhea 跨度不一样）⇒ 从字体文件
+//    现读，不写死：head 表的 unitsPerEm 与 hhea 表的 ascender/descender。
+[[nodiscard]] float FaceExtraSizeScale(const std::string& path, int fontNo) {
+    std::vector<std::uint8_t> bytes;
+    if (!ReadFile(path, bytes)) {
+        return 1.0f;
+    }
+    const Reader reader{bytes.data(), bytes.size()};
+    std::size_t fontOffset = 0;
+    if (reader.Tag(0, "ttcf")) {
+        const std::size_t fontCount = reader.U32(8);
+        if (fontNo < 0 || static_cast<std::size_t>(fontNo) >= fontCount) {
+            return 1.0f;
+        }
+        fontOffset = reader.U32(12 + static_cast<std::size_t>(fontNo) * 4);
+    }
+    std::size_t headOffset = 0;
+    std::size_t hheaOffset = 0;
+    const std::size_t tableCount = reader.U16(fontOffset + 4);
+    for (std::size_t i = 0; i < tableCount; ++i) {
+        const std::size_t record = fontOffset + 12 + i * 16;
+        if (reader.Tag(record, "head")) {
+            headOffset = reader.U32(record + 8);
+        } else if (reader.Tag(record, "hhea")) {
+            hheaOffset = reader.U32(record + 8);
+        }
+    }
+    if (headOffset == 0 || hheaOffset == 0) {
+        return 1.0f;
+    }
+    const int upem = reader.U16(headOffset + 18);          // head.unitsPerEm
+    const int ascent = static_cast<std::int16_t>(reader.U16(hheaOffset + 4));
+    const int descent = static_cast<std::int16_t>(reader.U16(hheaOffset + 6));
+    const int span = ascent - descent;
+    if (upem <= 0 || span <= 0) {
+        return 1.0f;
+    }
+    // 健全性钳制：正常字体的 A−D 在 0.9..2.0em 之间；超出说明解析错了，宁可不校正。
+    const float ratio = static_cast<float>(span) / static_cast<float>(upem);
+    if (ratio < 0.9f || ratio > 2.0f) {
+        return 1.0f;
+    }
+    return ratio;
+}
+
 int FindTtcIndex(const std::string& path, const std::string& familyName) {
     std::vector<std::uint8_t> bytes;
     if (!ReadFile(path, bytes)) {
@@ -367,10 +430,14 @@ bool BuildFontAtlas(bool serif) {
     atlas->Clear();
 
     g_fonts.clear();
+    const float uiExtra = FaceExtraSizeScale(activePath, activeFontNo);
     for (const float size : kUiSizes) {
         ImFontConfig config;
         config.FontNo = activeFontNo;
-        config.SizePixels = size * io.DisplayFramebufferScale.x;
+        // 全局缩放档：档位本身乘 scale（scale=1.0 时就是原值，表不变）。
+        config.SizePixels = size * g_fontScale;
+        // R6：em 盒校正 —— 字形与步进 ×(A−D)/upem，行盒不变（见函数注释）。
+        config.ExtraSizeScale = uiExtra;
         config.PixelSnapH = true;       // 对齐 AdvanceX，KV 列不错位；代价是 oversample 被压成 1，靠 kRasterizerDensity 补
         config.RasterizerDensity = kRasterizerDensity;
         ImFont* font = atlas->AddFontFromFileTTF(activePath.c_str(), config.SizePixels, &config);
@@ -388,10 +455,12 @@ bool BuildFontAtlas(bool serif) {
     const std::string boldPath = FirstExisting({paths.uiBold});
     if (!boldPath.empty()) {
         const int boldNo = FindTtcIndex(boldPath, "Microsoft YaHei UI Bold");
+        const float boldExtra = FaceExtraSizeScale(boldPath, boldNo);
         for (const float size : kUiSizes) {
             ImFontConfig config;
             config.FontNo = boldNo;
-            config.SizePixels = size * io.DisplayFramebufferScale.x;
+            config.SizePixels = size * g_fontScale;
+            config.ExtraSizeScale = boldExtra;
             config.PixelSnapH = true;
             config.RasterizerDensity = kRasterizerDensity;
             if (ImFont* font =
@@ -421,9 +490,11 @@ bool BuildFontAtlas(bool serif) {
     const std::string monoPath = FirstExisting({paths.monoAlt, paths.mono});
     g_mono.clear();
     if (!monoPath.empty() && uiFontNo >= 0) {
+        const float monoExtra = FaceExtraSizeScale(monoPath, 0);
         for (const float size : kMonoSizes) {
             ImFontConfig config;
-            config.SizePixels = size * io.DisplayFramebufferScale.x;
+            config.SizePixels = size * g_fontScale;
+            config.ExtraSizeScale = monoExtra; // 等宽字面自己的 hhea 跨度
             config.PixelSnapH = true;
             config.RasterizerDensity = kRasterizerDensity;
             ImFont* monoFont =
@@ -434,6 +505,7 @@ bool BuildFontAtlas(bool serif) {
             ImFontConfig fallback;
             fallback.FontNo = uiFontNo;
             fallback.SizePixels = config.SizePixels;
+            fallback.ExtraSizeScale = uiExtra; // 中文回落是 msyh，用它自己的跨度
             fallback.PixelSnapH = true;
             fallback.RasterizerDensity = kRasterizerDensity; // 必须与主源一致，否则同一 ImFont 内两种密度的位图互相错位
             fallback.MergeMode = true; // 追加进上面那个 ImFont，不新建
@@ -443,6 +515,10 @@ bool BuildFontAtlas(bool serif) {
     }
     if (g_mono.empty()) {
         g_mono = g_fonts; // 退回首字体，保证 KV 的等宽对齐不塌
+    }
+
+    for (ImFont* font : atlas->Fonts) {
+        font->CurrentRasterizerDensity = io.DisplayFramebufferScale.x;
     }
 
     // ⚠️ **不要**在这里调 ImFontAtlas::Build()：1.92+ 的后端声明
@@ -548,11 +624,16 @@ ImFont* LookupNearest(const std::unordered_map<float, ImFont*>& table, float pix
 
 } // namespace
 
-ImFont* FontAt(float pixelSize) { return LookupNearest(g_fonts, pixelSize); }
-ImFont* MonoAt(float pixelSize) { return LookupNearest(g_mono, pixelSize); }
-ImFont* FontBoldAt(float pixelSize) { return LookupNearest(g_bold, pixelSize); }
+// 请求值乘全局缩放档后再查表：token 是设计稿像素，缩放只在这一个口子上发生
+// （208 个调用点一个都不用动 —— 这就是「字号可调整」结构上成立的条件）。
+ImFont* FontAt(float pixelSize) { return LookupNearest(g_fonts, pixelSize * g_fontScale); }
+ImFont* MonoAt(float pixelSize) { return LookupNearest(g_mono, pixelSize * g_fontScale); }
+ImFont* FontBoldAt(float pixelSize) { return LookupNearest(g_bold, pixelSize * g_fontScale); }
 bool HasBoldFace() { return g_hasBold; }
 
-ImFont* BaseFont() { return FontAt(13.0f); }
+void SetUiFontScale(float scale) { g_fontScale = scale > 0.0f ? scale : 1.0f; }
+float UiFontScale() { return g_fontScale; }
+
+ImFont* BaseFont() { return FontAt(theme::font::kBase); }
 
 } // namespace shine::kit

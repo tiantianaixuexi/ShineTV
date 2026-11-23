@@ -289,12 +289,21 @@ INSERT INTO stage_artifacts(chapter_id,stage,scene_ord,shot_ord,payload_json,inp
  INSERT INTO generated_images(job_id,backend,model,prompt,negative,width,height,steps,rel_path,
                               source_kind,source_id,chapter_id,scene_id,status,error,raw_meta,
                               checklist_json,created,updated) VALUES
+   -- 非 shot 来源的一条（`source_kind='asset'`，资产设定图那条链的口径）。
+   -- 总控「最近产物」卡读这张表时**不限 source_kind** —— 只铺 shot 的话，
+   -- 「查询被写成 source_kind='shot'」这种退化不会被任何证据发现。
+   --
+   -- ⚠️ 它是**最新**的一条（id / created 都最大）⇒ 按 `id DESC` 排在「最近产物」第一行。
+   --    取证判据数它的颜色，而**第一行必须整块进视口**：那张卡在 1600×960 下要收起底栏
+   --    才拍得全，卡里**最下面那一行**会被窗口底边裁掉（实测只剩一半像素）。
    ('seed-job-shot1','comfy','seed-model','推门进屋','',1024,1024,20,'assets/shot/s1.png',
     'shot',1,1,1,'CANON','','{}','{}',1750103000,1750103100),
    ('seed-job-shot2','comfy','seed-model','拆开信封','',1024,1024,20,'assets/shot/s2.png',
     'shot',2,1,1,'PROPOSED','','{}','{}',1750103200,1750103300),
    ('seed-job-shot4','comfy','seed-model','踩上台阶','',1024,1024,20,'assets/shot/s4_missing.png',
-    'shot',4,1,2,'FAILED','文件被删了','{}','{}',1750103400,1750103500);
+    'shot',4,1,2,'FAILED','文件被删了','{}','{}',1750103400,1750103500),
+   ('seed-job-asset1','comfy','seed-model','阁楼层的设定图','',1024,1024,20,'assets/gen_recent_ref.png',
+    'asset',1,1,1,'CANON','','{}','{}',1750104000,1750104100);
 
  INSERT INTO shots(scene_id,ord,action,expression,mood,dialogue,narration,canon_status,timeline_json) VALUES
    (101,1,'黑猫从台阶下探出头','警惕','压抑','','它右耳缺了一角。','APPROVED','{"duration_s":3.0}'),
@@ -309,3 +318,25 @@ INSERT INTO stage_artifacts(chapter_id,stage,scene_ord,shot_ord,payload_json,inp
    (104,2,'他从匣里取出第一封','克制','压抑','第一封是我写给自己的。','纸已经发脆。','APPROVED','{"duration_s":5.5}'),
    (105,1,'煤油灯的火苗缩了一截','疲惫','压抑','','灯芯只剩最后一段。','PROPOSED','{"duration_s":3.0}'),
    (105,2,'他把灯吹灭','决然','紧绷','不能再点了。','黑暗里只剩雨声。','PROPOSED','{"duration_s":2.5}');
+
+-- ---- 6. 生成参数补全：出图页「结果」页签要显示**真参数** ----
+-- 为什么是 UPDATE 而不是再加几行 INSERT：`generated_images` 的「最新一条」口径
+--（`BookQuery.cpp` 里两次都按 `id` 排序取）与总控「最近产物」的排名都按 id 走 ——
+-- 多插一行会连带把那两处判据的对象换掉（`recent-products` 数的第一行就不再是
+-- 那条 `source_kind='asset'` 了）。参数是**同一行**的属性：就地补它，不新增行。
+--
+-- ⚠️ 几条 shot 行的参数刻意**两两不同**（steps 28/24/8、尺寸
+--    1024x576 / 1216x684 / 768x768、model 两种）：出图页结果页签的判据会拿
+--    第 1 镜这几个值去核 —— `steps` 与 `width/height` 若被读串了列，读数立刻
+--    与期望不等。几行填成同一个值的话，「读错列」在证据里完全看不出来。
+UPDATE generated_images SET model='sdXL_light_04', steps=28, width=1024, height=576,
+       negative='低质量, 多余手指'
+ WHERE source_kind='shot' AND source_id=1;
+UPDATE generated_images SET model='sdXL_light_04', steps=24, width=1216, height=684,
+       negative='低质量, 文字水印'
+ WHERE source_kind='shot' AND source_id=2;
+UPDATE generated_images SET model='sdXL_turbo_02', steps=8, width=768, height=768
+ WHERE source_kind='shot' AND source_id=4;
+UPDATE generated_images SET model='sdXL_base_01', steps=30, width=1024, height=1024,
+       negative='低质量'
+ WHERE source_kind='asset' AND source_id=1;

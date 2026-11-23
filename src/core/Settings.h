@@ -10,7 +10,11 @@ namespace shine {
 
 struct AppSettings {
     std::string themeId = "dark";
-    std::string comfyBaseUrl = "http://127.0.0.1:8188";
+    // 空 = **未配置**（默认如此）：不探测、不重连、不刷连接错误日志。
+    // 要用 ComfyUI 就填本机默认端点 http://127.0.0.1:8188。
+    // ⚠️ 2026-11-24 之前这里默认写死 8188 —— 没装 ComfyUI 的用户每 5 秒吃一条
+    //    `[libhv] connect 127.0.0.1:8188 failed!`（探活设计 + 默认值写死的合谋）。
+    std::string comfyBaseUrl;
     // P4.2：媒体本地缓存目录（空 = 默认 %APPDATA%\ShineTVStudio\cache\media；反射序列化自动读写）
     std::string mediaCacheDir;
 

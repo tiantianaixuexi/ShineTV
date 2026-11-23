@@ -90,7 +90,7 @@ void LoadStartupTheme() {
         shine::log::Error("theme load incomplete from {} — falling back to builtin defaults",
                           dir.string());
     }
-    // 先铺默认（深空）再谈持久化：没有 theme.json 时也必须有已应用的样式。
+    // 先铺默认（纸墨）再谈持久化：没有 theme.json 时也必须有已应用的样式。
     theme::ApplyCurrentTheme();
 
     // 自检开关：SHINE_THEME_SET=<ascii id> 直接切主题并打印结果。

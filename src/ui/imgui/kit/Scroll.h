@@ -24,6 +24,9 @@
 //    （workspace-scroll / hub-scroll / ov-right）一度全都中招，其中工作区那层的
 //    注释还写着「撑到 2400」，但 2400 从没告诉过 ImGui，只是个自说自话的局部变量。
 //    `setContentHeight` 在析构前补一个不可见 item（ImGui::Dummy），ContentSize 这才准。
+//    ⚠️ 例外：**原生 item 区域不需要调** —— 内容由 TreeNodeEx 等真 item 组成时，
+//    ImGui 自己会把 ContentSize 算出来（滚动从来靠 ContentSize，Dummy 只对零 item 的
+//    自绘内容必要），取证核销会回落到 ImGui 自己的 ScrollMax。自绘内容照旧必须自报。
 #pragma once
 
 #include "ui/imgui/kit/Widgets.h"
@@ -33,6 +36,26 @@
 #include <string_view>
 
 namespace shine::kit {
+
+// ---- 浮层闸门：浮层开着时**所有** child 都退出命中测试 ----
+//
+// 真相源是 `Shell::OverlayBlocksMouse()`，外壳每帧写一次；组件侧只读。放 kit 里是
+// 因为 `ScrollRegion` 的缺省实参要读它，而 kit 不认识 pages —— 方向只能反过来。
+//
+// ⚠️ 为什么必须是**全局缺省**而不是每个调用点各传一次：`BeginChild` 到处都是
+//    （工作区 / 侧栏 / 检查器 / 底栏四个列表 / 总览右栏 / 分镜时间线 / 连续性问题
+//    列表…），漏一处就是一处**静默**的「浮层里按钮点不动」，而且哪一处坏取决于当时
+//    的工作区与鼠标位置。实测就是这么中的：查看器的 × 在分镜页上点不动 ——
+//    工作区 child 自己有 `NoMouseInputs`，但 ImGui **不把**这个标志传给**嵌套** child，
+//    于是 `sb-timeline-strip` 拿走了 `HoveredWindow`，根窗口里查看器的按钮恒
+//    `hovered=false`。外观全对、编译过、静息截图与 hover 探针对它零覆盖
+//    （只有「浮层里的按钮点一下、读产品自己的开态」这一族判据能抓到）。
+void SetOverlayMouseGate(bool blocked) noexcept;
+[[nodiscard]] bool OverlayMouseGate() noexcept;
+
+// 浮层保持原有绘制层级，滚轮、点击轨道和拖拽滑块都更新同一个偏移。
+void OverlayScrollbar(ImDrawList* draw, Rect track, float rowHeight, float contentHeight,
+                      float visibleHeight, float& scroll, std::string_view id, Rect wheelArea);
 
 class ScrollRegion {
 public:
@@ -53,8 +76,11 @@ public:
     //   语义：底下的侧栏 / 顶栏 / 工作区**点不动**，点击由浮层自己的遮罩接走。
     //   ⚠️ 遮罩那边必须**真的注册一个全屏 HitTest** —— 只画不命中的话，点击既不
     //   关闭浮层也不被任何人接住，就是「点了没反应」。
+    //   ⚠️ 缺省值就是上面那份全局闸门（`OverlayMouseGate()`），**一般不用传**：
+    //   传一次是给「这个区域即使在浮层开着时也要收鼠标」这类例外留的口子，
+    //   而全仓目前没有这样的例外 —— 每多一个手传的调用点，就多一处可能忘掉的地方。
     ScrollRegion(std::string_view id, Rect bounds, bool borders = false,
-                 bool horizontalScroll = false, bool noMouseInputs = false);
+                 bool horizontalScroll = false, bool noMouseInputs = OverlayMouseGate());
     ~ScrollRegion();
 
     ScrollRegion(const ScrollRegion&) = delete;
@@ -128,6 +154,7 @@ public:
     // maxScrollY == 0 = 内容压根没超出区域（这时候「没变化」是正确结果）。
     struct ScrollApplied {
         std::string id;
+        int frame = -1; // 核销帧，用来区分共用同一 id 的连续请求。
         float scrollY = 0.0f;
         // 期望的滚动上限 = 自报内容高度 - 可视高度（自己算，确定性）。
         float maxScrollY = 0.0f;
@@ -151,11 +178,10 @@ private:
     Rect content_;
     float scrollY_ = 0.0f;
     float maxScrollY_ = 0.0f;
-    float bottomHeight_ = 0.0f;
     float contentHeight_ = 0.0f;
     float contentWidth_ = 0.0f;
     float expectedMaxScrollY_ = 0.0f;
-    std::string pendingKey_;
+    ImGuiID cacheId_ = 0;
 };
 
 } // namespace shine::kit

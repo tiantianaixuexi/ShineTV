@@ -61,6 +61,8 @@ namespace shine::kit {
 void LogFontAtlasIfNeeded();
 
 // 按像素取字体；没建过的尺寸向上取最近的一档。
+// ⚠️ 传入值应是 **theme::font::* 字号 token**（= 设计稿 CSS 像素）；全局缩放档
+//    （SetUiFontScale）在函数内部乘上，调用点不再自己乘。
 [[nodiscard]] ImFont* FontAt(float pixelSize);
 [[nodiscard]] ImFont* MonoAt(float pixelSize);
 [[nodiscard]] ImFont* BaseFont();
@@ -70,6 +72,16 @@ void LogFontAtlasIfNeeded();
 // 按族名定位子字体；取不到就退回常规字重（退回只偏细，不出豆腐块）。
 [[nodiscard]] ImFont* FontBoldAt(float pixelSize);
 [[nodiscard]] bool HasBoldFace();
+
+// ---- 全局字号缩放（R3，记忆.md（原 component-reuse.md） §5.2）----
+//
+// 图集按 `kUiSizes × scale` 烘焙、FontAt 系按「请求值 × scale」取档。
+// scale=1.0 时与不缩放的旧路径**逐位一致**（token 值 × 1.0 = 原值，同一张表）——
+// 这是「收编前后截图逐像素不变」的依据。
+// ⚠️ 改完 scale 必须**重建图集**（BuildFontAtlas，与切水墨主题同一条路）才生效；
+//    只调 Set 不重建的话，取档请求已经变了、图集还是旧的 ⇒ 向上取最近档静默画大。
+void SetUiFontScale(float scale);
+[[nodiscard]] float UiFontScale();
 
 // TTC 子字体定位：在 .ttc 里找族名匹配的下标；单字体文件恒返回 0。
 [[nodiscard]] int FindTtcIndex(const std::string& path, const std::string& familyName);

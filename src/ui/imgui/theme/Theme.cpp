@@ -24,7 +24,7 @@ namespace detail {
 
 // 5 套主题的全局表。**全工程只有这一份定义**（Theme_Internal.h 里是 extern 声明）。
 std::array<ThemeRecord, 5> g_themes{};
-ThemeId g_current = ThemeId::DeepSpace;
+ThemeId g_current = ThemeId::PaperInk;
 bool g_loaded = false;
 
 } // namespace detail
@@ -192,9 +192,8 @@ std::string_view ThemeFontFamilyOf(ThemeId id) {
 bool ThemeUsesSerif(ThemeId id) { return id == ThemeId::InkWash; }
 
 bool ThemeLogoHasShadow(ThemeId id) {
-    // tokens.css:202-207：只有水墨把 `.hub-logo` / `.brand .mark` 的 box-shadow
-    // 覆盖成 none（并把渐变底换成纯 accent）。
-    return id != ThemeId::InkWash;
+    // 水墨和新版纸墨以实色标记品牌。
+    return id != ThemeId::InkWash && id != ThemeId::PaperInk;
 }
 
 void ApplyGeometry(ImGuiStyle& style) {
@@ -275,9 +274,14 @@ void ApplyTheme(ThemeId id) {
     colors[ImGuiCol_ResizeGrip] = Rgba(d.accentDim);
     colors[ImGuiCol_Tab] = Rgba(c.bgPanel);
     colors[ImGuiCol_TabHovered] = Rgba(c.fillHover);
-    colors[ImGuiCol_TabActive] = Rgba(c.bgSurface);
-    colors[ImGuiCol_TabUnfocused] = Rgba(c.bgPanel);
-    colors[ImGuiCol_TabUnfocusedActive] = Rgba(c.bgSurface);
+    // imgui 19303（1.93.1 WIP）：1.90.9 的 Tab 改名在此版删了旧别名
+    // （TabActive→TabSelected / TabUnfocused→TabDimmed / TabUnfocusedActive→TabDimmedSelected），
+    // 另新增两条 Overline 槽。槽位语义照旧映射，Overline 跟选中强调走。
+    colors[ImGuiCol_TabSelected] = Rgba(c.bgSurface);
+    colors[ImGuiCol_TabDimmed] = Rgba(c.bgPanel);
+    colors[ImGuiCol_TabDimmedSelected] = Rgba(c.bgSurface);
+    colors[ImGuiCol_TabSelectedOverline] = Rgba(d.accentDim);
+    colors[ImGuiCol_TabDimmedSelectedOverline] = Rgba(d.accentDim);
     colors[ImGuiCol_DockingPreview] = Rgba(d.accentDim);
     colors[ImGuiCol_Text] = Rgba(c.textPrimary);
     colors[ImGuiCol_TextDisabled] = Rgba(c.textMuted);
@@ -292,7 +296,7 @@ void ApplyTheme(ThemeId id) {
     colors[ImGuiCol_TableRowBgAlt] = Rgba(c.bgSurface);
     colors[ImGuiCol_TextSelectedBg] = Rgba(d.accentDim);
     colors[ImGuiCol_DragDropTarget] = Rgba(d.accentGlow);
-    colors[ImGuiCol_NavHighlight] = Rgba(d.accentDim);
+    colors[ImGuiCol_NavCursor] = Rgba(c.lineFocus);
     colors[ImGuiCol_NavWindowingHighlight] = Rgba(c.lineFocus);
     colors[ImGuiCol_ModalWindowDimBg] = Rgba(c.shadowScrim);
 }

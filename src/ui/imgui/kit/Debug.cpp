@@ -71,7 +71,7 @@ void DrawStyleEditorPanel() {
 
     // 31 个 token 用 ImGui 自带的 ColorEdit4 排成网格 —— 不手写取色器。
     // ColorEdit4 要 float[4]，token 存的是 0xRRGGBBAA，逐项换算。
-    ImGui::PushFont(FontAt(12.0f));
+    ImGui::PushFont(FontAt(12.0f), 12.0f);
     constexpr int columns = 3;
     for (std::size_t i = 0; i < theme::kColorTokenCount; ++i) {
         ImGui::PushID(static_cast<int>(i));

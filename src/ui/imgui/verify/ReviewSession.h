@@ -53,7 +53,8 @@ inline constexpr int kWsVideoFlow = static_cast<int>(pages::Workspace::VideoFlow
 // 主题轮覆盖哪些页。P6.3 要求「6 工作区 × 5 主题 = 30 组」（phases.md:356），
 // 早先只挑了画廊 + 资产两页，于是总控/小说/分镜/出图/出片在 4 套非默认主题下
 // **从未被截过** —— 主题映射在这些页上漏项不会被任何证据图发现。
-// 现在全量覆盖，判读成本靠文件名分组与 md5 排重来控制。
+// 现在全量覆盖（P5.7 新增工作流后是 7 页 × 5 主题 = 35 组），判读成本靠文件名
+// 分组与 md5 排重来控制。
 constexpr int kThemedWorkspaces[] = {
     static_cast<int>(pages::Workspace::Overview),
     static_cast<int>(pages::Workspace::Novel),
@@ -61,6 +62,7 @@ constexpr int kThemedWorkspaces[] = {
     static_cast<int>(pages::Workspace::Storyboard),
     static_cast<int>(pages::Workspace::ImageFlow),
     static_cast<int>(pages::Workspace::VideoFlow),
+    static_cast<int>(pages::Workspace::Workflow),
 };
 
 // 底栏页签名 → 文件名片段。与 `Shell.cpp` 的 `tabs[]` 同序（任务队列/日志/产物/校验报告）。
@@ -135,6 +137,63 @@ struct Session {
     int overlayClicksPassed = 0;
     int overlayClickTotal = 4;
 
+    // 查看器里那两屏（大图那一层 + 「导出整版」的联系表）有没有真的把图打上屏。
+    //
+    // ⚠️ 与 sheetImagesSettled 同级、也必须进 overall，而且它挡的更窄更专：
+    //    大图档（`kit::RequestImageFull`，2048）**只在查看器开着的那一帧**才被请求，
+    //    所以「压根没请求」与「请求了没落地」在截图上完全一样（都画 `Art` 占位）。
+    //    结论 = 大图档 requested>0 && pending==0 && **两屏各自的纯色像素 > 0**。
+    bool viewerFullSettled = false;
+
+    // 逐镜成图（`generated_images` 的 `source_kind='shot'`）在两个位点上有没有真的上屏：
+    //   * `filmStripImages`     —— 出片页「成片条」那几格（第 1/2 镜的两种纯色各 > 0）；
+    //   * `imageFlowResultImage`—— 出图页「结果」页签那张成图（第 1 镜的纯色 > 0）。
+    //
+    // ⚠️ 两者都必须进 overall，理由与 `sheetImagesSettled` 完全一样：真图是**异步**上屏的，
+    //    「链断了」与「拍得太早」在截图上都是占位画 —— 这两处以前画的正是 `Art`
+    //    （所以占位画与「还没出图」在像素上根本分不开）。判据用**数纯色**（截图跨轮不可复现）。
+    bool filmStripImages = false;
+    bool imageFlowResultImage = false;
+    // 出图页「结果」页签那两行 KV（`Prompt` / `生成参数`）的**数据投影**对不对：
+    // 第 1 镜成图那一行的 `prompt/model/steps/width/height` 是否等于 fixture 契约
+    // （`ReviewFixture.h` 的 `kShot1*`）。
+    //
+    // ⚠️ 这一条判的**不是像素**，与上面那几条不同，理由是这两行**没有异步窗口** ——
+    //    同一帧里从 `BookShot` 读出来、当帧画完，所以没有「链断了」与「拍早了」同形
+    //    的那种二义，数色值在这里没有对象可数。它挡的是：① 查询没把那几列 SELECT
+    //    出来；② 列序读串（steps 当 width）；③ 行被「全空」判掉 ⇒ 界面上那两行
+    //    凭空少掉，而其余判据全绿。
+    // ⚠️ 它**挡不住**「画在屏外」—— 那一段由 `Page_ImageFlow.cpp` 里 kvHeight 跟着
+    //    行数走的算式保证（面板 560 高、body 里放得下 6 行）。别把这条当成像素判据读。
+    bool imageFlowParams = false;
+
+    // 总控 KPI 卡右上角那团柔光的**像素**判据：屏上真有足够多「合成后的 accent-dim」。
+    //
+    // ⚠️ 为什么非要数像素：这一团是 `PushClipRect` 裁到 padding box 之后画的，而
+    //    「裁剪写反/写小」的症状是**整团柔光消失**，卡还在、字还在、静息截图照样 saved。
+    //    只读代码或只比「颜色算对没有」都抓不到它。
+    // ⚠️ 判据要有**上下界**（都写在 ReviewScene.cpp）：下界 8000 挡「只接上一张卡」
+    //    （一张 ≈3200），上界 40000 挡「颜色退化成一块面」。只判下界实测骗过一次：
+    //    页面 alpha 链写错 ⇒ 报出来的色是**卡底色** ⇒ 读到 35 万像素，判绿。
+    //    这团光是 5 个 90px 圆被裁掉一角，必然只有万把像素的量级。
+    // ⚠️ 颜色来自页面自己的只读出口（`pages::KpiGlowRgb()`）：柔光色是**逐主题**的
+    //    （accent-dim 每套不同），写死在取证里会让这条判据只在默认主题下成立。
+    bool kpiGlow = false;
+    // 总控「最近产物」那一行**非 shot 来源**的出图产物（`generated_images`）有没有上屏。
+    // 同一个理由：这一卡以前只有 T 链账本那一族数据，而账本在执行体接入之前**恒为空**
+    // ⇒ 卡上永远只有空态。判据用数纯色（`assets/gen_recent_ref.png` = kRecentAssetColor）。
+    bool recentProductsImage = false;
+
+    // `kit::ImageKey` 与 `kit::ImageKeyFull` 的号段是不是真的分裂了
+    // （`kit::ImageKeyCollisionCount() == 0`）。
+    //
+    // ⚠️ 这一条**必须进 overall**：它是 `viewerFullSettled` 那个判据的**成立前提** ——
+    //    两档 key 一旦撞上，大图档就登记不进登记表，`RequestedImageFullCount()` 恒 0，
+    //    界面上却照样画得出图 ⇒ 判据报红而产品没坏（假红）。
+    //    而且它只在**某些路径字符串**下撞（路径含 `SHINE_IMGUI_REVIEW` 的输出目录）
+    //    ⇒ 「这轮红了」会被当成偶发而放过去。初值 false = 这一段没跑到。
+    bool imageKeysDistinct = false;
+
     // 抓一张图并计入 captured / failed。返回像素内容哈希（0 = 没抓到或没写出来，
     // 判据查重样时按「0 跳过」处理，见 ReviewVerdict.cpp）。
     std::uint64_t Grab(const std::string& name, int workspace, shine::theme::ThemeId theme) {
@@ -150,6 +209,28 @@ struct Session {
     // 受控图：抓完之后把指纹与图名记进判据三要查的那张表。
     void GrabDriven(const std::string& name, int workspace, shine::theme::ThemeId theme) {
         drivenHashes.push_back(Grab(name, workspace, theme));
+        drivenNames.push_back(name);
+    }
+
+    // **初始页**（项目中心）那一张。应用启动就落在它上面（webui `store.jsx:13` 的
+    // `useState('hub')`），所以它是「一开机就能看到的那一屏」，而不是某个工作区。
+    //
+    // ⚠️ 与 `Grab` 的差别只有一处：`hubShot = true`（让 `Shoot` 把项目中心**开**着拍）。
+    //    `Grab` 的缺省动作是关掉它 —— 少了这一张，项目中心这一整页在 89 张证据图里
+    //    一张都没有，页面上改了什么都不会有任何像素证据。
+    //
+    // ⚠️ 这张图的**内容依赖本机** `%APPDATA%\ShineTVStudio\projects.json`（项目中心的
+    //    最近列表读它，取证不重写用户索引），所以它只当**视觉证据**用：不要拿它的
+    //    像素数当判据（换台机器项目数不同，读数就不同）。
+    void GrabHubDriven(const std::string& name, shine::theme::ThemeId theme) {
+        std::uint64_t hash = 0;
+        if (Shoot(host, shell, outputDir, name, kWsOverview, theme, &hash, nullptr,
+                  /*hubShot=*/true)) {
+            result.captured++;
+        } else {
+            result.failed++;
+        }
+        drivenHashes.push_back(hash);
         drivenNames.push_back(name);
     }
 
@@ -175,6 +256,28 @@ struct Session {
             drivenNames.push_back(name);
         }
         return static_cast<int>(CountColorPixels(pixels, rgb));
+    }
+
+    // 一张图里数**两个**纯色。判据要「两处都接上了」时必须用这个，不能用两次
+    // `GrabCountColor`：那是**两张逐字节相同**的图（同一个状态拍两遍），既多存一张
+    // 证据、又让读的人以为那是两个不同状态（而第二张还必须 `registerDriven=false`
+    // 才不会撞上「受控图不许重样」——一处不写就间歇性 FAIL）。
+    std::pair<int, int> GrabCountTwoColors(const std::string& name, int workspace,
+                                           shine::theme::ThemeId theme, std::uint32_t rgbA,
+                                           std::uint32_t rgbB, bool registerDriven) {
+        std::vector<std::uint8_t> pixels;
+        std::uint64_t hash = 0;
+        if (Shoot(host, shell, outputDir, name, workspace, theme, &hash, &pixels)) {
+            result.captured++;
+        } else {
+            result.failed++;
+        }
+        if (registerDriven) {
+            drivenHashes.push_back(hash);
+            drivenNames.push_back(name);
+        }
+        return {static_cast<int>(CountColorPixels(pixels, rgbA)),
+                static_cast<int>(CountColorPixels(pixels, rgbB))};
     }
 };
 

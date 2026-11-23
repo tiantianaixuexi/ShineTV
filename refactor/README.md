@@ -11,16 +11,24 @@ source_of_truth:
 last_verified: 2026-09-30
 ---
 
+> **本页回答**：要改什么改哪个文件、分层与两条权威线、构建/门禁/验收入口。
+
 # ShineTV Studio 前端：ImGui 移植总览
 
-> **双端架构**：`webui/`（React + CSS）是**视觉设计基准**，只做效果、不管功能；
-> `src/ui/imgui/`（C++ / Dear ImGui）是它的 1:1 复刻，是真正跑起来的界面。
+项目中心、创建向导、工作区、面板和 DPI 的新版规格见 [UI 与交互规范](ui-interaction.md) 和 [新版可交互设计稿](ui-interaction.html)。本页继续作为源码地图，历史 CSS 复刻记录见 [设计基准](design-spec.md)。
+
+> `webui/`（React + CSS）只做效果参考；`src/ui/imgui/`（C++ / Dear ImGui）是实际运行的界面。
+> **UI 方向（2026-11-23 用户定调）：不做像素裁量，优先用 Dear ImGui 自带组件**
+> （`Button` / `Selectable` / `TreeNodeEx` / `BeginTable` / `InputText` / `Combo` / `Checkbox` …），
+> 样式贴近主题 token 即可；`webui/` 与 `design-spec.md` 降为**布局与文案参考**，不是像素验收基准。
 > 业务层 `shine_core`（`src/core util net db llm comfy gpu media flow visual novel paint mcp project pipeline`）
 > 与本次移植无关，**一行不改**。
 
 本文是**入口**：先读它定位「要改的东西在哪个文件」，再按需展开
 [`design-spec.md`](design-spec.md)（视觉判据）、[`architecture.md`](architecture.md)（分层与线程契约）、
-[`PROGRESS.md`](PROGRESS.md)（已验证的事实 + 未修偏差清单）。
+[`进度.md`](进度.md)（现状 + 未修偏差清单）、[`轮次记录.md`](轮次记录.md)（历史轮次与读数，归档）、
+**[`记忆.md（原 component-reuse.md）`](记忆.md（原 component-reuse.md）)**（统一组件复用方案 + 开发规范 + 字号可调整 + Figma 工作面；
+**动任何页面/组件之前先读这一份**）。
 
 ---
 
@@ -35,7 +43,7 @@ last_verified: 2026-09-30
 | 组件 | `kit/` 下 15 族 `Widget_*.h` + 视图族 `Views / View_Stage / View_FlowCanvas` |
 | 导航 | 6 个工作区 + 项目中心（整屏）+ 组件画廊（回归基准） |
 | 验收 | `SHINE_IMGUI_REVIEW=<dir>` 跑一次总回归后退出；`overall=PASS` ↔ 退出码 0 |
-| 未修偏差 | 见 [`PROGRESS.md` §「视觉 1:1 符合性审计」](PROGRESS.md) —— **改任何视觉前先读那一节** |
+| 未修偏差 | 见 [`进度.md` §「视觉 1:1 符合性审计」](进度.md) —— **改任何视觉前先读那一节** |
 
 ⚠️ **`webui/` 不在版本控制里**（`.gitignore` 最后一行）。它是本地设计稿，新 clone 拿不到。
 所以 `design-spec.md` §2 内联了全部 31×5 色值 —— 那份表才是可复现的记录。
@@ -66,9 +74,12 @@ ShineTVStudio (exe)              src/ui/imgui/app/main.cpp —— 只做 CLI 分
 
 ## 2. 两条权威线（先定这个，否则会改错层）
 
+> **2026-11-23 起视觉权威线降级**：`webui/` 只是布局/文案/配色的**参考**，
+> 不再做逐像素验收（用户定调「不做像素裁量，用 ImGui 自带组件就好」）。
+
 | 维度 | 权威 | 理由 |
 |---|---|---|
-| **视觉 / 样式 / 布局 / 交互态** | `webui/` | 用户要求 1:1；它是 CSS 设计稿，值齐全且自洽 |
+| **视觉 / 样式 / 布局 / 交互态** | 主题 token（`theme/`）+ ImGui 自带组件默认形态；`webui/` 仅参考 | 不做像素裁量；组件形态以 ImGui 原生为准 |
 | **功能 / 数据 / 行为** | `src/`（`shine_core`） | 只有它真接了 `project` / `novel` / `flow` / `comfy` 等后端 |
 
 两者的差集是**已知的、不补的**：
@@ -99,6 +110,12 @@ ShineTVStudio (exe)              src/ui/imgui/app/main.cpp —— 只做 CLI 分
 
 ### 3.2 组件库 `kit/`（改控件外观就改这里）
 
+> ⚠️ **先读 [`记忆.md（原 component-reuse.md）`](记忆.md（原 component-reuse.md）)**：页面层现在还有
+> **208 处硬编码字号 / 81 处裸 `AddText` / 49 处手写行步进**，
+> 并且缺三个原语（`kit::Text` / `kit::Layout` / `kit::ScrollList`）。
+> **新增/改动控件一律按那份文档的规范走**（Figma 定稿 → 导出常量 → 进 kit → 页面只调用 → 进画廊），
+> 不要继续在页面里手算几何 —— 那正是「每个页面都要花很久」的原因。
+
 | 族 | 文件 | 覆盖的设计稿 |
 |---|---|---|
 | 地基：绝对矩形 + 命中测试 | `kit/Widget_Core.h`（`Rect` / `HitTest` / `Clicked`） | — |
@@ -114,8 +131,15 @@ ShineTVStudio (exe)              src/ui/imgui/app/main.cpp —— 只做 CLI 分
 | 数据表（可排序） | `kit/Widget_Table.h` | `.table` |
 | 树 | `kit/Widget_Tree.h` | `.tree` |
 | 自绘原语 + 文本居中 + 网格列数 | `kit/Draw.h` | `draw` 层 |
+| 文本原语（一段文字怎么画/多宽/基线） | `kit/Text.h`（`TextStyle` + `Text` / `TextSize` / `TextAtBaseline`；字号只传 `theme::font::*` token，行盒 = token×1.6） | 页面层**禁止**裸 `AddText` 与字面量字号（R3 起） |
+| 字符串格式化 / 浮点转字符串 | `kit/Fmt.h`（`Fmt` 走 fmt；`Shortest`/`Fixed` 走 zmij） | 页面层**禁止** `std::to_string(double)` 与 `snprintf("%.1f")`（第十八轮起） |
+| 数据指纹（缓存失效判据） | `kit/Hash.h`（`Fnv1a` + `HashMix`，double 按位混入） | 「每帧绘制、数据变了才重建」的缓存都用它（第十八轮起） |
+| 布局推进（竖排/横排/流式折行） | `kit/Layout.h`（`Stack::Next(h,gap)` / `Row` / `Flow`；只算矩形不画） | 页面层**禁止**手写 `y += 元素高+间距`（R4 起；裸行距用 `Advance`） |
+| 等行距长列表（clipper 等价） | `kit/ScrollList.h`（只画可见行 + 内容高度自动上报；**前提是等行距**） | 底栏队列/产物表等；页面层禁止自己算滚动内容高度（R5 起） |
+| 字号 token / 全局缩放 | `theme/Tokens.h` 的 `font` 段 + `kit/Fonts.h`（`SetUiFontScale`，改后须重建图集） | — |
 | 动画（ImAnim 封装） | `kit/Anim.h` | `--dur-1/2/3`、`--ease`、`--ease-out` |
 | 滚动区 | `kit/Scroll.h` | `overflow:auto` |
+| 真实图片：请求 / 绘制 / 两档尺寸 | `kit/Image.h`（`RequestImage` 512 / `RequestImageFull` 2048；两档 key 的号段**必须先清后置**，自检 `ImageKeyCollisionCount()`） | `UI.jsx` 的图位点 |
 | 复合视图：`Art` / `ArtInk` | `kit/Views.cpp` | `UI.jsx` Art、ArtInk |
 | 阶段流 / 阶段表 / Steps | `kit/View_Stage.cpp` | `StageFlow.jsx`、`UI.jsx` Steps、`StageList` |
 | 节点画布 | `kit/View_FlowCanvas.cpp` | `FlowCanvas.jsx` |
@@ -126,10 +150,14 @@ ShineTVStudio (exe)              src/ui/imgui/app/main.cpp —— 只做 CLI 分
 | 要改的东西 | 文件 |
 |---|---|
 | 外壳**固定档**（顶栏 46 / 导航 56 / 侧栏 240 / 检查器 280 / 底栏 190 / 状态栏 26 / 面包屑 34） | `pages/Shell_Layout.h` |
-| 顶栏 / 导航栏 / 状态栏 / 面包屑 | `pages/Shell_Chrome.cpp` |
-| 侧栏（卷→章→镜树 / 资产 kind 树）+ 检查器三段 | `pages/Shell_Panels.cpp` |
+| 顶栏（品牌 / 项目胶囊 / 搜索触发器 / 运行停止 / 主题设置）+ **运行执行体** | `pages/Shell_TopBar.cpp`（第二十三轮自 `Shell_Chrome.cpp` 拆出：这一族里唯一带状态与动作的一块） |
+| 导航栏 / 状态栏 / 面包屑 | `pages/Shell_Chrome.cpp` |
+| 侧栏**绘制与命中**（面板壳 / 快速跳转 / 资产 kind 树） | `pages/Shell_Sidebar.cpp`（原 `Shell_Panels.cpp`，第十八轮按读写边界拆开；第二十三轮 735 → 342 行） |
+| 侧栏两棵树的**数据准备**（指纹缓存 + 先序互转，一个像素都不画） | `pages/Shell_Sidebar_Tree.h` / `.cpp`（第二十三轮拆出；`FlatTreeIndex` / `AssetLeaf*` 的约定都在头里） |
+| 检查器三段（属性 KV 缓存 / 预览 / 关联 tag 缓存） | `pages/Shell_Inspector.cpp` |
 | 底栏（任务队列 / 日志 / 产物） | `pages/Shell_Dock.cpp` |
 | 底栏「校验报告」页 + 详情模态 | `pages/Shell_Reports.cpp` |
+| **媒体查看器浮层**（图片舞台 / 联系表 / 四层入口） | `pages/MediaViewer.h` / `.cpp`（`AssetViewerRequest` / `AssetSheetViewerRequest` / `ShotViewerRequest`） |
 | 命令面板 / 主题菜单 / 设置模态 / 浮层分发 | `pages/Shell_Palette.cpp` |
 | 工作区分发 / 快捷键 / 布局持久化 / 项目打开 | `pages/Shell.cpp`、`pages/Shell.h` |
 | 页面公共件（`kGap=16`、`ViewHeader`、占位串、视口高通道） | `pages/PageCommon.h`、`pages/WorkspacePages.h` |
@@ -252,7 +280,10 @@ powershell -File out\_run_review.ps1 -OutDir "$PWD\build\shots" -Theme deepspace
 | `README.md`（本文） | 现状、分层、**文件地图**、两个固定动作 | 每次开工先读 |
 | [`design-spec.md`](design-spec.md) | webui 1:1 视觉规范：几何/字号、31×5 色表、图标、外壳尺寸、22 组件、6 页逐页布局、降级清单、验收方法 | **动任何视觉之前** |
 | [`architecture.md`](architecture.md) | 分层、线程契约、纹理路径、门禁规则 | 动宿主 / 线程 / 纹理时 |
-| [`PROGRESS.md`](PROGRESS.md) | 已验证的事实、已修的真缺陷、**未修偏差清单**、跨轮硬事实 | 改之前先查这里，避免重复踩 |
+| [`进度.md`](进度.md) | 现状 + 当前计划（小步）+ 判据清单 + **未修偏差清单** | 改之前先查这里，避免重复踩 |
+| [`轮次记录.md`](轮次记录.md) | 历史层：各轮验证读数与结论、取证快照（归档不再改） | 查旧结论 / 复现历史读数时 |
+| [`记忆.md`](记忆.md) | 坑与纪律：已修缺陷档案、门禁盲区、跨轮硬事实、开发规范 | 查「为什么有这条规矩」 |
+| [`dynamic-fields.md`](dynamic-fields.md) | 动态字段：AI 按小说风格扩展字段的机制、KV 可行性、一致性与扩展性 | 改字段机制 / 给新风格加维度时 |
 | [`phases.md`](phases.md) | P0–P7 历史实施步骤与验收判据 | 想知道某个 P 编号指什么时 |
 | `../AGENTS.md` | 协作规则、构建、门禁、常用入口 | 每次开工 |
 | `../webui/` | 设计稿本体（**不在版本控制里**） | 需要核对 CSS 原式时 |

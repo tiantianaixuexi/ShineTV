@@ -20,8 +20,10 @@ Rect Field(ImDrawList* draw, Rect bounds, std::string_view label, std::string_vi
 // Input h30 pad 0 10 r6 fill-muted 1px line-normal；
 // focus = line-focus 边 + 0 0 0 3px accent-dim 外环
 bool Input(ImDrawList* draw, Rect bounds, std::string& value, std::string_view placeholder,
-           std::string_view id);
+           std::string_view id, ImGuiInputTextFlags flags = ImGuiInputTextFlags_None);
 bool TextArea(ImDrawList* draw, Rect bounds, std::string& value, int lines, std::string_view id);
+// id 是隐藏的 ImGui 控件标识。有效 index 预览选中值，越界时显示「请选择」。
+// 无选项时禁用控件。选中选项时写回 index 并返回 true。
 bool Select(ImDrawList* draw, Rect bounds, const std::vector<std::string>& options,
             int& index, std::string_view id);
 

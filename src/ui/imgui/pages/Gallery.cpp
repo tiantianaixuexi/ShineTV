@@ -1,8 +1,41 @@
+// shine::pages::Gallery —— 组件画廊（**原生 ImGui 试点页**）
+//
+// 这一页是「去掉 1:1 复刻约束、改用 ImGui 原生控件」的唯一试点判据：
+//   * 布局 / 裁剪 / 滚动 / 焦点 / 文本编辑 / 排序 / 弹出层 全部由 ImGui 负责；
+//   * 卡片高度由内容决定（BeginChild + AutoResizeY），不再手写「148 / 130 / 240」；
+//   * 颜色仍来自 theme（ApplyTheme 已把 31 个 token 铺进 ImGuiStyle），
+//     页面层**不再自己推主题色**。
+//
+// 与旧版的差异是有意的（约束已去掉）：
+//   * 不再是 repeat(auto-fit, minmax(340px,1fr)) 两列网格，改单列卡片流；
+//     可用宽度由 ImGui 给，窗口变窄时自动回流。
+//   * 控件尺寸由 ImGuiStyle（FramePadding / ItemSpacing / Rounding）决定，
+//     不再逐控件写死 30 / 28 / 26 这些 CSS 像素。
+//   * Steps / StageFlow / Art 仍自绘 —— 它们是**图**不是控件（没有命中/焦点语义），
+//     塞进 Button 只会得到一个假的可点区域。
+//
+// 验收点（下一轮铺开到其余页面时按这四条复查）：
+//   1. 卡片高度自适应：内容多高，卡就多高，不靠常量表；
+//   2. 窗口变窄 / 变高：自动换行与滚动，不需要 setContentHeight；
+//   3. 键盘可达：Tab 能遍历控件，输入框能打字，弹出层能开合；
+//   4. 切主题：颜色跟着变（不需要页面参与）。
+
 #include "ui/imgui/pages/Gallery.h"
 
+#include "ui/imgui/kit/Draw.h"
+#include "ui/imgui/kit/Fonts.h"
+#include "ui/imgui/kit/Icon.h"
+#include "ui/imgui/kit/Text.h"
+#include "ui/imgui/kit/UiBridge.h"
 #include "ui/imgui/kit/Views.h"
+#include "ui/imgui/pages/PageCommon.h"
+#include "ui/imgui/theme/Theme.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace shine::pages {
@@ -10,415 +43,636 @@ namespace {
 
 using namespace shine::kit;
 
-constexpr float kVwPadX = 24.0f;
-constexpr float kVwPadY = 20.0f;
+// ---------------------------------------------------------------- 小工具
 
-void SectionLabel(ImDrawList* draw, Rect area, std::string_view text) {
-    ImFont* font = FontBoldAt(11.5f);
-    draw->AddText(font, 11.5f, area.min, ColorTextMuted(), text.data(), text.data() + text.size());
+// 卡片标题：13px / 700 / text.secondary（设计稿 .card-h）。
+void CardTitle(std::string_view text) {
+    PushUiFont(theme::font::kHint, /*bold=*/true);
+    ImGui::TextColored(theme::Rgba(theme::Current().textSecondary), "%.*s",
+                       static_cast<int>(text.size()), text.data());
+    PopUiFont();
+    ImGui::Spacing();
 }
 
-// 每个画廊卡：标题 + 内容区。
-Rect GalleryCard(ImDrawList* draw, Rect bounds, std::string_view title) {
-    DrawShadowed(draw, bounds.min, bounds.max, 10.0f, ColorPanel(), ColorLineSubtle(), 1.0f);
-    ImFont* font = FontBoldAt(12.5f);
-    draw->AddText(font, 12.5f, ImVec2(bounds.min.x + 14.0f, bounds.min.y + 12.0f), ColorTextSecondary(),
-                  title.data(), title.data() + title.size());
-    return Rect{bounds.min.x + 14.0f, bounds.min.y + 34.0f, bounds.max.x - 14.0f, bounds.max.y - 12.0f};
+void CardSpacing() { ImGui::Dummy(ImVec2(0.0f, 6.0f)); }
+
+// 每张卡：BeginUiCard + 14px 内边距。End 必须在 EndUiCard 之前。
+void CardBegin(const char* id) {
+    BeginUiCard(id);
+    BeginUiCardBody();
+}
+void CardEnd() {
+    EndUiCardBody();
+    EndUiCard();
 }
 
-void Card_Buttons(ImDrawList* draw, Rect area) {
-    ButtonSpec spec;
-    const float y0 = area.min.y;
+// ---- Tag（非交互标签）----
+// 用自绘而不是 Selectable：它没有选中语义，套一个可选控件只会凭空多出 hover 态。
+ImU32 TagBg(theme::Tone tone) {
+    return ColorOf(theme::CurrentDerived().tagBg[static_cast<std::size_t>(tone)]);
+}
+ImU32 TagBorder(theme::Tone tone) {
+    return ColorOf(theme::CurrentDerived().tagBorder[static_cast<std::size_t>(tone)]);
+}
+ImU32 TagFg(theme::Tone tone) {
+    return tone == theme::Tone::Idle ? ColorTextMuted() : ToneColor(tone);
+}
+
+// 原 PushUiFont 将 kSmall 取整到 kMicro，CalcTextSize 将宽度向上取整。
+constexpr TextStyle kTagTextStyle{.size = theme::font::kMicro, .bold = true};
+
+ImVec2 TagSize(std::string_view label, float fontHeight) {
+    const float textW = std::ceil(kit::TextWidth(label, kTagTextStyle));
+    return ImVec2(textW + 16.0f, fontHeight + 8.0f);
+}
+
+void DrawTagAt(ImVec2 p, std::string_view label, theme::Tone tone) {
+    const float h = theme::font::kSmall + 8.0f;
+    const ImVec2 sz = TagSize(label, h);
+    const ImVec2 p2(p.x + sz.x, p.y + sz.y);
+    ImDrawList* d = ImGui::GetWindowDrawList();
+    d->AddRectFilled(p, p2, TagBg(tone), 999.0f);
+    d->AddRect(p, p2, TagBorder(tone), 999.0f, 0, 1.0f);
+    TextStyle style = kTagTextStyle;
+    style.color = TagFg(tone);
+    kit::Text(d, ImVec2(p.x + 8.0f, p.y + 0.5f * (sz.y - style.size)), label, style);
+}
+
+// 一组 Tag 的自动换行。返回值是**排版用**的终点，不依赖 ImGui 的 item 流。
+class TagPen {
+public:
+    void Begin(float gapX, float gapY) {
+        start_ = ImGui::GetCursorScreenPos();
+        x_ = start_.x;
+        y_ = start_.y;
+        right_ = start_.x + std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        rowH_ = 0.0f;
+        gapX_ = gapX;
+        gapY_ = gapY;
+        used_ = false;
+    }
+    void Place(std::string_view label, theme::Tone tone) {
+        const ImVec2 sz = TagSize(label, theme::font::kSmall + 8.0f);
+        if (used_ && x_ + sz.x > right_) {
+            x_ = start_.x;
+            y_ += rowH_ + gapY_;
+            rowH_ = 0.0f;
+        }
+        DrawTagAt(ImVec2(x_, y_), label, tone);
+        x_ += sz.x + gapX_;
+        rowH_ = std::max(rowH_, sz.y);
+        used_ = true;
+    }
+    // 把「画了多少高」提交给 ImGui —— 否则父窗口不知道内容有多高（旧实现的手写
+    // setContentHeight 就是干这个的，原生布局下不需要）。
+    void End() {
+        ImGui::SetCursorScreenPos(start_);
+        const float used = (y_ - start_.y) + rowH_;
+        ImGui::Dummy(ImVec2(std::max(1.0f, right_ - start_.x), used));
+    }
+
+private:
+    ImVec2 start_{};
+    float x_ = 0.0f, y_ = 0.0f, right_ = 0.0f, rowH_ = 0.0f;
+    float gapX_ = 6.0f, gapY_ = 6.0f;
+    bool used_ = false;
+};
+
+// ---------------------------------------------------------------- 卡片
+
+void Card_Buttons() {
+    CardBegin("gal-card-buttons");
+    CardTitle("Button 4 变体 × 3 尺寸");
+
     struct Variant {
-        ButtonVariant variant;
         const char* label;
+        ImU32 bg, hover, active, fg;
     };
     const Variant variants[] = {
-        {ButtonVariant::Primary, "主按钮"}, {ButtonVariant::Secondary, "次按钮"},
-        {ButtonVariant::Ghost, "幽灵"}, {ButtonVariant::Danger, "危险"}};
-    float x = area.min.x;
-    for (int i = 0; i < 4; ++i) {
-        spec.variant = variants[i].variant;
-        const std::string label = variants[i].label;
-        const float w = ButtonWidth(ButtonSize::Medium, 0.0f,
-                                    FontBoldAt(13.0f)->CalcTextSizeA(13.0f, 1e9f, 0.0f, label.data(),
-                                                                       label.data() + label.size())
-                                        .x);
-        Button(draw, RectAt(x, y0, w, 30.0f), label, spec, "gal-btn-" + std::to_string(i));
-        x += w + 8.0f;
+        // 主按钮：accent 底 + accent-fg 字。
+        {"主按钮", ColorAccent(), ColorAccentHover(), ColorAccentHover(), ColorAccentFg()},
+        // 次按钮：fill.muted → fill.hover → fill.selected。
+        {"次按钮", ColorFillMuted(), ColorFillHover(), ColorFillSelected(), ColorText()},
+        // 幽灵：透明底，只有 hover/active 才有面。
+        {"幽灵", ColorTransparent(), ColorFillHover(), ColorFillSelected(), ColorTextSecondary()},
+        // 危险：status.danger 底。
+        {"危险", ColorOf(theme::Current().statusDanger), ColorOf(theme::Current().statusDanger),
+         ColorOf(theme::Current().statusDanger), ColorTextInverse()},
+    };
+
+    for (const Variant& v : variants) {
+        ImGui::PushID(v.label);
+        ImGui::PushStyleColor(ImGuiCol_Button, v.bg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, v.hover);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, v.active);
+        ImGui::PushStyleColor(ImGuiCol_Text, v.fg);
+        ImGui::Button(v.label, ImVec2(96.0f, 30.0f));
+        ImGui::PopStyleColor(4);
+        ImGui::SameLine(0.0f, 8.0f);
+        ImGui::PopID();
     }
-    // 尺寸档
-    x = area.min.x;
-    const float y1 = y0 + 38.0f;
-    for (ButtonSize size : {ButtonSize::Small, ButtonSize::Medium, ButtonSize::Large}) {
-        const std::string label = "尺寸";
-        const float w = ButtonWidth(size, 0.0f,
-                                    FontBoldAt(13.0f)->CalcTextSizeA(13.0f, 1e9f, 0.0f, label.data(),
-                                                                       label.data() + label.size())
-                                        .x);
-        ButtonSpec s2 = spec;
-        s2.variant = ButtonVariant::Secondary;
-        s2.size = size;
-        Button(draw, RectAt(x, y1, w, ButtonHeight(size)), label, s2,
-               "gal-size-" + std::to_string(static_cast<int>(size)));
-        x += w + 8.0f;
+    ImGui::NewLine();
+
+    // 尺寸档：只有 FramePadding 在变 —— 高度与内边距是 ImGui 自己的算法。
+    struct SizeCase {
+        const char* label;
+        ImVec2 pad;
+    };
+    const SizeCase sizes[] = {
+        {"Small", ImVec2(8.0f, 3.0f)},
+        {"Medium", ImVec2(12.0f, 7.0f)},
+        {"Large", ImVec2(16.0f, 11.0f)},
+    };
+    for (int i = 0; i < 3; ++i) {
+        ImGui::PushID(i);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, sizes[i].pad);
+        ImGui::Button(sizes[i].label);
+        ImGui::PopStyleVar();
+        ImGui::SameLine(0.0f, 8.0f);
+        ImGui::PopID();
     }
-    // loading / disabled
-    x = area.min.x;
-    const float y2 = y1 + 44.0f;
-    ButtonSpec loading = spec;
-    loading.variant = ButtonVariant::Primary;
-    loading.loading = true;
-    Button(draw, RectAt(x, y2, 96.0f, 30.0f), "加载中", loading, "gal-load");
-    x += 104.0f;
-    ButtonSpec disabled = spec;
-    disabled.variant = ButtonVariant::Secondary;
-    disabled.disabled = true;
-    Button(draw, RectAt(x, y2, 96.0f, 30.0f), "已禁用", disabled, "gal-dis");
-    x += 104.0f;
-    for (std::string_view icon : {"settings", "download", "refresh", "eye"}) {
-        IconButton(draw, RectAt(x, y2, 28.0f, 28.0f), icon, false, false,
-                   "gal-ib-" + std::string(icon), std::string(icon));
-        x += 32.0f;
-    }
+    ImGui::NewLine();
+
+    ImGui::BeginDisabled();
+    ImGui::Button("已禁用");
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::BeginDisabled();
+    ImGui::Button("加载中…");
+    ImGui::EndDisabled();
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::TextDisabled("BeginDisabled / EndDisabled 由 ImGui 管命中与灰显");
+
+    CardEnd();
+    ImGui::Spacing();
 }
 
-void Card_Tags(ImDrawList* draw, Rect area) {
-    float x = area.min.x;
-    float y = area.min.y;
-    const theme::Tone tones[] = {theme::Tone::Accent, theme::Tone::Info,  theme::Tone::Ok,
-                                  theme::Tone::Warn,  theme::Tone::Danger, theme::Tone::Busy,
-                                  theme::Tone::Idle};
+void Card_Tags() {
+    CardBegin("gal-card-tags");
+    CardTitle("Tag / Kbd");
+    const theme::Tone tones[] = {theme::Tone::Accent, theme::Tone::Info, theme::Tone::Ok,
+                                 theme::Tone::Warn,   theme::Tone::Danger, theme::Tone::Busy,
+                                 theme::Tone::Idle};
     const char* names[] = {"accent", "info", "ok", "warn", "danger", "busy", "idle"};
+
+    TagPen pen;
+    pen.Begin(6.0f, 6.0f);
     for (int i = 0; i < 7; ++i) {
-        const std::string label = names[i];
-        const float w = TagWidth(label, false, i % 2 == 0);
-        if (x + w > area.max.x) {
-            x = area.min.x;
-            y += 26.0f;
-        }
-        Tag(draw, RectAt(x, y, w, 20.0f), label, tones[i], false, i % 2 == 0);
-        x += w + 8.0f;
+        pen.Place(names[i], tones[i]);
     }
-    y += 28.0f;
-    x = area.min.x;
-    for (int i = 0; i < 7; ++i) {
-        const std::string label = names[i];
-        const float w = TagWidth(label, true, false);
-        if (x + w > area.max.x) {
-            x = area.min.x;
-            y += 24.0f;
-        }
-        Tag(draw, RectAt(x, y, w, 17.0f), label, tones[i], true, false, i == 5);
-        x += w + 6.0f;
-    }
-    y += 30.0f;
-    for (int i = 0; i < 7; ++i) {
-        StatusDot(draw, ImVec2(area.min.x + 4.0f + static_cast<float>(i) * 18.0f, y + 6.0f),
-                  tones[i], i == 5);
-    }
-    y += 20.0f;
-    const char* kbds[] = {"Ctrl", "K", "Shift", "↵"};
-    x = area.min.x;
+    pen.End();
+
+    CardSpacing();
+    const char* kbds[] = {"Ctrl", "K", "Shift", "Enter"};
+    const TextStyle kbdStyle{.size = theme::font::kMicro, .bold = true, .color = ColorTextMuted()};
     for (const char* k : kbds) {
-        const float w = KbdWidth(k);
-        Kbd(draw, RectAt(x, y, w, 18.0f), k);
-        x += w + 6.0f;
+        const float w = std::ceil(kit::TextWidth(k, kbdStyle)) + 12.0f;
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddRectFilled(
+            p, ImVec2(p.x + w, p.y + 18.0f), ColorFillMuted(), 4.0f);
+        ImGui::GetWindowDrawList()->AddRect(p, ImVec2(p.x + w, p.y + 18.0f), ColorLineNormal(),
+                                            4.0f, 0, 1.0f);
+        kit::Text(ImGui::GetWindowDrawList(), ImVec2(p.x + 6.0f, p.y + 3.0f), k, kbdStyle);
+        ImGui::Dummy(ImVec2(w, 18.0f));
+        ImGui::SameLine(0.0f, 6.0f);
     }
+    ImGui::NewLine();
+
+    CardEnd();
+    ImGui::Spacing();
 }
 
-void Card_SegmentedTabs(ImDrawList* draw, Rect area) {
-    // ⚠️ 早先这里是两条**裸语句**：
-    //     Segmented(draw, ..., options, "a",  "gal-seg");
-    //     Tabs(draw, ..., tabs,     "1",  "gal-tabs");
-    //   两个 value 都是**字面量**，返回值也直接丢弃。而 kit::Segmented / Tabs 的
-    //   实现（Widgets.cpp:451 / 568）是 `picked` 初值 = 传进去的 value，**只在**
-    //   `hit.clicked` 时被改 —— 返回值**必须由调用方存回**，否则下一帧又从字面量
-    //   重新开始。实际表现：点任意一项都弹回原项，控件完全点不动。
-    //
-    //   同一个文件 Card_Inputs 里 Switch / Checkbox 的同款问题已经判为
-    //   「组件画廊里按不动的开关比在业务页更不能接受」并修好了（见那里 154-164 的
-    //   注释）—— 这里是**同一张画布上漏改的另一半**：一页之内，开关能点、分段器
-    //   不能点，看起来像「这套控件有的能用有的不能用」，比全都不能用更容易误导。
-    //
-    // 修法照抄那边：用函数内 static 存跨帧状态（画廊卡是无实例的自由函数，
-    // 状态没地方挂，static 是本文件既有的手法，见 Card_Inputs）。
-    // 存回时**先拷成 std::string 再赋值**（不是 `segValue = segPicked`）：没点击时
-    // `Segmented` 返回的就是传进去的 value 本身，返回的 string_view 会**指向
-    // segValue 自己**，直接赋值等于自引用赋值。走临时对象这一步是本仓库既有口径
-    // （Page_ImageFlow.cpp 的 `std::to_string(panelTab_)` → `picked` → 存回）。
-    static std::string segValue = "a";
-    static std::string tabValue = "1";
-    const std::vector<SegmentOption> options{{"a", "详情"}, {"b", "总览"}};
-    const float w = SegmentedWidth(options);
-    const std::string_view segPicked =
-        Segmented(draw, RectAt(area.min.x, area.min.y, w, 32.0f), options, segValue, "gal-seg");
-    if (!segPicked.empty()) {
-        segValue = std::string(segPicked);
+void Card_SegmentedTabs() {
+    CardBegin("gal-card-seg");
+    CardTitle("Segmented / Tabs");
+    static int seg = 0;
+    static int tab = 0;
+
+    // Segmented：用 Selectable + 一个容器 child 拼（ImGui 没有原生 segmented）。
+    // 收益是**每段的命中/焦点/键盘导航免费**。
+    const char* segItems[] = {"详情", "总览"};
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ColorFillMuted());
+    ImGui::BeginChild("gal-seg", ImVec2(0.0f, 32.0f), ImGuiChildFlags_Borders);
+    ImGui::PopStyleColor();
+    for (int i = 0; i < 2; ++i) {
+        ImGui::PushID(i);
+        if (i > 0) {
+            ImGui::SameLine();
+        }
+        if (ImGui::Selectable(segItems[i], seg == i, ImGuiSelectableFlags_None,
+                              ImVec2(ImGui::CalcTextSize(segItems[i]).x + 24.0f, 0.0f))) {
+            seg = i;
+        }
+        ImGui::PopID();
     }
-    const std::vector<SegmentOption> tabs{{"1", "章节"}, {"2", "设定"}, {"3", "评审"}};
-    const std::string_view tabPicked = Tabs(
-        draw, RectAt(area.min.x, area.min.y + 42.0f, 260.0f, 30.0f), tabs, tabValue, "gal-tabs");
-    if (!tabPicked.empty()) {
-        tabValue = std::string(tabPicked);
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    if (ImGui::BeginTabBar("gal-tabs", ImGuiTabBarFlags_None)) {
+        const char* tabs[] = {"章节", "设定", "评审"};
+        for (int i = 0; i < 3; ++i) {
+            ImGui::PushID(i);
+            if (ImGui::BeginTabItem(tabs[i], nullptr, tab == i ? ImGuiTabItemFlags_SetSelected
+                                                              : ImGuiTabItemFlags_None)) {
+                tab = i;
+                ImGui::TextDisabled("第 %d 个页签的内容", i + 1);
+                ImGui::EndTabItem();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTabBar();
     }
+
+    CardEnd();
+    ImGui::Spacing();
 }
 
-void Card_Inputs(ImDrawList* draw, Rect area) {
-    static std::string text = "分镜图_v3";
-    static std::string area_text = "{\n  \"code\": \"S012\",\n  \"duration\": 6.0\n}";
-    static int selectIndex = 1;
+void Card_Inputs() {
+    CardBegin("gal-card-inputs");
+    CardTitle("Field / Input / TextArea / Select / Switch / Checkbox");
+    static char name[64] = "分镜图_v3";
+    static char json[256] = "{\n  \"code\": \"S012\",\n  \"duration\": 6.0\n}";
+    static int combo = 1;
     static bool on = true;
     static bool checked = true;
-    float y = area.min.y;
-    Rect field = Field(draw, RectAt(area.min.x, y, area.width(), 60.0f), "名称", "首行缩进两字");
-    Input(draw, RectAt(field.min.x, field.min.y, area.width(), 30.0f), text, "占位文字", "gal-in");
-    y = field.min.y + 42.0f;
-    Rect field2 = Field(draw, RectAt(area.min.x, y, area.width(), 30.0f), "Beat JSON", "");
-    TextArea(draw, RectAt(field2.min.x, field2.min.y, area.width(), 74.0f), area_text, 3, "gal-ta");
-    y = field2.min.y + 84.0f;
-    const std::vector<std::string> options{"S011 · 远景", "S012 · 中景", "S013 · 近景"};
-    Select(draw, RectAt(area.min.x, y, 200.0f, 30.0f), options, selectIndex, "gal-sel");
-    // ⚠️ 早先这两行是 `Switch(draw, ..., on, "gal-sw");` / `Checkbox(draw, ..., checked, ...)`，
-    //    **返回值直接丢弃**。kit::Switch / Checkbox 的 `bool on` 是**按值**传进去的
-    //    （Widgets.h），它们返回的是「是否被翻转」这个信号。所以点一百次开关都停在 on。
-    //    这是组件画廊页：它存在的意义就是**演示这些控件可用**，一个按不动的开关
-    //    在这里比在业务页更不能接受 —— 画廊是给人看「这套控件做得对不对」的。
-    if (Switch(draw, RectAt(area.min.x + 220.0f, y + 5.0f, 34.0f, 19.0f), on, "gal-sw")) {
-        on = !on;
-    }
-    if (Checkbox(draw, RectAt(area.min.x + 270.0f, y, 140.0f, 20.0f), checked, "启用", "gal-cb")) {
-        checked = !checked;
-    }
+    static float slider = 0.64f;
+    static int radio = 0;
+
+    PushUiFont(theme::font::kHint);
+    ImGui::TextUnformatted("名称");
+    PopUiFont();
+    ImGui::SetNextItemWidth(240.0f);
+    ImGui::InputTextWithHint("##gal-name", "占位文字", name, sizeof(name));
+    ImGui::Spacing();
+
+    PushUiFont(theme::font::kHint);
+    ImGui::TextUnformatted("Beat JSON");
+    PopUiFont();
+    ImGui::SetNextItemWidth(320.0f);
+    ImGui::InputTextMultiline("##gal-json", json, sizeof(json), ImVec2(0.0f, 74.0f));
+    ImGui::Spacing();
+
+    const char* options[] = {"S011 · 远景", "S012 · 中景", "S013 · 近景"};
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::Combo("##gal-combo", &combo, options, IM_ARRAYSIZE(options));
+    ImGui::SameLine();
+    ImGui::Checkbox("启用", &checked);
+    ImGui::SameLine();
+    ImGui::RadioButton("A", &radio, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton("B", &radio, 1);
+
+    ImGui::SetNextItemWidth(240.0f);
+    ImGui::SliderFloat("##gal-slider", &slider, 0.0f, 1.0f, "%.2f");
+    ImGui::SameLine();
+    ImGui::Text("Switch → 用 Checkbox 代替（ImGui 无原生 Switch）");
+
+    CardEnd();
+    ImGui::Spacing();
 }
 
-void Card_Progress(ImDrawList* draw, Rect area) {
-    float y = area.min.y;
-    Progress(draw, RectAt(area.min.x, y, area.width(), 6.0f), 64.0f, false, false);
-    y += 18.0f;
-    Progress(draw, RectAt(area.min.x, y, area.width(), 4.0f), 28.0f, true, true);
-    y += 20.0f;
-    Progress(draw, RectAt(area.min.x, y, area.width(), 6.0f), 100.0f, false, false);
+void Card_Progress() {
+    CardBegin("gal-card-progress");
+    CardTitle("Progress");
+    ImGui::ProgressBar(0.64f, ImVec2(ImGui::GetContentRegionAvail().x, 8.0f), "");
+    ImGui::Spacing();
+    ImGui::ProgressBar(0.28f, ImVec2(ImGui::GetContentRegionAvail().x, 6.0f), "");
+    ImGui::Spacing();
+    ImGui::ProgressBar(1.0f, ImVec2(ImGui::GetContentRegionAvail().x, 8.0f), "");
+    CardEnd();
+    ImGui::Spacing();
 }
 
-void Card_Cards(ImDrawList* draw, Rect area) {
-    const float w = (area.width() - 10.0f) * 0.5f;
-    Rect body = Card(draw, RectAt(area.min.x, area.min.y, w, area.height()), "普通卡片", "layers",
-                     false, false);
-    const std::string_view text = "body";
-    draw->AddText(FontAt(12.5f), 12.5f, body.min, ColorTextMuted(), text.data(),
-                  text.data() + text.size());
-    Rect body2 = Card(draw, RectAt(area.min.x + w + 10.0f, area.min.y, w, area.height()), "辉光",
-                      "zap", true, true);
-    const std::string_view text2 = "glow";
-    draw->AddText(FontAt(12.5f), 12.5f, body2.min, ColorTextMuted(), text2.data(),
-                  text2.data() + text2.size());
-}
-
-void Card_KV(ImDrawList* draw, Rect area) {
-    KeyValues(draw, area, {{"类别", "角色"}, {"别名", "沈砚 / 老沈"}, {"出处", "第 3 章"}, {"降级策略", "保留上一版"}});
-}
-
-void Card_Empty(ImDrawList* draw, Rect area) {
-    Empty(draw, area, "sparkles", "还没有项目", "点右上角「新建项目」，或用 ⌘O 打开一个已有项目。");
-}
-
-void Card_Steps(ImDrawList* draw, Rect area) {
-    const std::vector<std::string> steps{"生成", "评审", "落库"};
-    Steps(draw, area, steps, 1);
-    float y = area.min.y + 46.0f;
-    for (int i = 0; i < 5; ++i) {
-        const std::vector<kit::StageNode> nodes = {
-            {"T1", "读取项目", kit::StageState::Done},   {"T2", "扩写章节", kit::StageState::Done},
-            {"T3", "生成图", i == 0 ? kit::StageState::Running : kit::StageState::Todo},
-            {"T4", "评审", kit::StageState::Todo},      {"T5", "落库", kit::StageState::Skipped}};
-        StageFlow(draw, RectAt(area.min.x, y, area.width(), 30.0f), nodes);
-        y += 36.0f;
+void Card_Cards() {
+    CardBegin("gal-card-cards");
+    CardTitle("Card 普通 / glow");
+    const float w = (ImGui::GetContentRegionAvail().x - 10.0f) * 0.5f;
+    const char* titles[] = {"普通卡片", "辉光卡片"};
+    for (int i = 0; i < 2; ++i) {
+        ImGui::PushID(i);
+        if (i > 0) {
+            ImGui::SameLine();
+        }
+        BeginUiCard("gal-inner-card", w);
+        BeginUiCardBody();
+        PushUiFont(theme::font::kHint, /*bold=*/true);
+        ImGui::TextUnformatted(titles[i]);
+        PopUiFont();
+        ImGui::Spacing();
+        ImGui::TextDisabled("body");
+        EndUiCardBody();
+        EndUiCard();
+        ImGui::PopID();
     }
+    CardEnd();
+    ImGui::Spacing();
 }
 
-void Card_Art(ImDrawList* draw, Rect area) {
-    const float w = (area.width() - 10.0f) * 0.5f;
-    Art(draw, RectAt(area.min.x, area.min.y, w, 100.0f), 3, true);
-    Art(draw, RectAt(area.min.x + w + 10.0f, area.min.y, w, 100.0f), 7, true);
-    ArtInk(draw, RectAt(area.min.x, area.min.y + 108.0f, area.width(), 80.0f), 2, 0.8f);
-}
-
-// ListRow / ListCard / DataTable / Menu —— 2026-09-30 才补上的四个。
-//
-// 为什么这张卡重要：这一页存在的意义就是**证明 kit 控件真的可用**（上一轮
-// 「组件画廊的开关与复选框点不动」就是在这里暴露的）。而这四个组件当时
-// 「已实现、算得对、全树零调用」—— 零调用意味着**没有任何一处证明它们能用**，
-// 于是页面层各写了一份还写错。所以它们必须有演示。
-void Card_Rows(ImDrawList* draw, Rect area) {
-    float y = area.min.y;
-    // ListRow：选中 / 普通 / 禁用 三态。id 给不同值，鼠标点得动。
-    {
-        ListRowSpec spec;
-        spec.id = "gal-row-0";
-        spec.icon = "folder";
-        spec.title = "open/output";
-        spec.trailing = "目录";
-        spec.trailingMono = true;
-        ListRow(draw, RectAt(area.min.x, y, area.width(), 26.0f), spec);
-        y += 30.0f;
-    }
-    {
-        ListRowSpec spec;
-        spec.id = "gal-row-1";
-        spec.icon = "file";
-        spec.title = "ch012.json";
-        spec.trailing = "T12";
-        spec.trailingMono = true;
-        spec.selected = true;
-        ListRow(draw, RectAt(area.min.x, y, area.width(), 26.0f), spec);
-        y += 30.0f;
-    }
-    {
-        ListRowSpec spec;
-        spec.id = "gal-row-2";
-        spec.icon = "file";
-        spec.title = "ch013.json";
-        spec.trailing = "降级";
-        spec.disabled = true;
-        ListRow(draw, RectAt(area.min.x, y, area.width(), 26.0f), spec);
-        y += 34.0f;
-    }
-    // ListCard：双行（标题 + 描述）+ 选中态。
-    {
-        ListCardSpec spec;
-        spec.id = "gal-card-0";
-        spec.icon = "sparkles";
-        spec.title = "小说长篇";
-        spec.description = "章节 → 分镜 → 出图 → 出片，含连续性校验";
-        spec.selected = true;
-        ListCard(draw, RectAt(area.min.x, y, area.width(), 54.0f), spec);
-        y += 60.0f;
-    }
-    {
-        ListCardSpec spec;
-        spec.id = "gal-card-1";
-        spec.title = "影视短片";
-        spec.description = "剧本 → 镜表 → 连贯性 → 渲染";
-        ListCard(draw, RectAt(area.min.x, y, area.width(), 54.0f), spec);
-        y += 60.0f;
-    }
-}
-
-void Card_TableMenu(ImDrawList* draw, Rect area) {
-    // DataTable：4 列 + tag 列 + mono 列 + 排序。
-    static kit::TableSort sort;
-    const std::vector<kit::TableColumn> columns{
-        {"检查", 56.0f, false, false, false, true, false},
-        {"级别", 72.0f, false, false, false, false, true},
-        {"结论", 72.0f, false, false, false, false, true},
-        {"详情", 0.0f, false, false, /*sortable=*/true, false, false},
+void Card_KV() {
+    CardBegin("gal-card-kv");
+    CardTitle("KV 键值对");
+    struct Row {
+        const char* k;
+        const char* v;
     };
-    std::vector<kit::TableRow> rows;
-    for (int i = 0; i < 4; ++i) {
-        kit::TableRow row;
-        row.cells = {"C" + std::to_string(i + 1), i < 2 ? "high" : "low", i < 2 ? "未过" : "提示",
-                     "第 " + std::to_string(i + 1) + " 项校验的说明文字"};
-        row.tones = {theme::Tone::Idle, i < 2 ? theme::Tone::Danger : theme::Tone::Warn,
-                     i < 2 ? theme::Tone::Danger : theme::Tone::Warn, theme::Tone::Idle};
-        rows.push_back(row);
+    static const Row rows[] = {
+        {"类别", "角色"}, {"别名", "沈砚 / 老沈"}, {"出处", "第 3 章"}, {"降级策略", "保留上一版"},
+    };
+    if (ImGui::BeginTable("gal-kv", 2, ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableSetupColumn("key", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+        ImGui::TableSetupColumn("value");
+        for (const Row& r : rows) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", r.k);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(r.v);
+        }
+        ImGui::EndTable();
     }
-    DataTable(draw, RectAt(area.min.x, area.min.y, area.width(), 200.0f), columns, rows, sort,
-              /*compact=*/true, "gal-table");
-    // Menu：贴锚点右下展开（点它看展开）。
-    std::vector<MenuRow> menu;
-    MenuRow label;
-    label.kind = MenuRowKind::Label;
-    label.label = "视图";
-    menu.push_back(label);
-    MenuRow a;
-    a.kind = MenuRowKind::Item;
-    a.label = "紧凑列表";
-    a.icon = "list";
-    a.selected = true;
-    menu.push_back(a);
-    MenuRow b;
-    b.kind = MenuRowKind::Item;
-    b.label = "网格";
-    b.icon = "grid";
-    menu.push_back(b);
-    MenuRow sep;
-    sep.kind = MenuRowKind::Separator;
-    menu.push_back(sep);
-    MenuRow c;
-    c.kind = MenuRowKind::Item;
-    c.label = "归档（暂不可用）";
-    c.disabled = true;
-    menu.push_back(c);
-    const Rect anchor{area.max.x - 130.0f, area.min.y + 210.0f, area.max.x, area.min.y + 240.0f};
-    DrawRoundRect(draw, anchor.min, anchor.max, 6.0f, ColorElevated(), ColorLineNormal(), 1.0f);
-    DrawTextClipped(draw, FontAt(12.0f), 12.0f,
-                    ImVec2(anchor.min.x, kit::CenterTextY(FontAt(12.0f), 12.0f, anchor.center().y)),
-                    anchor.width() - 20.0f, ColorTextSecondary(), "点我展开菜单");
-    Menu(draw, anchor, menu, "gal-menu");
+    CardEnd();
+    ImGui::Spacing();
+}
+
+void Card_Empty() {
+    CardBegin("gal-card-empty");
+    CardTitle("Empty 空态");
+    const char* title = "还没有项目";
+    const char* body = "点右上角「新建项目」，或用 Ctrl+O 打开一个已有项目。";
+    PushUiFont(theme::font::kTitle, /*bold=*/true);
+    const float tw = ImGui::CalcTextSize(title).x;
+    PopUiFont();
+    PushUiFont(theme::font::kHint);
+    const float bw = ImGui::CalcTextSize(body).x;
+    PopUiFont();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    ImGui::Dummy(ImVec2(1.0f, 10.0f));
+    PushUiFont(theme::font::kTitle, /*bold=*/true);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail - tw) * 0.5f));
+    ImGui::TextUnformatted(title);
+    PopUiFont();
+    PushUiFont(theme::font::kHint);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (avail - bw) * 0.5f));
+    ImGui::TextColored(theme::Rgba(theme::Current().textMuted), "%s", body);
+    PopUiFont();
+    CardEnd();
+    ImGui::Spacing();
+}
+
+void Card_Steps(ImDrawList* draw) {
+    CardBegin("gal-card-steps");
+    CardTitle("Steps / StageFlow");
+    const std::vector<std::string> steps{"生成", "评审", "落库"};
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const float w = std::min(avail, StepsWidth(steps));
+        Steps(draw, Rect{p, ImVec2(p.x + w, p.y + 44.0f)}, steps, 1);
+        ImGui::Dummy(ImVec2(avail, 44.0f));
+    }
+    CardSpacing();
+    {
+        const std::vector<StageNode> nodes = {
+            {"T1", "读取", StageState::Done},
+            {"T2", "扩写", StageState::Done},
+            {"T3", "出图", StageState::Running},
+            {"T4", "评审", StageState::Failed},
+            {"T5", "落库", StageState::Skipped},
+        };
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const float w = std::min(avail, StageFlowWidth(nodes));
+        StageFlow(draw, Rect{p, ImVec2(p.x + w, p.y + 30.0f)}, nodes);
+        ImGui::Dummy(ImVec2(avail, 30.0f));
+    }
+    CardEnd();
+    ImGui::Spacing();
+}
+
+void Card_Rows(ImDrawList* draw) {
+    CardBegin("gal-card-rows");
+    CardTitle("ListRow / ListCard（Selectable 版）");
+    struct Row {
+        const char* icon;
+        const char* title;
+        const char* trailing;
+        bool selected;
+    };
+    static bool picked0 = false;
+    static bool picked1 = true;
+    static bool picked2 = false;
+    bool* picked[] = {&picked0, &picked1, &picked2};
+    const Row rows[] = {
+        {"folder", "open/output", "目录", false},
+        {"file", "ch012.json", "T12", true},
+        {"file", "ch013.json", "降级", false},
+    };
+    // 原 PushUiFont 将 kHint 取整到 kBody。
+    const TextStyle rowTitleStyle{.size = theme::font::kBody, .color = ColorText()};
+    const TextStyle rowTrailingStyle{.size = rowTitleStyle.size, .color = ColorTextMuted()};
+    for (int i = 0; i < 3; ++i) {
+        ImGui::PushID(i);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        // Selectable 自带 hover / 选中 / 键盘焦点 —— 这一行不再需要 HitTest。
+        if (ImGui::Selectable("##row", *picked[i], ImGuiSelectableFlags_None,
+                              ImVec2(avail, 26.0f))) {
+            *picked[i] = !*picked[i];
+        }
+        const ImVec2 rowMin = ImGui::GetItemRectMin();
+        const ImVec2 rowMax = ImGui::GetItemRectMax();
+        const float midY = (rowMin.y + rowMax.y) * 0.5f;
+        if (rows[i].icon != nullptr && rows[i].icon[0] != '\0') {
+            DrawIcon(draw, rows[i].icon, ImVec2(rowMin.x + 8.0f, midY - 6.0f), 12.0f,
+                     ColorTextMuted());
+        }
+        const float textY = kit::CenterY(midY, rowTitleStyle);
+        kit::Text(draw, ImVec2(rowMin.x + 26.0f, textY), rows[i].title, rowTitleStyle);
+        const float tw = std::ceil(kit::TextWidth(rows[i].trailing, rowTrailingStyle));
+        kit::Text(draw, ImVec2(rowMax.x - 8.0f - tw, textY), rows[i].trailing, rowTrailingStyle);
+        ImGui::PopID();
+    }
+
+    CardSpacing();
+    PushUiFont(theme::font::kHint, /*bold=*/true);
+    ImGui::TextUnformatted("双行卡（ListCard）");
+    PopUiFont();
+    static bool card0 = true;
+    static bool card1 = false;
+    const char* cardTitles[] = {"小说长篇", "影视短片"};
+    const char* cardDescs[] = {"章节 → 分镜 → 出图 → 出片，含连续性校验", "剧本 → 镜表 → 连贯性 → 渲染"};
+    bool* cardPicked[] = {&card0, &card1};
+    // 标题沿用 kHint 取整后的 kBody，描述沿用 kLabel 取整后的 kTiny。
+    const TextStyle cardTitleStyle{.size = theme::font::kBody, .bold = true, .color = ColorText()};
+    const TextStyle cardDescStyle{.size = theme::font::kTiny, .color = ColorTextMuted()};
+    for (int i = 0; i < 2; ++i) {
+        ImGui::PushID(100 + i);
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (ImGui::Selectable("##card", *cardPicked[i], ImGuiSelectableFlags_None,
+                              ImVec2(avail, 44.0f))) {
+            *cardPicked[i] = !*cardPicked[i];
+        }
+        const ImVec2 rmin = ImGui::GetItemRectMin();
+        kit::Text(draw, ImVec2(rmin.x + 10.0f, rmin.y + 7.0f), cardTitles[i], cardTitleStyle);
+        kit::Text(draw, ImVec2(rmin.x + 10.0f, rmin.y + 7.0f + cardTitleStyle.size + 4.0f),
+                  cardDescs[i], cardDescStyle);
+        ImGui::PopID();
+    }
+    CardEnd();
+    ImGui::Spacing();
+}
+
+void Card_TableMenu() {
+    CardBegin("gal-card-table");
+    CardTitle("DataTable（BeginTable，排序由 ImGui 的 SortSpecs 驱动）");
+
+    struct Row {
+        std::string cells[4];
+        theme::Tone tones[4];
+    };
+    static std::vector<Row> rows = [] {
+        std::vector<Row> v;
+        for (int i = 0; i < 5; ++i) {
+            Row r;
+            r.cells[0] = Fmt("C{}", i + 1);
+            r.cells[1] = (i < 2) ? "high" : "low";
+            r.cells[2] = (i < 2) ? "未过" : "提示";
+            r.cells[3] = Fmt("第 {} 项校验的说明文字", i + 1);
+            r.tones[0] = theme::Tone::Idle;
+            r.tones[1] = (i < 2) ? theme::Tone::Danger : theme::Tone::Warn;
+            r.tones[2] = (i < 2) ? theme::Tone::Danger : theme::Tone::Warn;
+            r.tones[3] = theme::Tone::Idle;
+            v.push_back(std::move(r));
+        }
+        return v;
+    }();
+
+    if (ImGui::BeginTable("gal-table", 4,
+                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInner |
+                              ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("检查", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+        ImGui::TableSetupColumn("级别", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+        ImGui::TableSetupColumn("结论", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+        ImGui::TableSetupColumn("详情");
+        ImGui::TableHeadersRow();
+
+        for (Row& r : rows) {
+            ImGui::TableNextRow();
+            for (int c = 0; c < 4; ++c) {
+                ImGui::TableNextColumn();
+                if (c == 0) {
+                    PushUiFont(theme::font::kSmall, /*bold=*/true, /*mono=*/true);
+                    ImGui::TextUnformatted(r.cells[c].c_str());
+                    PopUiFont();
+                } else if (c == 1 || c == 2) {
+                    ImGui::TextColored(theme::Rgba(ToneColor(r.tones[c])), "%s", r.cells[c].c_str());
+                } else {
+                    ImGui::TextColored(theme::Rgba(ColorTextMuted()), "%s", r.cells[c].c_str());
+                }
+            }
+        }
+
+        // 排序：**ImGui 只给 SortSpecs，排序由调用方做**。旧自绘表把 sort 当参数传
+        // 进来自己排；这里换成读 SortSpecs，排序方向是 ImGui 的表头点出来的。
+        if (ImGuiTableSortSpecs* sort = ImGui::TableGetSortSpecs()) {
+            if (sort->SpecsDirty && sort->SpecsCount > 0) {
+                const ImGuiTableColumnSortSpecs& s = sort->Specs[0];
+                if (s.ColumnIndex >= 0 && s.ColumnIndex < 4) {
+                    std::stable_sort(rows.begin(), rows.end(),
+                                     [&s](const Row& a, const Row& b) {
+                                         const int cmp = a.cells[s.ColumnIndex].compare(
+                                             b.cells[s.ColumnIndex]);
+                                         const bool ascending = s.SortDirection == ImGuiSortDirection_Ascending;
+                                         return ascending ? cmp < 0 : cmp > 0;
+                                     });
+                }
+                sort->SpecsDirty = false;
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    CardSpacing();
+    // 弹出层：OpenPopup + BeginPopup。命中、遮罩、Esc 关闭都是 ImGui 的。
+    if (ImGui::Button("视图 ▾")) {
+        ImGui::OpenPopup("gal-menu");
+    }
+    if (ImGui::BeginPopup("gal-menu")) {
+        if (ImGui::MenuItem("紧凑列表", nullptr, true)) {
+        }
+        if (ImGui::MenuItem("网格")) {
+        }
+        ImGui::Separator();
+        ImGui::BeginDisabled();
+        ImGui::MenuItem("归档（暂不可用）");
+        ImGui::EndDisabled();
+        ImGui::EndPopup();
+    }
+
+    CardEnd();
+    ImGui::Spacing();
+}
+
+void Card_Art(ImDrawList* draw) {
+    CardBegin("gal-card-art");
+    CardTitle("Art / ArtInk 程序化占位画（仍是自绘：它是图不是控件）");
+    const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float w = (avail - 10.0f) * 0.5f;
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        Art(draw, Rect{p, ImVec2(p.x + w, p.y + 100.0f)}, 3, true);
+        ImGui::Dummy(ImVec2(w, 100.0f));
+        ImGui::SameLine();
+        const ImVec2 q = ImGui::GetCursorScreenPos();
+        Art(draw, Rect{q, ImVec2(q.x + w, q.y + 100.0f)}, 7, true);
+        ImGui::Dummy(ImVec2(w, 100.0f));
+    }
+    ImGui::Spacing();
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ArtInk(draw, Rect{p, ImVec2(p.x + avail, p.y + 80.0f)}, 2, 0.8f);
+        ImGui::Dummy(ImVec2(avail, 80.0f));
+    }
+    CardEnd();
+    ImGui::Spacing();
 }
 
 } // namespace
 
 void GalleryPage::Draw(Rect area, ImDrawList* draw) {
-    const Rect content{area.min.x + kVwPadX, area.min.y + kVwPadY, area.max.x - kVwPadX,
-                       area.max.y - kVwPadY};
+    // 原生流式布局：直接用 ImGui 的光标推进，**不再**手写 RectAt / Stack / Flow。
+    // 外层 Shell 的 workspace ScrollRegion 已就位，页面只管往下排。
+    ImGui::SetCursorScreenPos(area.min);
 
-    // 头
-    DrawIcon(draw, "grid", content.min, 20.0f, ColorAccent());
-    ImFont* title = FontBoldAt(18.0f);
-    const std::string_view titleText = "组件画廊";
-    draw->AddText(title, 18.0f, ImVec2(content.min.x + 28.0f, content.min.y - 2.0f), ColorText(),
-                  titleText.data(), titleText.data() + titleText.size());
-    const std::string sub = "全部组件 × 全部状态 · 主题：" +
-                            std::string(theme::ThemeDisplayName(theme::CurrentThemeId()));
-    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(content.min.x + 28.0f, content.min.y + 22.0f),
-                  ColorTextMuted(), sub.data(), sub.data() + sub.size());
+    PushUiFont(theme::font::kViewTitle, /*bold=*/true);
+    const char* title = "组件画廊";
+    ImGui::TextUnformatted(title);
+    PopUiFont();
+    ImGui::Spacing();
+    PushUiFont(theme::font::kHint);
+    ImGui::TextColored(theme::Rgba(theme::Current().textMuted),
+                       "原生 ImGui 控件 · 流式布局 · 主题：%s",
+                       theme::ThemeDisplayName(theme::CurrentThemeId()));
+    PopUiFont();
+    ImGui::Separator();
+    CardSpacing();
 
-    const Rect grid{content.min.x, content.min.y + 48.0f, content.max.x, content.max.y};
+    Card_Buttons();
+    Card_Tags();
+    Card_SegmentedTabs();
+    Card_Inputs();
+    Card_Progress();
+    Card_Cards();
+    Card_KV();
+    Card_Empty();
+    Card_Steps(draw);
+    Card_Rows(draw);
+    Card_TableMenu();
+    Card_Art(draw);
 
-    // repeat(auto-fit, minmax(340px,1fr)) gap 14
-    const int columns = AutoGridCols(grid.width(), 340.0f, 14.0f);
-    const float columnW = (grid.width() - 14.0f * static_cast<float>(columns - 1)) /
-                         static_cast<float>(columns);
-
-    struct Entry {
-        const char* title;
-        void (*draw)(ImDrawList*, Rect);
-        float height;
-    };
-    static const Entry entries[] = {
-        {"Button 4 变体 × 3 尺寸", Card_Buttons, 148.0f},
-        {"Tag / StatusDot / Kbd", Card_Tags, 130.0f},
-        {"Segmented / Tabs", Card_SegmentedTabs, 84.0f},
-        {"Field / Input / TextArea / Select / Switch / Checkbox", Card_Inputs, 240.0f},
-        {"Progress（渐变 + run 微光）", Card_Progress, 48.0f},
-        {"Card 普通 / hover / glow", Card_Cards, 96.0f},
-        {"KV 键值对", Card_KV, 92.0f},
-        {"Empty 空态", Card_Empty, 190.0f},
-        {"Steps / StageFlow 5 态", Card_Steps, 200.0f},
-        {"ListRow / ListCard", Card_Rows, 226.0f},
-        {"DataTable / Menu", Card_TableMenu, 340.0f},
-        {"Art / ArtInk 程序化占位画", Card_Art, 200.0f},
-    };
-
-    float y = grid.min.y;
-    for (std::size_t i = 0; i < std::size(entries); ++i) {
-        const std::size_t column = i % static_cast<std::size_t>(columns);
-        const std::size_t row = i / static_cast<std::size_t>(columns);
-        if (row == 0) {
-            y = grid.min.y;
-        }
-        const float x = grid.min.x + (columnW + 14.0f) * static_cast<float>(column);
-        const float h = entries[i].height;
-        const Rect card = RectAt(x, y, columnW, h);
-        Rect body = GalleryCard(draw, card, entries[i].title);
-        entries[i].draw(draw, body);
-        if (column + 1 == static_cast<std::size_t>(columns) || i + 1 == std::size(entries)) {
-            y += h + 14.0f;
-        }
-    }
+    // 页面把「实际用到的高度」报给外壳 —— 这个数现在是 ImGui 排版算出来的，
+    // 不再是 12 条卡片高度常量表（旧实现：entries[12].height）。
+    const float used = ImGui::GetCursorScreenPos().y - area.min.y;
+    SetPageContentHeight(used + 8.0f);
 }
 
 } // namespace shine::pages

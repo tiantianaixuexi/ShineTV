@@ -105,4 +105,9 @@ $env:SHINE_IMGUI_REVIEW = "$PWD\build\shots"
 | [`refactor/README.md`](refactor/README.md) | 现状、分层、**文件地图（要改什么 → 改哪个文件）** |
 | [`refactor/design-spec.md`](refactor/design-spec.md) | webui 1:1 视觉规范：几何/字号、31×5 色表、图标、外壳尺寸、组件、逐页布局、验收方法 |
 | [`refactor/architecture.md`](refactor/architecture.md) | 分层、线程契约、纹理路径、门禁规则 |
-| [`refactor/PROGRESS.md`](refactor/PROGRESS.md) | 已验证的事实、已修缺陷、**未修偏差清单**、跨轮硬事实 |
+| [`refactor/进度.md`](refactor/进度.md) | 现状 + 当前计划（小步）+ 判据清单 + **未修偏差清单** |
+| [`refactor/轮次记录.md`](refactor/轮次记录.md) | 历史轮次记录（各轮读数与结论，归档不再改） |
+| [`refactor/记忆.md`](refactor/记忆.md) | 坑与纪律：已修缺陷档案、门禁盲区、跨轮硬事实、开发规范 |
+| [`refactor/dynamic-fields.md`](refactor/dynamic-fields.md) | 动态字段：AI 按小说风格扩展字段的机制与契约 |
+| [`refactor/animations.md`](refactor/animations.md) | 动画体系：ImAnim 接线、动画清单、取证确定性、vendor 升级记录 |
+| [`refactor/dpi-layout.md`](refactor/dpi-layout.md) | UI 体系：DPI 缩放契约、布局管理器、颜色对比度门禁 |

@@ -429,6 +429,14 @@ void mi_register_output(mi_output_fun* out, void* arg) mi_attr_noexcept {
 
 // add stderr to the delayed output after the module is loaded
 static void mi_add_stderr_output(void) {
+  // ShineTV 补丁（2026-11-23）：幂等化。Windows 下 `_mi_auto_process_init` 会被
+  // CRT 钩子（prim/prim.c:42/52）与 loader 挂接（prim/windows/prim.c:769）各触发一次
+  // ⇒ 本函数跑两次，`mi_assert_internal(mi_out_default == NULL)` 在断言激活的构建
+  // （Debug）里直接 abort —— 表现为「Debug 构建启动即死」。Release 无害（重复注册同
+  // 一个输出），但断言构建起不来。加一次性闸门后语义不变。
+  static bool mi_stderr_output_added = false;
+  if (mi_stderr_output_added) return;
+  mi_stderr_output_added = true;
   mi_assert_internal(mi_out_default == NULL);
   mi_out_buf_flush(&mi_out_stderr, false, NULL); // flush current contents to stderr
   mi_atomic_store_ptr_release(void,&mi_out_default,(void*)&mi_out_buf_stderr);  // and add stderr to the delayed output

@@ -52,9 +52,9 @@ struct HoverTarget {
 struct HoverTally {
     int ok = 0;
     int injectFailed = 0; // 鼠标覆盖没到位（帧内 ImGui 看到的坐标 != 注入的）→ 宿主/后端层
-    int sentinelDead = 0; // 静息帧（-FLT_MAX 哨兵）仍命中控件 → 哨兵失效，后续结论都不可信
+    int sentinelDead = 0; // 窗外静息点仍命中控件，后续结论不可信
     int moving = 0;       // 静息两帧就不一致 → 页面在动，这一拍测不出 hover 的因果
-    int offTarget = 0;    // 注入到位、页面静止，却一个控件都没命中 → **探针坐标**要改
+    int offTarget = 0;    // 注入到位、页面静止，却没有控件命中，需查热区和输入状态
     int broken = 0;       // 命中且静止，hover 前后像素却完全相同 → **产品**的 hover 缺陷
     // 聚合值只为兼容既有的 manifest 读法（脚本按正则读 `unstable=`）。
     [[nodiscard]] int unstable() const { return injectFailed + sentinelDead + moving + offTarget; }

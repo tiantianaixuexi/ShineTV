@@ -1,11 +1,13 @@
 #include "ui/imgui/kit/Widget_Tree.h"
 
+#include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Icon.h"
 #include "ui/imgui/kit/Widget_Color.h"
 #include "ui/imgui/kit/Widget_Core.h"
 
+#include <cstdio>
 #include <string>
 
 namespace shine::kit {
@@ -21,7 +23,7 @@ namespace {
 // 先序遍历的扁平计数 + 画一层的递归。visibleIndex 用来把「可见序号」和
 // 选中项对齐：折叠的子树不占序号（与 Shell.jsx 里 open[ch] 决定渲染一致）。
 float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int& selectedIndex,
-               int& counter, int depth, std::string_view id) {
+               int& counter, int depth, std::string_view parentKey) {
     const float rowH = TreeNodeHeight();
     float y = bounds.min.y;
     for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -56,11 +58,32 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
         const Rect row = RectAt(bounds.min.x + 20.0f * static_cast<float>(depth), y,
                                 bounds.width() - 20.0f * static_cast<float>(depth), rowH);
         const bool on = selectedIndex == index;
-        const Hit hit =
-            visible ? detail::HitTestItem(
-                          row, detail::UniqueId(std::string(id) + "#" + std::to_string(depth),
-                                                static_cast<int>(i)))
-                    : Hit{};
+        // 行 id = **先序路径键**（"<父行键>##<同父下标>"，顶层父键 = 控件 id）在栈上拼：
+        // 每帧 × 每行都走这里，不许堆分配；缓冲装不下才退回堆版本，产物逐字节一致。
+        //
+        // ⚠️ 原格式 "<id>#<depth>##<i>" 只带深度与同父下标、**不带父节点身份** ⇒
+        //    跨父撞车：「第一卷第 0 章」与「第二卷第 0 章」同键（side-tree#1##0），
+        //    两行同时可见时 ImGui 报 conflicting ID、后注册那行**点不动**（间歇出现，
+        //    取决于滚动位置与抓帧；第二十三轮定位、本轮修）。路径键天然唯一。
+        //    「改 id 会动 hover 探针读数」的顾虑已核：hover-tree-node 按**坐标**注入
+        //    （ReviewHoverProbe 表：kWsAssets 170,210），不认 id 串，改键安全。
+        char rowBuf[224];
+        std::string rowOverflow;
+        const int rn = std::snprintf(rowBuf, sizeof(rowBuf), "%.*s##%d",
+                                     static_cast<int>(parentKey.size()), parentKey.data(),
+                                     static_cast<int>(i));
+        const bool rowKeyFits = rn >= 0 && static_cast<std::size_t>(rn) < sizeof(rowBuf);
+        if (!rowKeyFits) {
+            rowOverflow = detail::UniqueId(parentKey, static_cast<int>(i));
+        }
+        const std::string_view rowKey(rowKeyFits ? rowBuf : rowOverflow.c_str(),
+                                      rowKeyFits ? static_cast<std::size_t>(rn) : rowOverflow.size());
+        const Hit hit = [&] {
+            if (!visible) {
+                return Hit{};
+            }
+            return detail::HitTestItemId(row, rowKey.data());
+        }();
 
         // 折叠箭头单独占一个 hit item（.tw，14×14）：它**套在行矩形里面**，
         // 所以点它会连带把整行的 hit 也触发 → 折叠的同时还会改选中项。
@@ -69,9 +92,16 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
         bool twistClicked = false;
         if (visible && node.hasChildren) {
             const Rect twist = RectAt(row.min.x + 8.0f, row.center().y - 7.0f, 14.0f, 14.0f);
-            const std::string twistId =
-                detail::UniqueId(std::string(id) + "#t" + std::to_string(depth),
-                                 static_cast<int>(i));
+            // 折叠箭头的 id 同样栈上拼（"<行键>#t"；行键已含父路径，天然唯一）。
+            char twistBuf[224];
+            std::string twistOverflow;
+            const int tn = std::snprintf(twistBuf, sizeof(twistBuf), "%.*s#t",
+                                         static_cast<int>(rowKey.size()), rowKey.data());
+            const std::string_view twistId =
+                tn >= 0 && static_cast<std::size_t>(tn) < sizeof(twistBuf)
+                    ? std::string_view(twistBuf, static_cast<std::size_t>(tn))
+                    : (twistOverflow = std::string(rowKey) + "#t",
+                       std::string_view(twistOverflow));
             // ⚠️ 必须声明：twisty 是**故意**套在行矩形里面的（见本段开头那段说明），
             //    而 `kit::HitTestItem` 会把每个矩形登记进本帧重叠自检表。
             //    不声明的话，小说侧栏那两个箭头会被逐帧记成「重复命中」，
@@ -90,10 +120,28 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
             draw->AddRectFilled(row.min, row.max, ColorFillSelected());
             draw->AddRectFilled(ImVec2(row.min.x, row.min.y), ImVec2(row.min.x + 2.0f, row.max.y),
                                 ColorAccent());
-        } else if (hit.hovered) {
-            draw->AddRectFilled(row.min, row.max, ColorFillHover());
+        } else {
+            // 补间版：节点 hover 填色硬切换走 ch0 色补间（kDurFast，含 alpha）；settle 在
+            // 「无填色」一侧目标是全透明 ⇒ 不画，与原样逐像素相同。
+            // ⚠️ 纯展示行（!visible ⇒ Hit{}，tid=0）不接补间 —— id=0 会跨控件撞车；
+            //    走原硬切换，而它的 hit.hovered 恒 false，与原样一样什么都不画。
+            const ImU32 rowFillNow =
+                (hit.tid != 0)
+                    ? TransitionColorTo(hit.tid, 0, hit.hovered ? ColorFillHover() : ImU32(0),
+                                        kDurFast)
+                    : (hit.hovered ? ColorFillHover() : ImU32(0));
+            if (rowFillNow != 0) {
+                draw->AddRectFilled(row.min, row.max, rowFillNow);
+            }
         }
-        const ImU32 fg = on ? ColorText() : (hit.hovered ? ColorText() : ColorTextSecondary());
+        // 补间版：节点文字色硬切换走 ch3 色补间（kDurFast）。目标式与原硬切换逐字相同
+        // （选中行恒 ColorText()）；tid=0 的行同上走原式。
+        const ImU32 fg =
+            (hit.tid != 0)
+                ? TransitionColorTo(
+                      hit.tid, 3,
+                      on ? ColorText() : (hit.hovered ? ColorText() : ColorTextSecondary()), kDurFast)
+                : (on ? ColorText() : (hit.hovered ? ColorText() : ColorTextSecondary()));
         float x = row.min.x + 8.0f;
         if (node.hasChildren) {
             // .tw（ui.css:796-806）：14×14 muted，收起朝右，展开旋转 90° 朝下。
@@ -141,7 +189,7 @@ float TreeWalk(ImDrawList* draw, Rect bounds, std::vector<TreeNode>& nodes, int&
             const float lineX = row.min.x + 14.0f;
             const float childTop = y;
             y = TreeWalk(draw, Rect{ImVec2(bounds.min.x, y), ImVec2(bounds.max.x, bounds.max.y)},
-                         node.children, selectedIndex, counter, depth + 1, id);
+                         node.children, selectedIndex, counter, depth + 1, rowKey);
             draw->AddLine(ImVec2(lineX, childTop), ImVec2(lineX, y), ColorLineSubtle(), 1.0f);
         }
     }

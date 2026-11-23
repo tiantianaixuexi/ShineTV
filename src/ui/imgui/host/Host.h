@@ -98,6 +98,23 @@ public:
     void SetFrameCtrlOverride(bool down) { ctrlOverride_ = down; }
     void ClearFrameCtrlOverride() { ctrlOverride_ = false; }
 
+    // 取证用：注入一段**字符输入**（UTF-8），在 `NewFrame` 之前走
+    // `io.AddInputCharactersUTF8` —— 与 win32 后端收 WM_CHAR 完全同一条路。
+    //
+    // ⚠️ 字符是**边沿**事件：覆盖开着的每一帧都会注入一遍，探针必须
+    //    「Set → 泵 1 帧 → Clear」，连泵 N 帧就是重复打字。
+    // ⚠️ 只有**拿到键盘焦点的 InputText** 会吃字符，且**激活当帧 ImGui 会丢弃
+    //    字符队列**（Shell_Palette 的 firstText 注释记过这个坑）—— 先点中输入框、
+    //    泵过激活帧、再注入字符。
+    void SetFrameTextOverride(std::string utf8) {
+        textOverride_ = std::move(utf8);
+        textOverrideSet_ = true;
+    }
+    void ClearFrameTextOverride() {
+        textOverrideSet_ = false;
+        textOverride_.clear();
+    }
+
     // 鼠标左键的按下 / 抬起覆盖。**光有位置注入是测不出「点不动」的** ——
     // 悬停探针读的是 hovered，而 `IsItemClicked()` 还要 MouseDown 的按下沿。
     // 判据里的用法：位置设好之后先注入 down 一帧、再注入 up 一帧。
@@ -112,6 +129,10 @@ public:
 
     // 显示器缩放系数（96 DPI = 1.0）。面板宽高按它换算，1:1 指的是 100% 缩放下。
     [[nodiscard]] static float DisplayScaledFactor();
+    // UI 缩放系数 k（设计单位 → 物理像素）。取证强制 1.0、SHINE_UI_SCALE 可覆盖、
+    // 否则跟随系统 DPI。全链路（布局 / 命中 / 文字量度）都在设计单位里跑，
+    // 渲染整体 ×k —— 见 Host.cpp 顶部那段约定。
+    [[nodiscard]] float UiScale() const noexcept { return uiScale_; }
 
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
@@ -125,10 +146,16 @@ private:
     float mouseOverrideX_ = 0.0f;
     float mouseOverrideY_ = 0.0f;
     bool mouseOverrideSet_ = false;
+    float uiScale_ = 1.0f;
+    bool fixedUiScale_ = false;
+    bool review_ = false;
     int keyOverride_ = 0;
     bool keyOverrideDown_ = false;
     bool keyOverrideSet_ = false;
     bool ctrlOverride_ = false;    HGLRC glContext_ = nullptr;  // GL 上下文
+    // 字符注入（见 SetFrameTextOverride 的说明）
+    std::string textOverride_;
+    bool textOverrideSet_ = false;
     // 鼠标左键覆盖（见 SetFrameMouseButtonOverride 的说明）
     bool mouseButtonOverrideDown_ = false;
     bool mouseButtonOverrideSet_ = false;

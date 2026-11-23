@@ -1,0 +1,18 @@
+{
+  "collection": "shinetv_memory",
+  "failed_files": [],
+  "indexed_chunks": 1,
+  "indexed_files": 6,
+  "last_completed_at": "2026-11-23T18:12:35.399278Z",
+  "last_started_at": "2026-11-23T18:12:31.157873Z",
+  "last_success_at": "2026-11-23T18:12:35.399278Z",
+  "milvus_uri": "~/.memsearch/milvus.db",
+  "operation": "index",
+  "paths": [
+    ".memsearch/memory"
+  ],
+  "schema_version": 1,
+  "status": "ok",
+  "total_files": 6,
+  "updated_at": "2026-11-23T18:12:35.399278Z"
+}

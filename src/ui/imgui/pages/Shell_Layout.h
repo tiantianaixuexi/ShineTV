@@ -12,12 +12,13 @@
 namespace shine::pages {
 
 // design-spec §4 的全部固定档（100% 缩放下）
-constexpr float kTopBarHeight = 46.0f;
+constexpr float kTopBarHeight = 52.0f;
 constexpr float kRailWidth = 56.0f;
 constexpr float kSidePanelWidth = 240.0f;
 constexpr float kInspectorWidth = 280.0f;
+constexpr float kPreferredWorkspaceWidth = 720.0f;
 constexpr float kDockHeight = 190.0f;
-constexpr float kStatusBarHeight = 26.0f;
-constexpr float kCrumbHeight = 34.0f;
+constexpr float kStatusBarHeight = 28.0f;
+constexpr float kCrumbHeight = 38.0f;
 
 } // namespace shine::pages

@@ -1,6 +1,7 @@
 #include "ui/imgui/pages/BookData.h"
 
 #include "db/sqlite/SqliteDb.h"
+#include "ui/imgui/kit/Fmt.h"
 #include "novel/NovelContinuity.h"
 #include "novel/NovelGraph.h"
 #include "novel/NovelVisual.h"
@@ -46,6 +47,11 @@ double DurationFromTimeline(const std::string& json) {
     }
     return any ? value : 0.0;
 }
+
+// 当前章切片（定义在 LoadBook 之后：全量与切章轻量两条路共用，说明见定义处）。
+void LoadChapterSlice(db::sqlite::Database& db, novelcore::NovelGraph& graph,
+                      novelcore::NovelVisual& visual, const std::filesystem::path& root,
+                      RowId chapterId, BookState& out);
 
 } // namespace
 
@@ -117,7 +123,7 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     out.chapterVStages.resize(out.chapters.size());
     for (std::size_t ci = 0; ci < out.chapters.size(); ++ci) {
         for (int v = 1; v <= 7; ++v) {
-            const std::string code = "V" + std::to_string(v);
+            const std::string code = kit::Fmt("V{}", v);
             if (auto arts = visual.ListStageArtifacts(out.chapters[ci].id, code)) {
                 out.chapterVStages[ci][static_cast<std::size_t>(v - 1)] =
                     static_cast<int>(arts->size());
@@ -173,6 +179,53 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     out.selectedChapter = std::clamp(wantChapter, 0, static_cast<int>(out.chapters.size()) - 1);
     const RowId chapterId = out.chapters[static_cast<std::size_t>(out.selectedChapter)].id;
 
+    // —— 总控「最近产物」：**出图产物**（最新在前）——
+    //
+    // ⚠️ 为什么总控要读这张表（而不是继续只列 T 链账本）：那张卡的 `s.entries` 来自
+    //    `pipeline::Runner::LedgerLog()`，而执行体未接入
+    //    （`OverviewPipelineWired()==false`，`BindOverviewProject` 传的是 nullptr 执行体）
+    //    ⇒ 账本**永远是空的** ⇒ 「最近产物」在真实运行里从来只有空态。
+    //    真正的产物在 `generated_images` 里。
+    //
+    // ⚠️ 不限 `source_kind`（与上面那条逐镜查询唯一的区别）：资产设定图那条链走的是
+    //    `source_kind='asset'`（`NovelAssetPipeline.cpp` 提交时写的），只认 shot 会把
+    //    它们全漏掉 —— 而这条判据存在的意义就是「最近产的东西」，不是「最近的镜图」。
+    // ⚠️ 排序用 `id`（插入序 = 出图顺序），不按 created：同一秒重出会分不出先后
+    //    （与逐镜那条同一个口径）。
+    //
+    // 文件大小在**这里**取（worker 线程，本来就做 IO）：UI 线程每帧 stat 一遍是
+    // 把 IO 搬回渲染循环；`-1` = 文件不在。
+    {
+        constexpr int kRecentImageLimit = 5;
+        if (auto st = db.Prepare("SELECT rel_path FROM generated_images WHERE rel_path<>'' "
+                                 "ORDER BY id DESC LIMIT ?1")) {
+            (void)st->BindInt(1, kRecentImageLimit);
+            while (st->Step() == db::sqlite::StepResult::Row) {
+                BookRecentImage row;
+                row.relPath = st->ColumnText(0);
+                std::error_code ec;
+                const auto size = std::filesystem::file_size(AssetImagePath(root, row.relPath), ec);
+                row.sizeBytes = ec ? -1 : static_cast<std::int64_t>(size);
+                out.recentImages.push_back(std::move(row));
+            }
+        }
+    }
+
+    // 当前章切片（与 LoadBookChapterSlice 共用同一份实现）。
+    LoadChapterSlice(db, graph, visual, root, chapterId, out);
+}
+
+
+namespace {
+
+// —— 当前章的切片：场 / 镜 / 逐镜成图 / V1–V8 阶段 / 连续性 ——
+//
+// LoadBook（全量）与 LoadBookChapterSlice（切章轻量重载）**共用这一份**：同一族
+// 查询只此一份实现，两处各写一遍迟早分叉。recentImages（最近产物，全局）与
+// chapterVStages（全书）**不在**切片里 —— 它们不随选中章变。
+void LoadChapterSlice(db::sqlite::Database& db, novelcore::NovelGraph& graph,
+                      novelcore::NovelVisual& visual, const std::filesystem::path& root,
+                      RowId chapterId, BookState& out) {
     std::vector<novelcore::SceneRow> scenes;
     if (auto listed = graph.ListScenes(chapterId)) {
         scenes = std::move(*listed);
@@ -252,9 +305,14 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     //    不要每镜一次查询。
     // ⚠️ 同一条镜可能有多张（重出过图）：按 id 升序取**最后一条**（= 最新那次）。
     //    不按 created 排 —— 那是秒级时间戳，同一秒重出会分不出先后。
+    // ⚠️ 这里一次把**同一行的生成参数**一起取出来（`prompt/model/steps/width/height`）：
+    //    出图页「结果」页签的 KV 要显示它们，而那些列就在这一行里。分两次查（先取
+    //    `rel_path` 再按 id 回查参数）会多一次往返，而且两条查询的「最新那条」排序
+    //    一旦写得不一样就会取到两行 —— 同源的东西就该在同一次查询里取。
     if (!out.shots.empty()) {
         std::string sql =
-            "SELECT source_id,rel_path FROM generated_images WHERE source_kind='shot' "
+            "SELECT source_id,rel_path,prompt,model,steps,width,height FROM generated_images "
+            "WHERE source_kind='shot' "
             "AND rel_path<>'' AND source_id IN (";
         for (std::size_t i = 0; i < out.shots.size(); ++i) {
             sql += (i == 0 ? "?" : ",?");
@@ -270,9 +328,17 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
                 const auto shotId = static_cast<RowId>(st->ColumnInt(0));
                 const std::string rel = st->ColumnText(1);
                 for (BookShot& shot : out.shots) {
-                    if (shot.id == shotId) {
-                        shot.imageRelPath = rel;  // 后写的覆盖先写的 ⇒ 留最新那条
+                    if (shot.id != shotId) {
+                        continue;
                     }
+                    // 后写的覆盖先写的 ⇒ 留最新那条（**连同它的参数**，见上面那句：
+                    // 图与参数必须来自同一行，混着两行读会出现「这张图的步数」不是它的）。
+                    shot.imageRelPath = rel;
+                    shot.imagePrompt = st->ColumnText(2);
+                    shot.imageModel = st->ColumnText(3);
+                    shot.imageSteps = static_cast<int>(st->ColumnInt(4));
+                    shot.imageWidth = static_cast<int>(st->ColumnInt(5));
+                    shot.imageHeight = static_cast<int>(st->ColumnInt(6));
                 }
             }
         }
@@ -280,7 +346,7 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
 
     // V1–V7：逐阶段查 stage_artifacts，**有产物才算 done**，没有就是 todo。
     for (int v = 1; v <= 7; ++v) {
-        const std::string code = "V" + std::to_string(v);
+        const std::string code = kit::Fmt("V{}", v);
         if (auto arts = visual.ListStageArtifacts(chapterId, code)) {
             out.vStage[static_cast<std::size_t>(v - 1)] = !arts->empty();
         }
@@ -300,5 +366,25 @@ void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out
     out.continuity.notes = std::move(outcome.notes);
     out.vStage[7] = outcome.error.empty();  // V8 跑出报告才算数；error 非空 = 没跑成
 }
+
+} // namespace
+
+// 切章轻量重载（见 BookData.h 的声明）：只取「当前章切片」。
+// 与 LoadBook 同一约定：跑在 worker 上、不碰 UI 状态，db 句柄局部、出函数即关。
+void LoadBookChapterSlice(const std::filesystem::path& root, RowId chapterId,
+                          int chapterIndex, BookState& out) {
+    out.selectedChapter = chapterIndex;
+    const std::filesystem::path dbPath = root / "db" / "novel.db";
+
+    db::sqlite::Database db;
+    if (auto opened = db.Open({.path = dbPath, .readOnly = true, .create = false}); !opened) {
+        out.error = "打不开小说库：" + opened.error().message;
+        return;
+    }
+    novelcore::NovelGraph graph(db);
+    novelcore::NovelVisual visual(db);
+    LoadChapterSlice(db, graph, visual, root, chapterId, out);
+}
+
 
 } // namespace shine::pages

@@ -1,0 +1,1159 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="ShineTV Studio 项目管理、小说、资产、分镜、出图、出片和审阅的交互设计。">
+<title>ShineTV Studio · 界面设计稿</title>
+<style>
+/* Hallmark · theme: Bloom · shape: app screen · genre: atmospheric · redesign: full · v2.1.0 */
+/* Critique: the prior dashboard gave each region the same weight. Here the project index, manuscript, footage and task board each lead their own screen. */
+:root{
+  color-scheme:light;
+  --bg:#f4efe6;--surface:#ebe3d6;--panel:#fffdf8;--raised:#fffdf8;
+  --line:#d0c3b4;--ink:#28211c;--quiet:#54483e;--dim:#716458;
+  --accent:#973b29;--accent-hover:#7e2f20;--accent-ink:#fff8f1;--accent-bg:#f4dfd3;
+  --warn:#77491f;--matte:#292422;--matte-paper:#f2e9df;--flow-grid:#8f766238;
+  --scrim:#281a12a8;--bright:#fff8f1;--selection-line:#a1513a;
+  --tool:#3b3129;--tool-border:#615045;--focus:#973b29;--field:#8c7768;
+  --disabled-bg:#ded4c8;--disabled-ink:#605245;
+  --ok:#3e6b40;--ok-bg:#e7eede;--danger:#992c1e;--danger-bg:#f6e0da;
+  --info:#3c566e;--info-bg:#e4eaf0;--warn-bg:#f6e9d3;--warn-line:#c49a5f;
+  --art-warm-1:#8a4a35;--art-warm-2:#a2624a;--art-cool-1:#4c5b63;--art-cool-2:#66787f;
+  --font-ui:"Microsoft YaHei UI","Segoe UI",system-ui,sans-serif;
+  --font-reader:"Noto Serif CJK SC","Songti SC",SimSun,serif;
+  --font-mono:Consolas,"Microsoft YaHei UI",monospace;
+  --radius:6px;
+}
+html,body{overflow-x:clip}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 var(--font-ui)}
+button,input,select,textarea{font:inherit}
+button,input,select,textarea{
+  min-width:0;min-height:36px;border:1px solid var(--line);
+  color:inherit;background:var(--panel)
+}
+button,select{padding:4px 12px;white-space:nowrap;border-radius:var(--radius)}
+button{cursor:pointer}
+button:hover{background:var(--surface)}
+button:active{background:var(--accent-bg)}
+button:disabled,button[aria-disabled=true]{background:var(--disabled-bg);color:var(--disabled-ink);border-color:var(--disabled-bg);cursor:not-allowed}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--focus);outline-offset:2px
+}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
+button.primary:hover,button.primary:active{background:var(--accent-hover)}
+button.selected,.selected{background:var(--accent-bg);border-color:var(--selection-line)}
+input,textarea{padding:8px 12px;width:100%;border:1px solid var(--field);border-radius:4px}
+textarea{resize:vertical;min-height:144px}
+label{display:grid;gap:4px;font-weight:600}
+h1,h2,h3,p{margin:0;min-width:0}
+h1,h2{overflow-wrap:break-word;text-wrap:balance}
+h1{font-size:27px;line-height:1.22}
+h2{font-size:19px;line-height:1.32}
+h3{font-size:16px}
+small,.dim{color:var(--dim)}
+.muted{color:var(--quiet)}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.line{display:flex;align-items:center;gap:12px;min-width:0}
+.between{justify-content:space-between}
+.grow{flex:1;min-width:0}
+.clip{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stack{display:grid;gap:16px;min-width:0}
+.design-tools{min-height:56px;padding:8px 16px;background:var(--tool);color:var(--bright);position:relative;z-index:4}
+.design-tools label{display:flex;align-items:center;gap:8px;font-size:12px}
+.design-tools strong{font-size:14px}
+.design-tools select,.design-tools button{color:var(--ink);min-height:32px}
+.design-tools :focus-visible{outline-color:var(--bright)}
+.presentation{overflow:auto;height:calc(100dvh - 56px)}
+.app{height:100%;min-height:440px;position:relative;overflow:hidden;background:var(--bg);container-type:inline-size;scrollbar-color:var(--quiet) var(--surface)}
+.capture .design-tools{display:none}
+.capture .presentation{height:100dvh}
+.top{height:56px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.logo,.mark{display:grid;place-items:center;flex:none;border-radius:var(--radius)}
+.logo{width:28px;height:28px;background:var(--ink);color:var(--bright)}
+.mark{width:32px;height:32px;background:var(--surface);color:var(--ink)}
+.glyph{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;vertical-align:middle;flex:none}
+.top .brand{border:0;display:flex;gap:8px;align-items:center;padding:0;background:transparent}
+.top .search{display:flex;width:224px;align-items:center;justify-content:space-between;color:var(--quiet)}
+.shell{--rail-width:64px;display:flex;flex-direction:column;height:100%}
+.shell>.top,.shell>.status{flex:none}
+.frame{display:grid;grid-template-columns:var(--rail-width) 224px minmax(0,1fr) 248px;position:relative;flex:1;min-height:0}
+.frame.no-side{grid-template-columns:var(--rail-width) 0 minmax(0,1fr) 248px}
+.frame.no-inspector{grid-template-columns:var(--rail-width) 224px minmax(0,1fr) 0}
+.frame.no-side.no-inspector{grid-template-columns:var(--rail-width) 0 minmax(0,1fr) 0}
+.no-side .sidebar,.no-inspector .inspector{display:none}
+.rail,.sidebar,.inspector{background:var(--surface);overflow:auto;min-width:0;min-height:0}
+.rail{background:var(--panel);padding:8px 4px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.rail button{display:grid;justify-items:center;place-content:center;gap:4px;min-height:48px;font-size:12px;padding:4px;border-color:transparent;color:var(--quiet)}
+.rail .active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent)}
+.rail hr{width:24px;border:0;border-top:1px solid var(--line);margin:8px auto}
+.sidebar,.inspector{border-right:1px solid var(--line);padding:16px 12px}
+.inspector{border-right:0;border-left:1px solid var(--line)}
+.sidebar h3,.inspector h3{margin-bottom:12px}
+.sidebar button,.inspector summary{display:block;width:100%;text-align:left;margin-bottom:4px}
+.sidebar button{border-color:transparent;background:transparent;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar button:hover,.sidebar button.selected{background:var(--panel);color:var(--ink)}
+.sidebar .group{margin-block:16px 8px;color:var(--dim);font-size:12px}
+.inspector details{border-top:1px solid var(--line);padding:12px 0}
+.inspector summary{cursor:pointer;font-weight:600}
+.kv{display:grid;grid-template-columns:80px minmax(0,1fr);gap:8px;color:var(--quiet)}
+.work{display:flex;flex-direction:column;min-width:0;min-height:0}
+.crumbs{height:36px;flex:none;padding:0 20px;border-bottom:1px solid var(--line);line-height:36px;color:var(--quiet);font-size:12px}
+.head{min-height:80px;padding:12px 24px;background:var(--bg);border-bottom:1px solid var(--line)}
+.head p{color:var(--quiet);margin-top:4px}
+.scroll{overflow:auto;min-height:0;flex:1}
+.content{padding:20px 24px 28px;min-width:0}
+.status{height:32px;background:var(--panel);border-top:1px solid var(--line);padding:0 16px;color:var(--quiet);font-size:12px}
+.status .warning,.warning{color:var(--warn)}
+.card{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius);min-width:0}
+.card>h2,.card>h1{padding:12px 16px;border-bottom:1px solid var(--line);font-size:16px}
+.pad{padding:16px}
+.stages{display:flex;gap:8px;overflow:auto;padding:12px}
+.stages span,.tag{padding:4px 8px;border:1px solid var(--line);border-radius:var(--radius);color:var(--quiet);white-space:nowrap}
+.tag.on,.stages .on{color:var(--accent);border-color:var(--selection-line);background:var(--accent-bg)}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:12px 0;background:var(--panel);border-block:1px solid var(--line)}
+.metric{padding:4px 12px;border-right:1px solid var(--line)}
+.metric:last-child{border-right:0}
+.metric strong{font:700 28px/1.25 var(--font-ui);font-variant-numeric:tabular-nums;display:block;margin-block:4px}
+.split{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;align-items:start}
+.rows>div{padding:8px 0;border-bottom:1px solid var(--line)}
+.rows>div:last-child{border:0}
+.table-wrap{overflow:auto;min-width:0}
+table{border-collapse:collapse;width:100%;text-align:left}
+th,td{padding:8px 12px;border-bottom:1px solid var(--line)}
+th{color:var(--quiet);font-size:12px;font-weight:600}
+tr:last-child td{border-bottom:0}
+.tabs{display:flex;align-items:center;gap:4px;overflow:auto}
+.tabs button{background:transparent;border-color:transparent;border-bottom:2px solid transparent;border-radius:0;padding-inline:12px}
+.tabs button.selected{color:var(--accent);border-bottom-color:var(--accent);background:var(--accent-bg)}
+.reading{padding:24px;display:grid;gap:20px;max-width:760px;margin-inline:auto}
+.reading p{color:var(--ink);line-height:1.9;font:17px/1.9 var(--font-reader)}
+.project-list{height:100%;overflow:auto;padding:0 32px 40px;max-width:1328px;margin-inline:auto}
+.library-top{height:64px;border-bottom:1px solid var(--line)}
+.library-title{margin-block:24px 20px}
+.library-title h1{font-size:36px}
+.feature{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:28px}
+.feature .feature-copy{padding:24px;display:grid;align-content:center;justify-items:start;gap:12px}
+.feature h2{font-size:30px}
+.feature figure{margin:0;position:relative;min-width:0;min-height:256px}
+.feature img{width:100%;height:100%;min-height:256px;object-fit:cover;position:absolute;inset:0}
+.feature figcaption{position:absolute;bottom:8px;right:12px;background:var(--matte);color:var(--matte-paper);padding:4px 8px;border-radius:var(--radius);font-size:12px}
+.project-tools{margin-block:16px 12px;flex-wrap:wrap}
+.project-tools input{max-width:344px}
+.project-index{background:var(--panel);border-block:1px solid var(--line)}
+.project-index .file-label{font-weight:700}
+.project-index td:last-child{text-align:right}
+.cover{display:grid;align-items:end;padding:8px;background:var(--matte);position:relative;overflow:hidden;color:var(--matte-paper)}
+.cover.photo{background:var(--matte) url("ui-demo-railway.png") center/cover}
+.cover .tag{justify-self:start;background:var(--matte);color:var(--matte-paper);border-color:var(--tool-border)}
+.thumb{border-radius:var(--radius);min-height:112px}
+.asset-card{padding:8px;display:grid;gap:8px}
+.asset-card button{width:100%;text-align:left}
+.camera-monitor{background:var(--matte);color:var(--matte-paper);padding:8px;border-radius:var(--radius)}
+.camera-monitor .cover{min-height:260px}
+.timeline{display:flex;gap:8px;overflow:auto;padding:12px}
+.timeline button{display:grid;gap:4px;min-width:124px;padding:4px}
+.timeline .thumb{min-height:64px}
+.flow{min-width:0;min-height:480px;padding:16px;display:grid;grid-template-columns:minmax(0,1fr) minmax(240px,332px);gap:12px}
+.board{min-height:360px;display:flex;overflow:auto;padding:12px;background-color:var(--panel);background-image:linear-gradient(var(--flow-grid) 1px,transparent 1px),linear-gradient(90deg,var(--flow-grid) 1px,transparent 1px);background-size:24px 24px;border:1px solid var(--line);border-radius:var(--radius)}
+.nodes{flex:0 1 320px;min-width:240px;position:relative;margin:auto}
+.flow-links{position:absolute;inset:0;width:100%;height:100%;color:var(--quiet);pointer-events:none}
+.flow-links path.edge{fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.node{padding:6px 8px;min-width:0;overflow:hidden;position:absolute}
+.node .line{gap:4px}
+.node .glyph{width:14px;height:14px}
+.node small{display:block;margin-top:4px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flow .cover{min-height:128px}
+.dock{flex:none;margin-left:var(--rail-width);background:var(--panel);border-top:1px solid var(--line);padding:8px 16px;max-height:28%;overflow:auto}
+.modal-layer{position:absolute;inset:0;display:grid;place-items:center;background:var(--scrim);padding:12px;z-index:3}
+.dialog{width:min(724px,100%);max-height:100%;overflow:auto;background:var(--raised);border:1px solid var(--line);border-radius:8px}
+.dialog header,.dialog footer{padding:12px 20px;border-bottom:1px solid var(--line)}
+.dialog footer{border-bottom:0;border-top:1px solid var(--line)}
+.dialog>.stack{padding:16px 20px}
+.wizard{max-width:1040px;margin-inline:auto;height:100%;overflow:auto;padding:0 24px 24px}
+.wizard-body{display:grid;grid-template-columns:196px minmax(0,1fr);min-height:0;gap:24px;padding-block:24px}
+.steps{display:flex;flex-direction:column;gap:8px}
+.step{padding:8px 12px;border-radius:var(--radius);color:var(--quiet);border:1px solid var(--line)}
+.step.current{background:var(--accent-bg);color:var(--accent);border-color:var(--accent);font-weight:700}
+.wizard-form{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:24px}
+.template{width:100%;text-align:left;padding:8px 12px;display:grid;gap:4px}
+.form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.static-preview{padding:24px;max-width:960px;margin-inline:auto}
+.static-preview img{max-width:100%;display:block;margin-top:16px}
+.no-display{display:none!important}
+[hidden]{display:none!important}
+/* ---- v2.1 功能细化组件 ---- */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:var(--quiet);white-space:nowrap}
+.badge.ok{color:var(--ok);border-color:var(--ok);background:var(--ok-bg)}
+.badge.warn{color:var(--warn);border-color:var(--warn-line);background:var(--warn-bg)}
+.badge.danger{color:var(--danger);border-color:var(--danger);background:var(--danger-bg)}
+.badge.busy{color:var(--accent);border-color:var(--selection-line);background:var(--accent-bg)}
+.badge.info{color:var(--info);border-color:var(--info);background:var(--info-bg)}
+.badge.idle{color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok)}.dot.busy{background:var(--accent);animation:pulse 1.2s infinite}
+.dot.danger{background:var(--danger)}.dot.warn{background:var(--warn-line)}.dot.idle{background:var(--line)}
+@keyframes pulse{50%{opacity:.35}}
+.empty{display:grid;gap:8px;justify-items:center;text-align:center;padding:28px 16px;color:var(--quiet)}
+.empty .glyph{width:26px;height:26px;color:var(--dim)}
+.empty strong{color:var(--ink);font-size:15px}
+.empty.small{padding:12px 8px}
+.gap{border:1px solid var(--warn-line);background:var(--warn-bg);padding:12px 16px;border-radius:4px;color:var(--warn)}
+.note{color:var(--dim);font-size:12px;line-height:1.7}
+.chipbar{display:flex;gap:8px;min-width:0;overflow-x:auto;padding:8px 0;position:relative}
+.chipbar .chip{flex:none;white-space:nowrap;padding:4px 8px;border:1px solid var(--line);border-radius:8px;color:var(--quiet);min-height:24px;line-height:18px}
+.chipbar .chip.on{color:var(--accent);border-color:var(--selection-line);background:var(--accent-bg);font-weight:600}
+.summary-card{background:var(--surface);border:1px solid var(--selection-line);padding:12px 16px;border-radius:4px;max-width:720px}
+.sflow{display:flex;align-items:stretch;overflow:auto;padding:12px}
+.sflow .spill{display:grid;gap:4px;min-width:78px;padding:8px;border:1px solid var(--line);border-radius:var(--radius);white-space:nowrap;background:var(--panel)}
+.sflow .spill .code{font:700 11px/1.3 var(--font-mono);color:var(--dim)}
+.sflow .spill .nm{font-size:11.5px;color:var(--quiet)}
+.sflow .spill.done{border-color:var(--ok);background:var(--ok-bg)}
+.sflow .spill.done .code{color:var(--ok)}
+.sflow .spill.on{border-color:var(--selection-line);background:var(--accent-bg)}
+.sflow .link{width:18px;align-self:center;height:1.5px;background:var(--line);flex:none}
+.matrix td.n,.matrix th.n{text-align:center;font-variant-numeric:tabular-nums;padding:8px;white-space:nowrap}
+.matrix td.n b{display:inline-block;min-width:24px;padding:0 8px;border-radius:4px;background:var(--surface);font-weight:600}
+.matrix td.n b.has{background:var(--accent-bg);color:var(--accent)}
+.product-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.product-row:last-child{border-bottom:0}
+.product-name{flex:1 0 136px;gap:8px}
+.product-thumb{display:grid;place-items:center;width:40px;height:28px;flex:none;border-radius:4px}
+.product-thumb.pending-art{border:1px solid var(--line)}
+.product-actions{gap:8px;margin-left:auto}
+.film{display:flex;gap:8px;overflow:auto;padding:12px}
+.film .cell{width:118px;flex:none;display:grid;gap:4px;padding:8px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);text-align:left}
+.film .cell.selected{border-color:var(--selection-line);background:var(--accent-bg)}
+.film .cell .shot-thumb{min-height:0;height:60px;border-radius:4px;display:grid;place-items:center;font-size:11px}
+.film .fmeta{display:flex;align-items:center;gap:7px}
+.film .fmeta .dot{margin-left:auto}
+.art{background:repeating-linear-gradient(135deg,var(--art-warm-1),var(--art-warm-1) 12px,var(--art-warm-2) 12px,var(--art-warm-2) 24px);color:var(--matte-paper)}
+.art.cool{background:repeating-linear-gradient(135deg,var(--art-cool-1),var(--art-cool-1) 12px,var(--art-cool-2) 12px,var(--art-cool-2) 24px)}
+.pending-art{background:var(--surface);color:var(--dim)}
+.sheet{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.sheet-cell{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel)}
+.sheet-cell .pic{height:150px;display:grid;place-items:center;color:var(--matte-paper);position:relative}
+.sheet-cell .lbl{padding:8px;font-size:12px;color:var(--quiet);border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:8px}
+.sheet-bar{display:flex;justify-content:space-between;gap:12px;padding:8px 0;font-size:12px;color:var(--quiet);flex-wrap:wrap}
+.field{display:grid;gap:4px}
+.field .hint{color:var(--dim);font-size:12px;font-weight:400}
+.seg{display:flex;overflow:auto}
+.seg button{border-radius:0;border-right-width:0;flex:none}
+.seg button:first-child{border-radius:var(--radius) 0 0 var(--radius)}
+.seg button:last-child{border-radius:0 var(--radius) var(--radius) 0;border-right-width:1px}
+.seg button.selected{color:var(--accent);border-color:var(--selection-line);background:var(--accent-bg)}
+.switch{position:relative;width:34px;height:19px;min-height:19px;padding:0;border-radius:10px;background:var(--disabled-bg);border:1px solid var(--line);flex:none}
+.switch::after{content:"";position:absolute;top:1px;left:1px;width:15px;height:15px;border-radius:50%;background:var(--panel);border:1px solid var(--line)}
+.switch[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+.switch[aria-checked="true"]::after{left:16px}
+.line.wrap{flex-wrap:wrap;align-items:flex-start}
+.line.wrap small{flex:1 1 220px;min-width:0}
+.wrap-any{display:block;white-space:normal;overflow-wrap:anywhere}
+.toast{position:absolute;bottom:48px;left:50%;transform:translateX(-50%);background:var(--matte);color:var(--matte-paper);padding:8px 16px;border-radius:var(--radius);z-index:5;max-width:80%;font-size:13px}
+.fv-stage{aspect-ratio:16/10;max-width:620px;width:100%;margin-inline:auto;border-radius:var(--radius);overflow:hidden;position:relative;background:var(--matte);display:grid;place-items:center}
+.fv-stage .zoomer{width:100%;height:100%;display:grid;place-items:center;overflow:hidden}
+.fv-stage img{width:100%;height:100%;object-fit:contain;transition:transform .12s}
+.fv-tools{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;padding:8px 0}
+.fv-tools button{min-height:28px;padding:4px 8px}
+.logline{font:13px/1.9 var(--font-mono);white-space:pre-wrap;word-break:break-all}
+.scroll-y{overflow:auto;min-height:0;max-height:320px}
+.pairline{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.pairline:last-child{border-bottom:0}
+.layer-node{display:grid;gap:4px;min-width:92px;padding:8px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);text-align:left}
+.layer-node .pic{height:50px;border-radius:4px;display:grid;place-items:center;color:var(--matte-paper);font-size:10px;overflow:hidden}
+.layer-node .lbl{font-size:11px;font-weight:700;display:flex;align-items:center;gap:8px}
+.layer-chain{display:flex;align-items:center;gap:0;overflow:auto;padding:12px 0}
+.layer-chain .link{width:22px;height:1.5px;background:var(--line);flex:none}
+.layer-chain .link.hot{background:var(--accent)}
+@media (prefers-reduced-motion:reduce){.dot.busy{animation:none}}
+@container(max-width:1180px){
+  .frame{grid-template-columns:var(--rail-width) 192px minmax(0,1fr) 0}
+  .frame.no-side{grid-template-columns:var(--rail-width) 0 minmax(0,1fr) 224px}
+  .frame.no-inspector{grid-template-columns:var(--rail-width) 192px minmax(0,1fr) 0}
+  .frame.no-side.no-inspector{grid-template-columns:var(--rail-width) 0 minmax(0,1fr) 0}
+  .frame:not(.no-side) .inspector,.top .comfy{display:none}
+}
+@container(max-width:900px){
+  .flow{grid-template-columns:minmax(0,1fr)}
+  .flow .board{min-height:276px}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .content{padding:16px}
+  .head{padding:12px 16px}
+  .split{grid-template-columns:minmax(0,1fr)}
+  .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .metric:nth-child(2){border-right:0}
+}
+@container(max-width:720px){
+  .top .search{width:auto}
+  .top .search span,.top .search small,.brand-name,.top .project-button{display:none}
+  .shell{--rail-width:56px}
+  .frame,.frame.no-inspector,.frame.no-side,.frame.no-side.no-inspector{grid-template-columns:var(--rail-width) minmax(0,1fr)}
+  .frame .sidebar,.frame .inspector{display:none}
+  .frame.panel-peek .sidebar,.frame.inspect-peek .inspector{display:block;position:absolute;z-index:2;inset-block:0;width:min(248px,68%);border:1px solid var(--line)}
+  .frame.panel-peek .sidebar{left:var(--rail-width)}
+  .frame.inspect-peek .inspector{right:0}
+  .project-list{padding-inline:16px}
+  .feature{grid-template-columns:minmax(0,1fr)}
+  .feature figure,.feature img{min-height:176px}
+  .feature .feature-copy{padding:16px}
+  .head h1{font-size:22px}
+  .wizard-body{grid-template-columns:minmax(0,1fr);gap:12px}
+  .steps{flex-direction:row;flex-wrap:wrap}
+  .wizard-form{padding:16px}
+  .form-grid{grid-template-columns:minmax(0,1fr)}
+  .status span:nth-child(2){display:none}
+  .sheet{grid-template-columns:minmax(0,1fr)}
+}
+@media(max-width:580px){
+  .design-tools{flex-wrap:wrap}
+  .design-tools strong{display:none}
+  .presentation{height:calc(100dvh - 56px)}
+}
+</style>
+<div class="design-tools line between"><strong>ShineTV Studio · 界面设计稿</strong><div class="line"><label>页面 <select id="screen"></select></label><label>缩放预览 <select id="scale"><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select></label><button id="compact">窄窗口</button></div></div>
+<div class="presentation"><div class="app" id="app"><main class="static-preview">
+  <h1>ShineTV Studio 项目中心</h1><p>打开项目后可进入小说、资产与分镜工作区。此静态画面展示项目封面。</p>
+  <img src="ui-demo-railway.png" width="1536" height="1024" alt="示例项目剧照，雨夜中的站台与灯">
+</main></div></div>
+<script>
+"use strict";
+const icons = {
+  logo:"M8 4l12 8-12 8z", hub:"M3 7h18v13H3z M3 7V4h7l2 3", overview:"M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
+  novel:"M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4z M12 6v15", assets:"M3 8l9-5 9 5-9 5z M3 12l9 5 9-5 M3 16l9 5 9-5", shots:"M3 9h18v11H3z M3 9V5l18-3v4z M8 4l2 3 M15 3l2 3",
+  image:"M3 4h18v16H3z M3 16l5-5 4 4 4-6 5 7 M8 8h.1", video:"M3 4h18v16H3z M8 4v16 M16 4v16 M3 9h5m8 0h5M3 15h5m8 0h5", gallery:"M4 5h16v14H4z M4 10h16 M10 10v9",
+  search:"M16 16l5 5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0", panel:"M3 4h18v16H3z M9 4v16", dock:"M3 4h18v16H3z M3 14h18", inspect:"M3 4h18v16H3z M15 4v16", settings:"M4 6h16 M4 12h16 M4 18h16 M8 4v4 M16 10v4 M10 16v4",
+  masks:"M4 6c2-2 4-2 6 0 M14 6c2-2 4-2 6 0 M4 6v8c0 3 3 5 8 6 5-1 8-3 8-6V6 M8 11h.1 M16 11h.1",
+  layers:"M12 3l9 5-9 5-9-5z M3 13l9 5 9-5", clapper:"M3 9h18v11H3z M3 9l2-5 16-2 2 4z M8 4l-1 4 M13 3.4l-1 4",
+  chip:"M7 7h10v10H7z M4 10h3 M4 14h3 M17 10h3 M17 14h3 M10 4v3 M14 4v3 M10 17v3 M14 17v3",
+  compare:"M4 4h7v16H4z M13 4h7v16h-7z M8 8l-2 4h4z", text:"M5 5h14v14H5z M8 9h8 M8 12h8 M8 15h5",
+  sparkles:"M12 3l1.8 4.7L18 9.5l-4.2 1.8L12 16l-1.8-4.7L6 9.5l4.2-1.8z M18 15l.9 2.1 2.1.9-2.1.9L18 21l-.9-2.1-2.1-.9 2.1-.9z",
+  refresh:"M20 12a8 8 0 1 1-2.3-5.6 M20 4v5h-5", eye:"M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6",
+  download:"M12 4v11 M7 11l5 5 5-5 M4 20h16", upload:"M12 20V9 M7 13l5-5 5 5 M4 4h16",
+  plus:"M12 5v14 M5 12h14", minus:"M5 12h14", target:"M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z",
+  folder:"M3 6h6l2 2h10v11H3z", file:"M6 3h8l4 4v14H6z M14 3v4h4", chev:"M9 5l7 7-7 7",
+  x:"M6 6l12 12 M18 6L6 18", check:"M5 12l5 5 9-11", alert:"M12 3l10 17H2z M12 10v4 M12 17h.1",
+  terminal:"M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5", play:"M7 4l12 8-12 8z", link:"M9 15l6-6 M8 12H6a3 3 0 0 1 0-6h3 M16 6h3a3 3 0 0 1 0 6h-3",
+  clock:"M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18z M12 7v5l3 3"
+};
+const glyph = id => '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="'+(icons[id]||icons.file)+'"/></svg>';
+const pages = [
+ ["hub","项目中心"],["create","新建 · 模板"],["name","新建 · 命名"],["idea","新建 · 创意"],["confirm","新建 · 确认"],["open","打开项目"],
+ ["overview","总控"],["novel","小说"],["assets","资产"],["shots","分镜"],["image","出图"],["video","出片"],["gallery","组件画廊"],
+ ["commands","命令面板"],["settings","设置"],["report","校验报告"],["viewer","媒体查看器"]
+];
+const templates = ["小说创作","影视分镜","空白项目"];
+const project = ["第七封信","海边剧场","黎明没有回声"];
+
+/* ===== fixture 数据（out/_fixture/db/novel.db 只读快照，数值不虚构） ===== */
+const DB = {
+  dbPath:"D:\\Studio\\第七封信\\db\\novel.db",
+  root:"D:\\Studio\\第七封信",
+  volumes:[[1,"第一卷 · 雨夜来信","信件、回声与第一次失约"],[2,"第二卷 · 断链","连续性开始出现裂缝的两章"],[3,"第三卷 · 回声","把前两卷的线索收进来的一卷"]],
+  chapters:[
+    [1,1,1,"雨夜里的第七封来信","revised","取信人发现信里写着他自己刚做过的事。","正文省略",12480,"08-24 09:46"],
+    [2,2,2,"旧仓库的钥匙","draft","一把不该存在的钥匙出现在门后。","正文省略",6100,"08-24 09:48"],
+    [3,2,3,"尚未展开的一章","draft","","",0,""],
+    [101,2,4,"门廊第三级台阶","draft","黑猫第一次出现。","正文省略",5200,"08-24 10:03"],
+    [102,2,5,"分拣间的夜班","revised","沈宛交代了邮戳的事。","正文省略",8800,"08-24 10:05"],
+    [103,3,6,"空名字的那一夜","draft","","",0,"08-24 10:06"],
+    [104,3,7,"六个划痕","draft","铁皮匣被打开。","正文省略",7300,"08-24 10:08"],
+    [105,3,8,"点灯的七晚","draft","煤油见底。","正文省略",4100,"08-24 10:10"],
+    [106,3,9,"尚未展开的一章","draft","","",0,"08-24 10:11"],
+    [107,3,10,"尚未展开的一章","draft","","",0,"08-24 10:13"],
+    [108,3,11,"尚未展开的一章","draft","","",0,"08-24 10:15"],
+    [109,3,12,"一个标题长到必须在章节条上省略号截断的收束章","draft","","",0,"08-24 10:16"]
+  ],
+  scenes:[
+    [1,1,1,"雨夜·门廊","夜"],[2,1,2,"雨夜·阁楼","夜"],[3,2,1,"仓库·内场","日"],
+    [101,101,1,"门廊·第三级台阶","夜"],[102,101,2,"门廊·雨停","夜"],[103,102,1,"邮局·分拣间","夜"],
+    [104,104,1,"阁楼·铁皮匣","夜"],[105,105,1,"阁楼·灯下","夜"]
+  ],
+  /* 镜：[id, sceneId, ord, action, expression, dialogue, narration, mood, canon, duration] */
+  shots:[
+    [1,1,1,"推门进屋，抖落外套上的雨","警惕","这信是寄给谁的？","雨水顺着门缝淌进来。","克制","APPROVED",4.5],
+    [2,1,2,"拆开信封，指腹压过纸纹","迟疑","","纸面有折痕，像被人反复读过。","紧绷","APPROVED",3.0],
+    [3,1,3,"抬头看向楼梯口","警觉","谁在上面？","阁楼没有开灯。","紧绷","APPROVED",2.5],
+    [4,2,4,"踩上第一级台阶","戒备","","木板在脚下发出轻响。","压抑","PROPOSED",6.0],
+    [5,2,5,"在阁楼窗前站定，侧脸被雨照亮","冷静","第七封。前六封都在撒谎。","雨把窗框描成一圈亮边。","克制","APPROVED",5.0],
+    [6,3,1,"用钥匙划开封条","平静","","封条比锁还旧。","冷静","PROPOSED",3.5],
+    [7,3,2,"推开内场大门","怔住","它一直在这儿。","灰尘在光柱里翻滚。","惊讶","PROPOSED",4.0],
+    [8,101,1,"黑猫从台阶下探出头","警惕","","它右耳缺了一角。","压抑","APPROVED",3.0],
+    [9,101,2,"他蹲下去伸手","迟疑","你也在等第七封？","猫没有躲。","克制","APPROVED",4.0],
+    [10,101,3,"雨停了，水滴从檐角落下","平静","","屋檐把夜空切成一长条。","压抑","PROPOSED",2.0],
+    [11,102,1,"他直起身看向邮局方向","警觉","","远处有一盏灯还亮着。","紧绷","PROPOSED",3.5],
+    [12,103,1,"沈宛把一叠信推过来","疲惫","邮戳是三天后盖的。","分拣间的灯管在闪。","冷静","APPROVED",5.0],
+    [13,103,2,"他一张一张翻信封","专注","","编号是连续的，日期不是。","紧绷","APPROVED",6.5],
+    [14,103,3,"她把最后一封按住","犹豫","这封不该在这儿。","她的手停在信封上。","压抑","APPROVED",4.5],
+    [15,103,4,"两个人同时沉默","复杂","","窗外有车经过，灯扫过墙面。","压抑","PROPOSED",3.0],
+    [16,104,1,"匣盖被抬开一条缝","紧张","","六道划痕对应六封信。","紧绷","APPROVED",4.0],
+    [17,104,2,"他从匣里取出第一封","克制","第一封是我写给自己的。","纸已经发脆。","压抑","APPROVED",5.5],
+    [18,105,1,"煤油灯的火苗缩了一截","疲惫","","灯芯只剩最后一段。","压抑","PROPOSED",3.0],
+    [19,105,2,"他把灯吹灭","决然","不能再点了。","黑暗里只剩雨声。","紧绷","PROPOSED",2.5]
+  ],
+  /* 实体：[id, kind, name, summary, status, createdCh] */
+  entities:[
+    [1,"person","林昭","第七封信的收信人。全程克制，不解释动机。","active",1],
+    [2,"person","周姨","阁楼的住户，线索的来源。","active",1],
+    [3,"item","黄铜钥匙","仓库内场封条上用的钥匙，来源不明。","active",2],
+    [101,"location","阁楼层","二楼尽头那间没有窗的房间。","active",1],
+    [102,"clothing","藏青呢大衣","林昭常穿的那件，右袖口有一道补线。","active",1],
+    [103,"prop","铜制门牌","门牌上的字被磨掉了一半。","active",2],
+    [104,"character","沈宛","邮局的夜班分拣员。","active",3],
+    [105,"faction","雨夜邮局","只在夜里派件的邮局。","active",3],
+    [106,"treasure","铁皮匣","匣子里装着前六封信。","active",2],
+    [107,"event","第七封来信送达","整本书的起点。","active",1],
+    [108,"creature","雨里的黑猫","总在门廊第三级台阶上。","active",2],
+    [109,"secret","那三天的去向","没人知道那三天他在哪。","active",4],
+    [110,"mystery","前六封信是谁寄的","贯穿全书的谜面。","active",1],
+    [111,"resource","阁楼的煤油","只够点七个晚上。","active",2],
+    [112,"person","","空名字：验 name.empty() 那条破折号分支。","active",6],
+    [113,"person","周姨","重名实体：与 #2 同名但不是同一个人，验分组树里两行同名都画得出。","active",6],
+    [114,"person","一个名字长到必须在界面上省略号截断的角色","验卡片与侧栏树的 ellipsis 截断。","active",7]
+  ],
+  /* 视觉资产：[id, entityId, name, sheet, canon, status, materials, note] */
+  vassets:[
+    [1,1,"林昭 · 外观基线","assets/linwan_base.png","APPROVED","READY","藏青呢大衣 / 灰呢围巾 / 油布帽","T4 角色正面图"],
+    [2,2,"周姨 · 阁楼照","assets/zhouyi_base.png","PROPOSED","STALE","暗红针织衫 / 灰白围裙","T4 出图后被 T6 改稿，需重出"],
+    [101,101,"阁楼层 · 场景基线","assets/阁楼层_基线.png","DRAFT","READY","木梁 / 煤油灯",""],
+    [102,102,"藏青呢大衣 · 服装基线","","DRAFT","PENDING","厚呢 / 铜扣","还没开始"],
+    [103,103,"铜制门牌 · 器物基线","","DRAFT","PROMPTING","铜","提示词已发，等回图"],
+    [104,104,"沈宛 · 外观基线","assets/shenwan_ref.png","DRAFT","REF_READY","墨绿工装 / 白衬衫","只有正脸"],
+    [105,105,"雨夜邮局 · 外景","assets/youju_sheet.png","DRAFT","SHEET_READY","青砖 / 铁栅",""],
+    [106,106,"铁皮匣 · 器物基线","","DRAFT","WARDROBE_READY","铁皮 / 锡",""],
+    [107,108,"雨里的黑猫 · 外观基线","assets/broken_sheet.png","DRAFT","FAILED","","文件在盘上，但不是 PNG ⇒ 解码失败"],
+    [108,114,"超长名角色 · 外观基线","assets/missing_sheet.png","DRAFT","STALE","","路径指向一个不存在的文件"]
+  ],
+  /* 派生层：[id, assetId, layer, status, degraded, note] */
+  vartifacts:[
+    [101,1,"front","DONE",0,""],[102,1,"turnaround","DONE",0,""],[103,1,"base_body","DONE",0,""],
+    [104,1,"wardrobe","DONE",1,"降级：超期未就绪，先用上一版服装出图（K28）"],
+    [105,2,"front","DONE",0,""],[106,2,"turnaround","DONE",0,""],
+    [107,2,"base_body","RUNNING",0,"正在出图"],[108,2,"wardrobe","PENDING",0,"等 base_body"],
+    [109,107,"front","DONE",0,""],[110,107,"turnaround","FAILED",1,"降级也失败了：模型超时"]
+  ],
+  /* 出图产物：[id, jobId, model, prompt, negative, w, h, steps, relPath, srcKind, srcId, chapterId, sceneId, status, error] */
+  gen:[
+    [1,"seed-job-shot1","sdXL_light_04","推门进屋","低质量, 多余手指",1024,576,28,"assets/shot/s1.png","shot",1,1,1,"CANON",""],
+    [2,"seed-job-shot2","sdXL_light_04","拆开信封","低质量, 文字水印",1216,684,24,"assets/shot/s2.png","shot",2,1,1,"PROPOSED",""],
+    [3,"seed-job-shot4","sdXL_turbo_02","踩上台阶","",768,768,8,"assets/shot/s4_missing.png","shot",4,1,2,"FAILED","文件被删了"],
+    [4,"seed-job-asset1","sdXL_base_01","阁楼层的设定图","低质量",1024,1024,30,"assets/gen_recent_ref.png","asset",1,1,1,"CANON",""]
+  ],
+  /* 阶段产物（stage_artifacts 聚合）：[chapterId, stage, count, hashFirst, hashLast] */
+  stages:[
+    [1,"V1",5,"seed-V1-ch1-sc1-sh1","seed-V1-ch1-sc2-sh2"],[1,"V2",5,"seed-V2-ch1-sc1-sh1","seed-V2-ch1-sc2-sh2"],
+    [1,"V3",5,"seed-V3-ch1-sc1-sh1","seed-V3-ch1-sc2-sh2"],[1,"V4",5,"seed-V4-ch1-sc1-sh1","seed-V4-ch1-sc2-sh2"],
+    [1,"V5",5,"seed-V5-ch1-sc1-sh1","seed-V5-ch1-sc2-sh2"],[1,"V6",5,"seed-V6-ch1-sc1-sh1","seed-V6-ch1-sc2-sh2"],
+    [1,"V7",5,"seed-V7-ch1-sc1-sh1","seed-V7-ch1-sc2-sh2"],
+    [2,"V1",2,"seed-V1-ch2-sc1-sh1","seed-V1-ch2-sc1-sh2"],[2,"V2",2,"seed-V2-ch2-sc1-sh1","seed-V2-ch2-sc1-sh2"],
+    [2,"V3",2,"seed-V3-ch2-sc1-sh1","seed-V3-ch2-sc1-sh2"],[2,"V4",2,"seed-V4-ch2-sc1-sh1","seed-V4-ch2-sc1-sh2"],
+    [2,"V5",2,"seed-V5-ch2-sc1-sh1","seed-V5-ch2-sc1-sh2"]
+  ],
+  foreshadows:[[1,"第七封信的邮戳","PLANTED",1,3,80],[2,"阁楼里多出的鞋印","DEVELOPING",1,3,65],[3,"门后的旧报纸","REVEALED",1,2,40]]
+};
+const T_STAGES=["T1 章节初始化","T2 前情导入","T3 世界状态","T4 角色状态","T5 关系网","T6 场景计划","T7 冲突编排","T8 伏笔计划","T9 场景事件序","T10 正文提示","T11 正文写作","T12 章节评审","T13 修复","T14 状态提取","T15 状态校验","T16 状态提交","T17 下一章备忘"];
+const V_STAGES=[["V0","资产管线"],["V1","场景切分"],["V2","导演七问"],["V3","表演设计"],["V4","空间设计"],["V5","镜头设计"],["V6","时间轴"],["V7","声音设计"],["V8","连续性校验"],["V9","叙事分镜"],["V10","提示词生成"],["V11","出图/出片"]];
+const LAYERS=[["front","正脸"],["turnaround","四视图"],["base_body","基础身体"],["wardrobe","服装"]];
+const ASSET_TONE={PENDING:["待处理","idle"],PROMPTING:["生成提示词","busy"],REF_READY:["参考图就绪","info"],SHEET_READY:["设定图就绪","info"],WARDROBE_READY:["服装就绪","info"],READY:["就绪","ok"],FAILED:["失败","danger"],STALE:["已过期","warn"]};
+const KIND_LABEL={person:"角色",character:"角色",location:"地点",item:"物品",prop:"物品",treasure:"物品",clothing:"服装",faction:"势力",event:"事件"};
+const CHAPTER_TONE={writing:["写作中","busy"],review:["待评审","warn"],done:["已完成","ok"]};
+
+/* ===== 取数小工具 ===== */
+const byId=(rows,id)=>rows.find(r=>r[0]===id)||null;
+const chapterAt=ord=>DB.chapters.find(c=>c[2]===ord)||DB.chapters[0];
+const chapterIdOf=ord=>chapterAt(ord)[0];
+const volumeOf=c=>byId(DB.volumes,c[1])||["","未归卷",""];
+const shotsOfChapter=cid=>{const sc=new Set(DB.scenes.filter(s=>s[1]===cid).map(s=>s[0]));return DB.shots.filter(sh=>sc.has(sh[1]));};
+const sceneOf=sh=>byId(DB.scenes,sh[1]);
+const entitiesOfChapter=cid=>DB.entities.filter(e=>e[5]===cid);
+const vassetOfEntity=eid=>DB.vassets.find(v=>v[1]===eid)||null;
+const vassetById=aid=>byId(DB.vassets,aid);
+const layersOfAsset=aid=>DB.vartifacts.filter(a=>a[1]===aid);
+const genOfShot=sid=>DB.gen.find(g=>g[9]==="shot"&&g[10]===sid)||null;
+const stageCount=(cid,stage)=>{const r=DB.stages.find(s=>s[0]===cid&&s[1]===stage);return r?r[2]:0;};
+const stageState=(cid,stage)=>stageCount(cid,stage)>0?"done":"todo";
+const shotsDuration=list=>Math.round(list.reduce((a,s)=>a+s[9],0)*10)/10;
+const chapterTotalDuration=cid=>shotsDuration(shotsOfChapter(cid));
+const statusLabel=s=>{if(!s)return"未知";const t=CHAPTER_TONE[s];return t?{t:s,tag:t[0],tone:t[1]}:{t:s,tag:s,tone:"idle"};};
+const kindLabel=k=>KIND_LABEL[k]||(k||"—");
+const dash=v=>(v===""||v==null)?"—":v;
+const shotCode=id=>"S"+String(id).padStart(3,"0");
+const timeText=v=>v?v:"—";
+
+/* ===== 查询参数（深链接） ===== */
+let state={peek:null,screen:"hub",section:null,selection:0,template:0,name:"第七封信",dir:"D:\\Studio",idea:"一封寄给过去的信，在暴雨夜抵达一座即将关闭的车站。",side:true,inspector:true,dock:false,compact:false,dockTab:0,viewerTab:0,zoom:1,toast:null,assetFilter:""};
+const query = new URLSearchParams(location.search);
+if (pages.some(([id])=>id===query.get("screen"))) state.screen=query.get("screen");
+state.compact=query.get("compact")==="1";
+if (query.has("tab")) state.section=Number(query.get("tab"));
+if (query.has("item")) state.selection=Number(query.get("item"));
+if (query.has("chapter")) state.chapter=Math.max(0,Math.min(DB.chapters.length-1,Number(query.get("chapter"))||0));
+if (query.has("entity")) state.selection=Math.max(0,Math.min(DB.entities.length-1,Number(query.get("entity"))||0));
+if (query.has("dock")) { state.dock=true; const d=Number(query.get("dock")); state.dockTab=Number.isFinite(d)&&query.get("dock")!==""?Math.max(0,Math.min(3,d)):0; }
+if(query.has("inspector"))state.inspectorTab=query.get("inspector");
+if(query.has("capture")) document.body.classList.add("capture");
+
+const screenSel = document.querySelector("#screen");
+screenSel.innerHTML=pages.map(([id,label])=>'<option value="'+id+'">'+label+'</option>').join("");
+const btn = (label, action="", cls="") => '<button type="button" class="'+cls+'" data-action="'+action+'">'+label+'</button>';
+const tag = (label,active=false) => '<span class="tag'+(active?' on':'')+'">'+label+'</span>';
+const badge = (label,tone="idle") => '<span class="badge '+tone+'">'+label+'</span>';
+const dot = tone => '<span class="dot '+tone+'"></span>';
+const cover = (cls="",label="")=>'<div class="cover '+cls+'">'+(label?tag(label):'')+'</div>';
+const card=(title,body,cls="")=>'<section class="card '+cls+'"><h2>'+title+'</h2><div class="pad">'+body+'</div></section>';
+const rows = pairs => '<div class="rows">'+pairs.map(([a,b])=>'<div class="line between"><span class="clip">'+a+'</span><small class="clip">'+b+'</small></div>').join("")+'</div>';
+const cellWrap = (x,tag) => /^\s*<(td|th)[\s>]/.test(String(x)) ? x : '<'+tag+'>'+x+'</'+tag+'>';
+const table = (headers,data,cls="") => '<div class="table-wrap"><table class="'+cls+'"><thead><tr>'+headers.map(x=>cellWrap(x,"th")).join("")+'</tr></thead><tbody>'+data.map(r=>'<tr>'+r.map(x=>cellWrap(x,"td")).join("")+'</tr>').join("")+'</tbody></table></div>';
+const escape = s=>String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
+const tabbar=(labels,sel=state.section??0,kind="section")=>'<div class="tabs" role="tablist">'+labels.map((x,i)=>btn(escape(x),kind+":"+i,sel===i?"selected":"")).join("")+'</div>';
+const stagesRow=(labels,upTo=2)=>'<div class="stages">'+labels.map((x,i)=>'<span class="'+(i<upTo?'on':'')+'">'+escape(x)+'</span>').join("")+'</div>';
+const emptyBox=(icon,title,hint,small=false)=>'<div class="empty'+(small?' small':'')+'">'+glyph(icon)+'<strong>'+escape(title)+'</strong>'+(hint?'<small>'+hint+'</small>':'')+'</div>';
+const gapBox=text=>'<div class="gap"><strong>缺口</strong> · '+escape(text)+'</div>';
+const kv = pairs => '<div class="kv">'+pairs.map(([k,v])=>'<span>'+escape(k)+'</span><strong class="clip">'+v+'</strong>').join("")+'</div>';
+const pillFlow = (items) => '<div class="sflow">'+items.map((it,i)=>(i?'<span class="link"></span>':'')+'<div class="spill '+(it.state||"")+'"><span class="code">'+escape(it.code)+'</span>'+(it.name?'<span class="nm">'+escape(it.name)+'</span>':'')+'</div>').join("")+'</div>';
+
+function chapterStatusTag(c){const t=statusLabel(c[4]);return badge(t.tag,t.tone);}
+function assetStatusTag(st){const t=ASSET_TONE[st];return t?badge(t[0],t[1]):badge(dash(st));}
+function shotThumb(sh,cls="thumb"){
+  const g=genOfShot(sh[0]);
+  if(g&&g[13]!=="FAILED")return '<div class="cover photo '+cls+'">'+tag(shotCode(sh[0])+" · 示意")+'</div>';
+  return '<div class="cover art '+cls+'">'+tag(shotCode(sh[0])+" · 待出图")+'</div>';
+}
+function toastHtml(){return state.toast?'<div class="toast" role="status">'+escape(state.toast)+'</div>':'';}
+function setToast(msg){state.toast=msg;render();setTimeout(()=>{if(state.toast===msg){state.toast=null;render();}},4200);}
+/* ===== 项目中心 / 四步向导 / 打开 ===== */
+function hub(){
+  return '<main class="project-list"><header class="library-top line between"><div class="line"><span class="logo">'+glyph("logo")+'</span><strong>ShineTV Studio</strong></div><small>本地工作区</small></header>'+
+    '<div class="library-title line between"><h1>项目中心</h1><div class="line">'+btn("打开…","open")+btn("新建项目","create","primary")+'</div></div>'+
+    '<section class="feature"><figure><img src="ui-demo-railway.png" width="1536" height="1024" alt="雨夜站台的示例剧照"><figcaption>示例项目剧照</figcaption></figure><div class="feature-copy"><small>最近打开</small><h2>第七封信</h2><p class="muted">一封寄给过去的信，在暴雨夜抵达一座即将关闭的车站。</p>'+btn("继续项目","overview","primary")+'</div></section>'+
+    '<div class="line between"><h2>最近项目</h2><small id="project-count">共 3 个示例项目</small></div><div class="project-tools line"><input id="project-filter" placeholder="按名称查找" aria-label="搜索项目">'+btn("最近打开","recent","selected")+btn("名称","alphabetical")+'</div>'+
+    '<div class="table-wrap"><table class="project-index"><thead><tr><th scope="col">项目</th><th scope="col">模板</th><th scope="col">位置</th><th scope="col">操作</th></tr></thead><tbody class="project-grid">'+project.map((name,i)=>'<tr class="project" data-name="'+name+'"><td class="file-label">'+name+'</td><td>'+templates[i]+'</td><td class="mono">D:\\Studio\\'+name+'</td><td>'+btn("打开","overview")+'</td></tr>').join("")+'</tbody></table></div></main>';
+}
+const steps=["create","name","idea","confirm"];
+function wizard(id){
+  const i=steps.indexOf(id), labels=["模板","命名","创意","确认"], titles=["为项目选择起点","命名并选择位置","写下你的创意","确认并创建项目"];
+  const content=[
+    templates.map((x,j)=>'<button class="template '+(state.template===j?'selected':'')+'" data-action="template:'+j+'"><strong>'+x+'</strong><small>'+["章节、角色与故事设定库","镜头、视觉资产与制作流程","从基础目录开始，自行规划内容"][j]+'</small></button>').join(""),
+    '<div class="form-grid"><label>项目名称<input data-field="name" value="'+escape(state.name)+'"></label><label>位置<input data-field="dir" value="'+escape(state.dir)+'"></label></div>'+card("将创建目录",'<div class="mono">'+escape(state.dir)+'\\'+escape(state.name)+'</div><small>project.json · db/ · work/ · output/</small>'),
+    '<label>一句话创意 <small id="idea-count">'+[...state.idea].length+' / 200</small><textarea data-field="idea">'+escape(state.idea)+'</textarea></label><small>创意可留空。创建后仍可继续编辑项目。</small>',
+    card(escape(state.name||"未命名项目"),'<div class="kv"><span>模板</span><strong>'+templates[state.template]+'</strong><span>目录</span><strong class="clip">'+escape(state.dir)+'\\'+escape(state.name)+'</strong><span>创意</span><span>'+escape(state.idea||"未填写")+'</span></div>')
+  ];
+  const back = i ? btn("上一步",steps[i-1]) : btn("取消","hub");
+  const next = btn(i===3?"创建":i===2?"确认信息":"下一步","next:"+i,"primary");
+  return '<main class="wizard"><header class="library-top line between"><div class="line"><span class="logo">'+glyph("logo")+'</span><strong>ShineTV Studio</strong></div>'+btn("返回项目中心","hub")+'</header><div class="library-title"><h1>新建项目</h1></div><div class="wizard-body"><nav class="steps" aria-label="项目创建步骤">'+labels.map((x,j)=>'<span class="step '+(i===j?'current':'')+'"'+(i===j?' aria-current="step"':'')+'>'+(j+1)+'　'+x+'</span>').join("")+'</nav><section class="wizard-form stack"><h2>'+titles[i]+'</h2>'+content[i]+'<small id="form-status" class="warning" role="status"></small><div class="line between">'+back+next+'</div></section></div></main>';
+}
+function modal(title,body,footer,close="overview"){
+  return '<div class="modal-layer"><section class="dialog" role="dialog" aria-modal="true" aria-label="'+title+'"><header class="line between"><h2 class="clip">'+title+'</h2><div class="line">'+footer+btn(glyph("x"),"close:"+close,"")+'</div></header><div class="stack">'+body+'</div><footer class="line between"><span class="note">'+(title.includes("查看")||title.includes("Sheet")?"滚轮缩放 · 拖动平移 · ←→ 切图 · 放大镜 3×":"Esc 关闭")+'</span><div class="line">'+btn("关闭",close)+'</div></footer></section></div>';
+}
+const curChapter=()=>DB.chapters[Math.max(0,Math.min(DB.chapters.length-1,state.chapter||0))];
+const curEntity=()=>DB.entities[Math.max(0,Math.min(DB.entities.length-1,state.selection||0))];
+const chapterIndexOf=c=>DB.chapters.indexOf(c);
+const curShots=()=>shotsOfChapter(curChapter()[0]);
+const curShot=()=>{const list=curShots();if(!list.length)return null;return list[Math.max(0,Math.min(list.length-1,state.selection||0))];};
+
+/* ===== 总控 ===== */
+function recentProducts(){
+  return DB.gen.map(g=>{
+    const failed=g[13]==="FAILED", shot=g[9]==="shot";
+    const name=shot?shotCode(g[10])+" 分镜图":g[3];
+    const thumbClass=failed?"pending-art":shot?"art":"art cool";
+    const thumbLabel=failed?"缩略图不可用":"缩略图示意";
+    return '<div class="product-row"><div class="line product-name">'+
+      '<span class="product-thumb '+thumbClass+'" role="img" aria-label="'+thumbLabel+'" title="'+thumbLabel+'">'+glyph("image")+'</span>'+
+      '<strong class="clip" title="'+escape(name)+'">'+escape(name)+'</strong></div><div class="line product-actions">'+
+      badge(failed?"出图文件不可用":g[13]==="CANON"?"已出图":"待确认",failed?"danger":g[13]==="CANON"?"ok":"warn")+btn("查看","viewer:0")+'</div></div>';
+  }).join("")||emptyBox("image","暂无产物","出图完成后可在此查看。",true);
+}
+function overview(){
+  const metrics=[["章节",DB.chapters.length,"已读取"],["镜头",DB.shots.length,"已读取"],["实体",DB.entities.length,"已登记"],["生成产物",DB.gen.length,"已登记"]];
+  const ledgerRows=DB.stages.map(([cid,stage,n,h0,h1])=>{
+    const c=DB.chapters.find(x=>x[0]===cid);
+    return [escape(stage+"（第 "+(c?c[2]:"?")+" 章）"),'<span class="mono clip">'+escape(h0+" … "+h1)+'</span>',escape("artifacts/ ×"+n),"—"];
+  });
+  const matrixHead=["章节",...["V1","V2","V3","V4","V5","V6","V7"].map(v=>'<th class="n">'+v+'</th>')];
+  const matrixRows=DB.chapters.map(c=>['第 '+c[2]+' 章<span class="dim"> · '+escape(c[3])+'</span>',...["V1","V2","V3","V4","V5","V6","V7"].map(v=>{
+    const n=stageCount(c[0],v);
+    return '<td class="n">'+(n?'<b class="has">'+n+'</b>':'<b class="dim">0</b>')+'</td>';
+  })]);
+  return '<div class="metrics">'+metrics.map(([n,v,note])=>'<div class="metric"><small>'+n+'</small><strong>'+v+'</strong><span class="muted">'+note+'</span></div>').join("")+'</div>'+
+  '<div class="split"><div class="stack">'+
+    card("制作阶段链",pillFlow(T_STAGES.map((t,i)=>({code:"T"+(i+1),name:t.split(" ")[1],state:""}))))+
+    card("账本 · 成本 / 调用 / 降级",table(["阶段","输入哈希","产物","降级"],ledgerRows)+
+      '<div class="note">阶段产物 '+DB.stages.reduce((total,row)=>total+row[2],0)+' 份 · 镜头 '+DB.shots.length+' 个 · 调用与成本暂无记录</div>')+
+    card("各章阶段产物",table(matrixHead,matrixRows,"matrix"))+
+  '</div><div class="stack">'+
+    card("最近产物",recentProducts())+
+    card("流水线停止规则",rows([["LLM 调用","未配置"],["高档调用","未配置"],["镜头",DB.shots.length+" / 上限未配置"],["估算成本","暂无记录"]]))+
+    card("运行信息",kv([["当前项目","第七封信"],["数据目录",'<span class="mono clip">'+escape(DB.dbPath)+'</span>'],["检查点","未接入"],["预算余量","未接入"]]))+
+    card("任务队列",'<p class="muted">暂无运行中的任务。当前预览无法启动制作阶段。</p><div class="line wrap" style="margin-top:12px"><button type="button" disabled>运行下一阶段</button><button type="button" disabled>运行全部</button></div>')+
+  '</div></div>';
+}
+
+/* ===== 小说（8 模式） ===== */
+const NOVEL_MODES=["章节","设定","初始化","流水线","评审","模型","状态","自动"];
+const NOVEL_GAPS={
+  2:"暂无初始化记录",
+  4:"暂无评审记录",
+  5:"暂无模型配置",
+  6:"暂无本章角色状态记录",
+  7:"暂无自动运行配置"
+};
+function novel(){
+  const mode=state.section??0;
+  const ci=Math.max(0,Math.min(DB.chapters.length-1,state.selection||0));
+  state.selection=ci;
+  const c=DB.chapters[ci], cid=c[0];
+  const chips='<div class="chipbar" role="tablist" aria-label="章节">'+DB.chapters.map((x,j)=>'<button type="button" class="chip'+(j===ci?" on":"")+'" data-action="item:'+j+'" title="'+escape(x[3])+'">第 '+x[2]+' 章</button>').join("")+'</div>';
+  const rail='<section class="card"><h2>章节属性</h2><div class="pad">'+kv([
+    ["章节","第 "+c[2]+" 章"],["标题",escape(c[3])||"—"],["字数",c[7]>0?String(c[7]):"未统计"],
+    ["状态",chapterStatusTag(c)],["更新",'<span class="mono">'+timeText(c[8])+'</span>'],["本章镜头",String(shotsOfChapter(cid).length)]
+  ])+'<div class="note" style="margin-top:8px">数据源：<span class="mono">'+escape(DB.dbPath)+'</span></div></div></section>';
+  let left="";
+  if(mode===0){
+    const st=statusLabel(c[4]);
+    left='<article class="card reading"><div class="line between"><h1>第 '+c[2]+' 章 · '+escape(c[3])+'</h1>'+badge(st.tag,st.tone)+'</div>'+
+      '<small>'+(c[7]>0?c[7]+" 字":"未统计")+' · 更新 '+timeText(c[8])+'</small>'+
+      (c[5]?'<div class="summary-card">本章目标 · '+escape(c[5])+'</div>':'')+
+      (c[6]?'<p>'+escape(c[6])+'</p>':emptyBox("text","本章尚无正文","可以切换到其他章节阅读。"))+
+      '</article>';
+  }else if(mode===1){
+    left=card("设定集",'<div class="note">共 '+DB.entities.length+' 个实体</div><div class="grid" style="margin-top:12px">'+
+      DB.entities.map((e,i)=>'<article class="card asset-card"><button type="button" data-action="asset:'+i+'"><strong class="clip">'+escape(e[2]||"—")+'</strong><small>'+escape(kindLabel(e[1]))+' · '+escape(dash(e[4]))+'</small><small class="clip">'+escape(e[3]||"—")+'</small></button></article>').join("")+'</div>');
+  }else if(mode===3){
+    const vRows=V_STAGES.map(([code,name])=>{
+      const n=stageCount(cid,code);
+      return [code,escape(name),badge(n>0?"完成":"待执行",n>0?"ok":"idle"),'<span class="mono">artifacts/</span>'+(n?' ×'+n:"")];
+    });
+    left=card("正文链 T1–T17 · 阶段定义",pillFlow(T_STAGES.map((t,i)=>({code:"T"+(i+1),name:t.split(" ")[1],state:""})))+
+      table(["阶段","名称","状态","产物"],T_STAGES.map((t,i)=>["T"+(i+1),escape(t.split(" ")[1]),badge("待执行","idle"),'<span class="mono">artifacts/</span>']))+
+      '<div class="note">在「总控」查看阶段产物。</div>')+
+      card("当前章 · V 阶段",pillFlow(V_STAGES.slice(0,8).map(([code,name])=>({code,name,state:stageState(cid,code)})))+
+        table(["阶段","名称","状态","产物条数"],vRows));
+  }else{
+    left='<section class="card pad">'+emptyBox("sparkles",NOVEL_GAPS[mode]||"暂无记录","")+'</section>';
+  }
+  return tabbar(NOVEL_MODES,mode)+chips+'<div class="split">'+left+'<aside class="stack">'+rail+'</aside></div>';
+}
+
+/* ===== 资产 ===== */
+function kindCounts(){
+  const m=new Map();
+  DB.entities.forEach(e=>m.set(e[1],(m.get(e[1])||0)+1));
+  return m;
+}
+function assets(){
+  const view=state.section===1?1:0;
+  const counts=kindCounts();
+  const chipRow='<div class="chipbar" role="tablist" aria-label="联动类别">'+
+    '<button type="button" class="chip'+(state.assetFilter===""?" on":"")+'" data-action="kind:">全部 '+DB.entities.length+'</button>'+
+    [...counts.entries()].map(([k,n])=>'<button type="button" class="chip'+(state.assetFilter===k?" on":"")+'" data-action="kind:'+k+'">'+escape(kindLabel(k))+' '+n+'</button>').join("")+'</div>';
+  const shown=DB.entities.map((e,i)=>[e,i]).filter(([e])=>!state.assetFilter||e[1]===state.assetFilter);
+  const ready=DB.vassets.filter(v=>v[5]==="READY").length;
+  if(view===0){
+    const grid=shown.length?'<div class="grid">'+shown.map(([e,i])=>{
+      const v=vassetOfEntity(e[0]);
+      return '<article class="card asset-card"><div class="cover art thumb">'+tag(kindLabel(e[1]))+'</div>'+
+        '<button type="button" data-action="asset:'+i+'"><strong class="clip">'+escape(e[2]||"—")+'</strong></button>'+
+        '<div class="line">'+(v?assetStatusTag(v[5]):badge("无视觉资产","idle"))+'<small>#'+e[0]+'</small></div></article>';
+    }).join("")+'</div>':emptyBox("masks",state.assetFilter?"这一类还没有实体":"还没有实体资产",state.assetFilter?"在左侧侧栏换回「全部」看看这个工程里有哪些实体":"跑一次初始化与资产流水线后这里才有内容。");
+    return tabbar(["总览","详情"],0)+chipRow+
+      '<div class="line between"><h2>实体资产</h2><small>'+ready+'/'+DB.vassets.length+' 就绪 · 缩略图为示意</small></div>'+grid;
+  }
+  const ei=Math.max(0,Math.min(DB.entities.length-1,state.selection||0));
+  const e=DB.entities[ei], v=vassetOfEntity(e[0]);
+  const layers=v?layersOfAsset(v[0]):[];
+  const done=layers.filter(a=>a[3]==="DONE").length;
+  const degraded=layers.some(a=>a[4]===1);
+  const filteredOut=state.assetFilter&&e[1]!==state.assetFilter;
+  const chain='<div class="layer-chain">'+LAYERS.map(([key,label],i)=>{
+    const a=layers.find(x=>x[2]===key);
+    const st=a?a[3]:"";
+    const tone=st==="DONE"?"ok":st==="RUNNING"?"busy":st==="FAILED"?"danger":"idle";
+    return (i?'<span class="link'+(st&&st!=="PENDING"?" hot":"")+'"></span>':'')+
+      '<button type="button" class="layer-node" data-action="viewer:'+(i+1)+'"><span class="pic art'+(i%2?" cool":"")+'">'+escape(st||"无图")+'</span><span class="lbl">'+escape(label)+dot(tone)+'</span></button>';
+  }).join("")+'</div>';
+  return tabbar(["总览","详情"],1)+
+    (filteredOut?'<div class="gap">当前这一项不在「'+escape(kindLabel(state.assetFilter))+'」的筛选结果里</div>':"")+
+    '<div class="split"><div class="stack">'+
+    card(escape(e[2]||"—"),'<div class="line between"><div class="line">'+(v?assetStatusTag(v[5]):badge("—","idle"))+'<span class="mono">#'+e[0]+'</span></div><div class="line">'+
+      (v&&v[3]?btn(glyph("eye")+" 查看大图","viewer:0")+btn(glyph("download")+" 导出整版","viewer:1")
+              :'<button type="button" disabled>'+glyph("eye")+' 查看大图</button><button type="button" disabled>'+glyph("download")+' 导出整版</button>')+'</div></div>'+
+      '<div class="split" style="margin-top:12px"><div><div class="cover art thumb" data-action="viewer:0">'+tag("基线图 · 点击查看大图")+'</div><div class="note">'+escape(v?v[3]||"—":"尚未建立")+'</div></div>'+
+      '<div>'+kv([
+        ["类别",escape(kindLabel(e[1]))],["实体 ID","#"+e[0]],["实体状态",escape(dash(e[4]))],
+        ["视觉资产",escape(v?v[2]:"尚未建立")],["Canon",escape(v?dash(v[4]):"—")],["生产状态",v?assetStatusTag(v[5]):"—"],
+        ["形象层",v?done+" / 4 层就绪":"—"],["设定图",'<span class="mono clip">'+escape(v?dash(v[3]):"—")+'</span>'],
+        ["降级",v?(degraded?badge("有降级产物","warn"):"无"):"—"]
+      ])+'</div></div>')+
+    card("V0 派生链 · 正脸 → 四视图 → 基础身体 → 服装",chain+'<div class="note">派生起点：文生图 · 缺层时：生成这一层。层状态枚举 PENDING / RUNNING / DONE / FAILED 原样显示；降级只在「降级」行标注。'+(layers.length?"":"（该资产还没有派生层行。）")+'</div>')+
+    card("一致性对比",emptyBox("compare","尚无一致性对比结果",v?"可点击派生链中的节点，逐层查看。":"该实体暂无视觉资产。"))+
+    '</div><aside class="stack">'+
+    card("实体摘要",'<p class="muted">'+escape(e[3]||"—")+'</p><div class="note" style="margin-top:8px">首现 第 '+e[5]+' 章</div>'+
+      (v?'<div class="note" style="margin-top:8px">材质 / 色彩 · '+escape(v[6]||"—")+'</div>'+(v[7]?'<div class="note">备注 · '+escape(v[7])+'</div>':""):""))+
+    card("关联资料",rows([["关联时间线","暂无记录"],["绑定镜头","暂无记录"],["参考图","暂无记录"]]))+
+    '</aside></div>';
+}
+
+/* ===== 分镜 ===== */
+function shotsView(){
+  const c=curChapter(), cid=c[0], list=curShots();
+  const sh=curShot();
+  const v8=pillFlow(["V1","V2","V3","V4","V5","V6","V7","V8"].map(v=>({code:v,state:stageState(cid,v)})));
+  if(!list.length){
+    return v8+'<div class="split"><section class="card pad">'+emptyBox("clapper","本章尚无镜头","可切换到已有分镜的章节。")+'</section>'+
+      card("连续性 C1-C12",emptyBox("compare","连续性未校验","V8 需要该章的镜头数据。"))+'</div>'+
+      '<section class="card"><h2>故事板时间线 · 拖拽重排</h2>'+emptyBox("clock","本章尚无镜头，时间线为空。","",true)+'</section>';
+  }
+  const scene=sceneOf(sh);
+  const dur=sh[9];
+  const detail=card("镜头详情",kv([
+    ["镜头","#"+sh[0]],["场 / 序","第 "+scene[2]+" 场 · 第 "+sh[2]+" 镜"],["动作",escape(sh[3])],["表演",escape(sh[4])],
+    ["机位","—"],["光线","—"],["时长",'<span class="mono">'+dur.toFixed(1)+'s</span>'],["情绪",escape(sh[7])],["旁白",escape(sh[6]||"—")]
+  ]));
+  const continuity=card("连续性 C1-C12",emptyBox("compare","本章暂无连续性报告","校验完成后，可在底栏的「校验报告」查看结果。"));
+  const maxDur=Math.max(...list.map(s=>s[9]));
+  const tl='<section class="card"><h2 class="line between">故事板时间线 · 拖拽重排<small>按住卡片拖动 · 时长条按比例</small></h2><div class="timeline">'+
+    list.map((s,j)=>btn(shotThumb(s,"thumb")+'<span class="mono">'+shotCode(s[0])+'</span><span class="clip" style="font-size:11px">'+escape(s[3])+'</span>'+
+      '<span class="line" style="gap:4px"><span style="height:4px;border-radius:2px;background:var(--accent);width:'+Math.max(30,Math.round(s[9]/maxDur*72))+'px"></span><small>'+s[9].toFixed(1)+'s</small></span>',
+      "item:"+j,j===state.selection?"selected":"")).join("")+'</div></section>';
+  return v8+'<div class="split">'+detail+continuity+'</div>'+tl;
+}
+/* ===== 流程节点图（FlowGraph） ===== */
+function flowNodes(video){
+  const c=curChapter(), list=curShots();
+  const imgCount=DB.gen.filter(g=>g[9]==="asset"&&g[13]!=="FAILED").length;
+  const shotImgs=list.filter(s=>{const g=genOfShot(s[0]);return g&&g[13]!=="FAILED";}).length;
+  if(video) return [
+    {icon:"image",label:"首帧",sub:"—",state:"todo"},{icon:"image",label:"尾帧",sub:"—",state:"todo"},
+    {icon:"video",label:"H3 生成",sub:list.length+" 镜 / 共 "+chapterTotalDuration(c[0])+"s",state:"todo"},
+    {icon:"refresh",label:"RIFE 补帧",sub:"—",state:"todo"},{icon:"file",label:"编码",sub:"—",state:"todo"}
+  ];
+  return [
+    {icon:"novel",label:"章节",sub:"第 "+c[2]+" 章 · "+c[3],state:"done"},
+    {icon:"text",label:"提示词",sub:"本章 "+list.length+" 镜",state:"todo"},
+    {icon:"masks",label:"角色参考",sub:imgCount?(imgCount+" 个实体已出图"):"还没有实体出图",state:imgCount?"done":"todo"},
+    {icon:"compare",label:"姿势骨架",sub:"—",state:"todo"},
+    {icon:"chip",label:"KSampler",sub:"队列里没有任务",state:"todo"},
+    {icon:"image",label:"VAE 解码",sub:"—",state:"todo"},
+    {icon:"check",label:"一致性校验",sub:"—",state:"todo"},
+    {icon:"download",label:"落盘",sub:shotImgs?"本章已有 "+shotImgs+" 镜出图":"—",state:shotImgs?"done":"todo"}
+  ];
+}
+function flowDiagram(video){
+  const nodes=flowNodes(video);
+  // 卡片和连线共用同一套坐标。画布变窄时只缩放横向，行高和间距保持可读。
+  const width=320, nodeWidth=144, nodeHeight=80, rowStep=104;
+  const left=0, right=width-nodeWidth, center=right/2;
+  const columns=video?[left,right,center,center,center]:[left,right,right,left,left,right,right,left];
+  const boxes=nodes.map((_,i)=>({x:columns[i],y:(video?Math.max(0,i-1):Math.floor(i/2))*rowStep}));
+  const height=boxes.at(-1).y+nodeHeight;
+  // 依赖与原生 FlowGraph 中同名的节点一致，出片的两路输入汇入 H3。
+  const links=video?[[0,2],[1,2],[2,3],[3,4]]:nodes.slice(1).map((_,i)=>[i,i+1]);
+  const arrowId=video?"video-link-arrow":"image-link-arrow";
+  const edges=links.map(([from,to])=>{
+    const a=boxes[from], b=boxes[to];
+    let path;
+    if(a.y===b.y){
+      const forward=a.x<b.x, y=a.y+nodeHeight/2;
+      path='M '+(forward?a.x+nodeWidth:a.x)+' '+y+' H '+(forward?b.x-3:b.x+nodeWidth+3);
+    }else{
+      const mid=a.y+nodeHeight+(rowStep-nodeHeight)/2;
+      path='M '+(a.x+nodeWidth/2)+' '+(a.y+nodeHeight)+' V '+mid+' H '+(b.x+nodeWidth/2)+' V '+(b.y-3);
+    }
+    return '<path class="edge" d="'+path+'" marker-end="url(#'+arrowId+')"><title>'+escape(nodes[from].label+' → '+nodes[to].label)+'</title></path>';
+  }).join("");
+  const cards=nodes.map((n,i)=>{
+    const {x,y}=boxes[i];
+    return '<div class="node card" style="left:'+(x/width*100)+'%;top:'+y+'px;width:'+(nodeWidth/width*100)+'%;height:'+nodeHeight+'px">'+
+      '<div class="line">'+glyph(n.icon)+'<strong class="clip">'+escape(n.label)+'</strong></div><small title="'+escape(n.sub)+'">'+escape(n.sub)+'</small>'+
+      (n.state==="done"?badge("完成","ok"):badge("待执行","idle"))+'</div>';
+  }).join("");
+  return '<div class="board"><div class="nodes" style="height:'+height+'px"><svg class="flow-links" viewBox="0 0 '+width+' '+height+'" preserveAspectRatio="none" role="img" aria-label="流程依赖">'+
+    '<defs><marker id="'+arrowId+'" viewBox="0 0 6 6" refX="6" refY="3" markerWidth="6" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto"><path d="M 0 0 L 6 3 L 0 6 Z" fill="currentColor"/></marker></defs>'+edges+'</svg>'+cards+'</div></div>';
+}
+function flowBoard(video){
+  return '<section class="flow"><div class="stack">'+
+    '<div class="card pad line between"><h1>'+headers[video?"video":"image"][0]+' · 本章 '+curShots().length+' 镜</h1><div class="line">'+(video?"":btn("批量出图","demo:submit-batch","primary"))+'</div></div>'+
+    flowDiagram(video)+
+    (video?filmStrip("成片条 · 逐镜预览"):card("出图任务 · Comfy",emptyBox("chip","Comfy 未配置","可在桌面端设置中填写 ComfyUI 地址。",true)))+
+  '</div><section class="card"><h2>'+(video?"出片任务":"出图任务")+'</h2><div class="pad stack">'+(video?"":tabbar(IMAGE_TABS))+(video?tabbar(VIDEO_TABS):"")+flowSidePanel(video)+'</div></section></section>';
+}
+function flowSidePanel(video){
+  const mode=state.section??0;
+  if(video){
+    if(mode===0) return pairChain();
+    if(mode===1) return emptyBox("chip","暂无视频任务","连接 ComfyUI 后可在此查看任务。");
+    return filmStats();
+  }
+  if(mode===0) return bindingPanel();
+  if(mode===1) return batchPanel();
+  if(mode===2) return reviewPanel();
+  return resultPanel();
+}
+function bindingPanel(){
+  return emptyBox("chip","Comfy 未配置","可在桌面端设置中填写 ComfyUI 地址。");
+}
+function batchPanel(){
+  const list=curShots();
+  if(!list.length) return emptyBox("clapper","本章尚无镜头","可切换到已有分镜的章节。");
+  return '<div class="note">本章 '+list.length+' 个镜头</div><div class="gap" style="margin:8px 0">当前预览无法提交批量出图。</div>'+
+    '<div class="rows">'+list.map(s=>'<div class="line between"><span class="line"><strong class="mono">'+shotCode(s[0])+'</strong><span class="clip">'+escape(s[3]||"—")+'</span></span>'+badge(dash(s[8]),"idle")+'</div>').join("")+'</div>'+
+    '<div class="line" style="margin-top:12px"><button type="button" disabled>批量出图</button></div>';
+}
+function reviewPanel(){
+  const list=DB.vassets.map(v=>[v,byId(DB.entities,v[1])]).filter(x=>x[1]);
+  if(!list.length) return emptyBox("masks","没有可评审的出图","这一类实体还没有视觉资产。先在资产工作区出图，再回来评审。");
+  return '<div class="cover art" style="min-height:150px">'+tag("示意插画 · 非本工程出图结果")+'</div>'+
+    '<div class="rows" style="margin-top:12px">'+list.map(([v,e])=>'<div class="line between"><span class="clip">'+escape(e[2]||"—")+'</span>'+assetStatusTag(v[5])+'</div>').join("")+'</div>'+
+    '<div class="note" style="margin-top:8px">暂无逐项评分。</div>';
+}
+function resultPanel(){
+  const sh=curShot();
+  if(!sh) return emptyBox("clapper","本章尚无镜头","可切换到已有分镜的章节查看出图结果。");
+  const g=genOfShot(sh[0]);
+  const c=curChapter(), scene=sceneOf(sh);
+  const outState=!g?["待出图","idle"]:(g[13]==="FAILED"?["出图文件不可用","danger"]:["已出图","ok"]);
+  const pic=g&&g[13]!=="FAILED"
+    ? '<div class="cover photo" data-action="viewer:0" style="min-height:190px">'+tag("示例剧照 · 设计稿占位 · 点击进查看器")+'</div>'
+    : (g?'<div class="cover art" style="min-height:190px">'+tag("出图文件不可用 · "+escape(g[14]||"—"))+'</div>'
+        :'<div class="cover pending-art" style="min-height:190px">'+tag("待出图 · 出图后在此显示")+'</div>');
+  return pic+'<div class="stack" style="margin-top:12px">'+kv([
+    ["所属章节","第 "+c[2]+" 章 · "+escape(c[3])],
+    ["场景","第 "+scene[2]+" 场 · "+escape(scene[3])],
+    ["出图状态",badge(outState[0],outState[1])],
+    ["设定状态",escape(dash(sh[8]))],
+    ...(g?[["Prompt",escape(g[3])||"—"],["生成参数",'<span class="mono wrap-any">'+escape(g[2]+" · "+g[5]+"×"+g[6]+" · "+g[7]+" 步")+'</span>']]:[["Prompt","—"],["生成参数","—"]])
+  ])+
+  '<div class="line wrap">'+btn(glyph("refresh")+" 重跑本镜出图","demo:rerun")+'</div></div>';
+}
+function pairChain(){
+  const list=curShots();
+  if(list.length<2) return emptyBox("clapper","本章还不足两个镜","首尾帧链是<strong>相邻两镜</strong>之间的关系，至少要两个镜才画得出来。");
+  return '<div>'+list.slice(0,-1).map((s,i)=>{
+    const nx=list[i+1];
+    return '<div class="pairline"><span class="mono"><strong>'+shotCode(s[0])+'</strong> → <strong>'+shotCode(nx[0])+'</strong></span><span class="clip">'+escape(s[3])+' → '+escape(nx[3])+'</span>'+badge(dash(nx[8]),"idle")+'</div>';
+  }).join("")+'</div><div class="note">标签显示后一个镜头的设定状态。</div>';
+}
+function filmStats(){
+  const list=curShots();
+  if(!list.length) return emptyBox("clapper","本章尚无镜头","可切换到其他章节查看逐镜预览。");
+  const withAsset=list.filter(s=>genOfShot(s[0])).length;
+  return kv([["本章镜数",String(list.length)],["总时长",'<span class="mono">'+chapterTotalDuration(curChapter()[0])+'s</span>'],["有出图记录",withAsset+" 镜"]]);
+}
+function filmStrip(title){
+  const list=curShots();
+  const body=list.length?'<div class="film">'+list.map((s,j)=>{
+    const g=genOfShot(s[0]);
+    const cls=g&&g[13]!=="FAILED"?"cover photo":(g?"cover art":"cover pending-art");
+    return btn('<span class="'+cls+' shot-thumb">'+(g&&g[13]!=="FAILED"?"示意":(g?"图像不可用":"待出片"))+'</span><span class="fmeta"><span class="mono">'+shotCode(s[0])+'</span> <small>'+s[9].toFixed(1)+'s</small>'+dot(s[8]?"busy":"idle")+'</span>',
+      "item:"+j,j===state.selection?"cell selected":"cell");
+  }).join("")+'</div>':emptyBox("film","本章尚无镜头","可切换到其他章节查看逐镜预览。",true);
+  return '<section class="card"><h2>'+escape(title)+'</h2>'+body+'</section>';
+}
+const IMAGE_TABS=["绑定","批量出图","图评审","结果"];
+const VIDEO_TABS=["首尾帧链","视频任务","成片"];
+function imageView(){ return flowBoard(false); }
+function videoView(){
+  return flowBoard(true)+'<div class="stack" style="margin-top:12px">'+filmStrip("成片 · 逐镜预览（与视频文件状态分开）")+
+    card("视频文件状态",emptyBox("file","暂无可查看的视频文件","可先浏览逐镜预览。"))+'</div>';
+}
+
+/* ===== 设置（Shell_Palette） ===== */
+let settingsUI={provider:0,protocol:0,sw1:false,sw2:false};
+function settingsBody(){
+  const providers=["OpenAI","Xiaomi MiMo","MiniMax","自定义"], protocols=["chat_completions","responses","anthropic"];
+  return '<div class="stack">'+
+  '<div>'+kv([["当前工程","第七封信"],["工程根",'<span class="mono clip">'+escape(DB.root)+'</span>'],["数据目录",'<span class="mono clip">'+escape(DB.dbPath)+'</span>']])+
+    '<div style="height:12px"></div>'+kv([["LLM 供应商","未配置"],["默认模型","—"],["写作模型","—"],["评审模型","—"],["ComfyUI","未配置"]])+
+    '<div style="height:12px"></div>'+kv([["图库来源","—"],["缩略图尺寸","512"],["产物目录","未配置"]])+
+    '<div class="note" style="margin-top:8px">以上取自 %APPDATA%/ShineTVStudio/settings.json · API Key 不在此显示</div></div>'+
+  '<section class="card"><h2>LLM 配置</h2><div class="pad stack">'+
+    '<div class="field"><span>供应商</span><div class="seg">'+providers.map((p,i)=>btn(escape(p),"provider:"+i,settingsUI.provider===i?"selected":"")).join("")+'</div></div>'+
+    '<div class="field"><span>协议</span><div class="seg">'+protocols.map((p,i)=>btn(escape(p),"protocol:"+i,settingsUI.protocol===i?"selected":"")).join("")+'</div></div>'+
+    '<label class="field">Base URL<input placeholder="空 = 默认端点" aria-describedby="s-base"></label>'+
+    '<label class="field">API Key<input type="password" placeholder="仅存本地 · 不打日志" autocomplete="off"><span class="hint" id="s-base">密码型输入 · 仅存本地，不打进日志；设计稿不读真实配置、不发请求。</span></label>'+
+    '<label class="field">模型<input placeholder="模型 id"></label>'+
+    '<div class="form-grid">'+
+      '<label class="field">规划模型<input placeholder="空 = 跟默认模型"></label>'+
+      '<label class="field">写作模型<input placeholder="空 = 跟默认模型"></label>'+
+      '<label class="field">评审模型<input placeholder="空 = 跟默认模型"></label>'+
+      '<label class="field">提取模型<input placeholder="空 = 跟默认模型"></label>'+
+    '</div>'+
+    '<div class="line between"><span>MiMo Token Plan</span><button type="button" class="switch" role="switch" aria-checked="'+settingsUI.sw1+'" aria-label="MiMo Token Plan" data-action="switch:sw1"></button></div>'+
+    '<div class="line between"><span>MiniMax 关思考</span><button type="button" class="switch" role="switch" aria-checked="'+settingsUI.sw2+'" aria-label="MiniMax 关思考" data-action="switch:sw2"></button></div>'+
+    '<div class="note">改动即写回 settings.json · API Key 仅存本地，不打进日志</div>'+
+  '</div></section></div>';
+}
+
+/* ===== 校验报告（Shell_Reports） ===== */
+function reportBody(){
+  return '<div class="stack">'+
+  card("逐项校验报告",emptyBox("compare","尚无校验报告","完成连续性校验后可在此查看逐项结论。"))+
+  '</div>';
+}
+
+/* ===== 媒体查看器（MediaViewer） ===== */
+let viewerUI={page:0,zoom:1,lens:false};
+const VIEWER_PAGES=[
+  ["基线设定图","基线 · 文生图"],["正脸","front"],["四视图","turnaround"],["基础身体","base_body"],["服装","wardrobe"]
+];
+function turnViewerPage(step){
+  const count=VIEWER_PAGES.length;
+  viewerUI.page=(viewerUI.page+step+count)%count;
+  viewerUI.zoom=1;
+  render();
+}
+function viewerBody(){
+  const tab=state.screen==="viewer"?(state.section??state.viewerTab??0):(state.viewerTab??0);
+  const page=viewerUI.page;
+  const layer=page>0?DB.vartifacts.find(a=>a[2]===VIEWER_PAGES[page][1]&&a[1]===1):null;
+  const fileName=page===0?"linwan_base.png":(VIEWER_PAGES[page][1]+".png");
+  const header='<header class="line between"><div class="line">'+glyph("image")+'<strong class="mono clip">'+fileName+'</strong>'+badge(tab?"联系表":"图片","info")+'</div>'+
+    '<div class="line">'+btn(glyph("download")+" 复制","demo:copy")+btn(glyph("upload")+" 另存为","demo:save-as")+
+    btn("上一张 (←)","pager:-1")+btn("下一张 (→)","pager:1")+'<span class="mono">'+(page+1)+'/'+VIEWER_PAGES.length+'</span>'+btn(glyph("x"),"close:assets")+'</div></header>';
+  let body;
+  if(tab){
+    body='<div class="sheet-bar"><strong>林昭 · 外观基线</strong><span>设定集整版</span></div>'+
+      '<div class="sheet">'+VIEWER_PAGES.map((p,i)=>{
+        const a=i>0?DB.vartifacts.find(x=>x[2]===VIEWER_PAGES[i][1]&&x[1]===1):null;
+        const st=a?a[3]:"";
+        const cls=i===0?"cover photo":(st==="FAILED"?"cover art cool":st==="DONE"?"cover art":"cover pending-art");
+        return '<div class="sheet-cell"><div class="pic '+(i===0?"":"art"+(i%2?" cool":""))+'" '+(i===0?'style="background:var(--matte) url(\'ui-demo-railway.png\') center/cover"':"")+'>'+escape(i===0?"示例剧照":(st||"无图"))+'</div>'+
+          '<div class="lbl"><span>'+escape(p[1]==="front"?"基线 · 文生图":p[0])+'</span>'+(st?badge(st,st==="DONE"?"ok":st==="FAILED"?"danger":st==="RUNNING"?"busy":"idle"):"")+'</div></div>';
+      }).join("")+'</div>'+
+      '<div class="line" style="margin-top:12px">'+btn("导出 PNG","demo:export-sheet","primary")+btn("重新生成整版","demo:regen-sheet")+'</div>';
+  }else{
+    const zoomStyle='transform:scale('+viewerUI.zoom.toFixed(2)+')';
+    body='<div class="fv-stage"><div class="zoomer"><img src="ui-demo-railway.png" alt="林晚 · 基线设定图（示例剧照占位）" style="'+zoomStyle+'"></div></div>'+
+      '<div class="fv-tools">'+btn(glyph("plus")+" 放大","zoom:in")+btn(glyph("minus")+" 缩小","zoom:out")+btn(glyph("target")+" 适应窗口","zoom:fit")+btn(glyph("search")+" 放大镜 3×","zoom:lens",viewerUI.lens?"selected":"")+'<span class="mono">'+Math.round(viewerUI.zoom*100)+'%</span></div>'+
+      '<div class="note">'+escape(VIEWER_PAGES[page][0]+(layer?" · "+layer[3]:""))+' · 示例剧照</div>';
+  }
+  return header+'<div class="stack">'+body+'</div>';
+}
+
+/* ===== 底栏（Shell_Dock，四页签） ===== */
+function dockHtml(){
+  const tab=state.dockTab??0;
+  const bodies=[
+    emptyBox("chip","暂无任务 · Comfy 未配置","可在桌面端设置中填写 ComfyUI 地址。",true),
+    '<div class="logline">打开项目 第七封信\n已读取 '+DB.chapters.length+' 章 · '+DB.shots.length+' 镜 · '+DB.entities.length+' 实体\nComfyUI 未配置</div>',
+    table(["文件名","扩展","位置"],DB.gen.map(g=>['<span class="mono">'+escape(g[8].split("/").pop())+'</span>',"PNG",'<span class="mono clip">'+escape(g[8].split("/").slice(0,-1).join("/")||"/")+'</span>',btn(glyph("chev"),"demo:open-product")]))+
+      '<div class="note">共 '+DB.gen.length+' 个产物</div>',
+    emptyBox("compare","尚无校验报告","完成连续性校验后可在此查看逐项结论。",true)
+  ];
+  return '<section class="dock"><div class="tabs">'+["任务队列","日志","产物","校验报告"].map((t,i)=>btn(t,"dock-tab:"+i,tab===i?"selected":"")).join("")+'</div>'+bodies[tab]+'</section>';
+}
+
+/* ===== 外壳 ===== */
+const headers={
+ overview:["全流程总控台","阶段进度、预算、账本与最近产物"],novel:["小说工作区","切换章节，阅读正文并检查设定"],assets:["视觉资产","查找实体、对照设定图和派生结果"],
+ shots:["分镜工作区","对照镜头画面、机位、时长和连续性"],image:["出图流程","分镜图绑定、图评审与生成结果"],video:["出片流程","首尾帧链、视频任务和成片"],gallery:["组件画廊","预览当前主题的组件和交互状态"]
+};
+function sidebarHtml(id){
+  const ci=state.chapter||0;
+  if(id==="assets"){
+    const counts=kindCounts();
+    const groups=[...counts.entries()].map(([k,n])=>'<div class="group">'+escape(kindLabel(k))+' '+n+'</div>'+
+      DB.entities.map((e,i)=>[e,i]).filter(([e])=>e[1]===k).map(([e,i])=>btn(escape(e[2]||"—"),"asset:"+i,i===state.selection?"selected":"")).join("")).join("");
+    return '<h3 class="line between"><span>实体资产</span><small>'+DB.vassets.filter(v=>v[5]==="READY").length+'/'+DB.vassets.length+' 就绪</small></h3><input id="sidebar-filter" placeholder="筛选…" aria-label="筛选实体">'+groups;
+  }
+  const tree=DB.volumes.map(v=>{
+    const chs=DB.chapters.filter(c=>c[1]===v[0]);
+    return '<div class="group">'+escape(v[1])+'</div>'+chs.map(c=>{
+      const j=DB.chapters.indexOf(c);
+      const sel=id==="novel"?(j===state.selection):(j===ci);
+      const shots=(id!=="overview")?shotsOfChapter(c[0]):[];
+      return btn(escape("第 "+c[2]+" 章 · "+c[3]),(id==="novel"?"item:":"chap:")+j,sel?"selected":"")+
+        (sel?shots.map((s,k)=>btn(escape(shotCode(s[0])+" · "+s[3]),"item:"+k,k===state.selection?"selected":"")).join(""):"");
+    }).join("");
+  }).join("");
+  return '<h3>项目资料</h3><input id="sidebar-filter" placeholder="筛选…" aria-label="筛选资料">'+tree;
+}
+function inspectorHtml(id){
+  const c=curChapter(), sh=curShot();
+  if(id==="assets"){const e=curEntity(),va=vassetOfEntity(e[0]);return '<h3>检查器</h3><details open><summary>属性</summary>'+kv([["当前项目","第七封信"],["工作区",escape(headers[id]?headers[id][0]:"—")],["实体名",escape(e[2]||"—")],["类别",escape(kindLabel(e[1]))],["资产状态",va?assetStatusTag(va[5]):badge("无视觉资产","idle")]])+'</details><details open><summary>预览</summary><div class="cover art thumb">'+tag("示意 · 非本工程出图结果")+'</div></details><details><summary>关联</summary><small>按当前实体查找</small></details>';}
+  return '<h3>检查器</h3><details open><summary>属性</summary>'+kv([
+    ["当前项目","第七封信"],["工作区",escape(headers[id]?headers[id][0]:"—")],
+    ["章节","第 "+c[2]+" 章"],["标题",escape(c[3])],
+    ["镜头",sh?shotCode(sh[0]):"—"],["设定状态",sh?escape(dash(sh[8])):"—"]
+  ])+'</details><details open><summary>预览</summary><div class="cover art thumb">'+tag("示意 · 非本工程出图结果")+'</div></details><details><summary>关联</summary><small>按当前章节或镜头查找</small></details>';
+}
+function shell(id){
+  const ids=["overview","novel","assets","shots","image","video","gallery"];
+  const label=x=>pages.find(([key])=>key===x)[1];
+  const nav=ids.map(x=>btn(glyph(x)+"<span>"+(x==="gallery"?"组件":label(x))+"</span>",x,id===x?"active":"")).join("");
+  const panels=[["panel","侧栏"],["dock","底栏"],["inspect","检查器"]].map(([x,t])=>btn(glyph(x)+"<span>"+t+"</span>",x)).join("");
+  const views={overview,novel,assets,shots:shotsView,image:imageView,video:videoView,gallery};
+  const sh=curShot();
+  let context=headers[id][0];
+  if(id==="novel")context="第 "+DB.chapters[Math.max(0,Math.min(DB.chapters.length-1,state.selection||0))][2]+" 章";
+  else if(id==="assets")context=state.section===1?curEntity()[2]||"详情":"总览";
+  else if(["shots","image","video"].includes(id))context=sh?shotCode(sh[0]):"第 "+curChapter()[2]+" 章";
+  const headTitle=id==="shots"&&sh?(shotCode(sh[0])+" · "+sh[3]):headers[id][0];
+  const headSub=id==="shots"?"本章 "+curShots().length+" 个镜头":headers[id][1];
+  const headExtra=id==="shots"?badge(dash(sh?sh[8]:"—"),"idle")+(btn("重新读取","demo:reload","primary")):"";
+  const inner=(id==="image"||id==="video")
+    ? '<div class="content">'+views[id]()+'</div>'
+    : '<div class="head line"><span class="mark">'+glyph(id)+'</span><div class="grow clip"><h1>'+escape(headTitle)+'</h1><p class="clip">'+escape(headSub)+'</p></div>'+headExtra+'</div><div class="content stack">'+views[id]()+'</div>';
+  return '<div class="shell"><header class="top line">'+btn('<span class="logo">'+glyph("logo")+'</span><strong class="brand-name">ShineTV Studio</strong>',"hub","brand")+btn("第七封信 ▾","hub","project-button")+btn(glyph("search")+'<span class="grow">搜索命令</span><small>Ctrl K</small>',"commands","search")+'<div class="grow"></div><small class="comfy">Comfy 未配置</small>'+btn(glyph("settings"),"settings")+btn("运行","dock","primary")+'</header>'+
+  '<div class="frame '+(state.side?"":"no-side")+' '+(state.inspector?"":"no-inspector")+' '+(state.peek==='panel'?'panel-peek':state.peek==='inspect'?'inspect-peek':'')+'"><nav class="rail" aria-label="工作区">'+nav+'<hr>'+panels+'</nav>'+
+  '<aside class="sidebar">'+sidebarHtml(id)+'</aside>'+
+  '<main class="work"><div class="crumbs clip">第七封信　›　'+label(id)+'　›　'+escape(context)+'</div><div class="scroll">'+inner+'</div></main>'+
+  '<aside class="inspector">'+inspectorHtml(id)+'</aside></div>'+
+  (state.dock?dockHtml():"")+'<footer class="status line between"><span>Comfy 未配置　　队列 0</span><span class="warning">制作阶段暂不可运行</span><span>纸墨</span></footer></div>'+toastHtml();
+}
+function gallery(){
+  const deepLinks=[
+    ["novel&tab=0..7","小说 8 模式：章节 / 设定 / 初始化 / 流水线 / 评审 / 模型 / 状态 / 自动"],
+    ["assets&tab=0/1","资产总览 / 详情"],
+    ["image&tab=0..3","出图：绑定 / 批量出图 / 图评审 / 结果"],
+    ["video&tab=0..2","出片：首尾帧链 / 视频任务 / 成片"],
+    ["overview&dock=0..3","总控 + 底栏四页签"],
+    ["viewer&tab=0/1","查看器：图片舞台 / 联系表"],
+    ["settings","设置"],["report","校验报告"]
+  ];
+  return '<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(225px,1fr))">'+card("按钮",'<div class="line">'+btn("主操作","", "primary")+btn("次操作")+'<button type="button" disabled>禁用</button></div>')+card("标签",'<div class="line">'+badge("已完成","ok")+badge("待处理")+badge("失败","danger")+badge("运行中","busy")+badge("已过期","warn")+'</div>')+card("表单",'<label>项目名称<input placeholder="输入名称"></label>')+card("分段控件",tabbar(["详情","总览","预览"],0))+card("开关",'<div class="line between"><span>MiMo Token Plan</span><button type="button" class="switch" role="switch" aria-checked="true" aria-label="示例开关" data-action="noop"></button></div>')+card("表格",table(["名称","状态"],[["章节","已读取"],["出图","待处理"]]))+card("空状态",'<div class="empty">'+glyph("sparkles")+'<strong>还没有可显示的项目</strong><small>尚无数据时用空态，不摆假数据。</small></div>')+'</div>'+
+  card("深链接索引（?capture=1&screen=…）",'<div class="rows">'+deepLinks.map(([q,d])=>'<div class="line between"><span class="mono clip">?screen='+escape(q)+'</span><small class="clip">'+escape(d)+'</small></div>').join("")+'</div><div class="note">另有 ?item=N（选中项）、?chapter=N（当前章）、?compact=1（窄窗口）、?dock=N（底栏页签）。</div>');
+}
+function render(){
+  const id = state.screen;
+  const app=document.querySelector("#app");
+  app.style.width=state.compact?"min(900px,100%)":"100%";
+  screenSel.value=id;
+  if(id==="viewer"&&state.section!=null)state.viewerTab=state.section;
+  let html;
+  if(id==="hub"||steps.includes(id)||id==="open"){
+   html=steps.includes(id)?wizard(id):hub();
+   if(id==="open") html+=modal("打开项目",project.map(x=>btn(x,"overview","template")).join("")+
+     '<label>浏览本地项目目录<input id="browse-directory" type="file" webkitdirectory aria-describedby="browse-status"></label><small id="browse-status">请选择包含 project.json 的目录。</small>',btn("取消","hub"),"hub");
+  } else if(headers[id]) {
+   html=shell(id);
+  } else if(id==="settings"){
+   html=shell("overview")+modal("项目与服务设置",settingsBody(),"","overview");
+  } else if(id==="report"){
+   html=shell("shots")+modal("连续性 C1-C12 · 逐项结论",reportBody(),"","shots");
+  } else if(id==="viewer"){
+   html=shell("assets")+modal2(viewerBody(),"assets");
+  } else {
+   html=shell("overview")+modal("命令面板",'<input id="command-filter" aria-label="搜索命令" placeholder="搜索工作区或操作…"><div id="command-list" class="stack">'+pages.slice(6,13).map(([x,n])=>btn(n,x,"template")).join("")+'</div>',"", "overview");
+  }
+  app.innerHTML=html;
+  const selectedChip=app.querySelector(".chipbar .chip.on");
+  if(selectedChip){
+   const bar=selectedChip.parentElement;
+   bar.scrollLeft=Math.max(0,selectedChip.offsetLeft+selectedChip.offsetWidth-bar.clientWidth);
+  }
+  const activeDialog=app.querySelector(".dialog");
+  if(activeDialog){
+   for(const sibling of app.children){
+     if(!sibling.classList.contains("modal-layer")) sibling.inert=true;
+   }
+   activeDialog.querySelector("input:not([type=file]), button")?.focus({preventScroll:true});
+  }
+}
+function modal2(body,close){
+  return '<div class="modal-layer"><section class="dialog" role="dialog" aria-modal="true" aria-label="媒体查看器" style="width:min(720px,100%)"><div class="stack">'+body+'</div>'+
+    '<footer class="line between"><span class="note">滚轮缩放 · 拖动平移 · ←→ 切图 · 放大镜 3×</span><div class="line">'+btn(glyph("x")+" 关闭 (Esc)",close)+'</div></footer></section></div>';
+}
+const DEMO_MSG={
+  "save-as":"当前预览无法另存图片。",
+  "copy":"当前预览无法复制图片。",
+  "export-sheet":"当前预览无法导出整版。",
+  "regen-sheet":"当前预览无法重新生成整版。",
+  "submit-batch":"当前预览无法提交批量出图。",
+  "rerun":"当前预览无法重新出图。",
+  "reload":"当前预览无法刷新项目数据。",
+  "open-product":"打开产物：需要用系统默认程序打开（演示）"
+};
+function go(id){ state.screen=id;state.section=null;state.selection=0;state.peek=null;render(); }
+document.querySelector("#scale").onchange=e=>{document.querySelector("#app").style.zoom=e.target.value;};
+screenSel.onchange=e=>go(e.target.value);
+document.querySelector("#compact").onclick=()=>{state.compact=!state.compact;render();};
+document.querySelector("#app").addEventListener("click",e=>{
+  const target=e.target.closest("[data-action]");if(!target)return;
+  const [kind,value]=target.dataset.action.split(":");
+  if(kind==="next"){
+   const i=Number(value);
+   if(i===1&&!state.name.trim()||i===2&&[...state.idea].length>200){
+     document.querySelector("#form-status").textContent=i===1?"请输入项目名称":"创意须在 200 字以内";return;
+   }
+   go(i===3?"overview":steps[i+1]);return;
+  }
+  if(kind==="section"||kind==="template"||kind==="item"){
+   state[kind==="item"?"selection":"section"]=Number(value);
+   if(kind==="item"&&(state.screen==="shots"||state.screen==="image"||state.screen==="video"))viewerUI.page=0;
+   render();return;
+  }
+  if(kind==="chap"){state.chapter=Number(value);state.selection=0;render();return;}
+  if(kind==="kind"){state.assetFilter=value||"";render();return;}
+  if(kind==="dock-tab"){state.dockTab=Number(value);render();return;}
+  if(kind==="asset"){state.screen="assets";state.section=1;state.selection=Number(value);render();return;}
+  if(kind==="viewer"){state.screen="viewer";state.viewerTab=Number(value)||0;state.section=state.viewerTab;state.peek=null;render();return;}
+  if(kind==="close"){go(value||"overview");return;}
+  if(kind==="demo"){
+   const sh=curShot();
+   const msg=value==="rerun"?(sh?shotCode(sh[0])+" ":"")+(DEMO_MSG.rerun):DEMO_MSG[value];
+   setToast(msg||"演示");return;
+  }
+  if(kind==="zoom"){
+   if(value==="in")viewerUI.zoom=Math.min(8,viewerUI.zoom*1.12);
+   else if(value==="out")viewerUI.zoom=Math.max(.25,viewerUI.zoom/1.12);
+   else if(value==="fit")viewerUI.zoom=1;
+   else viewerUI.lens=!viewerUI.lens;
+   render();return;
+  }
+  if(kind==="pager"){turnViewerPage(Number(value));return;}
+  if(kind==="provider"||kind==="protocol"){settingsUI[kind]=Number(value);render();return;}
+  if(kind==="switch"){settingsUI[value]=!settingsUI[value];render();return;}
+  if(kind==="panel"||kind==="inspect"||kind==="dock"){
+   const key={panel:"side",inspect:"inspector",dock:"dock"}[kind];state[key]=!state[key];if(kind!=="dock")state.peek=state.peek===kind?null:kind;render();return;
+  }
+  if(kind==="alphabetical"||kind==="recent"){
+   const grid=document.querySelector(".project-grid");
+   const cards=[...grid.children];cards.sort((a,b)=>kind==="recent"?project.indexOf(a.dataset.name)-project.indexOf(b.dataset.name):a.dataset.name.localeCompare(b.dataset.name,"zh-CN"));
+   grid.append(...cards);return;
+  }
+  if(kind==="noop"){return;}
+  if(headers[kind]||pages.some(([id])=>id===kind))go(kind);
+});
+document.querySelector("#app").addEventListener("input",e=>{
+  const field=e.target.dataset.field;
+  if(field){
+   state[field]=e.target.value;
+   if(field==="idea")document.querySelector("#idea-count").textContent=[...state.idea].length+" / 200";
+  }else if(e.target.id==="project-filter"){
+   const cards=[...document.querySelectorAll(".project")];cards.forEach(c=>c.hidden=!c.dataset.name.includes(e.target.value));
+   document.querySelector("#project-count").textContent="共 "+cards.filter(c=>!c.hidden).length+" 个示例项目";
+  }else if(e.target.id==="sidebar-filter"){
+   document.querySelectorAll(".sidebar button").forEach(b=>b.hidden=!b.textContent.includes(e.target.value));
+  }else if(e.target.id==="command-filter"){
+   document.querySelectorAll("#command-list button").forEach(b=>b.classList.toggle("no-display",!b.textContent.includes(e.target.value)));
+  }
+});
+document.querySelector("#app").addEventListener("change",e=>{
+  if(e.target.id==="browse-directory"){
+   const hasProject=[...e.target.files].some(f=>f.name==="project.json"&&f.webkitRelativePath.split("/").length===2);
+   if(hasProject)go("overview");
+   else document.querySelector("#browse-status").textContent="所选目录的根级没有 project.json。";
+  }
+});
+document.addEventListener("keydown", e=>{
+  const dialog=document.querySelector(".dialog");
+  if(dialog&&e.key==="Tab"){
+    const controls=[...dialog.querySelectorAll("button:not([disabled]),input,select,textarea")].filter(x=>!x.classList.contains("no-display"));
+    const edge=e.shiftKey?controls[0]:controls.at(-1);
+    if(edge&&document.activeElement===edge){e.preventDefault();(e.shiftKey?controls.at(-1):controls[0])?.focus();return;}
+  }
+  if(state.screen==="viewer"&&["ArrowLeft","ArrowRight"].includes(e.key)){
+    e.preventDefault();turnViewerPage(e.key==="ArrowRight"?1:-1);return;
+  }
+  if(e.ctrlKey&&["k","b","i","j"].includes(e.key.toLowerCase())){
+    e.preventDefault();const key=e.key.toLowerCase();
+    if(key==="k"){go("commands");document.querySelector("#command-filter").focus();}
+    else {const field={b:"side",i:"inspector",j:"dock"}[key];state[field]=!state[field];render();}
+  }
+  if(e.key==="Escape"&&!headers[state.screen])go(steps.includes(state.screen)||state.screen==="open"?"hub":"overview");
+});
+render();
+</script>
+</html>

@@ -1,5 +1,7 @@
 #include "ui/imgui/kit/View_Stage.h"
 
+#include <cstdio>
+
 namespace shine::kit {
 namespace {
 
@@ -55,13 +57,14 @@ float Steps(ImDrawList* draw, Rect bounds, const std::vector<std::string>& steps
         if (done) {
             DrawIconCentered(draw, "check", dot.center(), 10.0f, ColorAccent(), 2.2f);
         } else {
-            const std::string index = std::to_string(i + 1);
-            const float w = font->CalcTextSizeA(12.0f, 1e9f, 0.0f, index.data(),
-                                                index.data() + index.size())
-                                .x;
+            // 序号在栈上拼（每帧 × 每个阶段都走这里，不许堆分配）。
+            char index[16];
+            const int n = std::snprintf(index, sizeof(index), "%d", static_cast<int>(i) + 1);
+            const char* ib = index;
+            const char* ie = index + (n > 0 ? n : 0);
+            const float w = font->CalcTextSizeA(12.0f, 1e9f, 0.0f, ib, ie).x;
             draw->AddText(font, 12.0f, ImVec2(dot.center().x - 0.5f * w, dot.center().y - 6.0f),
-                          on ? ColorAccentFg() : ColorTextSecondary(), index.data(),
-                          index.data() + index.size());
+                          on ? ColorAccentFg() : ColorTextSecondary(), ib, ie);
         }
         draw->AddText(font, 12.0f, ImVec2(dot.max.x + 6.0f, bounds.center().y - 6.0f),
                       on ? ColorText() : ColorTextSecondary(), steps[i].data(),

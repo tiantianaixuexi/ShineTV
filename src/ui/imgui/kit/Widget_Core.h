@@ -46,8 +46,16 @@ struct Hit {
     bool held = false;
     bool clicked = false;
     bool doubleClicked = false;
+    // 补间 id：与本控件 InvisibleButton 同一个 ImGuiID（同串同 ID 栈 ⇒ 同值）。
+    // 给 `Anim.h` 的 TransitionTo / TransitionColorTo / TransitionFloatTo 用 ——
+    // 同一控件每帧传同一对 (tid, channel)，传错不会报错、只会两条补间互相拉扯。
+    ImGuiID tid = 0;
 };
 [[nodiscard]] Hit HitTest(Rect bounds, std::string_view id);
+// (前缀, 序号) 重载：id 在 kit 内部栈上拼成 "<prefix><index>"，调用点循环里
+// 不再 `"prefix" + std::to_string(i)` 每帧造串。两参/三参重载产生的字符串
+// 逐字节一致 —— 取证判据（hover 探针按 id 记录）不受影响。
+[[nodiscard]] Hit HitTest(Rect bounds, std::string_view prefix, int index);
 
 // ---- 「图标（或状态点）+ 文字」两段内容在一条容器里的水平落点 ----
 //
@@ -78,6 +86,9 @@ struct IconTextLayout {
 // 外壳/页面层最常用的一条：本帧是否点了这块矩形。
 [[nodiscard]] bool Clicked(Rect bounds, std::string_view id);
 [[nodiscard]] bool Hovered(Rect bounds, std::string_view id);
+// (前缀, 序号) 重载，同 HitTest：循环体里零串拼接。
+[[nodiscard]] bool Clicked(Rect bounds, std::string_view prefix, int index);
+[[nodiscard]] bool Hovered(Rect bounds, std::string_view prefix, int index);
 
 // ---- 同一帧重复命中的自检（2026-09-30 加）----
 //
@@ -110,11 +121,22 @@ namespace detail {
 
 // 命中测试本体：返回 hovered / active / clicked / doubleClicked。
 // 公开的 HitTest() 只是它的转发（那层转发是拆分前就有的，保留）。
-[[nodiscard]] Hit HitTestItem(Rect bounds, std::string_view id);
+// ⚠️ id 一律走栈缓冲落成 NUL 结尾的 C 串再进来（Draw 每帧零堆分配）；
+//    只有超长 id 才退回堆。新调用点请用 (prefix, index) 重载。
+[[nodiscard]] Hit HitTestItem(Rect bounds, std::string_view id, bool keyboard = false);
+[[nodiscard]] Hit HitTestItem(Rect bounds, std::string_view prefix, int index);
+// NUL 结尾 C 串版本体：上面两个重载落好缓冲后都进这里。
+[[nodiscard]] Hit HitTestItemId(Rect bounds, const char* id, bool keyboard = false);
 
 // 一族控件里的第 index 项的 item id。Segmented / Tabs / DataTable / Tree /
 // Menu 都靠它给同一族里的兄弟项生成互不相同的 ImGui id。
+// FormatUniqueId 是它的零分配版：把 "<id><middle>##<index>" 写进调用方的栈
+// 缓冲并返回 string_view（当帧内有效）；缓冲装不下才退回 *overflow（堆），
+// 产物与栈上路径逐字节一致。UniqueId 保留作溢出兜底与一次性路径。
 [[nodiscard]] std::string UniqueId(std::string_view id, int index);
+[[nodiscard]] std::string_view FormatUniqueId(char* buf, std::size_t cap, std::string_view id,
+                                              std::string_view middle, int index,
+                                              std::string* overflow);
 
 } // namespace detail
 

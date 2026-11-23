@@ -15,7 +15,11 @@
 
 #include "core/Log.h"
 #include "core/Settings.h"
+#include "ui/imgui/kit/Fmt.h"
+#include "ui/imgui/kit/Hash.h"
+#include "ui/imgui/kit/Image.h"  // 最近产物那几行的真图缩略图
 #include "ui/imgui/kit/Scroll.h"
+#include "ui/imgui/kit/Text.h"
 #include "ui/imgui/pages/PageCommon.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
@@ -32,6 +36,31 @@ namespace overview {
 
 using namespace shine::kit;
 
+namespace {
+
+// 「最近产物」里出图那一行的缩略图尺寸。设计稿 `Overview.jsx:148` 的内联样式就是
+// `width:40, height:28`（那一格画的是 `Art`，我们这里画真图）。
+constexpr float kThumbW = 40.0f;
+constexpr float kThumbH = 28.0f;
+
+// 字节 → 「1.8 MB」/「812 B」（设计稿那一列的行文是 `出图 · 1.8 MB`，`Overview.jsx:137`）。
+// 1024 进制，一位小数 —— 这一列要的是量级，不是精确值。浮点走 kit::Fixed（第二十轮）。
+std::string HumanSize(std::int64_t bytes) {
+    if (bytes < 0) {
+        return "文件缺失";
+    }
+    if (bytes < 1024) {
+        return kit::Fmt("{} B", bytes);
+    }
+    const double kb = static_cast<double>(bytes) / 1024.0;
+    if (kb < 1024.0) {
+        return kit::Fmt("{} KB", kit::Fixed(kb, 1));
+    }
+    return kit::Fmt("{} MB", kit::Fixed(kb / 1024.0, 1));
+}
+
+} // namespace
+
 float DrawRightRail(Rect rightCol, const OverviewRun& s) {
     // 「章节 × V 阶段」矩阵（数据层 `BookSideView::chapterVStages` 已接好）之所以
     // 曾经放不下，也是同一个原因：右栏在那个窗口高度下塞不下第四张卡。
@@ -46,12 +75,222 @@ float DrawRightRail(Rect rightCol, const OverviewRun& s) {
         const Rect rc = rightScroll.content();
         const float cardW = rc.width();
         float ry = rc.min.y;
+        // 最近产物（webui Overview.jsx:132-157 整块）
+        //
+        // ⚠️ 画**全部**条目，不再按「可用高度」砍行 —— 砍行的逻辑本身依赖一个
+        //    算错了的空间（见本文件开头那段重叠分析），而且砍掉之后用户完全看不出
+        //    「还有更多」。现在内容超出由 ScrollRegion 滚。
+        //
+        // ⚠️ 这一块以前**只有** T 链账本这一族数据，而那一族在真实运行里恒为空
+        //    （账本来自 `pipeline::Runner::LedgerLog()`，执行体未接入 ⇒ 一行都没有）
+        //    ⇒ 卡上永远只有空态文案，设计稿那四行（正文 / 评审 / 出图 / 出片）里的
+        //    「出图」那一行**从来没有数据**。现在两族并列：
+        //      · 上：`generated_images` 最近的出图产物 —— **有缩略图**（设计稿那 40×28 的
+        //        `Art` 位就是给它留的，`Overview.jsx:148`）；
+        //      · 下：T 链的阶段产物（json/md，没有图可画，只有阶段码与降级）。
+        //    两族**不合并排序**：账本条目没有时间戳（`LedgerEntry` 只有 stage /
+        //    input_hash / output_path / degradation），合起来排就是编顺序。
+        const pages::BookSideView& side = pages::BookSide();
+        const int imgRows = static_cast<int>(side.recentImages.size());
+        const int artRows = static_cast<int>(s.entries.size());
+        // 行高两族不同：出图那几行要放下 28 高的缩略图（40），账本行是双行卡（32）。
+        constexpr float kImageRowH = 40.0f;
+        constexpr float kLedgerRowH = 32.0f;
+        constexpr float kRowGap = 4.0f;
+        float listH = 0.0f;
+        for (int i = 0; i < imgRows; ++i) {
+            listH += kImageRowH + kRowGap;
+        }
+        for (int i = 0; i < artRows; ++i) {
+            listH += kLedgerRowH + kRowGap;
+        }
+        const float artH = 44.0f + 16.0f + ((imgRows + artRows) > 0 ? listH + 4.0f : 24.0f);
+        const Rect art{rc.min.x, ry, rc.max.x, ry + artH};
+        Rect artBody = Card(cdraw, art, "最近产物", "folder", false, false);
+        ry = art.max.y + kGap;
+        // 「查看」打开**最新那一条产物**：出图行在最上（`id` 倒序 = 最新出的那张），
+        // 没有出图产物时才回退到账本最后一条。
+        const std::filesystem::path newest =
+            imgRows > 0
+                ? AssetImagePath(s.root, side.recentImages.front().relPath)
+                : (artRows > 0 ? util::PathFromUtf8(s.entries.back().output_path)
+                               : std::filesystem::path{});
+        ButtonSpec viewSpec;
+        viewSpec.variant = ButtonVariant::Ghost;
+        viewSpec.size = ButtonSize::Small;
+        viewSpec.disabled = newest.empty();
+        if (Button(cdraw, RectAt(art.max.x - 60.0f, art.min.y + 10.0f, 44.0f, 24.0f), "查看", viewSpec,
+                   "ov-view")) {
+            const std::string err = util::ShellOpen(newest);
+            if (!err.empty()) {
+                log::Error("总控：打开产物失败 {}", err);
+            }
+        }
+        if (imgRows + artRows == 0) {
+            TextClipped(cdraw, ImVec2(artBody.min.x, artBody.min.y), artBody.width(),
+                        s.bound ? "novel.db 还没有出图产物，T 链也没有落盘产物。"
+                                : "未绑定工程根。",
+                        TextStyle{.size = theme::font::kTiny, .color = ColorTextMuted()}, true);
+        } else {
+            float ay = artBody.min.y;
+            // ---- 上：出图产物（真图缩略图，与资产卡 / 分镜 `.tthumb` 同一档实现）----
+            // 行文案与命中 id 缓存（第二十轮波 3）：指纹覆盖 (relPath, sizeBytes)，
+            // 工程根用 path 的 == 比较（不分配）；变了才重建 name/sub/id。
+            struct ImgRow {
+                std::string name;
+                std::string sub;
+                std::string id;
+                std::filesystem::path path;
+            };
+            static std::vector<ImgRow> imgRowsCache;
+            {
+                std::uint64_t ik = HashMix(0, side.recentImages.size());
+                for (const pages::BookRecentImage& img : side.recentImages) {
+                    ik = HashMix(ik, Fnv1a(img.relPath));
+                    ik = HashMix(ik, static_cast<std::uint64_t>(img.sizeBytes));
+                }
+                static std::filesystem::path cachedRoot;
+                static std::uint64_t cachedImgKey = 0;
+                if (cachedImgKey != ik || cachedRoot != s.root) {
+                    cachedImgKey = ik;
+                    cachedRoot = s.root;
+                    imgRowsCache.clear();
+                    imgRowsCache.reserve(side.recentImages.size());
+                    for (std::size_t i = 0; i < side.recentImages.size(); ++i) {
+                        const pages::BookRecentImage& img = side.recentImages[i];
+                        ImgRow row;
+                        row.path = AssetImagePath(s.root, img.relPath);
+                        row.name = util::PathToUtf8(row.path.filename());
+                        // 副行 = 设计稿的「出图 · 1.8 MB」。文件不在（-1）时说清楚 —— 那是
+                        // 一条**失败记录**（fixture 里 `status='FAILED'` 那条就是这样），
+                        // 与 0 字节的合法产物必须分开。
+                        row.sub = std::string("出图 · ") +
+                                  (img.sizeBytes < 0 ? std::string("文件缺失")
+                                                     : HumanSize(img.sizeBytes));
+                        row.id = kit::Fmt("ov-img-{}", i);
+                        imgRowsCache.push_back(std::move(row));
+                    }
+                }
+            }
+            for (std::size_t i = 0; i < side.recentImages.size(); ++i) {
+                const ImgRow& cached = imgRowsCache[i];
+                const std::filesystem::path& path = cached.path;
+                const std::string& name = cached.name;
+                const std::string& sub = cached.sub;
+                kit::ListCardSpec spec;
+                spec.id = cached.id;
+                spec.title = name;
+                spec.description = sub;
+                spec.iconSize = 0.0f;   // 缩略图不是 kit 图标，见下（textInset 让开它）
+                spec.paddingX = 6.0f;
+                spec.titleSize = 12.0f;
+                spec.descSize = 11.0f;
+                spec.textInset = kThumbW + 10.0f;
+                spec.textGap = 3.0f;
+                const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + kImageRowH};
+                const Hit hit = kit::ListCard(cdraw, row, spec);
+                // 缩略图：真图优先，解不出/文件不在就画设计稿那张 `Art` 占位
+                // （`Overview.jsx:148` 的 `Art seed={seed}` 位）。**画在 ListCard 之后**
+                // ——行本体（底 + 描边 + 命中）由它一次取齐，这里只补左端那块图。
+                const Rect thumb{row.min.x + 6.0f, row.center().y - kThumbH * 0.5f,
+                                 row.min.x + 6.0f + kThumbW, row.center().y + kThumbH * 0.5f};
+                const ImageSlot slot = RequestImage(path);
+                DrawRoundRect(cdraw, thumb.min, thumb.max, 3.0f, ColorFillMuted());
+                if (slot.ready()) {
+                    DrawImage(cdraw, thumb, slot, 3.0f, ImageFit::Cover);
+                } else {
+                    Art(cdraw, thumb, static_cast<int>(i) + 1, /*cover=*/true);
+                }
+                DrawIcon(cdraw, "chevron",
+                         ImVec2(row.max.x - 16.0f, row.center().y - 6.0f), 12.0f, ColorTextMuted());
+                if (hit.clicked) {
+                    const std::string err = util::ShellOpen(path);
+                    if (!err.empty()) {
+                        log::Error("总控：打开出图产物失败 {}", err);
+                    }
+                }
+                ay += kImageRowH + kRowGap;
+            }
+            // ---- 下：T 链阶段产物（账本）----
+            // ---- 下：T 链账本行（第二十轮波 3：行文案与 id 随 entries 一次性重建）----
+            struct ArtRow {
+                std::string title;
+                std::string sub;
+                std::string id;
+                std::filesystem::path path;
+            };
+            static std::vector<ArtRow> artRowsCache;
+            {
+                std::uint64_t ak = HashMix(0, s.entries.size());
+                for (const auto& entry : s.entries) {
+                    ak = HashMix(ak, Fnv1a(entry.output_path));
+                    ak = HashMix(ak, Fnv1a(entry.degradation));
+                    ak = HashMix(ak, static_cast<std::uint64_t>(static_cast<int>(entry.stage)));
+                }
+                static std::uint64_t cachedArtKey = 0;
+                if (cachedArtKey != ak) {
+                    cachedArtKey = ak;
+                    artRowsCache.clear();
+                    artRowsCache.reserve(s.entries.size());
+                    for (std::size_t i = 0; i < s.entries.size(); ++i) {
+                        const auto& entry = s.entries[i];
+                        ArtRow row;
+                        row.path = util::PathFromUtf8(entry.output_path);
+                        row.title = util::PathToUtf8(row.path.filename());
+                        row.sub = pipeline::StageCode(entry.stage);
+                        if (!entry.degradation.empty()) {
+                            row.sub += " · 降级 " + entry.degradation;
+                        }
+                        row.id = kit::Fmt("ov-art-{}", i);
+                        artRowsCache.push_back(std::move(row));
+                    }
+                }
+            }
+            for (std::size_t i = 0; i < s.entries.size(); ++i) {
+                const ArtRow& cached = artRowsCache[i];
+                const std::filesystem::path& path = cached.path;
+                // 产物行是**双行卡**（文件名 + 阶段/降级说明）→ kit::ListCard，
+                // 不是 ListRow。硬塞进 ListRow 会逼调用点自己排第二行的 Y ——
+                // 那正是这 5 处各写各的根源。
+                //
+                // ⚠️ hit 由 ListCard **一次性**取齐并返回。原代码注释记的就是这个坑：
+                // 先 Hovered(idA) 再 Clicked(idB) 会在同一矩形上叠两个 InvisibleButton，
+                // ImGui 只让先注册的拿到 HoveredId，第二个永远 clicked=false ——
+                // 那一行点不开，而编译、日志、截图全绿。
+                const std::string& sub = cached.sub;
+                kit::ListCardSpec spec;
+                spec.id = cached.id;
+                spec.title = cached.title;
+                spec.description = sub;
+                spec.iconSize = 0.0f;   // 无图标
+                spec.paddingX = 6.0f;
+                spec.titleSize = 12.0f;
+                spec.descSize = 11.0f;
+                spec.textInset = 0.0f;
+                // 右侧留给 chevron：文字可用宽因此收窄，不必调用点自己算。
+                spec.textGap = 3.0f;
+                const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + kLedgerRowH};
+                if (kit::ListCard(cdraw, row, spec).clicked) {
+                    const std::string err = util::ShellOpen(path);
+                    if (!err.empty()) {
+                        log::Error("总控：打开产物失败 {}", err);
+                    }
+                }
+                // chevron：ListCard 不画它（设计里这一族是 hover 卡 + 选中勾）。
+                // 这一行原本有 chevron，保留它作为「可点开」的提示。
+                DrawIcon(cdraw, "chevron",
+                         ImVec2(row.max.x - 16.0f, row.center().y - 6.0f), 12.0f, ColorTextMuted());
+                ay += kLedgerRowH + kRowGap;
+            }
+        }
+
         const pipeline::StopDecision decision = EvaluateStopPolicy(s.budget);
         const bool hasReason = decision.stop && !decision.reason.empty();
-        const std::string verdict =
-            decision.stop ? decision.rule : std::string("未触发任何停止条件");
+        // verdict 只取引用不拷贝（第二十轮波 3）。
+        static const std::string kNoStop = "未触发任何停止条件";
+        const std::string& verdict = decision.stop ? decision.rule : kNoStop;
 
-        // ---- 卡 1：流水线停止规则（预算 + 前置条件，**不用 S 编号**）----
+        // ---- 流水线停止规则（预算 + 前置条件，**不用 S 编号**）----
         //
         // 与左栏那张「停止条件 · S1–S12」（OverviewStopRules.cpp）**不是同一套编号**：
         // `pipeline::StopPolicy` 判 5 组（预算 / LLM 前置 / Comfy 前置 / 交叉复核 /
@@ -65,111 +304,65 @@ float DrawRightRail(Rect rightCol, const OverviewRun& s) {
         float by = budgetBody.min.y;
         StatusDot(cdraw, ImVec2(budgetBody.min.x + 4.0f, by + 6.0f),
                   decision.stop ? theme::Tone::Warn : theme::Tone::Ok, false);
-        cdraw->AddText(FontBoldAt(12.5f), 12.5f, ImVec2(budgetBody.min.x + 16.0f, by),
-                       decision.stop ? ColorOf(theme::Current().statusWarn)
-                                     : ColorOf(theme::Current().statusOk),
-                       verdict.data(), verdict.data() + verdict.size());
+        Text(cdraw, ImVec2(budgetBody.min.x + 16.0f, by), verdict,
+             TextStyle{.size = theme::font::kHint, .bold = true,
+                       .color = decision.stop ? ColorOf(theme::Current().statusWarn)
+                                              : ColorOf(theme::Current().statusOk)});
         by += 20.0f;
         if (hasReason) {
-            DrawTextClipped(cdraw, FontAt(11.5f), 11.5f, ImVec2(budgetBody.min.x, by),
-                            budgetBody.width(), ColorTextMuted(), decision.reason, true);
+            TextClipped(cdraw, ImVec2(budgetBody.min.x, by), budgetBody.width(), decision.reason,
+                        TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
             by += 30.0f;
         }
         // 四个上限就是 Budget 的四个字段（`src/pipeline/Budget.h`），顺序与旧
         // StopReportView 一致。刻意不编 S 编号 —— 上面那张卡已经把 S1–S12 占给真规则了。
-        const std::vector<std::pair<std::string, std::string>> thresholds = {
-            {"LLM 调用", std::to_string(s.budget.llm_calls) + " / " +
-                             std::to_string(s.budget.max_llm_calls)},
-            {"高档调用", std::to_string(s.budget.high_quality_calls) + " / " +
-                              std::to_string(s.budget.max_high_quality_calls)},
-            {"镜头", std::to_string(s.budget.shots) + " / " + std::to_string(s.budget.max_shots)},
-            {"成本", Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
-        };
+        // 行文案缓存：指纹覆盖预算字段（含按位 double），变了才重建（第二十轮波 3）。
+        std::uint64_t budgetKey = HashMix(0, static_cast<std::uint64_t>(s.budget.llm_calls));
+        budgetKey = HashMix(budgetKey, static_cast<std::uint64_t>(s.budget.max_llm_calls));
+        budgetKey = HashMix(budgetKey, static_cast<std::uint64_t>(s.budget.high_quality_calls));
+        budgetKey = HashMix(budgetKey, static_cast<std::uint64_t>(s.budget.max_high_quality_calls));
+        budgetKey = HashMix(budgetKey, static_cast<std::uint64_t>(s.budget.shots));
+        budgetKey = HashMix(budgetKey, static_cast<std::uint64_t>(s.budget.max_shots));
+        budgetKey = HashMix(budgetKey, static_cast<double>(s.budget.cost));
+        budgetKey = HashMix(budgetKey, static_cast<double>(s.budget.max_cost));
+        static std::uint64_t thresholdsKey = 0;
+        static std::vector<std::pair<std::string, std::string>> thresholds;
+        if (thresholdsKey != budgetKey) {
+            thresholdsKey = budgetKey;
+            thresholds = {
+                {"LLM 调用", kit::Fmt("{} / {}", s.budget.llm_calls, s.budget.max_llm_calls)},
+                {"高档调用", kit::Fmt("{} / {}", s.budget.high_quality_calls,
+                                      s.budget.max_high_quality_calls)},
+                {"镜头", kit::Fmt("{} / {}", s.budget.shots, s.budget.max_shots)},
+                {"成本", Money(s.budget.cost) + " / " + Money(s.budget.max_cost)},
+            };
+        }
         const bool overBudget = s.budget.Exceeded();
         for (const auto& [code, name] : thresholds) {
             StatusDot(cdraw, ImVec2(budgetBody.min.x + 4.0f, by + 6.0f),
                       overBudget ? theme::Tone::Warn : theme::Tone::Idle, false);
-            DrawTextClipped(cdraw, FontAt(12.5f), 12.5f, ImVec2(budgetBody.min.x + 16.0f, by),
-                            budgetBody.width() - 16.0f, ColorTextSecondary(), code);
-            DrawTextClipped(cdraw, FontAt(12.0f), 12.0f, ImVec2(budgetBody.min.x + 90.0f, by),
-                            budgetBody.width() - 90.0f, ColorText(), name);
+            TextClipped(cdraw, ImVec2(budgetBody.min.x + 16.0f, by), budgetBody.width() - 16.0f,
+                        code, TextStyle{.size = theme::font::kHint, .color = ColorTextSecondary()});
+            TextClipped(cdraw, ImVec2(budgetBody.min.x + 90.0f, by), budgetBody.width() - 90.0f,
+                        name, TextStyle{.size = theme::font::kTiny, .color = ColorText()});
             by += 20.0f;
         }
-        DrawTextClipped(
-            cdraw, FontAt(11.0f), 11.0f, ImVec2(budgetBody.min.x, by + 4.0f), budgetBody.width(),
-            ColorTextMuted(),
-            std::string("前置 · LLM ") + (LlmConfigured() ? "已配置" : "未配置") + " · ComfyUI " +
-                (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") + " · 交叉复核 " +
-                (CrossReviewConfigured() ? "已配置" : "未配置") + " · Scene 未查询 novel.db",
-            true);
-
-        // 最近产物（webui Overview.jsx:132-157 整块）
-        //
-        // ⚠️ 画**全部**条目，不再按「可用高度」砍行 —— 砍行的逻辑本身依赖一个
-        //    算错了的空间（见本文件开头那段重叠分析），而且砍掉之后用户完全看不出
-        //    「还有更多」。现在内容超出由 ScrollRegion 滚。
-        const int artRows = static_cast<int>(s.entries.size());
-        const float artH =
-            44.0f + 16.0f + (artRows > 0 ? 32.0f * static_cast<float>(artRows) + 4.0f : 24.0f);
-        const Rect art{rc.min.x, ry, rc.max.x, ry + artH};
-        Rect artBody = Card(cdraw, art, "最近产物", "folder", false, false);
-        ry = art.max.y + kGap;
-        ButtonSpec viewSpec;
-        viewSpec.variant = ButtonVariant::Ghost;
-        viewSpec.size = ButtonSize::Small;
-        viewSpec.disabled = s.entries.empty();
-        if (Button(cdraw, RectAt(art.max.x - 60.0f, art.min.y + 10.0f, 44.0f, 24.0f), "查看", viewSpec,
-                   "ov-view")) {
-            const std::string err = util::ShellOpen(util::PathFromUtf8(s.entries.back().output_path));
-            if (!err.empty()) {
-                log::Error("总控：打开产物失败 {}", err);
+        // 前置说明只随三个配置位变：组合没变就复用（第二十轮波 3）。
+        {
+            const int preKey = (LlmConfigured() ? 1 : 0) | (Settings().comfyBaseUrl.empty() ? 0 : 2) |
+                               (CrossReviewConfigured() ? 4 : 0);
+            static int cachedPreKey = -1;
+            static std::string preLine;
+            if (cachedPreKey != preKey) {
+                cachedPreKey = preKey;
+                preLine = std::string("前置 · LLM ") + (LlmConfigured() ? "已配置" : "未配置") +
+                          " · ComfyUI " +
+                          (Settings().comfyBaseUrl.empty() ? "未配置" : "已配置") +
+                          " · 交叉复核 " + (CrossReviewConfigured() ? "已配置" : "未配置") +
+                          " · Scene 未查询 novel.db";
             }
-        }
-        if (artRows == 0) {
-            DrawTextClipped(cdraw, FontAt(12.0f), 12.0f, ImVec2(artBody.min.x, artBody.min.y),
-                            artBody.width(), ColorTextMuted(),
-                            s.bound ? "还没有落盘产物。" : "未绑定工程根。", true);
-        } else {
-            float ay = artBody.min.y;
-            for (std::size_t i = 0; i < s.entries.size(); ++i) {
-                const auto& entry = s.entries[i];
-                const std::filesystem::path path = util::PathFromUtf8(entry.output_path);
-                // 产物行是**双行卡**（文件名 + 阶段/降级说明）→ kit::ListCard，
-                // 不是 ListRow。硬塞进 ListRow 会逼调用点自己排第二行的 Y ——
-                // 那正是这 5 处各写各的根源。
-                //
-                // ⚠️ hit 由 ListCard **一次性**取齐并返回。原代码注释记的就是这个坑：
-                // 先 Hovered(idA) 再 Clicked(idB) 会在同一矩形上叠两个 InvisibleButton，
-                // ImGui 只让先注册的拿到 HoveredId，第二个永远 clicked=false ——
-                // 那一行点不开，而编译、日志、截图全绿。
-                std::string sub = pipeline::StageCode(entry.stage);
-                if (!entry.degradation.empty()) {
-                    sub += " · 降级 " + entry.degradation;
-                }
-                kit::ListCardSpec spec;
-                spec.id = "ov-art-" + std::to_string(i);
-                spec.title = util::PathToUtf8(path.filename());
-                spec.description = sub;
-                spec.iconSize = 0.0f;   // 无图标
-                spec.paddingX = 6.0f;
-                spec.titleSize = 12.0f;
-                spec.descSize = 11.0f;
-                spec.textInset = 0.0f;
-                // 右侧留给 chevron：文字可用宽因此收窄，不必调用点自己算。
-                spec.textGap = 3.0f;
-                const Rect row{artBody.min.x - 4.0f, ay, artBody.max.x, ay + 32.0f};
-                if (kit::ListCard(cdraw, row, spec).clicked) {
-                    const std::string err = util::ShellOpen(path);
-                    if (!err.empty()) {
-                        log::Error("总控：打开产物失败 {}", err);
-                    }
-                }
-                // chevron：ListCard 不画它（设计里这一族是 hover 卡 + 选中勾）。
-                // 这一行原本有 chevron，保留它作为「可点开」的提示。
-                DrawIcon(cdraw, "chevron",
-                         ImVec2(row.max.x - 16.0f, row.center().y - 6.0f), 12.0f, ColorTextMuted());
-                ay += 36.0f;
-            }
+            TextClipped(cdraw, ImVec2(budgetBody.min.x, by + 4.0f), budgetBody.width(), preLine,
+                        TextStyle{.size = theme::font::kMicro, .color = ColorTextMuted()}, true);
         }
 
         // 运行信息：Overview.jsx:160-167 的四行（当前项目 / 数据目录 / 检查点 / 预算余量）
@@ -177,15 +370,34 @@ float DrawRightRail(Rect rightCol, const OverviewRun& s) {
         const Rect info{rc.min.x, ry, rc.max.x, ry + infoH};
         Rect infoBody = Card(cdraw, info, "运行信息", "info", false, false);
         ry = info.max.y + kGap;
-        char chapterText[16];
-        std::snprintf(chapterText, sizeof(chapterText), "ch%03d", s.chapter < 0 ? 0 : s.chapter);
-        KeyValues(cdraw, infoBody,
-                  {{"当前项目", s.root.empty() ? std::string("未打开项目")
-                                              : util::PathToUtf8(s.root.filename())},
-                   {"数据目录", s.root.empty() ? std::string("—") : util::PathToUtf8(s.root)},
-                   {"检查点", s.chapter < 0 ? std::string("无") : std::string(chapterText)},
-                   {"预算余量", Money(s.budget.max_cost - s.budget.cost) + " / " +
-                                    Money(s.budget.max_cost)}});
+        // 运行信息 KV 缓存（第二十轮波 3）：root 用 path == 比较，预算按位 double。
+        {
+            std::uint64_t infoKey = HashMix(0, static_cast<std::uint64_t>(s.chapter));
+            infoKey = HashMix(infoKey, static_cast<double>(s.budget.cost));
+            infoKey = HashMix(infoKey, static_cast<double>(s.budget.max_cost));
+            static std::uint64_t cachedInfoKey = 0;
+            static std::filesystem::path cachedInfoRoot;
+            static bool cachedInfoRootValid = false;
+            static std::vector<kit::KVRow> infoKv;
+            if (cachedInfoKey != infoKey || !cachedInfoRootValid ||
+                cachedInfoRoot != s.root) {
+                cachedInfoKey = infoKey;
+                cachedInfoRoot = s.root;
+                cachedInfoRootValid = true;
+                char chapterText[16];
+                std::snprintf(chapterText, sizeof(chapterText), "ch%03d",
+                              s.chapter < 0 ? 0 : s.chapter);
+                infoKv = {{"当前项目", s.root.empty() ? std::string("未打开项目")
+                                                    : util::PathToUtf8(s.root.filename())},
+                          {"数据目录", s.root.empty() ? std::string("—")
+                                                      : util::PathToUtf8(s.root)},
+                          {"检查点", s.chapter < 0 ? std::string("无")
+                                                   : std::string(chapterText)},
+                          {"预算余量", Money(s.budget.max_cost - s.budget.cost) + " / " +
+                                           Money(s.budget.max_cost)}};
+            }
+            KeyValues(cdraw, infoBody, infoKv.data(), infoKv.size());
+        }
 
         // ---- 章节 × V 阶段矩阵：行 = 章，列 = V1–V7 ----
         //
@@ -223,18 +435,22 @@ float DrawRightRail(Rect rightCol, const OverviewRun& s) {
             Rect matBody = Card(cdraw, mat, "章节 × V 阶段", "grid", false, false);
             const float labelW = 40.0f;
             const float cell = (matBody.width() - labelW) / 7.0f;
+            // 列头恒定：提 static 表（第二十轮波 3）。
+            static const char* const kVHeads[7] = {"V1", "V2", "V3", "V4", "V5", "V6", "V7"};
             for (int v = 0; v < 7; ++v) {
-                const std::string head = "V" + std::to_string(v + 1);
-                cdraw->AddText(FontBoldAt(9.5f), 9.5f,
-                              ImVec2(matBody.min.x + labelW + cell * v + 2.0f, matBody.min.y),
-                              ColorTextMuted(), head.data(), head.data() + head.size());
+                const std::string_view head = kVHeads[v];
+                Text(cdraw, ImVec2(matBody.min.x + labelW + cell * v + 2.0f, matBody.min.y), head,
+                     TextStyle{.size = theme::font::kFine, .bold = true, .color = ColorTextMuted()});
             }
             float my = matBody.min.y + kMatBodyTopPad;
             for (int i = 0; i < rows; ++i) {
                 const pages::BookChapterView& ch = book.chapters[static_cast<std::size_t>(i)];
-                const std::string ord = "第" + std::to_string(ch.ord);
-                cdraw->AddText(MonoAt(9.5f), 9.5f, ImVec2(matBody.min.x, my + 4.0f),
-                              ColorTextSecondary(), ord.data(), ord.data() + ord.size());
+                // 行头「第N」在栈上拼（每帧 × 每章都走这里，第二十轮波 3）。
+                char ordBuf[24];
+                const int ordN = std::snprintf(ordBuf, sizeof(ordBuf), "第%d", ch.ord);
+                const std::string_view ord(ordBuf, ordN > 0 ? static_cast<std::size_t>(ordN) : 0u);
+                Text(cdraw, ImVec2(matBody.min.x, my + 4.0f), ord,
+                     TextStyle{.size = theme::font::kFine, .mono = true, .color = ColorTextSecondary()});
                 for (int v = 0; v < 7; ++v) {
                     // 下标与 chapters 对齐；长度不足（快照还没回来）时按「没跑过」处理。
                     const int count =
@@ -250,25 +466,29 @@ float DrawRightRail(Rect rightCol, const OverviewRun& s) {
                                             : ColorFillMuted());
                     if (count > 0) {
                         // 居中用实测宽度，不写死字符数偏移 —— 数字会从 1 涨到两位数，
-                        // 固定偏移会让两位数整体偏右。
-                        const std::string n = std::to_string(count);
-                        ImFont* nf = MonoAt(9.0f);
-                        const float nw = nf->CalcTextSizeA(9.0f, 1e9f, 0.0f, n.data(),
-                                                           n.data() + n.size())
-                                             .x;
-                        cdraw->AddText(nf, 9.0f,
-                                      ImVec2(cell0.min.x + (cell0.max.x - cell0.min.x - nw) * 0.5f,
-                                             cell0.min.y + 4.0f),
-                                      ColorText(), n.data(), n.data() + n.size());
+                        // 固定偏移会让两位数整体偏右。数字在栈上拼（第二十轮波 3）。
+                        char nBuf[12];
+                        const int nN = std::snprintf(nBuf, sizeof(nBuf), "%d", count);
+                        const std::string_view n(nBuf,
+                                                 nN > 0 ? static_cast<std::size_t>(nN) : 0u);
+                        // ⚠️ kNano(9) 在 kMonoSizes 里没有档 —— `MonoAt` 向上取到 9.5f
+                        //    光栅化，而**传给绘制的字号仍是 9.0**。收编不改变这一点。
+                        const TextStyle nStyle{.size = theme::font::kNano, .mono = true,
+                                               .color = ColorText()};
+                        const float nw = TextSize(n, nStyle).x;
+                        Text(cdraw,
+                             ImVec2(cell0.min.x + (cell0.max.x - cell0.min.x - nw) * 0.5f,
+                                    cell0.min.y + 4.0f),
+                             n, nStyle);
                     }
                 }
                 my += kMatRowH;
             }
             // 脚注位置由同一组常量推出来，不是 `max.y - 12` 之类的手写锚点。
             const float footY = my + kMatFootGap; // my 此时已是最后一行的底
-            DrawTextClipped(cdraw, FontAt(10.5f), 10.5f,
-                            ImVec2(matBody.min.x, footY), matBody.width(), ColorTextMuted(),
-                            "格内数字 = 该章在该阶段的产物条数（ListStageArtifacts）。");
+            TextClipped(cdraw, ImVec2(matBody.min.x, footY), matBody.width(),
+                        "格内数字 = 该章在该阶段的产物条数（ListStageArtifacts）。",
+                        TextStyle{.size = theme::font::kSmall, .color = ColorTextMuted()});
             // 推进 ry —— ScrollRegion 的可滚高度靠最后一次上报的内容底算出来，
             // 忘了推就等于这张卡「不在内容里」，滚到底也拍不到（与「有内容但没被拍到」同族）。
             ry = mat.max.y + kGap;

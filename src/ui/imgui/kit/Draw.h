@@ -82,6 +82,25 @@ void DrawDiagGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
 void DrawHGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 from,
                    ImU32 to);
 
+// 椭圆径向渐变，对应 CSS 的
+// `radial-gradient(<rx>px <ry>px at <x> <y>, <色> <a>%, transparent <stop>%)`。
+//
+// 为什么要它：设计稿里有**两层径向**的地方（项目中心底色，design-spec §7.7）用
+// 线性渐变表达不出来 —— 辉光的位置（18% 左上 / 95% 右上）与它的椭圆长短轴都是
+// 径向独有的参数，换成长线只是「有一块亮色」，位置与形状全不对。
+//
+// 手法与 `DrawShadow` 相同、**同一个坑**：ImGui 没有渐变/模糊 API，只能拿
+// N 圈同心椭圆由外向内叠。⚠️ 每圈只能带**增量** alpha：
+//   第 i 圈铺满 [0, t_i]（t = 归一化到椭圆边的距离），增量取
+//   a_i = (α(t_i) − α(t_{i+1})) / (1 − α(t_{i+1}))，
+// 于是半径 t 处的**累计** alpha 恰好是 α(t)。若每圈各带一份 α(t_i)，它们会互相
+// 累加 —— 中心叠成接近实色、而「看着加了、其实浓了 N 倍」在静息截图上完全正常。
+//
+// `color` 自带内层 alpha（用 `kit::WithAlphaSet(色, 0.14f)` 取，别用 `WithAlpha`
+// —— 那是调制）；`stop` 是透明度归零的归一化半径（CSS 的 60% → 0.6）。
+void DrawRadialGradient(ImDrawList* draw, ImVec2 center, float rx, float ry, ImU32 color,
+                        float stop, int steps = 24);
+
 // box-shadow。ImGui 没有 blur API，所以按「若干层同心圆角矩形 + 高斯权重 alpha」
 // 逼近；逐主题的几何与逐层 alpha 取自 design tokens（见 theme/Theme.cpp 的
 // kShadowSpecs 与 Tokens.h 的 theme::ShadowTier）。
@@ -111,7 +130,7 @@ void DrawShadow(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, theme:
 
 // ---- 文本 ----
 // CSS text-overflow: ellipsis 的等价：超宽时尾部出省略号。
-// 返回实际绘制宽度。
+// 单行返回实际绘制宽度。wrap=true 时返回总行高。
 float DrawTextClipped(ImDrawList* draw, ImFont* font, float fontSize, ImVec2 pos, float maxWidth,
                       ImU32 color, std::string_view text, bool wrap = false);
 

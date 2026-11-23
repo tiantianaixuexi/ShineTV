@@ -368,6 +368,10 @@ add_library(shine_core STATIC
 
   # yyjson
   ${THIRD}/yyjson/yyjson.c
+
+  # zmij（fmt 作者的最短浮点表示库）：kit/Fmt.h 的 Shortest/Fixed 落在这份
+  # 显式实例化上。不编它就是「头文件找得到、链接器报 undefined reference」。
+  ${THIRD}/zmij/zmij.cc
 )
 
 target_include_directories(shine_core PUBLIC

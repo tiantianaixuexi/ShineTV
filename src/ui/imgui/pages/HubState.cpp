@@ -151,6 +151,21 @@ void Refilter(HubState& hub) {
     }
 }
 
+void RefilterOpen(HubState& hub) {
+    // 与 Refilter 同一判定族，多匹配一项**路径**（对话框那行显示的就是路径，
+    // 按路径找项目是真实用法；主屏卡片没有路径行，故不加进 Refilter）。
+    const std::string key = LowerAscii(util::Trim(hub.openQuery));
+    hub.openShown.clear();
+    for (std::size_t i = 0; i < hub.cards.size(); ++i) {
+        const HubCard& card = hub.cards[i];
+        if (key.empty() || LowerAscii(card.entry.name).find(key) != std::string::npos ||
+            LowerAscii(card.premise).find(key) != std::string::npos ||
+            LowerAscii(util::PathToUtf8(card.entry.rootDir)).find(key) != std::string::npos) {
+            hub.openShown.push_back(static_cast<int>(i));
+        }
+    }
+}
+
 void Open(HubState& hub, const HubCard& card) {
     const std::expected<project::ProjectRef, project::Error> ref =
         hub.service.Open(card.entry.rootDir);
@@ -161,6 +176,7 @@ void Open(HubState& hub, const HubCard& card) {
     }
     hub.status = "已打开项目「" + ref->name + "」· " + util::PathToUtf8(ref->rootDir);
     hub.statusError = false;
+    hub.leaveToWorkspace = true;
     Refresh(hub);
 }
 

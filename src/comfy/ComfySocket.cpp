@@ -315,6 +315,9 @@ void ComfySocket::EmitState(ConnectionState s, std::string_view msg) {
 }
 
 void ComfySocket::EnsureConnected(std::string_view baseUrl, std::string_view clientId) {
+    if (baseUrl.empty()) {
+        return; // 未配置 ComfyUI：不发起任何连接（防御闸，调用方已有同款短路）
+    }
     const std::string normalized = NormalizeBaseUrl(baseUrl);
     if (normalized.empty() || clientId.empty()) {
         return;

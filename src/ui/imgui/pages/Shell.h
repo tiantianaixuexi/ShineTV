@@ -12,6 +12,7 @@
 #include "ui/imgui/kit/Debug.h"
 #include "ui/imgui/kit/Widgets.h"
 #include "ui/imgui/pages/Gallery.h"
+#include "ui/imgui/pages/MediaViewer.h"  // 查看器浮层：OverlayBlocksMouse() 要读它的开态
 #include "ui/imgui/pages/WorkspacePages.h"
 #include "ui/imgui/theme/Theme.h"
 
@@ -25,7 +26,7 @@
 
 namespace shine::pages {
 
-// 6 个工作区 + 组件画廊（Rail 第 10 项，hidden，只在这一栏出现）。
+// 7 个工作区 + 组件画廊（Rail 第 10 项，hidden，只在这一栏出现）。
 enum class Workspace {
     Overview = 0,   // 总控
     Novel,          // 小说
@@ -33,10 +34,11 @@ enum class Workspace {
     Storyboard,     // 分镜
     ImageFlow,      // 出图
     VideoFlow,      // 出片
+    Workflow,       // 工作流（节点式视频生产线，P5.7）
     Gallery,        // 组件画廊
 };
 
-inline constexpr int kWorkspaceCount = 7;
+inline constexpr int kWorkspaceCount = 8;
 
 // 命令面板里每一条的动作。显式枚举而不是「一个 int 兼表两种含义」——
 // 早先那版用 `int workspace`，-1/-2/-3.. 表示各种命令，而 Enter 的执行体只有
@@ -54,6 +56,13 @@ enum class PaletteAction {
 [[nodiscard]] const char* WorkspaceIcon(int workspace);
 [[nodiscard]] const char* WorkspaceLabel(int workspace);
 [[nodiscard]] const char* WorkspaceSubtitle(int workspace);
+// 侧栏树的两种形态（设计稿 Shell.jsx）：小说 / 分镜 / 出图 / 出片是「卷 → 章 → 镜」
+// 树（ShotSideTree），资产是「kind 筛选 + 分组树」（AssetsSideTree，Shell.jsx:519-580）；
+// 总控与项目中心没有侧栏树。侧栏按它挑树，检查器按它分流「实体属性 / 镜 / 章」
+// 三条分支 —— 两处必须是同一份判式（原在 Shell_Panels.cpp 匿名命名空间，
+// 拆成 Shell_Sidebar / Shell_Inspector 后提成共享；定义在 Shell_Sidebar.cpp）。
+[[nodiscard]] bool WorkspaceHasSideTree(int workspace);
+[[nodiscard]] bool WorkspaceHasAssetTree(int workspace);
 // 数据通路目标（refactor/README 的模块表），取证 manifest 里要写清楚。
 [[nodiscard]] const char* WorkspaceTarget(int workspace);
 
@@ -112,6 +121,8 @@ public:
     // 不误，80 张绿图对它零覆盖），只有「点完开态变没变」才能判。
     [[nodiscard]] bool settingsOpen() const { return settingsOpen_; }
     [[nodiscard]] bool themeMenuOpen() const { return themeMenuOpen_; }
+    // 最近一次绘制的菜单矩形，供点击探针使用。
+    [[nodiscard]] kit::Rect ThemeMenuRect() const { return themeMenuPanel_; }
     [[nodiscard]] bool reportModalOpen() const { return reportDetail_ >= 0; }
     // 「设置」模态右上角 × 按钮的矩形。**判据要用产品自己这份**，不要在 Review.cpp
     // 里复算一遍 `display.x * 0.5f + 280 - 23` 之类的式子 —— 布局一改，判据就会
@@ -140,7 +151,9 @@ public:
     // 写回展开态，于是「关联」段永远打不开。和上轮那个死模态同一类。
     void SetInspectorSection(int index, bool open);
     // 取证用：资产侧栏 kind 筛选（空 = 全部）。
-    void SetKindFilter(std::string kind) { SetBookKindFilter(std::move(kind)); }
+    void SetKindFilter(std::string kind) {
+        SetBookKindFilter(kind.empty() ? std::nullopt : std::optional(std::move(kind)));
+    }
     // 取证用：资产页 详情 / 总览 切换。分不清这两态就没法证明 kind chip 也筛了
     // **主区网格** —— 只在详情态截图的话，chip 有没有接上网格根本看不出来。
     void SetAssetsOverview(bool on) { assets_.setOverview(on); }
@@ -172,7 +185,9 @@ public:
     // 面包屑第三段。**按工作区现算**（小说取真章、资产取真实体名），不是存下来的值 ——
     // 以前 `SetWorkspace` 无条件写 "总览"，字段全仓再无别处会改，切到小说页面包屑
     // 照样是「项目 › 小说 › 总览」。
-    [[nodiscard]] std::string DerivedViewLabel() const;
+    // 面包屑第三段：按工作区现算，但**走指纹缓存**返回缓存引用（第二十轮波 3：
+    // 面包屑每帧调用，原先每帧现拼）。指纹覆盖全部分支用到的输入。
+    [[nodiscard]] const std::string& DerivedViewLabel() const;
 
     // 取证用：布局态的指纹。
     //
@@ -229,6 +244,16 @@ private:
     // （外面按 64 推进，实际占 84.8，差 20.8 正好是那个没算的标签）。
     [[nodiscard]] float DrawJumpButtons(kit::Rect bounds, ImDrawList* draw);
     void DrawInspector(kit::Rect area, ImDrawList* draw);
+    // 检查器「属性」段 KV 表 / 「关联」段 tag 行的**显示缓存**：数据指纹没变就
+    // 整帧复用上一帧的字符串。检查器每帧绘制，原先这两处每帧现拼
+    // vector<pair<string,string>> / tag 文本（实现见 Shell_Inspector.cpp）。
+    void RefreshInspectorKv(const BookSideView& book);
+    void RefreshRelationTags(const BookSideView& book);
+    // 侧栏两棵树的**显示缓存**：树每帧从 BookSideView 快照重建，原先每章 Fmt、
+    // 每镜拼接、每 chip count_if + Fmt 都在 Draw 里跑（实现见 Shell_Sidebar.cpp，
+    // 指纹算法见 kit/Hash.h）。
+    void RefreshAssetSideTree(const BookSideView& book);
+    void RefreshNovelSideTree(const BookSideView& book, bool withShots);
     void DrawDock(kit::Rect area, ImDrawList* draw);
     void DrawStatusBar(kit::Rect area, ImDrawList* draw);
     void DrawBreadcrumbs(kit::Rect area, ImDrawList* draw);
@@ -260,7 +285,7 @@ private:
     // 机制与证据见 chromeInteractive_ 的注释。
     kit::Hit ChromeHit(const kit::Rect& bounds, std::string_view id);
 
-    // 浮层是否开着（命令面板 / 设置模态 / 报告模态 / 主题菜单）。
+    // 浮层是否开着（命令面板 / 设置模态 / 报告模态 / 主题菜单 / 查看器）。
     //
     // **必须只有这一份**：每个 `kit::ScrollRegion` 都是一次 `BeginChild`，而 child
     // 会成为鼠标所在处的 `HoveredWindow`，根窗口里提交的浮层 item 于是恒
@@ -269,7 +294,8 @@ private:
     // 早先这个布尔只在 `DrawWorkspace` 里就地算了一遍，侧栏后来也加了滚动区 ——
     // 就地再算一遍就是两个真相源，迟早只改一处。
     [[nodiscard]] bool OverlayBlocksMouse() const {
-        return paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 || themeMenuOpen_;
+        return paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 || themeMenuOpen_ ||
+               MediaViewerOpen();
     }
     [[nodiscard]] bool ChromeClicked(const kit::Rect& bounds, std::string_view id) {
         return ChromeHit(bounds, id).clicked;
@@ -294,6 +320,7 @@ private:
     void DrawDockReports(kit::Rect body, ImDrawList* draw);
     void DrawReportModal();
 
+    bool preferInspectorInCompact_ = false;
     ShellLayout layout_;
     // 项目服务实例：新建 / 打开 / 最近列表都走它（前端持有自己的实例，见 Project.h:139）。
     project::ProjectService projects_;
@@ -312,6 +339,66 @@ private:
     // 侧栏树的**卷**层展开态（key = chapters.volume_id；0 = 「未归卷」也是合法 key）。
     // 与 collapsedKinds_ 同一个道理：树每帧从快照重建，展开态存局部变量的话下一帧就收回。
     std::vector<int> collapsedVolumes_;
+    // ---- 侧栏树显示缓存（指纹算法见 kit/Hash.h）----
+    // 资产树 + chip 行：指纹覆盖 assets（index/kind/name/tone）、kind 筛选、
+    // collapsedKinds_。分组 key 用原始 kind。
+    struct AssetKindChip {
+        std::string kind;
+        std::string label;
+        std::string count;
+        std::string id;
+    };
+    std::uint64_t assetTreeKey_ = 0;
+    std::vector<AssetKindChip> assetKindChips_;   // 实际出现的 kind，按首次出现顺序
+    std::string assetReadyText_;                 // 标题行的「x/y 就绪」
+    int assetReadyCount_ = 0;                    // 就绪数（进度条要用）
+    std::vector<kit::TreeNode> assetTreeNodes_;
+    std::vector<int> assetTreeLeaf_;             // 叶子序号（含折叠组）→ BookSideView::assets 下标
+    std::vector<std::string> assetTreeKinds_;    // 分组序号 → 原始 kind
+    // 章 / 镜树：指纹覆盖章、卷和折叠状态。显示镜头时才纳入选中章和镜头。
+    std::uint64_t novelTreeKey_ = 0;
+    std::vector<kit::TreeNode> novelTreeVolumes_;
+    std::vector<std::pair<int, std::string>> novelTreeVolumeOrder_;  // volumeId → 标题
+    // ---- 底栏显示缓存（第二十轮波 3）----
+    std::uint64_t dockQueueKey_ = 0;
+    std::vector<std::string> dockQueuePct_;  // 队列行「p/max · pct%」
+    int dockQueueFootCount_ = -1;
+    std::string dockQueueFoot_;
+    int dockLogFootTotal_ = -1;
+    int dockLogFootRows_ = -1;
+    std::string dockLogFoot_;
+    std::vector<std::string> artifactIds_;   // "dock-art-<name>"，扫描回投时随 artifacts_ 重建
+    std::string artifactFoot_;
+    // 报告页显示缓存：行码 / 行 id / 页脚随 reports_ 一次性重建
+    //（回投时 ++reportsGeneration_，Draw 比对代数决定要不要重建）。
+    int reportsGeneration_ = 0;
+    int reportCacheGen_ = -1;
+    std::vector<std::string> reportCodes_;      // 等宽章码 "chNNN"
+    std::vector<std::string> reportIds_;        // "dock-report-<i>"
+    std::string reportFoot_;
+    // 面包屑第三段（DerivedViewLabel）的显示缓存；const 方法里写 ⇒ mutable。
+    mutable std::uint64_t viewLabelKey_ = 0;
+    mutable std::string viewLabelCache_;
+    // 设置模态三组 KV 的显示缓存（第二十轮波 3）：模态开着时每帧不再构造
+    // initializer_list 与 PathToUtf8 临时串。11 行合一-vector，绘制时切片。
+    std::uint64_t settingsKvKey_ = 0;
+    bool settingsKvValid_ = false;
+    std::filesystem::path settingsKvRootPath_;  // path 的 == 比较不分配
+    std::vector<kit::KVRow> settingsKvRows_;
+    // 设置模态「LLM 配置」编辑区的**落盘指纹**（全部可编辑字段的 Fnv1a 串接，
+    // 算式在 DrawSettingsModal 末尾）：kit::Input 的文本打字即写回 Settings 字段，
+    // SaveSettings() 按指纹差异 + 「编辑动作 / 编辑态结束 / 模态关闭」三类时机落盘，
+    // 首帧只登记指纹不落盘。key 不进指纹打印路径 —— 全程不打日志。
+    std::uint64_t settingsLlmKey_ = 0;
+    bool settingsLlmKeyValid_ = false;
+    // ---- 检查器显示缓存（ImGui 每帧绘制 ⇒ 不在 Draw 里现拼字符串）----
+    // 指纹算法见 kit/Hash.h；「属性」段三条分支共用同一张表，行数记在 inspectorKvCount_。
+    std::uint64_t inspectorKey_ = 0;
+    int inspectorKvCount_ = 0;
+    std::array<kit::KVRow, 9> inspectorKv_;
+    std::uint64_t relationKey_ = 0;
+    std::vector<std::string> relationTags_;
+    std::vector<theme::Tone> relationTones_;
     std::vector<std::string> logLines_;
     bool paletteOpen_ = false;
     // 刚打开的那一帧：用来把焦点交给输入框（命令面板的用法是「打开就打字」）。
@@ -334,12 +421,24 @@ private:
     bool atlasIsSerif_ = false;
 
     // ---- 浮层与面板的开关态（webui Shell.jsx:14 的 menu 状态）----
-    bool hubOpen_ = false;        // 项目中心整屏（品牌标 / 项目胶囊点击进入）
+    //
+    // ⚠️ `hubOpen_` 初值 = **true**：项目中心是**初始页**。webui 的 store 里
+    //    `const [screen, setScreen] = useState('hub')`（store.jsx:13），
+    //    `App.jsx:87` 只在 `screen === 'workshop'` 时才画外壳 —— 也就是说 webui
+    //    **一开机就是项目中心那一屏**，而本工程原先从总控（工作区 0）起步，
+    //    与基准不一致。它仍然是整屏替身：开着时 `DrawFrame` 只画它，
+    //    Esc / 「返回工作区」/ 打开一个项目都会回到工作区。
+    //
+    //    取证侧的影响面**必须**一起改（`Shoot` 显式定这个开态、各段探针显式复位）——
+    //    否则 89 张工作区证据图会整屏拍到项目中心，而 manifest 照样记 saved。
+    bool hubOpen_ = true;         // 项目中心整屏（启动默认；品牌标 / 项目胶囊点击进入）
     bool themeMenuOpen_ = false;  // 顶栏「主题」菜单
+    bool themeMenuJustOpened_ = false;  // 打开菜单的点击不参与外部关闭
     bool settingsOpen_ = false;   // 「设置 · 三步开工」模态
     int reportDetail_ = -1;       // 底栏校验报告点开的条目下标，-1 = 未打开
     // 主题菜单锚点（顶栏「主题」按钮左下角），上一帧 DrawTopBar 写下。
     ImVec2 themeMenuAnchor_{0.0f, 0.0f};
+    kit::Rect themeMenuPanel_{};
     // 「设置」模态的几何，上一帧 DrawSettingsModal 写下，**只此一份**：
     //   settingsFrame_  面板框（「点外面关闭」判定用）
     //   settingsClose_  右上角 ×（绘制与判据共用）
@@ -361,9 +460,6 @@ private:
     //      修法是浮层开着时 chrome 走 ChromeHit()，不提交任何 item。
     // 静息截图对这两条**零覆盖**（不点击），所以取证全绿也证明不了什么。
     bool chromeInteractive_ = true;
-    // 主题菜单「点外面关闭」的全屏热区。必须在 chrome **之前**注册（理由同上），
-    // 所以单独抽出来在 DrawFrame 开头调，结果存在这里给 DrawThemeMenu 用。
-    kit::Hit themeOutsideHit_;
 
     // ---- 底栏「产物」页的真实文件列表 ----
     // IO 走 worker：UI 线程只读这个缓存。scanRoot_ 记上次扫的是哪个工程根，
@@ -387,33 +483,29 @@ private:
     // 早先这一页只给诚实空态，而 DrawReportModal 更糟：它是个**永远打不开的空壳** ——
     // 驱动它的 reportDetail_ 全代码只有 `= -1` 初始化与复位，从没有任何地方把它设成 ≥0。
     // 现在列表按章列真报告，点行开逐项详情。
-    struct ReportIssue {
-        std::string code;      // "C1".."C12"
-        std::string severity;  // high | medium | low
-        std::string detail;    // 中文，可直接显示
-    };
-    struct ChapterReport {
-        int chapterOrd = 0;  // ch<NNN> 的序号（文件名给的；JSON 里只有库内的 chapter_id）
-        int chapterId = 0;   // novel.db 的 chapter_id
-        int shots = 0;
-        int pairs = 0;
-        int rulesChecked = 0;
-        int failed = 0;
-        int unverified = 0;
-        std::vector<ReportIssue> issues;
-        std::vector<std::string> notes;  // unverified 的原因，每条一次
-        std::string path;                 // 报告落盘位置
-    };
-    // 模态里那张 compact 表的一行。设计稿那张表实际渲染 5 个 td 而表头只写了 4 个标题
-    // （Shell.jsx:285 vs 289-293，设计稿自身缺陷）：表头照设计稿写 4 个，name 列留空 ——
-    // 业务层的 ContinuityIssue 本来就没有独立的名称字段，不编一个出来。
+    // 模态明细表的一行。
     struct CheckRow {
         std::string code;
-        std::string level;   // high | medium | low；未核对为空
-        theme::Tone levelTone = theme::Tone::Idle;
-        std::string verdict;  // 过 / 未过 / 提示 / 未核对
-        theme::Tone verdictTone = theme::Tone::Idle;
+        std::string level;   // high | medium | low；未核对为 "-"
+        theme::Tone levelTone;
+        const char* verdict;
+        theme::Tone verdictTone;
         std::string detail;
+    };
+    struct ReportCounts {
+        std::size_t failed = 0;
+        std::size_t hints = 0;
+        std::size_t unverified = 0;
+
+        std::size_t Total() const { return failed + hints + unverified; }
+    };
+    struct ChapterReport {
+        int chapterOrd = 0;  // ch<NNN> 的序号
+        int pairs = 0;
+        std::vector<CheckRow> rows;
+        ReportCounts counts;
+        std::string summary;
+        std::string path;
     };
     std::vector<ChapterReport> reports_;
     std::filesystem::path reportScanRoot_;
@@ -422,16 +514,8 @@ private:
     // 模态主体的纵向滚动偏移。12 条 issue 装不满时用滚轮滚。
     float reportScroll_ = 0.0f;
 
-    // severity 串 → 色调（设计稿 Shell.jsx:291：high→danger / medium→warn / low→idle）。
-    static theme::Tone SeverityTone(std::string_view severity);
-    // 整条报告的三态：failed > unverified > 通过。unverified 是「数据不足」，
-    // 给 Warn 而不是 Ok —— 照实显示，不粉饰成通过。
     static theme::Tone ReportTone(const ChapterReport& report);
-    // 行尾 Tag 的文案，例如「1 未过 · 2 未核对 · 12 镜对」。
-    static std::string ReportSummary(const ChapterReport& report);
-    // issues + notes 铺成模态那张表的行。notes 形如「C3：数据不足…」，
-    // 冒号前是规则码，取出来当「检查」列。
-    static std::vector<CheckRow> BuildCheckRows(const ChapterReport& report);
+    static std::string ReportBreakdown(const ReportCounts& counts);
     // 解析一个 v08_continuity.json。false = 文件缺失 / 非法 JSON / 缺 stage 字段（跳过该目录）。
     static bool ParseContinuityReport(const std::filesystem::path& file, ChapterReport& out);
     // 模态标题栏「导出 JSON」：把这一份报告写到 <project>/output/，写盘放 worker。
@@ -444,12 +528,13 @@ private:
     int runStageIndex_ = 0; // 0..16，对应 T1..T17
     int runPercent_ = 0;
 
-    // 六个工作区（各自持有交互态：选中的镜头/标签/页签）
+    // 七个工作区（各自持有交互态：选中的镜头/标签/页签）
     NovelPage novel_;
     AssetsPage assets_;
     StoryboardPage storyboard_;
     ImageFlowPage imageflow_;
     VideoFlowPage videoflow_;
+    WorkflowPage workflow_;
     GalleryPage gallery_;
 };
 

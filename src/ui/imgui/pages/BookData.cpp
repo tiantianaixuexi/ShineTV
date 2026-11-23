@@ -19,7 +19,7 @@ std::uint64_t g_bookGen = 0;
 
 // P4 外壳（Shell 侧栏树 / 检查器）读的那份**只读视图**。BookState 的持有者是
 // Book()（在匿名命名空间之外，因为三页都要读它）—— 但外壳仍然只拿只读视图：
-// 每次快照落地时重建一份纯数据拷贝，外壳不持有数据、也不做 IO。
+// 全量快照落地时重建，切章时只更新当前章相关字段。外壳不做 IO。
 // 函数内 static 持有，getter 返回引用，所以外壳每帧读它没有拷贝成本。
 BookSideView& BookSideCache() {
     static BookSideView view;
@@ -29,40 +29,26 @@ BookSideView& BookSideCache() {
 // 资产工作区的 kind 筛选存处。⚠️ 必须是**函数内 static**，不能是 BookSideView 的
 // 字段：视图每次 RebuildBookSide 都被整块重建（`v = BookSideView{}`），
 // 存在里面必被冲掉 —— 症状是筛完立刻弹回「全部」。
-// 值是 entities.kind 的**英文原文**（空串 = 全部），不存中文标签：分组名走
-// AssetKindLabel()，筛选值必须与 BookSideView::assets 的 kind 同源。
-std::string& BookKindFilterSlot() {
-    static std::string kind;
+// 值是 entities.kind 原文。nullopt 表示全部，空字符串仍可匹配旧库里的空 kind。
+std::optional<std::string>& BookKindFilterSlot() {
+    static std::optional<std::string> kind;
     return kind;
 }
 
-// 从刚落地的快照重建视图。
-// ⚠️ 只能读**合并后**的 s：ApplyBook 里 `s = std::move(next)` 之后 next 已经被搬空，
-//    这时候再遍历 next.chapters 只会拿到空列表（症状：侧栏树永远只有一行空态）。
-//    s 这时是最终态：selectedChapter 是 worker 按 wantChapter 定的、selectedShot 已夹回
-//    新快照的范围、loading 已置 false。
-void RebuildBookSide(const BookState& s) {
+void SyncBookSideState(const BookState& s) {
     BookSideView& v = BookSideCache();
-    v = BookSideView{};  // 先清空：换工程 / 库打不开时不能把上一本的章挂在新工程上
     v.bound = s.bound;
     v.loading = s.loading;
     v.error = s.error;
     v.selectedChapter = s.selectedChapter;
     v.selectedShot = s.selectedShot;
-    v.chapters.reserve(s.chapters.size());
-    for (const BookChapter& c : s.chapters) {
-        BookChapterView row;
-        row.ord = c.ord;
-        row.title = c.title;
-        row.status = c.status;
-        row.words = c.words;
-        row.volumeId = static_cast<int>(c.volumeId);
-        row.volumeTitle = c.volumeTitle;
-        v.chapters.push_back(std::move(row));
-    }
-    // 章节 × V 阶段矩阵原样搬过去（worker 已经查完，这里只做拷贝）。
-    v.chapterVStages = s.chapterVStages;
+    v.selectedAsset = s.selectedAsset;
+}
+
+void RefreshBookSideShots(const BookState& s) {
+    BookSideView& v = BookSideCache();
     // ⚠️ 只有**当前选中章**的镜（shots 与 BookState.shots 同口径），不是全书。
+    v.shots.clear();
     v.shots.reserve(s.shots.size());
     for (const BookShot& shot : s.shots) {
         BookShotView row;
@@ -79,6 +65,43 @@ void RebuildBookSide(const BookState& s) {
         row.imageRelPath = shot.imageRelPath;  // 这一镜的成片图；空 = 还没出图
         v.shots.push_back(std::move(row));
     }
+}
+
+void RefreshBookSideRelation(const BookState& s) {
+    BookSideView& v = BookSideCache();
+    // 检查器「关联」段锚在当前选中镜上。没有镜或没有关联场时，相应字段留空。
+    v.relation = BookRelationView{};
+    if (const BookShot* selected = s.shot(); selected != nullptr) {
+        v.relation.shotCode = ShotCode(selected->ord);
+        for (const BookSceneLink& link : s.sceneLinks) {
+            if (link.id == selected->sceneId) {
+                v.relation.sceneOrd = link.ord;
+                v.relation.sceneTitle = link.title;
+                v.relation.foreshadows = link.foreshadows;
+                break;
+            }
+        }
+    }
+}
+
+// 全量快照落地或换工程时，重建章列表、资产列表和当前章视图。
+void RebuildBookSide(const BookState& s) {
+    BookSideView& v = BookSideCache();
+    v = BookSideView{};  // 换工程时清掉旧数据
+    SyncBookSideState(s);
+    v.chapters.reserve(s.chapters.size());
+    for (const BookChapter& c : s.chapters) {
+        BookChapterView row;
+        row.ord = c.ord;
+        row.title = c.title;
+        row.status = c.status;
+        row.words = c.words;
+        row.volumeId = static_cast<int>(c.volumeId);
+        row.volumeTitle = c.volumeTitle;
+        v.chapters.push_back(std::move(row));
+    }
+    v.chapterVStages = s.chapterVStages;
+    RefreshBookSideShots(s);
     // ---- 资产工作区侧栏：全量实体，**不按 kind 预筛** ----
     // ⚠️ 筛选是工作区 UI 态（BookKindFilterSlot），筛完的树拿着这里的
     //    BookAssetView::index 回指，所以 index 必须**等于** BookState::assets
@@ -105,32 +128,10 @@ void RebuildBookSide(const BookState& s) {
         AssetTone(asset.hasAsset ? asset.assetStatus : std::string(), row.statusLabel, row.tone);
         v.assets.push_back(std::move(row));
     }
-    // 选中下标必须夹进新快照的范围：换工程 / 库打不开时 assets 是空的。
-    v.selectedAsset = s.assets.empty()
-                          ? 0
-                          : std::clamp(s.selectedAsset, 0, static_cast<int>(s.assets.size()) - 1);
-
-    // ---- 检查器「关联」段：伏笔 / 场 / 镜三组 ----
-    // 口径：这一段锚在**当前选中的那一镜**上，三组一起有或一起空。
-    // 没选中镜（本章一个镜都没有，s.shot() == nullptr）时三组全留空 ——
-    // 不拿「本章第一场」去补一个场 tag：空镜码配一个「场景 12」会被读成
-    // 「这一镜属于第 12 场」，而实际上没有选中任何镜，那是误导而不是空态。
-    v.relation = BookRelationView{};
-    if (const BookShot* selected = s.shot(); selected != nullptr) {
-        v.relation.shotCode = ShotCode(selected->ord);  // 侧栏 / 故事板 / 检查器同一份
-        for (const BookSceneLink& link : s.sceneLinks) {
-            if (link.id != selected->sceneId) {
-                continue;
-            }
-            v.relation.sceneOrd = link.ord;
-            v.relation.sceneTitle = link.title;
-            v.relation.foreshadows = link.foreshadows;
-            break;
-        }
-        // sceneId 在本章的 sceneLinks 里找不到（scenes 表为空 / shots.scene_id
-        // 指向别章的场）时：sceneOrd 留 0、sceneTitle 与 foreshadows 留空 ——
-        // 0 序即「不落在任何场上」，不编一个占位场出来。
-    }
+    // 最近的出图产物（总控「最近产物」卡的缩略图）。纯数据拷贝 —— 文件大小已经在
+    // worker 侧 stat 过（那里本来就做 IO），UI 线程不再碰盘。
+    v.recentImages = s.recentImages;
+    RefreshBookSideRelation(s);
 }
 
 // 把 worker 产出的快照并进状态。selectedChapter 由 worker 按 wantChapter 定好，
@@ -160,12 +161,7 @@ BookState& Book() {
 void RequestBookReload() {
     BookState& s = Book();
     s.loading = true;
-    // ⚠️ 这里也要重建视图：`loading` 是在**派发之前**就翻成 true 的，而视图只在
-    //    ApplyBook（落地时）与 BindBook（换工程时）重建 —— 不补这一下，视图里的
-    //    loading 永远是上一轮的 false。症状：调用方「等 !loading」立刻成立、一帧都不等，
-    //    然后把上一章的画面当成新章拍下来（实测：side-tree-empty-chapter 与 side-tree
-    //    几乎逐字节相同）。此处只更新标志位，不动已经取好的章 / 镜。
-    RebuildBookSide(s);
+    SyncBookSideState(s);  // 派发前让外壳看到 loading，已有列表继续使用。
     const std::uint64_t gen = ++g_bookGen;
     const std::filesystem::path root = s.root;
     const int wantChapter = s.selectedChapter;
@@ -184,6 +180,47 @@ void RequestBookReload() {
 
 namespace {
 
+// 切片回投：只把「当前章切片」并进现有状态，章列表（含全书正文）/ 资产 /
+// recentImages / chapterVStages **一个都不动** —— 这就是切章不再「整表刷新」的
+// 关键：列表数据本来就没变，换掉它才是那次可见的刷新。
+void ApplyBookSlice(BookState& s, BookState&& next) {
+    const int keepShot = s.selectedShot;
+    s.sceneLinks = std::move(next.sceneLinks);
+    s.shots = std::move(next.shots);
+    for (int i = 0; i < 8; ++i) {
+        s.vStage[i] = next.vStage[i];
+    }
+    s.continuity = std::move(next.continuity);
+    s.selectedChapter = next.selectedChapter;
+    s.error = std::move(next.error);
+    s.selectedShot = keepShot >= 0 && keepShot < static_cast<int>(s.shots.size()) ? keepShot : 0;
+    s.loading = false;
+    SyncBookSideState(s);
+    RefreshBookSideShots(s);
+    RefreshBookSideRelation(s);
+}
+
+// 切章派发前同步选中项和 loading，回投时按 generation 丢弃过期结果。
+void RequestBookChapterSlice(RowId chapterId, int chapterIndex) {
+    BookState& s = Book();
+    s.loading = true;
+    SyncBookSideState(s);
+    RefreshBookSideRelation(s);
+    const std::uint64_t gen = ++g_bookGen;
+    const std::filesystem::path root = s.root;
+    async::RunOnWorker([root, chapterId, chapterIndex, gen] {
+        BookState next;
+        LoadBookChapterSlice(root, chapterId, chapterIndex, next);
+        async::PostToUi([gen, next = std::move(next)]() mutable {
+            BookState& cur = Book();
+            if (gen != g_bookGen) {
+                return;  // 已经又发起了一轮，丢掉这次过期结果
+            }
+            ApplyBookSlice(cur, std::move(next));
+        });
+    });
+}
+
 void BindBook(std::filesystem::path root) {
     BookState& s = Book();
     if (s.root == root) {
@@ -194,6 +231,7 @@ void BindBook(std::filesystem::path root) {
                          //    否则这一轮还没回投的窗口里，侧栏会把上一本的章
                          //    挂在新工程名下（症状：切了书树还是旧章节）。
     if (root.empty()) {
+        ++g_bookGen;  // 解绑后丢弃仍在途中的查询。
         return;  // 未打开工程 → 空态
     }
     s.root = std::move(root);
@@ -324,7 +362,10 @@ void BookEmpty(Rect body, ImDrawList* draw, const char* icon, const char* hint) 
         Empty(draw, body, icon, "读取失败", s.error);
         return;
     }
-    if (s.loading) {
+    // 「正在读取」只在**还没有任何数据**时显示。已有数据时加载中照常显示旧数据
+    //（stale-while-revalidate）：切章 / 重读都会翻 loading，整块换空态再重建就是
+    // 「每点一章列表刷新一次」的可见部分。数据没变就不该换画面。
+    if (s.loading && s.chapters.empty() && s.assets.empty()) {
         Empty(draw, body, icon, "正在读取 novel.db", hint);
         return;
     }
@@ -354,39 +395,35 @@ void BindStoryboardProject(std::filesystem::path root) { BindBook(std::move(root
 // 只读视图。UI 线程读，不做任何 IO；没绑工程时返回的是一份全 0 / 空列表的默认视图。
 const BookSideView& BookSide() { return BookSideCache(); }
 
-// entities.kind / visual_assets.kind → 中文分类名。表外原样回显，不编一个名字。
-// ⚠️ 必须定义在匿名命名空间**之外**（声明见 WorkspacePages.h），否则 Shell 的
-//    kind 筛选树链接不到它。**就是**原先那个内部 KindLabel —— 一份映射，
-//    改名导出而已；资产页卡片 / 详情那两处调用点也走它。
 std::string AssetKindLabel(const std::string& kind) {
-    if (kind == "person" || kind == "character") {
-        return "角色";
+    static constexpr std::pair<std::string_view, std::string_view> labels[] = {
+        {"person", "人物"}, {"character", "角色"}, {"location", "地点"},
+        {"item", "物品"}, {"prop", "道具"}, {"treasure", "宝物"},
+        {"clothing", "服装"}, {"faction", "势力"}, {"event", "事件"},
+    };
+    for (const auto& [value, label] : labels) {
+        if (kind == value) {
+            return std::string(label);
+        }
     }
-    if (kind == "location") {
-        return "地点";
+    if (kind.empty()) {
+        return kDash;
     }
-    if (kind == "item" || kind == "prop" || kind == "treasure") {
-        return "物品";
+    // 自定义 kind 撞上界面标签时加引号。原值以同样的引号开头时也加一层。
+    if (kind == "全部" || kind == kDash || kind.starts_with("「") ||
+        std::ranges::any_of(labels, [&kind](const auto& entry) { return kind == entry.second; })) {
+        return "「" + kind + "」";
     }
-    if (kind == "clothing") {
-        return "服装";
-    }
-    if (kind == "faction") {
-        return "势力";
-    }
-    if (kind == "event") {
-        return "事件";
-    }
-    return kind.empty() ? kDash : kind;
+    return kind;
 }
 
-const std::string& BookKindFilter() { return BookKindFilterSlot(); }
-void SetBookKindFilter(std::string kind) { BookKindFilterSlot() = std::move(kind); }
+const std::optional<std::string>& BookKindFilter() { return BookKindFilterSlot(); }
+void SetBookKindFilter(std::optional<std::string> kind) { BookKindFilterSlot() = std::move(kind); }
 
 // 侧栏资产树点叶子 → 改选中实体。index 是 **BookSideView::assets 的下标**
 // （与 BookState::assets 同序），不是筛后树的序号。
 // 越界只可能是过期点击或旧工程的下标，先判界、后夹范围，和 SelectBookChapter
-// 同一套写法；改完立刻重建视图 —— 外壳读的是缓存，不重建就还是上一格高亮。
+// 同一套写法；改完同步外壳视图的选中项。
 void SelectBookAsset(int index) {
     BookState& s = Book();
     if (s.assets.empty()) {
@@ -397,7 +434,7 @@ void SelectBookAsset(int index) {
         return;
     }
     s.selectedAsset = std::clamp(index, 0, last);
-    RebuildBookSide(s);
+    SyncBookSideState(s);
 }
 
 // 侧栏点击 → 改选中项。越界直接什么都不做。
@@ -415,8 +452,11 @@ void SelectBookChapter(int index) {
     }
     s.selectedChapter = std::clamp(index, 0, last);
     s.selectedShot = 0;  // 换章了：旧镜下标在新章里没意义，归 0 等 worker 回投
-    RebuildBookSide(s);  // 选中项立刻生效；RequestBookReload 内部还会再重建一次（带 loading=true）
-    RequestBookReload();  // 取的是新选中章的场 / 镜（LoadBook 按 wantChapter 定章）
+    // ⚠️ 切章走**轻量切片**（只重取本章的场/镜/逐镜成图/V 阶段/连续性），不整库重读：
+    //    全量 LoadBook 会把全书正文（500 章 ≈ 13MB）整个重取、整份快照换掉 ——
+    //    那正是「每点一章列表刷新一次」的元凶（loading 翻真 + 全量回投各刷一次）。
+    RequestBookChapterSlice(s.chapters[static_cast<std::size_t>(s.selectedChapter)].id,
+                            s.selectedChapter);
 }
 
 // 选镜只改下标，**不重取** —— 镜列表已经在内存里，重取会白跑一轮 sqlite。
@@ -430,11 +470,8 @@ void SelectBookShot(int index) {
         return;
     }
     s.selectedShot = std::clamp(index, 0, last);
-    // ⚠️ 必须重建视图。故事板页直接读 BookState（永远新鲜），侧栏与检查器读的是
-    //    缓存视图 —— 不补这一下，点了 S002 之后故事板换面了、侧栏高亮和检查器属性
-    //    还钉在 S001 上。而且这种不一致**不会**被"两张图 md5 不同"抓到：
-    //    故事板那半边确实变了，两张图必然不同。只能靠人看图发现。
-    RebuildBookSide(s);
+    SyncBookSideState(s);
+    RefreshBookSideRelation(s);
 }
 
 } // namespace shine::pages

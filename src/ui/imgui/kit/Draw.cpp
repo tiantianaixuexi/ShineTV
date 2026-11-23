@@ -192,189 +192,9 @@ int AutoFillCols(float available, float minColumn, float gap) {
     return AutoGridCols(available, minColumn, gap);
 }
 
-namespace {
-// 反向矩形自检的**唯一一份**状态。三个对外函数共用它 —— 早先各写一个函数内
-// static，结果 count 和 last 互不相干，Reset 也是空壳，等于没记。
-struct InvertedRectState {
-    int count = 0;
-    char last[128] = {};
-};
-InvertedRectState& InvertedState() {
-    static InvertedRectState state;
-    return state;
-}
-} // namespace
-
-void NoteInvertedRect(float minX, float minY, float maxX, float maxY, const char* where) {
-    InvertedRectState& state = InvertedState();
-    ++state.count;
-    std::snprintf(state.last, sizeof(state.last), "%s min=(%.0f,%.0f) max=(%.0f,%.0f)", where,
-                  minX, minY, maxX, maxY);
-    // 只报前 8 次：同一个控件每帧都会触发一次，不限量的话日志会被刷爆，
-    // 真正的「唯一一处」反而被埋掉。判据用的是计数，不是条数。
-    if (state.count <= 8) {
-        shine::log::Error("kit: 反向矩形 —— {} 会被整块丢弃（画不出、也点不到）", state.last);
-    }
-}
-int InvertedRectCount() { return InvertedState().count; }
-void ResetInvertedRectCount() { InvertedState() = InvertedRectState{}; }
-const char* LastInvertedRect() { return InvertedState().last; }
-
-namespace {
-// 命中自检的**唯一一份**状态，理由与 InvertedState 相同：共用才有意义。
-struct HoverProbeState {
-    int count = 0;
-    char last[128] = {};
-};
-HoverProbeState& HoverState() {
-    static HoverProbeState state;
-    return state;
-}
-} // namespace
-
-void NoteHoveredItem(const char* id) {
-    HoverProbeState& state = HoverState();
-    ++state.count;
-    std::snprintf(state.last, sizeof(state.last), "%s", id != nullptr ? id : "(null)");
-}
-int HoveredItemCount() { return HoverState().count; }
-void ResetHoveredItemCount() { HoverState() = HoverProbeState{}; }
-const char* LastHoveredItem() { return HoverState().last; }
-
-namespace {
-// 重复命中的状态。与 InvertedState 不同的两点：
-//   1. 按**帧**分桶（ImGui::GetFrameCount）—— 同一矩形每帧都命中是正常的，
-//      跨帧不清空的话计数会涨到几万，判据就废了。
-//   2. 只比对**矩形**不看 id：漏写的是「同一个矩形上的第二次命中」，而调用点
-//      通常还换了个 id（`dock-report-3` vs `dock-report-hit-3`），比 id 抓不到。
-//
-// ⚠️ 这里用 4 个 float 而不是 `Rect`：那个类型声明在 Widgets.h，而 Widgets.h
-//    依赖本文件（Draw.h），反向包含就成环。Draw.h 里的 NoteInvertedRect 当年
-//    也是同样原因收四个裸 float。
-struct HitRect {
-    float minX = 0.0f;
-    float minY = 0.0f;
-    float maxX = 0.0f;
-    float maxY = 0.0f;
-    // 诊断用：登记这个热区的 id。**不参与判据** —— 判据只比矩形（理由见上面第 2 条），
-    // 这里纯粹是为了「报出来的时候能说出对方是谁」。没有它就得拿坐标去反推，
-    // 实测反推过一轮：`(296,742)-(538,934)` 这个 242×192 的盒子光看数字认不出来。
-    std::string id;
-    // 登记时所在的 draw list（一个窗口一个，指针一一对应）。**参与判据** —— 见
-    // `NoteDuplicateHit` 里那段（跨 list 不算）。用 draw list 而不是 ImGuiWindow：
-    // 后者是内部类型（要 imgui_internal.h），而**裁剪区本来就挂在 draw list 上**——
-    // 拿它判同一性，语义比「同一个窗口」还贴。
-    const ImDrawList* list = nullptr;
-};
-struct DuplicateHitBucket {
-    int frame = -1;
-    std::vector<HitRect> rects;
-    int overlaps = 0;   // 本帧累计的重叠次数（只数**没声明过**的）
-    char last[160] = {};
-    // 本帧内被 DeclareNestedHit 声明过的子项 id。只对**紧接着的一次**同 id 命中生效。
-    std::string declaredChild;
-};
-DuplicateHitBucket& DuplicateBucket() {
-    static DuplicateHitBucket bucket;
-    return bucket;
-}
-
-// a 是否把 b 整个盖住（或反之）。要求**严格包含**至少一条边：
-// 两个完全一样大的矩形也算包含 —— 那正是「同一矩形注册两次」的典型形态，
-// 但它只该在**声明过**的情况下被豁免，否则照样报（见 DeclareNestedHit）。
-bool ContainsEitherWay(const HitRect& a, const HitRect& b) {
-    const bool aWrapsB = a.minX <= b.minX && a.minY <= b.minY && a.maxX >= b.maxX && a.maxY >= b.maxY;
-    const bool bWrapsA = b.minX <= a.minX && b.minY <= a.minY && b.maxX >= a.maxX && b.maxY >= a.maxY;
-    return aWrapsB || bWrapsA;
-}
-} // namespace
-
-void DeclareNestedHit(std::string_view childId) {
-    DuplicateHitBucket& bucket = DuplicateBucket();
-    const int frame = ImGui::GetFrameCount();
-    if (bucket.frame != frame) {
-        bucket.frame = frame;
-        bucket.rects.clear();
-        bucket.declaredChild.clear();
-    }
-    bucket.declaredChild.assign(childId);
-}
-
-void NoteDuplicateHit(float minX, float minY, float maxX, float maxY, const char* id) {
-    DuplicateHitBucket& bucket = DuplicateBucket();
-    const int frame = ImGui::GetFrameCount();
-    if (bucket.frame != frame) {
-        bucket.frame = frame;
-        bucket.rects.clear();
-        // 声明**只在当帧有效**：跨帧留着的声明会去豁免一个跟它毫无关系的命中。
-        bucket.declaredChild.clear();
-    }
-    // 声明是**一次性**的：取走就清空。这样同一次声明不可能连豁免两处，
-    // 而且「声明了但没对上」时下一次会照常报。
-    const bool declared = !bucket.declaredChild.empty() && bucket.declaredChild == id;
-    if (declared) {
-        bucket.declaredChild.clear();
-    }
-    const HitRect r{minX, minY, maxX, maxY, std::string(id), ImGui::GetWindowDrawList()};
-    for (const HitRect& seen : bucket.rects) {
-        // ⚠️ **只在同一个 draw list 里比**（= 同一个窗口）。跨 list 的「重叠」不是这个
-        //    自检要抓的东西：裁剪区按 draw list 生效，被裁掉的 item **根本不参与
-        //    hover**（`ItemHoverable` → `IsClippedEx`），所以「滚动区 / 子窗口里的内容
-        //    溢出到浮层或底栏上」**抢不走** hover —— 那只是绘制被裁、热区登记照旧。
-        //
-        //    早先这里不分 list，于是这一族被逐帧计成冲突：把 fixture 从 3 章铺到 12 章
-        //    之后一次报了 **425** 次，凶手两个**都是跨 list 的**：
-        //      · `side-tree` 的章行（侧栏）压到底栏；
-        //      · `asset-card-12`（资产网格的滚动内容）压到底栏报告行。
-        //    后者本来就是**合法的**（工作区是可滚动的，内容当然比视口长），前者是真溢出
-        //    （顺带修了，见 `Widget_Tree.cpp`）。判据把两种混在一起报，就会把「版式溢出」
-        //    与「合法的滚动内容」都误判成「控件点不动」。
-        if (seen.list != r.list) {
-            continue;
-        }
-        // 有实际面积的交叠才算。相邻（贴边）或零面积不算。
-        const float w = std::min(seen.maxX, r.maxX) - std::max(seen.minX, r.minX);
-        const float h = std::min(seen.maxY, r.maxY) - std::max(seen.minY, r.minY);
-        if (w > 0.0f && h > 0.0f) {
-            // 设计性嵌套：调用方在注册子 item 前用 DeclareNestedHit 声明过，
-            // **且**两个矩形确实是包含关系 ⇒ 这是 `.tree .node` 套 `.tw` 那一类，
-            // 不算重复。豁免后仍把子矩形登记进本帧表，之后若有第三个无关控件
-            // 压在它上面，照样会报。
-            //
-            // ⚠️ 早先这里只有「有面积就算」一条判据，而上面的注释却写着
-            //    「父子结构里父矩形包含子矩形是设计如此，不算重复」——
-            //    注释和代码说的不是一回事，于是小说侧栏那两个 `.tw` 箭头被
-            //    逐帧计了一遍（815 次/轮），整个 regression 恒为 FAIL。
-            if (declared && ContainsEitherWay(seen, r)) {
-                bucket.rects.push_back(r);
-                return;
-            }
-            // ⚠️ 把**对方**的矩形**和 id** 都打出来。只报自己的坐标时，「跟谁撞的」得靠猜：
-            //    第一次实测报 `side-tree#t0##0 ... 交叠 14x1`（看不出对方是谁），
-            //    补了矩形之后靠 y 认出了一处；第二次实测剩的是
-            //    `(296,742)-(538,934)` 这个 242×192 的盒子 —— 光看数字认不出来，
-            //    所以 id 也得带上。诊断信息不够，就要多花一整轮去反推。
-            std::snprintf(bucket.last, sizeof(bucket.last),
-                          "%s min=(%.0f,%.0f) max=(%.0f,%.0f) 与 %s min=(%.0f,%.0f) max=(%.0f,%.0f) "
-                          "交叠 %.0fx%.0f",
-                          id, minX, minY, maxX, maxY, seen.id.c_str(), seen.minX, seen.minY,
-                          seen.maxX, seen.maxY, w, h);
-            // 只报前 8 次：同一处每帧都会触发，不限量会把真正的「唯一一处」埋掉。
-            // 判据读的是计数，不是条数。
-            if (++bucket.overlaps <= 8) {
-                shine::log::Error(
-                    "kit: 同一帧内重叠热区 —— {} —— ImGui 先注册者独占，后一个永远 "
-                    "clicked=false（控件画得出来但按不动）",
-                    bucket.last);
-            }
-            return;
-        }
-    }
-    bucket.rects.push_back(r);
-}
-int DuplicateHitCount() { return DuplicateBucket().overlaps; }
-void ResetDuplicateHitCount() { DuplicateBucket() = DuplicateHitBucket{}; }
-const char* LastDuplicateHit() { return DuplicateBucket().last; }
+// ⚠️ 反向矩形 / 悬停探针 / 同帧重复命中三族取证自检**已拆到 Draw_Diag.cpp**
+//    （第二十轮）—— 它们只记状态、不画东西，读者是取证层；本文件只留绘制原语。
+//    NoteInvertedRect 等声明仍在 Draw.h，DrawRoundRect 照常调用。
 
 void DrawRoundRect(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 fill,
                    ImU32 border, float borderWidth, bool topHighlight) {
@@ -398,9 +218,12 @@ void DrawRoundRect(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU
         // 没有这个色 —— 它是为了逼近 box-shadow 的上沿观感**加出来的**近似值。
         // 做成 token 会让人以为设计稿里有它，进而去「对齐」一个不存在的设计值。
         // theme-ok 已知降级（R5）的上沿高光近似，设计稿没有对应 token，见 design-spec §9.3
-        const float inset = std::min(1.0f, radius);
-        draw->AddLine(ImVec2(min.x + inset, min.y + 0.5f), ImVec2(max.x - inset, min.y + 0.5f),
-                      ImU32(0x38FFFFFFu), 1.0f);
+        // 高光沿两端圆角之间的直边绘制。矮矩形的圆角受高度限制。
+        const float inset = std::min(radius, (max.y - min.y) * 0.5f);
+        if (min.x + inset < max.x - inset) {
+            draw->AddLine(ImVec2(min.x + inset, min.y + 0.5f), ImVec2(max.x - inset, min.y + 0.5f),
+                          ImU32(0x38FFFFFFu), 1.0f);
+        }
     }
 }
 
@@ -443,6 +266,36 @@ void DrawDiagGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, 
 void DrawHGradient(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU32 from,
                    ImU32 to) {
     FillRoundedBands(draw, min, max, rounding, from, to, /*vertical=*/false);
+}
+
+void DrawRadialGradient(ImDrawList* draw, ImVec2 center, float rx, float ry, ImU32 color, float stop,
+                        int steps) {
+    if (draw == nullptr || rx <= 0.0f || ry <= 0.0f || stop <= 0.0f || steps <= 0) {
+        return;
+    }
+    const float a0 = static_cast<float>((color >> IM_COL32_A_SHIFT) & 0xFFu) / 255.0f;
+    if (a0 <= 0.0f) {
+        return; // 看不出来的调用不该产出 draw call（否则白填一屏）
+    }
+    const ImU32 rgb = color & ~IM_COL32_A_MASK;
+    const int rings = std::min(steps, 64);
+    // 由外向内：第 i 圈的半径是 rx·t_{i+1}（铺满 [0, t_{i+1}]），增量 alpha 让半径 t
+    // 处的**累计**正好是 α(t)。推导见头文件；`aIn <= aOut` 的那些圈落在 stop 之外。
+    for (int i = rings - 1; i >= 0; --i) {
+        const float t0 = static_cast<float>(i) / static_cast<float>(rings);
+        const float t1 = static_cast<float>(i + 1) / static_cast<float>(rings);
+        const float aIn = a0 * std::clamp(1.0f - t0 / stop, 0.0f, 1.0f);
+        const float aOut = a0 * std::clamp(1.0f - t1 / stop, 0.0f, 1.0f);
+        if (aIn <= aOut) {
+            continue;
+        }
+        // over 合成求增量：aOut 之上再叠 ring 才到 aIn。
+        const float ring = (aIn - aOut) / std::max(1.0f - aOut, 1.0f / 255.0f);
+        const ImU32 col = rgb | (static_cast<ImU32>(std::clamp(ring, 0.0f, 1.0f) * 255.0f + 0.5f)
+                                 << IM_COL32_A_SHIFT);
+        draw->AddEllipseFilled(center, ImVec2(std::max(rx * t1, 0.5f), std::max(ry * t1, 0.5f)),
+                               col, 0.0f, 64);
+    }
 }
 
 namespace {
@@ -503,6 +356,8 @@ void DrawShadow(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, theme:
     const ImU32 base = theme::ToImU32(theme::CurrentShadowToken(tier));
     const float radius = std::max(0.0f, std::min(rounding, 0.5f * (max.x - min.x)));
 
+
+
     // ⚠️⚠️ `AddRectFilled` 的签名是 `(p_min, p_max, col, rounding)` —— **颜色在圆角前面**。
     //    写反了不报编译错，也不崩：col 位收到一个半径（14），于是颜色变成
     //    0x0000000E（全透明黑），圆角变成 0xFF000000 被截成巨大值。半径为 0 的那次
@@ -550,60 +405,88 @@ void DrawShadowed(ImDrawList* draw, ImVec2 min, ImVec2 max, float rounding, ImU3
     DrawRoundRect(draw, min, max, rounding, fill, border, borderWidth, /*topHighlight=*/true);
 }
 
+namespace {
+
+constexpr std::string_view kEllipsis = "…";
+
+struct ClippedLine {
+    std::string_view prefix;
+    float prefixWidth = 0.0f;
+    float width = 0.0f;
+    bool ellipsis = false;
+};
+
+ClippedLine FitTextLine(ImFont* font, float size, float width, std::string_view text) {
+    if (font == nullptr || text.empty() || width <= 0.0f) {
+        return {};
+    }
+    const std::string_view line = text.substr(0, text.find_first_of("\r\n"));
+    const char* end = line.data() + line.size();
+    const float fullWidth = TextWidth(font, size, line.data(), end);
+    if (line.size() == text.size() && fullWidth <= width) {
+        return {line, fullWidth, fullWidth, false};
+    }
+    const float marker = TextWidth(font, size, kEllipsis.data(), kEllipsis.data() + kEllipsis.size());
+    if (marker > width) {
+        return {};
+    }
+    const char* prefixEnd = line.data();
+    font->CalcTextSizeA(size, width - marker, 0.0f, line.data(), end, &prefixEnd);
+    const float prefixWidth = TextWidth(font, size, line.data(), prefixEnd);
+    return {line.substr(0, static_cast<std::size_t>(prefixEnd - line.data())),
+            prefixWidth, prefixWidth + marker, true};
+}
+
+} // namespace
+
 float DrawTextClipped(ImDrawList* draw, ImFont* font, float fontSize, ImVec2 pos, float maxWidth,
                       ImU32 color, std::string_view text, bool wrap) {
-    if (font == nullptr || text.empty() || maxWidth <= 0.0f) {
+    if (draw == nullptr || font == nullptr || text.empty() || maxWidth <= 0.0f) {
         return 0.0f;
     }
+    const ImVec2 clipMin = draw->GetClipRectMin();
+    const ImVec2 clipMax = draw->GetClipRectMax();
+    draw->PushClipRect(ImVec2(pos.x, clipMin.y), ImVec2(pos.x + maxWidth, clipMax.y), true);
     if (!wrap) {
-        const float width = MeasureClipped(font, fontSize, maxWidth, text);
-        // 截断时画截断后的内容：逐字退到能容下「…」。
-        std::size_t end = text.size();
-        if (TextWidth(font, fontSize, text.data(), text.data() + text.size()) > maxWidth) {
-            const char* ellipsis = "…";
-            const float ellipsisWidth = TextWidth(font, fontSize, ellipsis, ellipsis + 3);
-            const float budget = maxWidth - ellipsisWidth;
-            while (end > 0) {
-                if (TextWidth(font, fontSize, text.data(), text.data() + end) <= budget) {
-                    break;
-                }
-                --end;
-                while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) {
-                    --end;
-                }
-            }
-            draw->AddText(font, fontSize, pos, color, text.data(), text.data() + end);
-            draw->AddText(font, fontSize, ImVec2(pos.x + budget, pos.y), color, ellipsis,
-                          ellipsis + 3);
-            return maxWidth;
+        const auto line = FitTextLine(font, fontSize, maxWidth, text);
+        if (!line.prefix.empty()) {
+            draw->AddText(font, fontSize, pos, color, line.prefix.data(),
+                          line.prefix.data() + line.prefix.size());
         }
-        draw->AddText(font, fontSize, pos, color, text.data(), text.data() + text.size());
-        (void)width;
-        return TextWidth(font, fontSize, text.data(), text.data() + text.size());
+        if (line.ellipsis) {
+            draw->AddText(font, fontSize, ImVec2(pos.x + line.prefixWidth, pos.y), color,
+                          kEllipsis.data(), kEllipsis.data() + kEllipsis.size());
+        }
+        draw->PopClipRect();
+        return line.width;
     }
 
-    // 手工折行：ImGui 的 AddText 不自动换行。行高按 tokens.css 的 1.6。
     const float lineHeight = fontSize * 1.6f;
+    const char* current = text.data();
+    const char* end = text.data() + text.size();
+    const char* newline = std::find(current, end, '\n');
     float y = pos.y;
-    std::size_t start = 0;
-    while (start < text.size()) {
-        std::size_t end = start;
-        while (end < text.size()) {
-            std::size_t next = end + 1;
-            while (next < text.size() && (static_cast<unsigned char>(text[next]) & 0xC0) == 0x80) {
+    while (current < end) {
+        const char* next = current;
+        font->CalcTextSizeA(fontSize, maxWidth, 0.0f, current, newline, &next);
+        if (next == current && next < newline) {
+            // 极窄区域可能连一个字都放不下，始终按 UTF-8 边界前进。
+            ++next;
+            while (next < newline && (static_cast<unsigned char>(*next) & 0xC0) == 0x80) {
                 ++next;
             }
-            if (TextWidth(font, fontSize, text.data() + start, text.data() + next) > maxWidth &&
-                end > start) {
-                break;
-            }
-            end = next;
         }
-        draw->AddText(font, fontSize, ImVec2(pos.x, y), color, text.data() + start,
-                      text.data() + end);
+        if (next > current) {
+            draw->AddText(font, fontSize, ImVec2(pos.x, y), color, current, next);
+        }
         y += lineHeight;
-        start = end;
+        current = next;
+        if (next == newline && newline < end) {
+            ++current;
+            newline = std::find(current, end, '\n');
+        }
     }
+    draw->PopClipRect();
     return y - pos.y;
 }
 
@@ -632,30 +515,7 @@ float CenterTextX(float minX, float maxX, float textWidth) {
 }
 
 float MeasureClipped(ImFont* font, float fontSize, float maxWidth, std::string_view text) {
-    if (font == nullptr || text.empty()) {
-        return 0.0f;
-    }
-    const float full = TextWidth(font, fontSize, text.data(), text.data() + text.size());
-    if (full <= maxWidth) {
-        return full;
-    }
-    const char* ellipsis = "…";
-    const float ellipsisWidth = TextWidth(font, fontSize, ellipsis, ellipsis + 3);
-    const float budget = maxWidth - ellipsisWidth;
-    if (budget <= 0.0f) {
-        return ellipsisWidth;
-    }
-    std::size_t end = text.size();
-    while (end > 0) {
-        if (TextWidth(font, fontSize, text.data(), text.data() + end) <= budget) {
-            return TextWidth(font, fontSize, text.data(), text.data() + end) + ellipsisWidth;
-        }
-        --end;
-        while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) {
-            --end;
-        }
-    }
-    return ellipsisWidth;
+    return FitTextLine(font, fontSize, maxWidth, text).width;
 }
 
 void DrawDotGrid(ImDrawList* draw, ImVec2 min, ImVec2 max, float cell, ImU32 dot) {

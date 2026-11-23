@@ -1,0 +1,1 @@
+﻿# find-manual-list 棘轮基线：文件=存量条数。收编一个文件就跑 -WriteBaseline 收紧，只降不升。

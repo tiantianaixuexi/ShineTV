@@ -97,12 +97,12 @@ Rect Drawer(ImDrawList* draw, Rect screen, std::string_view title, std::string_v
 // 单条：min-w 260 max-w 380 + 10/14 内边距 + 1px line-normal +
 // **左侧 3px 状态色竖条**（border-left）+ r-md10 + shadow-2 + 12.5px。
 // 这是**最后一条**（最靠近屏幕底部那条）该在哪：stackBottom 给 .toasts 的下边。
-// 返回这条的高度，调用方往上累加即可排出多条的间距。
+// 返回这条的高度，调用方往上累加即可排出多条的间距。frameOut 可选，返回实际框体。
 //
 // `alpha` 是本体的整体不透明度（含投影）：toast 尾巴有 0.4s 淡出，投影必须
 // 一起淡 —— 本体没了影子还挂着，看着像渲染残留。1.0 = 不透明（默认）。
 float Toast(ImDrawList* draw, Rect screen, std::string_view text, theme::Tone tone,
-            std::string_view icon, float above = 0.0f, float alpha = 1.0f);
+            std::string_view icon, float above = 0.0f, float alpha = 1.0f, Rect* frameOut = nullptr);
 // .toasts 的固定边距：right 16 / bottom 40。
 inline constexpr float kToastRight = 16.0f;
 inline constexpr float kToastBottom = 40.0f;

@@ -31,6 +31,12 @@ float FrameDelta() {
 
 void ReserveTweenPool(std::size_t floats, std::size_t vec2, std::size_t vec4, std::size_t ints,
              std::size_t colors) {
+    // ⚠️ 必须关 lazy-init（im_anim.h:125，默认开）：本模块恒传 init_value == target
+    // （pinned 后重建要直接落终值），而 lazy 路径在「通道不存在且 target≈init」时
+    // **直接 return target 且不建通道**（im_anim.cpp:944）⇒ 通道永不创建、补间
+    // 永不启动，所有 Transition* 悄悄退化成硬切换（实测：接线后运行时逐像素同硬切换）。
+    // 关掉后缺通道以 init_value 建（首帧落 target 不跳变），之后 target 翻转正常补间。
+    iam_set_lazy_init(false);
     iam_reserve(static_cast<int>(floats), static_cast<int>(vec2), static_cast<int>(vec4),
                 static_cast<int>(ints), static_cast<int>(colors));
 }
@@ -83,6 +89,15 @@ ImU32 TransitionColorTo(ImGuiID id, ImGuiID channel, ImU32 target, float durSeco
                                           ImVec4(to[0], to[1], to[2], to[3]));
     const float out[4] = {result.x, result.y, result.z, result.w};
     return join(out);
+}
+
+float TransitionFloatTo(ImGuiID id, ImGuiID channel, float target, float durSeconds) {
+    if (AnimationPinned()) {
+        return target;
+    }
+    const float out = iam_tween_float(id, channel, target, ReduceMotion() ? 0.001f : durSeconds,
+                                      kEaseOut, iam_policy_crossfade, FrameDelta(), target);
+    return out;
 }
 
 }  // namespace shine::kit

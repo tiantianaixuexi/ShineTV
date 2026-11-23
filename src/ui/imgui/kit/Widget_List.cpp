@@ -1,5 +1,6 @@
 #include "ui/imgui/kit/Widget_List.h"
 
+#include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Icon.h"
@@ -30,21 +31,29 @@ Hit ListRow(ImDrawList* draw, Rect bounds, const ListRowSpec& spec) {
     }
     // 底色：选中优先于 hover（`.mi.on` / `tr.sel` 的既有语义）。
     // 圆角 6 —— 页面层 5 处自己写的时候有 4 处用 6、1 处用 8。
-    if (spec.selected) {
-        DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, ColorFillSelected());
-    } else if (hit.hovered) {
-        DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, ColorFillHover());
+    // 补间版：hover 底与选中底是**同一个槽位**，走 channel 0（hover 主底）的
+    // kDurFast 颜色补间（含 alpha：移出 hover 时淡出到透明），settle 值与原硬
+    // 切换逐值相同。
+    // ⚠️ 无命中的行（spec.id 空 / suppressed ⇒ hit.tid=0）不接补间：tid=0 会与
+    //    其它无 id 行撞车（Widget_Card 的既有约定），照旧硬切换。
+    const ImU32 rowFill = spec.selected    ? ColorFillSelected()
+                          : hit.hovered   ? ColorFillHover()
+                                          : ImU32(0);
+    const ImU32 rowFillNow =
+        (hit.tid != 0) ? TransitionColorTo(hit.tid, 0, rowFill, kDurFast) : rowFill;
+    if (rowFillNow != 0) {
+        DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, rowFillNow);
     }
 
     const float centerY = bounds.center().y;
     float x = bounds.min.x + spec.paddingX;
+    const float rowRight = bounds.max.x - spec.rightPaddingX.value_or(spec.paddingX);
     // chevron 先量宽度：标题可用宽要减去它，否则长标题会压在 chevron 底下
     // （页面层几处是「标题写死 220/300 宽」，容器一变窄就压字）。
     constexpr float kChevronW = 10.0f;
     const bool hasChevron = !spec.chevron.empty() && spec.chevron != "none";
     if (hasChevron) {
-        DrawIcon(draw, spec.chevron, ImVec2(bounds.max.x - spec.paddingX - kChevronW,
-                                            centerY - kChevronW * 0.5f),
+        DrawIcon(draw, spec.chevron, ImVec2(rowRight - kChevronW, centerY - kChevronW * 0.5f),
                  kChevronW, spec.disabled ? WithAlpha(ColorTextMuted(), 0.45f) : ColorTextMuted());
     }
 
@@ -57,7 +66,7 @@ Hit ListRow(ImDrawList* draw, Rect bounds, const ListRowSpec& spec) {
     }
 
     // 标题可用宽 = 到 chevron（或右内边距）为止，再减去右侧次要文字的实际宽度。
-    float titleRight = bounds.max.x - spec.paddingX;
+    float titleRight = rowRight;
     if (hasChevron) {
         titleRight -= kChevronW + 6.0f;
     }
@@ -65,11 +74,10 @@ Hit ListRow(ImDrawList* draw, Rect bounds, const ListRowSpec& spec) {
     if (!spec.trailing.empty()) {
         ImFont* trailingFont =
             spec.trailingMono ? MonoAt(spec.trailingSize) : FontAt(spec.trailingSize);
-        const float trailingW = MeasureClipped(trailingFont, spec.trailingSize, 1e9f, spec.trailing);
         // 右侧次要文字也从 chevron 往回退，两者互不重叠。
-        const float trailingX =
-            std::max(x, (hasChevron ? bounds.max.x - spec.paddingX - kChevronW - 6.0f
-                                    : bounds.max.x - spec.paddingX) - trailingW);
+        const float trailingW = MeasureClipped(trailingFont, spec.trailingSize,
+                                               std::max(0.0f, titleRight - x), spec.trailing);
+        const float trailingX = titleRight - trailingW;
         // ⚠️ 同样走 CenterTextY。页面层这 5 处里有 3 处写死 `y + 5.0f` / `y + 6.0f`，
         // 行高 24~30 时偏上 1.25~2.5px。
         DrawTextClipped(draw, trailingFont, spec.trailingSize,
@@ -106,9 +114,16 @@ Hit ListCard(ImDrawList* draw, Rect bounds, const ListCardSpec& spec,
     // .card.hoverable（ProjectHub.jsx:39/226）：hover 走 **shadow-1**（投影档切换），
     // 不是填色底。选中态是 accent 描边（ProjectHub.jsx:40 的 accent-dim 环）——
     // 刻意**不**折成投影档，两者视觉形态不同。
+    // 边框色补间（channel 2 = 描边，kDurFast）：hover / 选中的边框色硬切换平滑
+    // 过渡；投影档**保持离散**（tier 参数原样传，不动 DrawShadowed —— 档间交叉
+    // 渐变要动 DrawShadowed 的分层 alpha，见 Widget_Card 的既有注释）。
+    // ⚠️ hoverable=false 或无 id 时 hit.tid=0，不接补间（会撞车），照旧硬切换。
+    const ImU32 cardBorder =
+        spec.selected ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle());
+    const ImU32 cardBorderNow =
+        (hit.tid != 0) ? TransitionColorTo(hit.tid, 2, cardBorder, kDurFast) : cardBorder;
     DrawShadowed(draw, bounds.min, bounds.max, 10.0f,
-                 spec.selected ? ColorFillMuted() : ColorPanel(),
-                 spec.selected ? ColorAccent() : (hit.hovered ? ColorLineStrong() : ColorLineSubtle()),
+                 spec.selected ? ColorFillMuted() : ColorPanel(), cardBorderNow,
                  1.0f, hit.hovered ? theme::ShadowTier::Card : theme::ShadowTier::None);
 
     if (!spec.icon.empty()) {
@@ -123,7 +138,7 @@ Hit ListCard(ImDrawList* draw, Rect bounds, const ListCardSpec& spec,
                         (spec.icon.empty() ? 0.0f : (spec.iconSize + 8.0f));
     // 右侧要给 footer 留位（打开列表的「打开」按钮），所以文字右界取整个右内边距 ——
     // footer 自己在**整卡命中之后**画，两者在水平上不重叠。
-    const float textRight = bounds.max.x - spec.paddingX;
+    const float textRight = bounds.max.x - spec.paddingX - (spec.selected && !footer ? 28.0f : 0.0f);
 
     if (!spec.description.empty()) {
         // 两行的**块**按卡中心对齐：块高 = title + gap + desc，块顶 = 中心 − 块高/2。

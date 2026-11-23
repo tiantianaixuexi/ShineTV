@@ -118,8 +118,12 @@ bool SeedReportFixture(const std::filesystem::path& root) {
         // 分镜页时间线卡片（`.tthumb`）的**逐镜成片图**：来源是 `generated_images` 的
         // `source_kind='shot'` + `source_id=shots.id`。`assets/shot/s4_missing.png` 这
         // 一条**刻意不造**（`generated_images` 里登记了、文件不在）⇒ 回退到设计稿的 `Art`。
-        {"assets/shot/s1.png", 0xFB7185u, "分镜 · 第 1 镜成片图"},
-        {"assets/shot/s2.png", 0x34D399u, "分镜 · 第 2 镜成片图"},
+        {"assets/shot/s1.png", kShotColor1, "分镜 · 第 1 镜成片图（也被成片条 / 出图结果页数）"},
+        {"assets/shot/s2.png", kShotColor2, "分镜 · 第 2 镜成片图（成片条第 2 格）"},
+        // `generated_images` 里**非 shot** 来源的一条（`source_kind='asset'`，见
+        // `_fixture_seed.sql` 末尾那行）。总控「最近产物」卡读这张表时**不限** source_kind
+        // —— 这一张就是那条查询的判据对象（同时它是 id 最大的那条，排在最前）。
+        {"assets/gen_recent_ref.png", kRecentAssetColor, "总控 · 最近产物（非 shot 来源）"},
     };
     for (const SheetSeed& sheet : sheets) {
         constexpr std::uint32_t kSide = 64;

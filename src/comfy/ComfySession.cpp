@@ -64,7 +64,10 @@ ComfySession& ComfySession::Instance() {
 
 void ComfySession::Init(std::string_view baseUrl) {
     clientId_ = MakeClientId();
-    baseUrl_ = NormalizeBaseUrl(baseUrl.empty() ? "http://127.0.0.1:8188" : baseUrl);
+    // ⚠️ 空 = **未配置**，不回落默认 8188（2026-11-24 修）：回落会让「没配 ComfyUI」
+    //    的用户每 5 秒探一次 127.0.0.1:8188、每分钟吃 12 条连接错误日志。
+    //    未配置时 Tick / Connect 全部短路，一点网络活动都没有。
+    baseUrl_ = NormalizeBaseUrl(baseUrl);
     inited_ = true;
     state_ = ConnectionState::Connecting;
     lastError_.clear();
@@ -139,6 +142,11 @@ void ComfySession::EnsureSocket() {
 
 void ComfySession::Connect() {
     if (baseUrl_.empty()) {
+        // 未配置：不探测。状态归到「未连接」并刷新文案 —— SetBaseUrl("") 清空配置时
+        // 走的就是这条路，不留上一轮的「连接错误（…）」旧文案。
+        state_ = ConnectionState::Disconnected;
+        lastError_.clear();
+        RefreshHealthStrings();
         return;
     }
     EnsureSocket();
@@ -583,6 +591,9 @@ void ComfySession::PollHealth(float dtSec) {
 void ComfySession::Tick(float dtSec) {
     if (!inited_) {
         return;
+    }
+    if (baseUrl_.empty()) {
+        return; // 未配置：不轮询、不探活、不重连（见 Init 的说明）
     }
     PollHealth(dtSec);
 

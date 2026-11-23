@@ -8,6 +8,9 @@
 //    （文字直接压在一起）—— 返回行数是唯一能让调用点算对的形状。
 #include "ui/imgui/pages/Overview.h"
 
+#include "ui/imgui/kit/Fmt.h"
+#include "ui/imgui/kit/Hash.h"
+
 #include "ui/imgui/pages/PageKpi.h"
 // OverviewPipelineWired() 的声明在 WorkspacePages.h（公开入口），不在 Overview.h
 // （后者只放这一页内部共享的东西）。KPI 行要判「执行体接没接」才能决定显示
@@ -37,44 +40,70 @@ int DrawKpiRow(ImDrawList* draw, Rect content, float kpiTop, const OverviewRun& 
     const bool wired = OverviewPipelineWired();
     const int totalStages = static_cast<int>(s.chain.size());
     const bool overBudget = s.budget.Exceeded();
-    const std::string kNoData = "未接入";
+    static const std::string kNoData = "未接入";
     struct Kpi {
         std::string label;
         std::string value;
         std::string unit;
         std::string footnote;
-        theme::Tone tone;
     };
-    const Kpi kpis[] = {
-        {"阶段进度",
-         wired ? std::to_string(s.doneChain.size()) + "/" + std::to_string(totalStages) : kNoData,
-         "",
-         !wired ? std::string("执行体未接入 · 进度无从产生")
-                : (s.doneChain.empty()
-                       ? std::string("账本里还没有阶段产物")
-                       : ("已落盘 " + s.doneChain.front() +
-                          (s.doneChain.size() > 1 ? " – " + s.doneChain.back() : std::string()))),
-         theme::Tone::Accent},
-        {"LLM 调用", wired ? std::to_string(s.budget.llm_calls) : kNoData, "次",
-         "高档 " + std::to_string(s.budget.high_quality_calls) + " · 上限 " +
-             std::to_string(s.budget.max_llm_calls),
-         theme::Tone::Info},
-        {"估算成本", wired ? Money(s.budget.cost) : kNoData, "",
-         "上限 " + Money(s.budget.max_cost), theme::Tone::Ok},
-        {"镜头", wired ? std::to_string(s.budget.shots) : kNoData, "个",
-         "上限 " + std::to_string(s.budget.max_shots), theme::Tone::Warn},
-        {"阶段产物", wired ? std::to_string(static_cast<int>(s.entries.size())) : kNoData, "条",
-         overBudget ? ("预算已停：" + (s.budget.Reason().empty() ? std::string("超限") : s.budget.Reason()))
-                    : std::string("work/ 下每阶段一文件"),
-         theme::Tone::Danger},
-    };
+    // ⚠️ 没有 tone 字段：设计稿那团柔光是 `--accent-dim`，**五张卡同色**
+    //    （见 `PageKpi.h` 的说明）。加 tone 只会让人以为可以逐卡换色。
+    //
+    // 五张卡的文案缓存（第二十轮波 3）：指纹覆盖全部输入（账本链首尾 / 预算字段
+    // 含按位 double / Reason），变了才重建，每帧只递字符串。
+    std::uint64_t kpiKey = HashMix(0, wired ? 1ull : 0ull);
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(totalStages));
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.doneChain.size()));
+    if (!s.doneChain.empty()) {
+        kpiKey = HashMix(kpiKey, Fnv1a(s.doneChain.front()));
+        kpiKey = HashMix(kpiKey, Fnv1a(s.doneChain.back()));
+    }
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.budget.llm_calls));
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.budget.high_quality_calls));
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.budget.max_llm_calls));
+    kpiKey = HashMix(kpiKey, static_cast<double>(s.budget.cost));
+    kpiKey = HashMix(kpiKey, static_cast<double>(s.budget.max_cost));
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.budget.shots));
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.budget.max_shots));
+    kpiKey = HashMix(kpiKey, static_cast<std::uint64_t>(s.entries.size()));
+    kpiKey = HashMix(kpiKey, overBudget ? 1ull : 0ull);
+    kpiKey = HashMix(kpiKey, Fnv1a(s.budget.Reason()));
+    static std::uint64_t cachedKpiKey = 0;
+    static Kpi kpis[5];
+    if (cachedKpiKey != kpiKey) {
+        cachedKpiKey = kpiKey;
+        kpis[0] = {"阶段进度",
+                   wired ? kit::Fmt("{}/{}", s.doneChain.size(), totalStages) : kNoData,
+                   "",
+                   !wired ? std::string("执行体未接入 · 进度无从产生")
+                          : (s.doneChain.empty()
+                                 ? std::string("账本里还没有阶段产物")
+                                 : ("已落盘 " + s.doneChain.front() +
+                                    (s.doneChain.size() > 1 ? " – " + s.doneChain.back()
+                                                            : std::string())))};
+        kpis[1] = {"LLM 调用", wired ? kit::Fmt("{}", s.budget.llm_calls) : kNoData, "次",
+                   kit::Fmt("高档 {} · 上限 {}", s.budget.high_quality_calls,
+                            s.budget.max_llm_calls)};
+        kpis[2] = {"估算成本", wired ? Money(s.budget.cost) : kNoData, "",
+                   "上限 " + Money(s.budget.max_cost)};
+        kpis[3] = {"镜头", wired ? kit::Fmt("{}", s.budget.shots) : kNoData, "个",
+                   kit::Fmt("上限 {}", s.budget.max_shots)};
+        kpis[4] = {"阶段产物", wired ? kit::Fmt("{}", s.entries.size()) : kNoData,
+                   "条",
+                   overBudget ? ("预算已停：" + (s.budget.Reason().empty() ? std::string("超限")
+                                                                          : s.budget.Reason()))
+                              : std::string("work/ 下每阶段一文件")};
+    }
     for (std::size_t i = 0; i < std::size(kpis); ++i) {
         const int column = static_cast<int>(i) % kpiCols;
         const int row = static_cast<int>(i) / kpiCols;
+        // 卡高与行距走 `PageKpi.h` 的常量：`WorkspaceA.cpp` 的 `gridTop` 用的是**同一份**。
         KpiCard(draw,
-                RectAt(content.min.x + (kpiW + 14.0f) * static_cast<float>(column),
-                       kpiTop + (96.0f + 14.0f) * static_cast<float>(row), kpiW, 96.0f),
-                kpis[i].label, kpis[i].value, kpis[i].unit, kpis[i].footnote, kpis[i].tone);
+                RectAt(content.min.x + (kpiW + kKpiRowGap) * static_cast<float>(column),
+                       kpiTop + (kKpiCardHeight + kKpiRowGap) * static_cast<float>(row), kpiW,
+                       kKpiCardHeight),
+                kpis[i].label, kpis[i].value, kpis[i].unit, kpis[i].footnote);
     }
     return (static_cast<int>(std::size(kpis)) + kpiCols - 1) / std::max(1, kpiCols);
 }

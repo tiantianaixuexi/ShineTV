@@ -33,8 +33,9 @@ struct MenuRow {
     bool disabled = false;
 };
 // 贴 anchor 右下展开（.menu-pop 的 top: calc(100% + 6px); right: 0）。
-// 返回本帧点中的**行**下标（-1 = 没点中 / 点了禁用项）。关闭与否由调用方按返回值决定。
-int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::string_view id);
+// 返回本帧点中的**行**下标（-1 = 没点中 / 点了禁用项），并可回传绘制所用的面板矩形。
+int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::string_view id,
+         Rect* outPanel = nullptr);
 [[nodiscard]] float MenuWidth(const std::vector<MenuRow>& rows);
 [[nodiscard]] float MenuHeight(const std::vector<MenuRow>& rows);
 

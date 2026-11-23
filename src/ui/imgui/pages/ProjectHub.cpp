@@ -22,6 +22,8 @@
 // Segmented 的返回值 —— 这两条是时序，不是排版，所以留在派发层。
 #include "ui/imgui/pages/PageCommon.h"
 
+#include "ui/imgui/kit/Text.h"
+#include "ui/imgui/kit/Image.h"
 #include "ui/imgui/pages/Hub.h"
 #include "util/Encoding.h"
 #include "util/Strings.h"
@@ -81,72 +83,41 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
         hub::Refresh(hub);
     }
 
-    DrawVGradient(draw, area.min, area.max, 0.0f, ColorOf(theme::Current().bgVoid),
-                  ColorOf(theme::CurrentDerived().accentDim));
-    ArtInk(draw, Rect{area.min.x, area.max.y - 240.0f, area.max.x, area.max.y}, 3, 0.3f);
+    const ImVec2 viewPos = ImGui::GetWindowPos();
+    const ImVec2 viewSize = ImGui::GetWindowSize();
+    const Rect viewport = RectAt(viewPos.x, viewPos.y, viewSize.x, viewSize.y);
+    draw->AddRectFilled(viewport.min, viewport.max, ColorVoid());
 
-    const float columnW = std::min(1080.0f, area.width() - 64.0f);
-    const Rect column{(area.width() - columnW) * 0.5f, 40.0f, (area.width() + columnW) * 0.5f,
-                      area.max.y - 40.0f};
-
-    const float float_ = ReduceMotion() ? 0.0f : (Pulse(5.0f) - 0.5f) * 8.0f;
-    // ⚠️ `.hub-logo { animation: float-y 5s }`（views.css:35）—— 位移是**整个元素**
-    //    一起动，投影跟着走。所以 `float_` 要先并进 logo 矩形，再整体交给 LogoMark，
-    //    不能「按原位置画投影、按浮动位置画本体」。
-    const Rect logo{column.min.x, column.min.y + float_, column.min.x + 52.0f,
-                    column.min.y + 52.0f + float_};
-    LogoMark(draw, logo, 14.0f, 26.0f);  // --r-lg = 14（views.css:28）
-    // `.hub-hero { gap: 18px }`（views.css:22）—— 原来写的是 16。
-    constexpr float kHeroGap = 18.0f;
-    const char* brand = "ShineTV Studio";
-    draw->AddText(FontBoldAt(26.0f), 26.0f, ImVec2(logo.max.x + kHeroGap, column.min.y + 8.0f),
-                  ColorText(), brand, brand + std::strlen(brand));
-    const char* subtitle = "把小说变成画面";
-    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(logo.max.x + kHeroGap, column.min.y + 40.0f),
-                  ColorTextMuted(), subtitle, subtitle + std::strlen(subtitle));
-
-    // ---- 工具条：搜索 / 排序 / 打开… / 新建项目 ----
-    const float barY = column.min.y + 76.0f;
-    const Rect search{column.min.x, barY, column.min.x + 280.0f, barY + 30.0f};
-    // 设计稿的搜索框是「图标 + 输入」合一（.search）。kit::Input 的左内边距只有
-    // 10px、塞不下 14px 图标，所以输入框右移 24px，再在没 hover/没聚焦时把它
-    // 自己的左边框擦掉 —— 两个控件合起来仍然是一个 280px 的圆角搜索框。
-    const Rect searchInput{search.min.x + 24.0f, search.min.y, search.max.x, search.max.y};
-    Input(draw, searchInput, hub.query, "搜索项目…", "hub-search");
-    if (!ImGui::IsItemFocused() && !ImGui::IsItemHovered()) {
-        draw->AddRectFilled(searchInput.min, ImVec2(searchInput.min.x + 1.0f, searchInput.max.y),
-                            ColorFillMuted());
-    }
-    DrawIcon(draw, "search", ImVec2(search.min.x + 8.0f, search.center().y - 7.0f), 14.0f,
-             ColorTextMuted());
-
-    const std::vector<SegmentOption> sortOptions{{"r", "最近打开"}, {"n", "名称"}};
-    const std::string_view picked = Segmented(
-        draw, RectAt(search.max.x + 10.0f, barY, SegmentedWidth(sortOptions), 30.0f), sortOptions,
-        hub.sort, "hub-sort");
-    if (picked != hub.sort) {
-        hub.sort = std::string(picked);
-        hub::Refresh(hub); // 排序换了要真重排（Refresh 按 hub.sort 排）
-    }
-
+    const float outerW = std::min(1280.0f, area.width() - 56.0f);
+    const float left = area.min.x + (area.width() - outerW) * 0.5f;
+    const Rect column = RectAt(left, area.min.y + 20.0f, outerW, area.height());
+    const TextStyle title{.size = theme::font::kHubBrand, .bold = true, .color = ColorText()};
+    Text(draw, column.min, "项目中心", title);
+    const float barY = area.min.y + 24.0f;
+    ImGui::BeginDisabled(wasOpen);
     ButtonSpec openProjectSpec;
     openProjectSpec.variant = ButtonVariant::Secondary;
     openProjectSpec.icon = "folder";
     const char* openLabel = "打开…";
-    const float openW =
-        ButtonWidth(ButtonSize::Medium, 15.0f, LabelWidth(FontAt(13.0f), 13.0f, openLabel));
-    const bool openClicked =
-        Button(draw, RectAt(column.max.x - openW, barY, openW, 30.0f), openLabel, openProjectSpec,
-               "hub-open");
+    const float openW = ButtonWidth(
+        ButtonSize::Medium, 15.0f, TextWidth(openLabel, TextStyle{.size = theme::font::kBody}));
     ButtonSpec newProject;
     newProject.variant = ButtonVariant::Primary;
     newProject.icon = "plus";
     const char* newLabel = "新建项目";
-    const float newW =
-        ButtonWidth(ButtonSize::Medium, 15.0f, LabelWidth(FontBoldAt(13.0f), 13.0f, newLabel));
+    const float newW = ButtonWidth(
+        ButtonSize::Medium, 15.0f,
+        TextWidth(newLabel, TextStyle{.size = theme::font::kBody, .bold = true}));
+    // ⚠️ 次序按设计稿（Pixso `13:11`/`13:12`）：**主按钮「新建项目」最靠右**
+    //    （右沿 = 列内容右沿 1468），「打开…」在其左、间距 10（1355 → 1365）。
+    //    DOM 顺序也是 `打开…` 在前、`新建项目` 在后（ProjectHub.jsx:153-154）——
+    //    原来把「打开…」钉在最右，两个按钮正好互换。
     const bool newClicked =
-        Button(draw, RectAt(column.max.x - openW - 10.0f - newW, barY, newW, 30.0f), newLabel,
-               newProject, "hub-new");
+        Button(draw, RectAt(column.max.x - newW, barY, newW, 30.0f), newLabel, newProject,
+               "hub-new");
+    const bool openClicked =
+        Button(draw, RectAt(column.max.x - newW - 10.0f - openW, barY, openW, 30.0f), openLabel,
+               openProjectSpec, "hub-open");
     if (openClicked) {
         hub.openDlg = true;
     }
@@ -156,87 +127,97 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
         hub.status.clear();
         hub.statusError = false;
     }
-    // 搜索过滤放在工具条之后：本帧输入框里刚敲进来的字立刻生效
+    Stack sections{Rect{ImVec2(left, column.min.y + 56.0f), column.max}};
+    if (hub.cards.empty()) {
+        constexpr char kWelcomeTitle[] = "还没有项目";
+        constexpr char kWelcomeBody[] = "新建项目，或打开磁盘上的已有项目";
+        const float height = EmptyHeight(sections.area.width(), kWelcomeTitle, kWelcomeBody);
+        const Rect welcome = sections.Next(std::max(144.0f, height), 20.0f);
+        DrawRoundRect(draw, welcome.min, welcome.max, 8.0f, ColorPanel(), ColorLineNormal(), 1.0f);
+        Empty(draw, welcome, "folder", kWelcomeTitle, kWelcomeBody);
+    } else {
+        const auto recent = std::max_element(hub.cards.begin(), hub.cards.end(),
+            [](const hub::HubCard& a, const hub::HubCard& b) {
+                return a.entry.lastOpened < b.entry.lastOpened;
+            });
+        const Rect feature = sections.Next(232.0f, 24.0f);
+        DrawRoundRect(draw, feature.min, feature.max, 8.0f, ColorPanel(), ColorLineNormal(), 1.0f);
+        const float coverW = feature.width() * 0.52f;
+        const Rect cover = RectAt(feature.min.x + 1.0f, feature.min.y + 1.0f,
+                                  coverW - 1.0f, feature.height() - 2.0f);
+        const auto path = recent->entry.coverThumb;
+        const auto preview = RequestImage(path.empty() ? path : recent->entry.rootDir / path);
+        if (preview.ready()) {
+            DrawImage(draw, cover, preview, 5.0f, ImageFit::Cover);
+        } else {
+            DrawRoundRect(draw, cover.min, cover.max, 5.0f, ColorSurface());
+            DrawIconCentered(draw, hub::TemplateIcon(recent->tplLabel), cover.center(), 48.0f,
+                             ColorTextSecondary());
+        }
+        const float x = cover.max.x + 24.0f;
+        const float maxW = feature.max.x - 20.0f - x;
+        kit::Text(draw, ImVec2(x, feature.min.y + 28.0f), "最近打开",
+                  TextStyle{.size = theme::font::kTiny, .color = ColorTextSecondary()});
+        kit::TextClipped(draw, ImVec2(x, feature.min.y + 56.0f), maxW, recent->entry.name,
+                         TextStyle{.size = theme::font::kValue, .bold = true, .color = ColorText()});
+        const std::string description = recent->premise.empty()
+            ? util::PathToUtf8(recent->entry.rootDir) : recent->premise;
+        kit::TextClipped(draw, ImVec2(x, feature.min.y + 101.0f), maxW, description,
+                         TextStyle{.size = theme::font::kBody, .color = ColorTextSecondary()});
+        if (Button(draw, RectAt(x, feature.max.y - 58.0f, 112.0f, 34.0f), "继续项目",
+                   ButtonSpec{.variant = ButtonVariant::Primary}, "hub-continue")) {
+            hub::Open(hub, *recent);
+        }
+    }
+
+    const Rect tools = sections.Next(34.0f, 16.0f);
+    static const std::vector<SegmentOption> sortOptions{{"r", "最近打开"}, {"n", "名称"}};
+    const float sortWidth = SegmentedWidth(sortOptions);
+    const float searchW = std::min(344.0f, tools.width() - sortWidth - 16.0f);
+    Input(draw, RectAt(tools.min.x, tools.min.y, searchW, 34.0f), hub.query,
+          "搜索项目名称或创意…", "hub-search");
+    const std::string_view sort = Segmented(draw, RectAt(tools.min.x + searchW + 12.0f,
+                                            tools.min.y, sortWidth, 34.0f), sortOptions,
+                                            hub.sort, "hub-sort");
+    if (!sort.empty() && sort != hub.sort) {
+        hub.sort = std::string(sort);
+        hub::Refresh(hub);
+    }
     hub::Refilter(hub);
 
-    // ---- 计数行：搜索结果条数 + 上一次操作的结果 ----
-    const Rect count{column.min.x, barY + 30.0f + 22.0f, column.max.x, barY + 30.0f + 22.0f + 16.0f};
-    const std::string countText = "最近项目 · 共 " + std::to_string(hub.shown.size()) + " 个项目";
-    // 原来写死 `count.min.y + 1.0f`：计数行高 16，正确中心是 +8，字盒中心落在 7，
-    // **偏上 1.0px**。计数与右侧状态共用同一个 Rect，一起按容器中心算。
-    draw->AddText(FontBoldAt(12.0f), 12.0f,
-                  ImVec2(count.min.x, kit::CenterTextY(FontBoldAt(12.0f), 12.0f, count.center().y)),
-                  ColorTextMuted(), countText.data(), countText.data() + countText.size());
+    const Rect tableHead = sections.Next(34.0f);
+    DrawRoundRect(draw, tableHead.min, tableHead.max, 0.0f, ColorSurface());
+    const TextStyle label{.size = theme::font::kTiny, .bold = true, .color = ColorTextSecondary()};
+    Text(draw, ImVec2(tableHead.min.x + 16.0f, CenterY(tableHead.center().y, label)), "最近项目", label);
+    Text(draw, ImVec2(tableHead.max.x - 180.0f, CenterY(tableHead.center().y, label)), "操作", label);
+
+    int openIndex = -1;
+    for (const int index : hub.shown) {
+        const Rect row = sections.Next(58.0f);
+        if (row.max.y < viewport.min.y || row.min.y > viewport.max.y) {
+            continue;
+        }
+        if (hub::DrawCard(draw, hub, hub.cards[static_cast<std::size_t>(index)], row)) {
+            openIndex = index;
+        }
+    }
+    if (openIndex >= 0) {
+        hub::Open(hub, hub.cards[static_cast<std::size_t>(openIndex)]);
+    }
+    if (!hub.query.empty() && hub.shown.empty()) {
+        constexpr char kNoMatchTitle[] = "没有匹配的项目";
+        constexpr char kNoMatchBody[] = "请换个搜索词";
+        Empty(draw, sections.Next(EmptyHeight(sections.area.width(), kNoMatchTitle, kNoMatchBody)),
+              "search", kNoMatchTitle, kNoMatchBody);
+    }
     if (!hub.status.empty()) {
-        const float maxW = column.width() * 0.5f;
-        const float statusW = std::min(LabelWidth(FontAt(12.0f), 12.0f, hub.status.c_str()), maxW);
-        // 同上：原来 `count.min.y + 1.0f`，**偏上 1.0px**。右对齐但 Y 走同一个中心线。
-        DrawTextClipped(draw, FontAt(12.0f), 12.0f,
-                        ImVec2(count.max.x - statusW,
-                               kit::CenterTextY(FontAt(12.0f), 12.0f, count.center().y)),
-                        statusW, hub.statusError ? ToneColor(theme::Tone::Danger) : ColorTextMuted(),
-                        hub.status);
+        const Rect status = sections.Next(32.0f);
+        TextClipped(draw, ImVec2(status.min.x, status.min.y + 8.0f), status.width(),
+                    hub.status, TextStyle{.size = theme::font::kTiny,
+                        .color = hub.statusError ? ToneColor(theme::Tone::Danger) : ColorTextSecondary()});
     }
-
-    // ---- 卡片栅格 / 空态 ----
-    const Rect grid{column.min.x, count.max.y + 10.0f, column.max.x, column.max.y - 8.0f};
-    if (hub.shown.empty()) {
-        const Rect emptyCard{grid.min.x, grid.min.y, grid.max.x, grid.min.y + 260.0f};
-        DrawShadowed(draw, emptyCard.min, emptyCard.max, 10.0f, ColorPanel(), ColorLineSubtle(),
-                     1.0f);
-        const bool filtering = !util::Trim(hub.query).empty();
-        const char* emptyTitle = filtering ? "没有匹配的项目" : "还没有项目";
-        const char* emptyBody =
-            filtering ? "换个关键词试试，或新建一个项目开始你的第一部作品"
-                      : "点「新建项目」开始你的第一部作品";
-        Empty(draw, Rect{emptyCard.min.x, emptyCard.min.y + 60.0f, emptyCard.max.x,
-                         emptyCard.max.y - 60.0f},
-              "folder", emptyTitle, emptyBody);
-    } else {
-        constexpr float cardH = 250.0f; // 120 封面 + pbody(12+19+21+21+20+11+24+13)
-        const int columns = std::max(1, AutoFillCols(grid.width(), 240.0f, 14.0f));
-        const float cardW = (grid.width() - 14.0f * static_cast<float>(columns - 1)) /
-                            static_cast<float>(columns);
-        // 打开会重排列表（lastOpened 变了），所以只记下标、循环外再执行 ——
-        // 循环里刷新会让 hub.cards 重建，后面几张卡读到的是错位的条目。
-        int openIndex = -1;
-        for (std::size_t i = 0; i < hub.shown.size(); ++i) {
-            const hub::HubCard& card = hub.cards[static_cast<std::size_t>(hub.shown[i])];
-            const int column = static_cast<int>(i) % columns;
-            const int row = static_cast<int>(i) / columns;
-            const Rect bounds{grid.min.x + (cardW + 14.0f) * static_cast<float>(column),
-                              grid.min.y + (cardH + 14.0f) * static_cast<float>(row), cardW, cardH};
-            if (hub::DrawCard(draw, hub, card, bounds, cardW - 28.0f)) {
-                openIndex = static_cast<int>(i);
-            }
-        }
-        if (openIndex >= 0) {
-            hub::Open(hub, hub.cards[static_cast<std::size_t>(
-                                hub.shown[static_cast<std::size_t>(openIndex)])]);
-        }
-    }
-
-    // ---- 自报栅格实际高度（Shell 的 `hub-scroll` 靠它才能滚）----
-    //
-    // ⚠️ 不报的话项目卡超过一屏就被裁掉**且滚不到**（1080 高窗口约 6 张，第 7 张
-    //    起够不着）。上一轮 Shell 那侧写的是 `setContentHeight(region.content().height())`
-    //    —— 上报值恰好等于视口高，等于上报了 0 行，ScrollMaxY 恒为 0。**看着加了、
-    //    实际等于没加**。Shell 侧现在有一次性哨兵会把这个报出来。
-    // 高度按栅格公式算（行数 = ceil(条目数/列数)），与上面画卡用的是同一套列宽算法。
-    {
-        float usedBottom;
-        if (hub.shown.empty()) {
-            usedBottom = grid.min.y + 260.0f;
-        } else {
-            constexpr float kHubCardH = 250.0f;
-            const int cols = std::max(1, AutoFillCols(grid.width(), 240.0f, 14.0f));
-            const int rowCount =
-                (static_cast<int>(hub.shown.size()) + cols - 1) / cols; // 向上取整
-            usedBottom = grid.min.y + (kHubCardH + 14.0f) * static_cast<float>(rowCount) - 14.0f;
-        }
-        // 与列首/计数行保持一致的下边界，向上多留 8px 收尾。
-        pages::SetPageContentHeight(usedBottom - area.min.y + 8.0f);
-    }
+    pages::SetPageContentHeight(sections.Cur() - area.min.y + 24.0f);
+    ImGui::EndDisabled();
 
     // ---- 弹窗：确认 > 向导 > 打开项目 ----
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
@@ -249,13 +230,13 @@ void DrawProjectHub(Rect area, ImDrawList* draw) {
         }
     }
     if (hub.confirm) {
-        hub::DrawConfirmDialog(hub, area, draw);
+        hub::DrawConfirmDialog(hub, viewport, draw);
     }
     if (hub.wizard) {
-        hub::DrawWizard(hub, area, draw);
+        hub::DrawWizard(hub, viewport, draw);
     }
     if (hub.openDlg) {
-        hub::DrawOpenDialog(hub, area, draw);
+        hub::DrawOpenDialog(hub, viewport, draw);
     }
 }
 

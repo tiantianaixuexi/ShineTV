@@ -51,6 +51,13 @@ struct HubState {
     std::string dir;
     std::string idea;
     bool openDlg = false;
+    // 「打开项目」对话框的搜索框（与主屏的 query/shown **各自独立**：
+    // 在对话框里打字不该顺手改掉主屏的过滤）。匹配 name / premise / 路径，
+    // RefilterOpen 每帧在输入**之后**调（本帧敲进来的字立刻生效，ProjectHub 工具条同款时序）。
+    std::string openQuery;
+    std::vector<int> openShown;
+    // 搜索框几何：每帧由 DrawOpenDialog 写下，判据点它拿键盘焦点（settingsClose_ 同款模式）。
+    kit::Rect openSearchRect{};
     bool confirm = false;
     // 「点面板外关闭」这一下点击**是否算数**。只在本帧之前对话框就已经开着时
     // 才为真 —— 见 ProjectHub.cpp 里的说明（不加这道闸门，弹窗会被打开它的那
@@ -62,6 +69,13 @@ struct HubState {
     std::string pendingId;
     std::string status;
     bool statusError = false;
+    // 「打开 / 创建项目成功 ⇒ 离开项目中心、切到该项目工作区」的**离场信号**
+    // （Shell.h 里「打开一个项目都会回到工作区」是既定语义，此前只有注释没有接线：
+    // 打开后 hub 不退、工作区也不绑工程，要手点「返回工作区」）。由 `Open` /
+    // 向导创建成功置位；`Shell::DrawProjectHubScreen` 消费一次后清零，并经
+    // `service.Current()` 拿 ref 去 `SetProjectRoot`（与 settingsClose_ 同一模式：
+    // 动作在一处写，开态在持有者手里关）。
+    bool leaveToWorkspace = false;
 };
 
 HubState& S();
@@ -72,6 +86,9 @@ HubState& S();
 void Refresh(HubState& hub);
 // 搜索过滤：项目名或一句话创意命中即可（webui 匹配 name + desc）。
 void Refilter(HubState& hub);
+// 「打开项目」对话框的搜索过滤：项目名 / 一句话创意 / 项目路径任一命中。
+// 路径也算（对话框那行 description 显示的就是路径，按路径找项目是真实用法）。
+void RefilterOpen(HubState& hub);
 // 打开项目：真 Open（读 project.json + 置顶索引），失败把业务层的中文 message 摆出来。
 void Open(HubState& hub, const HubCard& card);
 // 从最近列表移除：ProjectService 没这个接口，走 ProjectIndex（只摘登记，不删文件）。
@@ -98,8 +115,7 @@ std::size_t CharCount(std::string_view text);
 
 // 项目卡：整卡可点 + pfoot 的四个入口（打开 / 资源管理器 / 更多 / 主题）。
 // 返回 true = 本帧通过整卡或「打开」按钮触发了打开。
-bool DrawCard(ImDrawList* draw, HubState& hub, const HubCard& card, kit::Rect bounds,
-              float bodyWidth);
+bool DrawCard(ImDrawList* draw, HubState& hub, const HubCard& card, kit::Rect bounds);
 
 // 新建项目向导：模板 / 命名 / 创意 / 确认。数据源 = AllTemplates / PreviewTree / Create。
 void DrawWizard(HubState& hub, kit::Rect area, ImDrawList* draw);

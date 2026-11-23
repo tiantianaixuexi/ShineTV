@@ -1,5 +1,6 @@
 #include "ui/imgui/kit/Widget_Overlay.h"
 
+#include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Icon.h"
@@ -47,11 +48,21 @@ void Tooltip(Rect anchor, std::string_view text, bool below) {
     if (io.DeltaTime > 0.0f) {
         shownFor = std::min(shownFor + io.DeltaTime, delay + 1.0f);
     }
+    // 出现淡入的补间 id：Tooltip 只画不命中（pointer-events:none，无 Hit / tid
+    // 不可用），用**稳定自有 id** `ImGui::GetID("kit-tooltip")` 在固定调用点取。
+    const ImGuiID tipTid = ImGui::GetID("kit-tooltip");
     if (shownFor < delay) {
+        // 还在 200ms 出现延迟里：顺手把淡入补间往 0 驱动 —— 补间在不被调用的帧
+        // 是冻住的（鼠标移开后本函数整个不再被调用），「移开再回来」时不驱动就
+        // 回不到 0、会接着旧值秒出。延迟 200ms > 补间 120ms，够它落回 0。
+        (void)TransitionFloatTo(tipTid, 0, 0.0f, kDurFast);
         return;
     }
     // 出现动画：opacity 0→1 + scale .94→1，都是 --dur-1（120ms）。
-    const float t = ReduceMotion() ? 1.0f : std::clamp((shownFor - delay) / 0.12f, 0.0f, 1.0f);
+    // 补间版：出现进度挂 channel 0 的 kDurFast 浮点补间，scale(.94→1) 共用同一个
+    // 进度。pinned 期间直接落 1 ⇒ 取证与原终态逐值相同（原来按 shownFor 手算的
+    // t 不认钉住时钟，会拍到随机中间值）。
+    const float t = TransitionFloatTo(tipTid, 0, 1.0f, kDurFast);
     const ImU32 bg = WithAlphaSet(ColorOverlay(), t);
     const ImU32 border = WithAlpha(ColorLineNormal(), t);
     const ImU32 fg = WithAlpha(ColorText(), t);
@@ -128,13 +139,20 @@ float MenuHeight(const std::vector<MenuRow>& rows) {
     return h;
 }
 
-int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::string_view id) {
+int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::string_view id,
+         Rect* outPanel) {
     if (rows.empty()) {
+        if (outPanel != nullptr) {
+            *outPanel = Rect{};
+        }
         return -1;
     }
     const float width = MenuWidth(rows);
     // top: calc(100% + 6px); right: 0（shell.css:103-104）—— 面板右边缘对齐锚点右边缘。
     const Rect panel = RectAt(anchor.max.x - width, anchor.max.y + 6.0f, width, MenuHeight(rows));
+    if (outPanel != nullptr) {
+        *outPanel = panel;
+    }
     DrawShadowed(draw, panel.min, panel.max, 10.0f, ColorOverlay(), ColorLineNormal(), 1.0f, theme::ShadowTier::Overlay);
 
     int picked = -1;
@@ -162,21 +180,30 @@ int Menu(ImDrawList* draw, Rect anchor, const std::vector<MenuRow>& rows, std::s
         }
         // .mi 的实际可点区域是面板去掉 padding 5 后的整宽。
         const Rect item = RectAt(panel.min.x + 5.0f, y, width - 10.0f, h);
-        const Hit hit = detail::HitTestItem(item, detail::UniqueId(id, static_cast<int>(i)));
-        if (hit.hovered && !row.disabled) {
-            // .mi.on：accent 字 + accent-dim 底；普通 hover：fill-hover + primary。
-            if (row.selected) {
-                draw->AddRectFilled(item.min, item.max, ColorAccentDim());
-            } else {
-                draw->AddRectFilled(item.min, item.max, ColorFillHover());
-            }
+        // 菜单项 id 栈上拼（每帧 × 每项都走这里，不许堆分配）。
+        char itemIdBuf[160];
+        std::string itemIdOverflow;
+        const Hit hit = detail::HitTestItem(
+            item, detail::FormatUniqueId(itemIdBuf, sizeof(itemIdBuf), id, "", static_cast<int>(i),
+                                         &itemIdOverflow));
+        // .mi.on：accent 字 + accent-dim 底；普通 hover：fill-hover + primary。
+        // 补间版：底色走 channel 0（hover 主底）、字色走 channel 3（文字/次色）的
+        // kDurFast 颜色补间（底色含 alpha：移出 hover 时淡出到透明）。hit.tid 来自
+        // 上面 HitTestItem 的 item id，每帧稳定；settle 值与原硬切换逐值相同。
+        const ImU32 fillTarget = (hit.hovered && !row.disabled)
+                                     ? (row.selected ? ColorAccentDim() : ColorFillHover())
+                                     : ImU32(0);
+        const ImU32 fillNow = TransitionColorTo(hit.tid, 0, fillTarget, kDurFast);
+        if (fillNow != 0) {
+            draw->AddRectFilled(item.min, item.max, fillNow);
         }
         if (hit.clicked && !row.disabled) {
             picked = static_cast<int>(i);
         }
-        const ImU32 fg = row.selected ? ColorAccent()
-                                      : (hit.hovered && !row.disabled ? ColorText()
-                                                                      : ColorTextSecondary());
+        const ImU32 fgTarget = row.selected ? ColorAccent()
+                                            : (hit.hovered && !row.disabled ? ColorText()
+                                                                            : ColorTextSecondary());
+        const ImU32 fg = TransitionColorTo(hit.tid, 3, fgTarget, kDurFast);
         ImFont* font = FontAt(12.5f);
         float x = item.min.x + 10.0f;
         // `.menu-pop .mi`（shell.css:114-120）：display:flex + **align-items:center** +

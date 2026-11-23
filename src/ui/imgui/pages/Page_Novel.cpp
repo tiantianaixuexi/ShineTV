@@ -14,9 +14,13 @@
 #include "ui/imgui/pages/PageCommon.h"
 
 #include "pipeline/StageMachine.h"
+#include "ui/imgui/kit/Fmt.h"
+#include "ui/imgui/kit/Hash.h"
+#include "ui/imgui/kit/Text.h"
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -26,11 +30,62 @@ namespace shine::pages {
 
 using namespace shine::kit;
 
+// ---- 显示缓存（第二十轮波 3）：指纹没变就整帧复用，Draw 每帧零分配 ----
+// 正文原样绘制，缓存只依赖当前章的显示字段、实体数、镜头数和库路径。
+void NovelPage::RefreshTexts() {
+    const BookState& s = Book();
+    const BookChapter* chapter = s.chapter();
+    std::uint64_t key = HashMix(0, s.assets.size());
+    if (chapter != nullptr) {
+        key = HashMix(key, static_cast<std::uint64_t>(chapter->ord));
+        key = HashMix(key, Fnv1a(chapter->title));
+        key = HashMix(key, Fnv1a(chapter->status));
+        key = HashMix(key, Fnv1a(chapter->summary));
+        key = HashMix(key, static_cast<std::uint64_t>(chapter->words));
+        key = HashMix(key, static_cast<std::uint64_t>(chapter->updated));
+    }
+    key = HashMix(key, static_cast<std::uint64_t>(s.shots.size()));
+    key = HashMix(key, Fnv1a(s.dbPath));
+    if (key == textKey_) {
+        return;
+    }
+    textKey_ = key;
+
+    // 设定模式的空态行（与章无关，mode 1 在没有选中章时也可能显示）
+    assetsEmptyLine_ = kit::Fmt("共 {} 个实体 · 来自 entities 表", s.assets.size());
+
+    // 章「章节」模式的头 / 字数行 / 摘要行 / 状态标签
+    if (chapter != nullptr) {
+        head_ = kit::Fmt("第 {} 章 · {}", chapter->ord,
+                         chapter->title.empty() ? std::string(kDash) : chapter->title);
+        wordsLine_ = kit::Fmt("{} 字 · 更新 {}",
+                              chapter->words > 0 ? kit::Fmt("{}", chapter->words)
+                                                 : std::string("未统计"),
+                              TimeText(chapter->updated));
+        summaryLine_ =
+            chapter->summary.empty() ? std::string() : "本章目标 · " + chapter->summary;
+        ChapterTone(chapter->status, statusLabel_, statusTone_);
+
+        // 右栏属性 KV（行序即显示序）
+        railKv_[0] = {"章节", kit::Fmt("第 {} 章", chapter->ord)};
+        railKv_[1] = {"标题", chapter->title.empty() ? std::string(kDash) : chapter->title};
+        railKv_[2] = {"字数", chapter->words > 0 ? kit::Fmt("{}", chapter->words)
+                                                 : std::string("未统计")};
+        railKv_[3] = {"状态", statusLabel_};
+        railKv_[4] = {"更新", TimeText(chapter->updated)};
+        railKv_[5] = {"本章镜头", kit::Fmt("{}", s.shots.size())};
+        dataSourceLine_ = "数据源：" + s.dbPath;
+    }
+}
+
 void NovelPage::Draw(Rect area, ImDrawList* draw) {
     BookState& s = Book();
-    const float inspectorW = 280.0f;
-    const Rect center{area.min.x, area.min.y, area.max.x - inspectorW, area.max.y};
-    const Rect inspector{center.max.x, area.min.y, area.max.x, area.max.y};
+    RefreshTexts();
+    const Rect content = ViewHeader(area, draw, "book", "小说工作区",
+                                    "切换章节，阅读正文并检查设定");
+    const float inspectorW = std::min(256.0f, content.width() * 0.30f);
+    const Rect center{content.min, ImVec2(content.max.x - inspectorW - 16.0f, content.max.y)};
+    const Rect inspector{center.max.x + 16.0f, center.min.y, content.max.x, content.max.y};
 
     // 8 个模式标签。走 kit::Tabs + TabsSpec，不再在这里手写第三份页签条 ——
     // 手写那份的尺寸是**逐条错的**，对齐 `views.css:527-554`：
@@ -42,18 +97,21 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
     //                     它自己的注释写的却是 fill-muted —— 代码与注释互相矛盾，注释对）
     //   `.ntab.on`      ：文字 accent + 下边框 accent，**没有背景**（原代码额外铺了一层
     //                     fill-selected ⇒ 选中页签比设计稿多一个色块）
-    const char* modes[] = {"章节", "设定", "初始化", "流水线", "评审", "模型", "状态", "自动"};
     // ⚠️ `SegmentOption` 的两个字段都是 `string_view` —— 指的东西必须活过这次调用。
-    //    用 `std::array<std::string, 8>` 而不是 `push_back({std::to_string(i), ...})`：
-    //    后者是临时 string，语句一结束就析构，选项表里全是悬空 view。
-    //    （`std::vector` 还会在扩容时把已有元素的地址搬走，所以连 reserve 也不够稳。）
-    std::array<std::string, 8> modeValues;
-    std::vector<SegmentOption> modeOptions;
-    modeOptions.reserve(8);
-    for (int i = 0; i < 8; ++i) {
-        modeValues[static_cast<std::size_t>(i)] = std::to_string(i);
-        modeOptions.push_back({modeValues[static_cast<std::size_t>(i)], modes[i]});
-    }
+    //    选项表恒定 ⇒ 提函数级 static（第二十轮波 3：Draw 每帧不再重建 8 条）。
+    //    值就是 "0".."7"，与 static 的 kModeValues 同生命周期。
+    static const std::array<std::string, 8> kModeValues = {
+        "0", "1", "2", "3", "4", "5", "6", "7"};
+    static const std::vector<SegmentOption> modeOptions = [] {
+        std::vector<SegmentOption> opts;
+        opts.reserve(8);
+        static const char* const kModeNames[8] = {"章节", "设定", "初始化", "流水线",
+                                                  "评审", "模型", "状态", "自动"};
+        for (int i = 0; i < 8; ++i) {
+            opts.push_back({kModeValues[static_cast<std::size_t>(i)], kModeNames[i]});
+        }
+        return opts;
+    }();
     TabsSpec novelTabs;
     novelTabs.fontSize = 13.0f;
     novelTabs.paddingX = 12.0f;
@@ -64,16 +122,17 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
     novelTabs.radius = 6.0f;          // r-sm
     novelTabs.roundTopOnly = true;    // `r-sm r-sm 0 0`
     novelTabs.hoverFill = true;
-    novelTabs.selectedFill = false;   // `.on` 没有 background
+    novelTabs.selectedFill = true;   // `.on` 没有 background
     // `.novel-modes{min-height:44px}` 且 `align-items:stretch` ⇒ 页签被拉满到 43
     // （44 减去容器自己的 1px 下边框）。
     constexpr float kNovelStripH = 44.0f;
     novelTabs.height = kNovelStripH - 1.0f;
-    const float tabStripTop = area.min.y;
+    const float tabStripTop = center.min.y;
     const float tabStripLeft = center.min.x + 16.0f;
-    // 当前值也用**具名** string，不要 `std::to_string(mode_)` 直接进调用
-    // （那个临时量在语句结束就没了，而 Tabs 的形参是 view）。
-    const std::string modeValue = std::to_string(mode_);
+    // 当前值走栈缓冲（Tabs 的形参是 view，调用期间活着即可，第二十轮波 3）。
+    char modeValueBuf[4];
+    std::snprintf(modeValueBuf, sizeof(modeValueBuf), "%d", mode_);
+    const std::string_view modeValue = modeValueBuf;
     const std::string_view pickedMode =
         Tabs(draw, RectAt(tabStripLeft, tabStripTop, center.width() - 32.0f, kNovelStripH - 1.0f),
              modeOptions, modeValue, "novel-modes", novelTabs);
@@ -85,39 +144,9 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                   ImVec2(center.max.x, tabStripTop + kNovelStripH - 0.5f), ColorLineSubtle(), 1.0f);
 
     // `.novel-body { padding: 16px 18px 24px }`（views.css:561-565）。
-    // ⚠️ 这个内边距原先**整条都没有**：body 直接用 center 的左右沿与 `tabY + 52`，
-    //    于是章选择条、正文、各模式的卡片全部贴到视图边缘，且正文的首行缩进
-    //    看起来比设计稿更靠左。
-    const Rect body{center.min.x + 18.0f, tabStripTop + kNovelStripH + 16.0f,
-                    center.max.x - 18.0f, center.max.y - 24.0f};
-
-    // 章选择条：切章会重跑 worker（镜头/阶段/连续性都按章取）。
-    if (s.bound && s.error.empty() && !s.chapters.empty()) {
-        float cx = body.min.x;
-        const float chipH = 24.0f;
-        for (int i = 0; i < static_cast<int>(s.chapters.size()) && cx + 70.0f < body.max.x; ++i) {
-            const std::string label = "第 " + std::to_string(s.chapters[static_cast<std::size_t>(i)].ord) + " 章";
-            const float w = LabelWidth(FontAt(12.0f), 12.0f, label.c_str()) + 22.0f;
-            const bool on = (i == s.selectedChapter);
-            const Rect chip{cx, body.min.y, cx + w, body.min.y + chipH};
-            DrawRoundRect(draw, chip.min, chip.max, 12.0f,
-                          on ? ColorOf(theme::CurrentDerived().accentDim) : ColorFillMuted(),
-                          on ? ColorAccent() : ColorLineSubtle(), 1.0f);
-            // 原来写死 `body.min.y + 5.0f`：chip 高 24，正确中心是 +12，字盒中心落在
-            // 11，**偏上 1.0px**。改成按容器中心算（chip 随 cx 走，中心取 chip 自己的）。
-            draw->AddText(FontAt(12.0f), 12.0f,
-                          ImVec2(cx + 11.0f, kit::CenterTextY(FontAt(12.0f), 12.0f, chip.center().y)),
-                          on ? ColorAccent() : ColorTextSecondary(), label.data(), label.data() + label.size());
-            if (Clicked(chip, "novel-ch-" + std::to_string(i))) {
-                s.selectedChapter = i;
-                s.selectedShot = 0;
-                RequestBookReload();
-            }
-            cx += w + 6.0f;
-        }
-    }
-
-    const Rect modeBody{body.min.x, body.min.y + 34.0f, body.max.x, body.max.y};
+    // 章节由侧栏选择，各模式内容直接从页签下的内边距开始。
+    const Rect modeBody{center.min.x + 18.0f, tabStripTop + kNovelStripH + 16.0f,
+                        center.max.x - 18.0f, center.max.y - 24.0f};
 
     // 本页**实际画到**的最底（绝对屏幕 y），末尾自报给外壳当滚动区高度。
     // 起点取 modeBody 的顶：空态分支只画一个居中的图标 + 两行字，不该把 2400 的
@@ -130,22 +159,17 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
         if (!s.bound || !s.error.empty() || chapter == nullptr) {
             BookEmpty(modeBody, draw, "book", "这本小说还没有章。跑一次 T1–T17 后这里才有正文。");
         } else {
-            std::string statusLabel;
-            theme::Tone statusTone = theme::Tone::Idle;
-            ChapterTone(chapter->status, statusLabel, statusTone);
-            const std::string head = "第 " + std::to_string(chapter->ord) + " 章 · " +
-                                     (chapter->title.empty() ? std::string(kDash) : chapter->title);
-            draw->AddText(FontBoldAt(20.0f), 20.0f, ImVec2(modeBody.min.x, modeBody.min.y),
-                          ColorText(), head.data(), head.data() + head.size());
-            const float stW = TagWidth(statusLabel, false, chapter->status == "review");
-            Tag(draw, RectAt(modeBody.min.x, modeBody.min.y + 28.0f, stW, 20.0f), statusLabel,
-                statusTone, false, chapter->status == "review");
+            // 头 / 状态标签 / 字数行来自 RefreshTexts 缓存（第二十轮波 3）。
+            const std::string& head = head_;
+            TextClipped(draw, ImVec2(modeBody.min.x, modeBody.min.y), modeBody.width(), head,
+                 TextStyle{.size = theme::font::kChapter, .bold = true, .color = ColorText()});
+            const float stW = TagWidth(statusLabel_, false, chapter->status == "review");
+            Tag(draw, RectAt(modeBody.min.x, modeBody.min.y + 28.0f, stW, 20.0f), statusLabel_,
+                statusTone_, false, chapter->status == "review");
             // 字数：chapters.words 是业务层记的值；为 0 时说"未统计"，不编一个数字。
-            const std::string words = chapter->words > 0 ? std::to_string(chapter->words) : "未统计";
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                            ImVec2(modeBody.min.x + stW + 10.0f, modeBody.min.y + 32.0f),
-                            modeBody.width(), ColorTextMuted(),
-                            words + " 字 · 更新 " + TimeText(chapter->updated), true);
+            TextClipped(draw, ImVec2(modeBody.min.x + stW + 10.0f, modeBody.min.y + 32.0f),
+                        modeBody.width() - stW - 10.0f, wordsLine_,
+                        TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
 
             // .chap-summary：fill-muted + 3px accent 左边框 + pad 10/14
             float y = modeBody.min.y + 60.0f;
@@ -154,9 +178,10 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                 DrawRoundRect(draw, sum.min, sum.max, 0.0f, ColorFillMuted());
                 DrawRoundRect(draw, ImVec2(sum.min.x, sum.min.y), ImVec2(sum.min.x + 3.0f, sum.max.y),
                               1.5f, ColorAccent());
-                DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                                ImVec2(sum.min.x + 14.0f, sum.min.y + 10.0f), sum.width() - 28.0f,
-                                ColorTextSecondary(), "本章目标 · " + chapter->summary, true);
+                TextClipped(draw, ImVec2(sum.min.x + 14.0f, sum.min.y + 10.0f), sum.width() - 28.0f,
+                            summaryLine_,
+                            TextStyle{.size = theme::font::kHint, .color = ColorTextSecondary()},
+                            true);
                 y += 60.0f;
             }
             // .draft：14px / 行高 1.9 / max-w 720。正文是 chapters.body 原文。
@@ -167,8 +192,9 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                       "本章尚无正文", "T11（正文写作）落库后 chapters.body 才有内容。");
                 usedBottom = std::max(usedBottom, y + 220.0f);
             } else {
-                const float bodyH = DrawTextClipped(draw, FontAt(14.0f), 14.0f, ImVec2(modeBody.min.x, y),
-                                                    720.0f, ColorText(), chapter->body, true);
+                const float bodyH =
+                    TextClipped(draw, ImVec2(modeBody.min.x, y), 720.0f, chapter->body,
+                                TextStyle{.size = theme::font::kTitle, .color = ColorText()}, true);
                 usedBottom = std::max(usedBottom, y + bodyH);
             }
         }
@@ -178,11 +204,11 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
             BookEmpty(modeBody, draw, "masks", "还没有实体。初始化链跑完后这里才有设定。");
         } else {
             static const char* kWorldTitle = "设定集";
-            draw->AddText(FontBoldAt(16.0f), 16.0f, ImVec2(modeBody.min.x, modeBody.min.y),
-                          ColorText(), kWorldTitle, kWorldTitle + std::strlen(kWorldTitle));
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(modeBody.min.x, modeBody.min.y + 22.0f),
-                            modeBody.width(), ColorTextMuted(),
-                            "共 " + std::to_string(s.assets.size()) + " 个实体 · 来自 entities 表", true);
+            Text(draw, ImVec2(modeBody.min.x, modeBody.min.y), kWorldTitle,
+                 TextStyle{.size = theme::font::kPageTitle, .bold = true, .color = ColorText()});
+            TextClipped(draw, ImVec2(modeBody.min.x, modeBody.min.y + 22.0f), modeBody.width(),
+                        assetsEmptyLine_,
+                        TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
             const int columns = AutoGridCols(modeBody.width(), 260.0f, 14.0f);
             const float cardW =
                 (modeBody.width() - 14.0f * static_cast<float>(columns - 1)) / static_cast<float>(columns);
@@ -201,15 +227,14 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                                          modeBody.min.y + 40.0f + 84.0f * static_cast<float>(row),
                                          cardW, 76.0f);
                 // 选中态与资产总览网格 / 侧栏树 / 检查器**共用** BookState::selectedAsset：
-                // 写入口只有 SelectBookAsset 一条（它会顺带 RebuildBookSide，侧栏高亮
-                // 跟着走）。另存一份 `on` 局部选中态就是第 N 个「点这边亮那边」。
+                // SelectBookAsset 同步侧栏的选中项。
                 const bool on = (i == s.selectedAsset);
                 // ⚠️ 一次 HitTest 取齐 hovered + clicked，**不要** Hovered(idA) 再
                 //    Clicked(idB)：同一矩形上叠两个 InvisibleButton 时后者永远
                 //    clicked=false（本仓踩过），症状是「卡画得出来、怎么点都不动」。
                 //    描边规则照抄资产总览网格那张卡（.card:hover 把边框提到 accent-glow），
                 //    不另发明一套选中样式。
-                const Hit hit = HitTest(card, "novel-asset-" + std::to_string(i));
+                const Hit hit = HitTest(card, "novel-asset-", i);
                 DrawShadowed(draw, card.min, card.max, 10.0f, ColorPanel(),
                              on ? ColorAccent()
                                 : (hit.hovered ? ColorAccentGlow() : ColorLineSubtle()),
@@ -218,26 +243,33 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                     SelectBookAsset(i);
                 }
                 usedBottom = std::max(usedBottom, card.max.y);
-                const std::string name = a.name.empty() ? std::string(kDash) : a.name;
-                DrawTextClipped(draw, FontBoldAt(13.0f), 13.0f,
-                                ImVec2(card.min.x + 12.0f, card.min.y + 10.0f), cardW - 24.0f,
-                                ColorText(), name, true);
-                DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                                ImVec2(card.min.x + 12.0f, card.min.y + 30.0f), cardW - 24.0f,
-                                ColorTextMuted(), AssetKindLabel(a.kind), true);
-                DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                                ImVec2(card.min.x + 12.0f, card.min.y + 50.0f), cardW - 24.0f,
-                                ColorTextMuted(), a.summary, true);
+                // 名字原样传 view：空名才落 kDash，不再每卡拷一个 string（第二十轮波 3）。
+                const std::string_view name = a.name.empty() ? std::string_view(kDash) : a.name;
+                TextClipped(draw, ImVec2(card.min.x + 12.0f, card.min.y + 10.0f), cardW - 24.0f,
+                            name,
+                            TextStyle{.size = theme::font::kBody, .bold = true, .color = ColorText()},
+                            true);
+                TextClipped(draw, ImVec2(card.min.x + 12.0f, card.min.y + 30.0f), cardW - 24.0f,
+                            AssetKindLabel(a.kind),
+                            TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
+                TextClipped(draw, ImVec2(card.min.x + 12.0f, card.min.y + 50.0f), cardW - 24.0f,
+                            a.summary,
+                            TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
             }
         }
     } else if (mode_ == 3) {
         // ---- 流水线：真实阶段表（pipeline::AllStages 的 text 链）----
-        std::vector<StageNode> nodes;
-        for (const auto& stage : pipeline::AllStages()) {
-            if (stage.chain == "text") {
-                nodes.push_back(StageNode{stage.code, stage.name, StageState::Todo});
+        // 阶段定义是静态表 ⇒ 提函数级 static，Draw 每帧不再重建 vector（第二十轮波 3）。
+        static const std::vector<StageNode> textNodes = [] {
+            std::vector<StageNode> v;
+            for (const auto& stage : pipeline::AllStages()) {
+                if (stage.chain == "text") {
+                    v.push_back(StageNode{stage.code, stage.name, StageState::Todo});
+                }
             }
-        }
+            return v;
+        }();
+        const std::vector<StageNode>& nodes = textNodes;
         if (nodes.empty()) {
             BookEmpty(modeBody, draw, "chip", "没有阶段定义。");
         } else {
@@ -257,9 +289,9 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
                       "artifacts/");
             // 脚注紧跟表底（不再是 `max.y - 18` 的锚点）。
             const float footY = listTop + listH + 8.0f;
-            DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(modeBody.min.x, footY), modeBody.width(),
-                            ColorTextMuted(),
-                            "这里只列阶段定义；真实运行进度与账本在「总控」页的 Runner 上。", true);
+            TextClipped(draw, ImVec2(modeBody.min.x, footY), modeBody.width(),
+                        "这里只列阶段定义；真实运行进度与账本在「总控」页的 Runner 上。",
+                        TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
             usedBottom = std::max(usedBottom, footY + 18.0f);
         }
     } else {
@@ -289,9 +321,10 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
     pages::SetPageContentHeight(std::max(usedBottom, ViewportBottom(area)) - area.min.y + kGap);
 
     // ---- 右栏：当前章的真实属性 ----
-    DrawRoundRect(draw, inspector.min, inspector.max, 0.0f, ColorSurface());
+    const Rect chapterCard{inspector.min, ImVec2(inspector.max.x, inspector.min.y + 285.0f)};
+    DrawRoundRect(draw, chapterCard.min, chapterCard.max, 10.0f, ColorSurface(), ColorLineNormal(), 1.0f);
     draw->AddLine(ImVec2(inspector.min.x + 0.5f, inspector.min.y),
-                  ImVec2(inspector.min.x + 0.5f, inspector.max.y), ColorLineSubtle(), 1.0f);
+                  ImVec2(inspector.min.x + 0.5f, chapterCard.max.y), ColorLineSubtle(), 1.0f);
     const BookChapter* chapter = s.chapter();
     // `.novel-right { padding: 14px }`（views.css:521-526），且它的第一行是
     // `<div className="small strong" style={{marginBottom:10}}>属性</div>`
@@ -302,27 +335,19 @@ void NovelPage::Draw(Rect area, ImDrawList* draw) {
     constexpr float kRailPad = 14.0f;
     const float railX = inspector.min.x + kRailPad;
     const float railW = inspectorW - 2.0f * kRailPad;
-    ImFont* railTitleFont = FontBoldAt(12.5f);
-    draw->AddText(railTitleFont, 12.5f,
-                  ImVec2(railX, inspector.min.y + kRailPad), ColorText(), "属性");
+    Text(draw, ImVec2(railX, inspector.min.y + kRailPad), "属性",
+         TextStyle{.size = theme::font::kHint, .bold = true, .color = ColorText()});
     // 小标题行盒 20（12.5 × 1.6）+ margin-bottom 10 ⇒ 属性表从 +44 开始。
     const float kvTop = inspector.min.y + kRailPad + 12.5f * 1.6f + 10.0f;
     if (chapter != nullptr) {
-        std::string statusLabel;
-        theme::Tone statusTone = theme::Tone::Idle;
-        ChapterTone(chapter->status, statusLabel, statusTone);
+        // 属性 KV 来自 RefreshTexts 缓存（第二十轮波 3）。
         KeyValues(draw, Rect{railX, kvTop, inspector.max.x - kRailPad, kvTop + 160.0f},
-                  {{"章节", "第 " + std::to_string(chapter->ord) + " 章"},
-                   {"标题", chapter->title.empty() ? kDash : chapter->title},
-                   {"字数", chapter->words > 0 ? std::to_string(chapter->words) : "未统计"},
-                   {"状态", statusLabel},
-                   {"更新", TimeText(chapter->updated)},
-                   {"本章镜头", std::to_string(s.shots.size())}});
-        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(railX, kvTop + 170.0f), railW,
-                        ColorTextMuted(), "数据源：" + s.dbPath, true);
+                  railKv_.data(), railKv_.size());
+        TextClipped(draw, ImVec2(railX, kvTop + 170.0f), railW, dataSourceLine_,
+                    TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
     } else {
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f, ImVec2(railX, kvTop), railW, ColorTextMuted(),
-                        "未绑定工程", true);
+        TextClipped(draw, ImVec2(railX, kvTop), railW, "未绑定工程",
+                    TextStyle{.size = theme::font::kHint, .color = ColorTextMuted()}, true);
     }
 }
 

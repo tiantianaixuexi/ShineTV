@@ -135,6 +135,7 @@ struct ImGui_ImplWin32_Data
     HWND                        MouseHwnd;
     int                         MouseTrackedArea;   // 0: not tracked, 1: client area, 2: non-client area
     int                         MouseButtonsDown;
+    bool                        LogicalMouseCoordinates;
     INT64                       Time;
     INT64                       TicksPerSecond;
     ImGuiMouseCursor            LastMouseCursor;
@@ -362,6 +363,24 @@ static ImGuiViewport* ImGui_ImplWin32_FindViewportByPlatformHandle(ImGuiPlatform
 
 // This code supports multi-viewports (multiple OS Windows mapped into different Dear ImGui viewports)
 // Because of that, it is a little more complicated than your typical single-viewport binding code!
+void ImGui_ImplWin32_SetLogicalMouseCoordinates(bool enabled)
+{
+    ImGui_ImplWin32_GetBackendData()->LogicalMouseCoordinates = enabled;
+}
+
+static ImVec2 ImGui_ImplWin32_MouseScale(ImGuiIO& io, ImGui_ImplWin32_Data* bd)
+{
+    if (bd->LogicalMouseCoordinates && !(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+        return io.DisplayFramebufferScale;
+    return ImVec2(1.0f, 1.0f);
+}
+
+static void ImGui_ImplWin32_AddClientMousePos(ImGuiIO& io, ImGui_ImplWin32_Data* bd, POINT pos)
+{
+    const ImVec2 scale = ImGui_ImplWin32_MouseScale(io, bd);
+    io.AddMousePosEvent((float)pos.x / scale.x, (float)pos.y / scale.y);
+}
+
 static void ImGui_ImplWin32_UpdateMouseData(ImGuiIO& io, ImGuiPlatformIO& platform_io)
 {
     ImGui_ImplWin32_Data* bd = ImGui_ImplWin32_GetBackendData(io);
@@ -378,7 +397,8 @@ static void ImGui_ImplWin32_UpdateMouseData(ImGuiIO& io, ImGuiPlatformIO& platfo
         // When multi-viewports are enabled, all Dear ImGui positions are same as OS positions.
         if (io.WantSetMousePos)
         {
-            POINT pos = { (int)io.MousePos.x, (int)io.MousePos.y };
+            const ImVec2 scale = ImGui_ImplWin32_MouseScale(io, bd);
+            POINT pos = { (int)(io.MousePos.x * scale.x), (int)(io.MousePos.y * scale.y) };
             if ((io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) == 0)
                 ::ClientToScreen(focused_window, &pos);
             ::SetCursorPos(pos.x, pos.y);
@@ -395,7 +415,7 @@ static void ImGui_ImplWin32_UpdateMouseData(ImGuiIO& io, ImGuiPlatformIO& platfo
             POINT mouse_pos = mouse_screen_pos;
             if (!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
                 ::ScreenToClient(bd->hWnd, &mouse_pos);
-            io.AddMousePosEvent((float)mouse_pos.x, (float)mouse_pos.y);
+            ImGui_ImplWin32_AddClientMousePos(io, bd, mouse_pos);
         }
     }
 
@@ -774,7 +794,7 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandlerEx(HWND hwnd, UINT msg, WPA
         if (msg == WM_NCMOUSEMOVE && !want_absolute_pos) // WM_NCMOUSEMOVE are absolute coordinates.
             ::ScreenToClient(hwnd, &mouse_pos);
         io.AddMouseSourceEvent(mouse_source);
-        io.AddMousePosEvent((float)mouse_pos.x, (float)mouse_pos.y);
+        ImGui_ImplWin32_AddClientMousePos(io, bd, mouse_pos);
         return 0;
     }
     case WM_MOUSELEAVE:
@@ -818,6 +838,8 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandlerEx(HWND hwnd, UINT msg, WPA
             ::SetCapture(hwnd); // Allow us to read mouse coordinates when dragging mouse outside of our window bounds.
         bd->MouseButtonsDown |= 1 << button;
         io.AddMouseSourceEvent(mouse_source);
+        if (bd->LogicalMouseCoordinates)
+            ImGui_ImplWin32_AddClientMousePos(io, bd, POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         io.AddMouseButtonEvent(button, true);
         return 0;
     }
@@ -836,15 +858,25 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandlerEx(HWND hwnd, UINT msg, WPA
         if (bd->MouseButtonsDown == 0 && ::GetCapture() == hwnd)
             ::ReleaseCapture();
         io.AddMouseSourceEvent(mouse_source);
+        if (bd->LogicalMouseCoordinates)
+            ImGui_ImplWin32_AddClientMousePos(io, bd, POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
         io.AddMouseButtonEvent(button, false);
         return 0;
     }
     case WM_MOUSEWHEEL:
-        io.AddMouseWheelEvent(0.0f, (float)GET_WHEEL_DELTA_WPARAM(wParam) / (float)WHEEL_DELTA);
-        return 0;
     case WM_MOUSEHWHEEL:
-        io.AddMouseWheelEvent(-(float)GET_WHEEL_DELTA_WPARAM(wParam) / (float)WHEEL_DELTA, 0.0f);
+    {
+        if (bd->LogicalMouseCoordinates)
+        {
+            POINT pos{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ::ScreenToClient(hwnd, &pos);
+            ImGui_ImplWin32_AddClientMousePos(io, bd, pos);
+        }
+        const float delta = (float)GET_WHEEL_DELTA_WPARAM(wParam) / (float)WHEEL_DELTA;
+        io.AddMouseWheelEvent(msg == WM_MOUSEHWHEEL ? -delta : 0.0f,
+                             msg == WM_MOUSEWHEEL ? delta : 0.0f);
         return 0;
+    }
     case WM_KEYDOWN:
     case WM_KEYUP:
     case WM_SYSKEYDOWN:

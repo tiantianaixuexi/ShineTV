@@ -110,11 +110,99 @@ void FinishVerdict(Session& session) {
                           "「图片闪过一次就没了」，而不报任何错。查 RequestImage 有没有"
                           "被写成「只在 State==NotLoaded 时请求」，别改判据");
     }
+    // viewerFullSettled 是查看器那条链的判据（大图档 2048）。它挡的是同一类假绿的
+    // 第三个实例：大图**只在查看器开着的那一帧**才被请求，所以「没请求过」与
+    // 「请求了没落地」在截图上都是 `Art` 占位。没有它，查看器里一张真图都没上屏
+    // 而 overall 照样 PASS。
+    if (!session.viewerFullSettled) {
+        shine::log::Error("review: 查看器里的真图没上屏（大图档 requested={} / pending={}）—— "
+                          "requested=0 表示查看器那一帧**一次都没请求大图**（页面入口没跑到，"
+                          "或 RequestImageFull 没被调）；pending>0 表示 worker/上传链卡住；"
+                          "两者都正常却仍判红时，是**某一屏的纯色像素数为 0** —— "
+                          "查看器画的是 `Art` 占位，或者打开的不是预期的那一页"
+                          "（`viewer-full=` 那行里 pixels 是图片屏、sheet-pixels 是联系表屏）。"
+                          "查链路，别改判据",
+                          kit::RequestedImageFullCount(), kit::PendingImageFullCount());
+    }
+    // 逐镜成图的两处位点（出片页成片条 / 出图页结果页签）。与 `sheetImagesSettled` 同族：
+    // 这两处早先画的是 `Art` 占位画，于是「占位画」与「真图还没落地」在像素上完全同形，
+    // 而没有判据时「这一段一次都没请求过图」也不会体现在 overall 上（假绿）。
+    if (!session.filmStripImages) {
+        shine::log::Error("review: 出片页「成片条」里没有逐镜成片的真图（`film-strip=` 那行）—— "
+                          "这一族的图来自 `generated_images` 的 `source_kind='shot'`"
+                          "（与分镜页 `.tthumb` 同一个查询）。两格都数不到时先查：镜图有没有"
+                          "真的请求过（`RequestImage` 每帧无条件调）、fixture 里第 1/2 镜的"
+                          "`source_id` 有没有铺上、成片条有没有被面板挤到画不出来。"
+                          "别改成数「有没有画东西」——占位画也能数出像素");
+    }
+    if (!session.imageFlowResultImage) {
+        shine::log::Error("review: 出图页「结果」页签那张成图不是真图（`imageflow-result=` 那行）"
+                          "—— 这一格早先画的是 `Art(..., seed=6)` 的程序化占位画，页签名就叫"
+                          "「结果」，所以它是最容易被当成出图结果的一处。查 `BookState::shot()`"
+                          "的 `imageRelPath`（`BookQuery.cpp` 那一句 `source_kind='shot'`）"
+                          "有没有填上、以及结果页签那一格有没有调 `RequestImage`");
+    }
+    // 出图页「结果」页签那两行生成参数（`Prompt` / `生成参数`）的投影。
+    // 与上面几条**不同**：这一条判的不是像素而是数据 —— 那两行同步画，没有异步窗口。
+    // 它挡的是查询漏列 / 列序读串 / 行被判空跳过（界面少两行而整轮全绿）。
+    if (!session.imageFlowParams) {
+        shine::log::Error("review: 出图页「结果」页签的生成参数不是 fixture 契约里的那几个值"
+                          "（`imageflow-params=` 那行，带实测值与期望值）—— "
+                          "查 `BookQuery.cpp` 那条 `source_kind='shot'` 查询有没有把 "
+                          "`prompt/model/steps/width/height` 一起 SELECT 出来、"
+                          "`ColumnInt/ColumnText` 的下标有没有与 SELECT 的列序对上、"
+                          "以及 `Page_ImageFlow.cpp` 里那两行 KV 的判空条件。"
+                          "别改期望值：它们是 `_fixture_seed.sql` 的独立契约"
+                          "（`ReviewFixture.h` 的 `kShot1*`）");
+    }
+    // 总控 KPI 卡右上角的柔光（`views.css:419-430`）有没有真的上屏、且**五张卡都在**。
+    // 这一团是 `PushClipRect` 裁到 padding box 之后画的 ⇒ 裁剪写反/写小会让它**整团消失**，
+    // 而卡、文字、静息截图全都正常 ⇒ 只有数像素能发现。
+    if (!session.kpiGlow) {
+        shine::log::Error("review: 总控 KPI 的柔光像素不在量级内（`kpi-glow=` 那行带实测值/"
+                          "颜色/上下界）—— 要看数字落在哪一边："
+                          "① pixels≈0：整团没画（裁剪反了 / 半径传错）；"
+                          "② pixels≈3200：只接上了一张卡；"
+                          "③ pixels 远大于上界（十万级）：**颜色退化成了一块面** —— "
+                          "去查 `PageKpi.cpp` 的 `GlowColor()`：`WithAlpha` 是**调制**"
+                          "（原 alpha × 参数），要覆盖得用 `WithAlphaSet`。"
+                          "改产品，别改上下界");
+    }
+    // 总控「最近产物」那一行的出图产物（`generated_images`，非 shot 来源）。
+    // 与上面两条同族：这一卡以前只列 T 链账本，而账本在执行体接入之前**恒为空** ⇒
+    // 卡片永远只有空态文案，设计稿里「出图 · 1.8 MB」那一行从来没有过数据。
+    if (!session.recentProductsImage) {
+        shine::log::Error("review: 总控「最近产物」里没有出图产物的真图（`recent-products=` 那行）"
+                          "—— 数据来自 `generated_images`（**不限 source_kind**，"
+                          "`BookQuery.cpp` 里那句 `rel_path<>'' ORDER BY id DESC`），"
+                          "文件大小在 worker 侧 stat。查：快照有没有落地"
+                          "（这一卡的数据是异步回投的）、右栏有没有滚到顶部"
+                          "（那几行在视口外等于没拍到）、以及那一行有没有 `RequestImage`");
+    }
+    // imageKeysDistinct 是上面那条判据的**成立前提**，所以它自己也得进 overall：
+    // `ImageKey` 与 `ImageKeyFull` 撞成同一个 key 时，大图档登记不进登记表
+    // （`try_emplace`），`RequestedImageFullCount()` 恒 0 ⇒ 上一条报红。
+    // 而「撞不撞」取决于整条路径字符串的 FNV（路径里含 `SHINE_IMGUI_REVIEW` 的输出目录）
+    // ⇒ 同一份代码换个 `-OutDir` 就从 PASS 变 FAIL。没有这条自检，那种红只会被当成
+    // 「偶发」而放过去，根因永远不露头。
+    if (!session.imageKeysDistinct) {
+        shine::log::Error("review: `kit::Image` 的两档 key 号段**没有分裂**（{} / {} 条探针撞了）"
+                          "—— `ImageKey` 与 `ImageKeyFull` 相撞时，页面里的缩略图先注册过"
+                          "那条路径，大图档就登记不进去（`try_emplace` 不覆盖），于是"
+                          "`viewer-full` 会以「大图一次都没请求过」的样子假红，而大图明明在屏上；"
+                          "同时服务侧按 key 存 targetSize ⇒ 两个调用点每帧互相换档重解码。"
+                          "修法是**先清号段位再置位**（见 `kit/Image.h` 约束 3），别改判据",
+                          kit::ImageKeyCollisionCount(), kit::kImageKeySelfTestProbes);
+    }
     const bool pass = result.failed == 0 && !result.scrollFailed && identicalPairs == 0 &&
                       drivenDuplicates == 0 && session.reportScanConverged &&
                       session.bookSnapshotConverged && session.assetSnapshotConverged &&
                       session.artifactsConverged && session.sheetImagesSettled &&
-                      session.sheetImagesRecovered && inverted == 0 && duplicateHits == 0 &&
+                      session.sheetImagesRecovered && session.viewerFullSettled &&
+                      session.filmStripImages && session.imageFlowResultImage &&
+                      session.imageFlowParams && session.kpiGlow && session.recentProductsImage &&
+                      session.imageKeysDistinct && inverted == 0 &&
+                      duplicateHits == 0 &&
                       session.hoverProbesPassed == session.hoverProbeTotal &&
                       session.shortcutsPassed == session.shortcutTotal &&
                       session.overlayClicksPassed == session.overlayClickTotal;
@@ -134,7 +222,9 @@ void FinishVerdict(Session& session) {
                                 "  asset-snapshot: " +
                                 (session.assetSnapshotConverged ? "converged" : "TIMEOUT") +
                                 "  artifact-snapshot: " +
-                                (session.artifactsConverged ? "converged" : "TIMEOUT"));
+                                (session.artifactsConverged ? "converged" : "TIMEOUT") +
+                                "  viewer-full: " +
+                                (session.viewerFullSettled ? "settled" : "TIMEOUT"));
     if (inverted > 0) {
         WriteManifest(manifest, std::string("last-inverted-rect=") + kit::LastInvertedRect());
     }

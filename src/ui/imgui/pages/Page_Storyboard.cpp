@@ -4,15 +4,25 @@
 // NovelVisual::ListShotsByChapter）、V1–V7 阶段产物（ListStageArtifacts）、
 // V8 连续性（RunContinuityChecks 的真实三态）。旧版的 "S012 · 转身"、6.0s、
 // 6 条 "C1 服装一致"、8 张 S010–S017 缩略图全是写死的，已全部删除。
+//
+// 模块化（2026-10-01）：
+//   * 常量（文案 / 几何）集中在文件顶部 —— 「待出图」这类字面量不再埋在分支里；
+//   * 小组件 `PendingThumb` 单独成函数（缩略图的「还没出图」占位栈）；
+//   * 所有会显示的字符串走 RefreshTexts 的**数据指纹缓存**（kit/Hash.h）：
+//     ImGui 每帧绘制，Draw 里不再现拼 `std::to_string` / vector<pair>；
+//   * 格式化统一走 kit::Fmt（fmt），浮点转字符串走 kit::Fixed（zmij，
+//     一位小数 = 设计稿 mock 数据的口径）。
 #include "ui/imgui/pages/BookData.h"
 
 #include "ui/imgui/pages/PageCommon.h"
 
+#include "ui/imgui/kit/Fmt.h"
+#include "ui/imgui/kit/Hash.h"
 #include "ui/imgui/kit/Image.h"  // 逐镜成片图（真图 / Art / 「待出图」三分支）
 #include "ui/imgui/kit/Scroll.h"
+#include "ui/imgui/kit/Text.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -20,37 +30,211 @@ namespace shine::pages {
 
 using namespace shine::kit;
 
-void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
+namespace {
+
+// ==================== 文案常量（集中文件顶部，不埋在分支里）====================
+
+// 时间线卡「还没出图」的占位小字（Storyboard.jsx:165 同款）。
+static constexpr char kPending[] = "待出图";
+// 详情卡里 timeline_json 那一栏的栏头。
+static constexpr char kBeatLabel[] = "BEAT 时间轴（shots.timeline_json）";
+// 时间线卡头右侧的 extra 提示（Storyboard.jsx:145）。
+static constexpr char kTlHint[] = "按住卡片拖动 · 时长条按比例";
+// timeline_json 没写时详情卡里的诚实占位。
+static constexpr char kBeatEmpty[] = "这一镜没有 timeline_json。";
+// V1–V8 阶段条的段名（StageNode.name 只显示这一段，静态常量省去每帧 8 次拼接）。
+static constexpr char kStageNames[8][4] = {"V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8"};
+
+// ==================== 几何常量（逐项来自 CSS，出处写在行尾）====================
+
+constexpr float kTlCardW = 128.0f;       // .tl-card width（views.css:959）
+constexpr float kTlCardR = 10.0f;        // --r-md（tokens.css:11）
+constexpr float kTlGap = 10.0f;          // .timeline gap（views.css:953）
+constexpr float kTlThumbH = 72.0f;       // .tthumb height（views.css:977）
+constexpr float kTlInfoPadY = 7.0f;      // .tinfo padding 7px 9px 9px（views.css:980）
+constexpr float kTlInfoPadX = 9.0f;
+constexpr float kTlInfoPadB = 9.0f;
+constexpr float kTlCodeH = 11.0f * 1.6f;      // .tcode mono 11/700 → 17.6
+constexpr float kTlActionGap = 2.0f;          // .taction margin-top（views.css:991）
+constexpr float kTlActionH = 11.5f * 1.6f;    // .taction 11.5 → 18.4
+constexpr float kTlDurGap = 6.0f;             // .tdur margin-top（views.css:997）
+constexpr float kTlDurH = 10.5f * 1.6f;       // .tdur 行盒 10.5 → 16.8（里面的 .prog.thin 只有 4px）
+// 卡的外框是 border-box：上下各 1px 边 + 缩略图 + `.tinfo` 的三段
+constexpr float kTlCardH = 2.0f + kTlThumbH + kTlInfoPadY + kTlCodeH + kTlActionGap +
+                           kTlActionH + kTlDurGap + kTlDurH + kTlInfoPadB;  // = 150.8
+constexpr float kTlStripPadX = 2.0f;     // .timeline padding 左右 2
+constexpr float kTlStripPadTop = 8.0f;   // .timeline padding 上 8
+constexpr float kTlStripPadBottom = 12.0f;  // .timeline padding 下 12
+constexpr float kCardHeadH = 46.6f;      // kit::Card 的 `.card-h`
+constexpr float kCardBodyPad = 16.0f;    // `.card-b { padding: 16px }`
+constexpr float kTimelinePanelH = kCardHeadH + kCardBodyPad + kTlStripPadTop + kTlCardH +
+                                  kTlStripPadBottom + kCardBodyPad;  // = 249.4
+constexpr float kStripH = kTlStripPadTop + kTlCardH + kTlStripPadBottom;
+// 「待出图」占位栈的三段（图标 20 + 间隙 4 + 12px 字的行盒）。
+constexpr float kPendingIcon = 20.0f;
+constexpr float kPendingGap = 4.0f;
+constexpr float kPendingLineH = 12.0f * 1.6f;  // = 19.2
+constexpr float kPendingStackH = kPendingIcon + kPendingGap + kPendingLineH;
+
+// ---- 小组件：缩略图里的「待出图」占位栈 ----
+//
+// 图标 + 一行 12px 小字，整体在缩略图内居中（Storyboard.jsx:163-166 的 else 分支）。
+// 原先是 Draw 内层循环里的一段内联代码 —— 抽出来后循环体只剩「这一格是什么状态」
+// 的三分支判断。
+void PendingThumb(ImDrawList* draw, Rect thumb) {
+    const float stackTop = thumb.center().y - kPendingStackH * 0.5f;
+    DrawIconCentered(draw, "image", ImVec2(thumb.center().x, stackTop + kPendingIcon * 0.5f),
+                     kPendingIcon, ColorTextMuted());
+    const float textTop = stackTop + kPendingIcon + kPendingGap;
+    // R3 收编：`.tiny` = 12px（kTiny 档）。量宽与画共用同一份 TextStyle ——
+    // 改前是「量用 LabelWidth(font, 12.0f) / 画用 AddText(font, 12.0f)」两处各写一遍
+    // 同一个数字，改一档漏另一档就画在 B 档量在 A 档（Text.h 的像素不变契约：逐位等价）。
+    const TextStyle tinyStyle{.size = theme::font::kTiny, .color = ColorTextMuted()};
+    const std::string_view pendingText(kPending, sizeof(kPending) - 1);
+    const float tinyW = TextWidth(pendingText, tinyStyle);
+    Text(draw,
+         ImVec2(thumb.center().x - tinyW * 0.5f,
+                CenterY(textTop + kPendingLineH * 0.5f, tinyStyle)),
+         pendingText, tinyStyle);
+}
+
+} // namespace
+
+// ---- 显示文本缓存：指纹没变就整帧复用 ----
+//
+// 指纹覆盖**所有被显示**的字段（数值 + 字符串的 FNV）。重建是 O(显示文本总量)，
+// 只在数据真变时发生；指纹本身是 O(同样总量) 的纯哈希，无分配 —— 两头都比
+// 「每帧拼一遍字符串」便宜，而且**正确性不靠「记得在哪里刷新」**：任何字段一变
+// 指纹就变，下一帧自然重建。
+void StoryboardPage::RefreshTexts() {
     BookState& s = Book();
     const BookChapter* chapter = s.chapter();
     const BookShot* shot = s.shot();
 
-    // 页头标题/副行：没有选中镜头时说清是哪种空态，不用占位镜头号。
-    // 副行恒为"章 + 已落库镜头数 + 库路径"（全是真实计数），标题随选中镜头变。
-    std::string title = "分镜";
-    std::string subtitle = "Scene → Sequence → Shot";
+    std::uint64_t key = HashMix(0, s.shots.size());
+    key = HashMix(key, static_cast<std::uint64_t>(s.selectedShot));
+    key = HashMix(key, Fnv1a(s.dbPath));
     if (chapter != nullptr) {
-        title = "第 " + std::to_string(chapter->ord) + " 章" +
-                (chapter->title.empty() ? std::string() : (" · " + chapter->title));
-        subtitle = "已落库镜头 " + std::to_string(s.shots.size()) + " 个 · " + s.dbPath;
+        key = HashMix(key, static_cast<std::uint64_t>(chapter->ord));
+        key = HashMix(key, Fnv1a(chapter->title));
     }
     if (shot != nullptr) {
-        title = ShotCode(shot->ord) + " · " +
-                (shot->action.empty() ? std::string(kDash) : shot->action);
+        key = HashMix(key, static_cast<std::uint64_t>(shot->id));
+        key = HashMix(key, static_cast<std::uint64_t>(shot->sceneOrd));
+        key = HashMix(key, static_cast<std::uint64_t>(shot->ord));
+        key = HashMix(key, static_cast<std::uint64_t>(shot->cameraId));
+        key = HashMix(key, static_cast<std::uint64_t>(shot->lightingId));
+        key = HashMix(key, Fnv1a(shot->action));
+        key = HashMix(key, Fnv1a(shot->expression));
+        key = HashMix(key, Fnv1a(shot->mood));
+        key = HashMix(key, Fnv1a(shot->narration));
+        key = HashMix(key, Fnv1a(shot->durationNote));
+        key = HashMix(key, Fnv1a(shot->canonStatus));
+        key = HashMix(key, shot->durationSec);
     }
-    Rect right;
-    Rect content = ViewHeader(area, draw, "clapper", title.c_str(), subtitle.c_str(), &right);
+    for (const BookShot& row : s.shots) {
+        key = HashMix(key, static_cast<std::uint64_t>(row.ord));
+        key = HashMix(key, row.durationSec);
+    }
+    key = HashMix(key, s.continuity.ran ? 1ull : 0ull);
+    key = HashMix(key, static_cast<std::uint64_t>(s.continuity.shotsSeen));
+    key = HashMix(key, static_cast<std::uint64_t>(s.continuity.pairsChecked));
+    key = HashMix(key, static_cast<std::uint64_t>(s.continuity.failed));
+    key = HashMix(key, static_cast<std::uint64_t>(s.continuity.unverified));
+    for (const novelcore::ContinuityIssue& issue : s.continuity.issues) {
+        key = HashMix(key, Fnv1a(issue.code));
+        key = HashMix(key, Fnv1a(issue.detail));
+    }
+    for (const std::string& note : s.continuity.notes) {
+        key = HashMix(key, Fnv1a(note));
+    }
+    if (key == textKey_) {
+        return;
+    }
+    textKey_ = key;
 
+    // ---- 页眉标题 / 副行：没有选中镜头时说清是哪种空态，不用占位镜头号 ----
+    // 副行恒为"章 + 已落库镜头数 + 库路径"（全是真实计数），标题随选中镜头变。
+    title_ = "分镜";
+    subtitle_ = "Scene → Sequence → Shot";
+    if (chapter != nullptr) {
+        title_ = chapter->title.empty() ? kit::Fmt("第 {} 章", chapter->ord)
+                                        : kit::Fmt("第 {} 章 · {}", chapter->ord, chapter->title);
+        subtitle_ = kit::Fmt("已落库镜头 {} 个 · {}", s.shots.size(), s.dbPath);
+    }
+    if (shot != nullptr) {
+        title_ = kit::Fmt("{} · {}", ShotCode(shot->ord),
+                          shot->action.empty() ? kDash : shot->action);
+    }
     // 状态标签：取镜头的 canon_status（shots 表的规范值），映射不到就原样显示。
-    std::string canonLabel = shot != nullptr && !shot->canonStatus.empty() ? shot->canonStatus : kDash;
-    const float tagW = TagWidth(canonLabel, false, true);
-    Tag(draw, RectAt(right.max.x - 320.0f, right.min.y, tagW, 20.0f), canonLabel, theme::Tone::Idle,
+    canonLabel_ = shot != nullptr && !shot->canonStatus.empty() ? shot->canonStatus
+                                                                : std::string(kDash);
+
+    // ---- 「镜头详情」KV 表（9 行，行序即显示序）----
+    detailKv_ = {};
+    if (shot != nullptr) {
+        // 时长：优先 timeline_json.duration_s（秒，一位小数），退回 duration_note
+        // 原文，都没有 → kDash。DurationText 是全树唯一的一份（见 PageCommon.h）。
+        std::string duration = std::string(kDash);
+        if (shot->durationSec > 0.0) {
+            duration = DurationText(shot->durationSec);
+        } else if (!shot->durationNote.empty()) {
+            duration = shot->durationNote;
+        }
+        detailKv_[0] = {"镜头", kit::Fmt("#{}", shot->id)};
+        detailKv_[1] = {"场 / 序", kit::Fmt("第 {} 场 · 第 {} 镜", shot->sceneOrd, shot->ord)};
+        detailKv_[2] = {"动作", shot->action.empty() ? std::string(kDash) : shot->action};
+        detailKv_[3] = {"表演", shot->expression.empty() ? std::string(kDash) : shot->expression};
+        detailKv_[4] = {"机位", OrDashId(shot->cameraId)};
+        detailKv_[5] = {"光线", OrDashId(shot->lightingId)};
+        detailKv_[6] = {"时长", std::move(duration)};
+        detailKv_[7] = {"情绪", shot->mood.empty() ? std::string(kDash) : shot->mood};
+        detailKv_[8] = {"旁白", shot->narration.empty() ? std::string(kDash) : shot->narration};
+    }
+
+    // ---- 时间线逐镜两段文案 + 命中 id ----
+    cells_.clear();
+    cells_.reserve(s.shots.size());
+    for (std::size_t i = 0; i < s.shots.size(); ++i) {
+        const BookShot& row = s.shots[i];
+        cells_.push_back(ShotCell{ShotCode(row.ord), DurationText(row.durationSec),
+                                  kit::Fmt("sb-tl-{}", i)});
+    }
+
+    // ---- 连续性汇总行 + issue 行（镜对在这里换算成镜码）----
+    summaryText_ = kit::Fmt("镜 {} · 比对 {} 对 · 失败 {} · 数据不足 {}", s.continuity.shotsSeen,
+                            s.continuity.pairsChecked, s.continuity.failed,
+                            s.continuity.unverified);
+    issueLabels_.clear();
+    issueLabels_.reserve(s.continuity.issues.size());
+    for (const novelcore::ContinuityIssue& issue : s.continuity.issues) {
+        // 镜对换成镜码（`镜 #128→#131：` → `镜 S004 → S005：`）：这条 issue 说的
+        // 就是「这两镜之间」出了什么事，写库主键的话没人对得上号。解析不出来就
+        // 原样显示 detail —— 见 ShotPairToCodes 的注释。
+        issueLabels_.push_back(kit::Fmt("{} {}", issue.code, ShotPairToCodes(issue.detail, s.shots)));
+    }
+}
+
+void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
+    BookState& s = Book();
+    const BookShot* shot = s.shot();
+
+    // 本帧要显示的所有文案先备好（指纹没变 = 纯复用上一帧的字符串）。
+    RefreshTexts();
+
+    Rect right;
+    Rect content = ViewHeader(area, draw, "clapper", title_.c_str(), subtitle_.c_str(), &right);
+
+    const float tagW = TagWidth(canonLabel_, false, true);
+    Tag(draw, RectAt(right.min.x, right.min.y + 5.0f, tagW, 20.0f), canonLabel_, theme::Tone::Idle,
         false, true);
 
     ButtonSpec run;
     run.variant = ButtonVariant::Primary;
     const char* runLabel = "重新读取";
-    const float runW = ButtonWidth(ButtonSize::Medium, 0.0f, LabelWidth(FontBoldAt(13.0f), 13.0f, runLabel));
+    const float runW = ButtonWidth(
+        ButtonSize::Medium, 0.0f,
+        TextWidth(runLabel, TextStyle{.size = theme::font::kBody, .bold = true}));
     // ⚠️ 业务层目前**没有**暴露"替前端跑 V1–V8"的服务接口（Qt 版靠 NovelDirector +
     // LlmCallFn 注入，ImGui 侧没有注入点）。所以这里只给"重新读取"，不给一个点了
     // 什么都不做的假"运行 V1–V8"。
@@ -70,8 +254,9 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
 
     // V1–V8 状态：逐项来自真实表（V1–V7 看 stage_artifacts 有无产物，V8 看连续性报告）。
     std::vector<StageNode> vs;
+    vs.reserve(8);
     for (int i = 0; i < 8; ++i) {
-        vs.push_back(StageNode{"V" + std::to_string(i + 1), "",
+        vs.push_back(StageNode{kStageNames[i], "",
                                s.vStage[i] ? StageState::Done : StageState::Todo});
     }
     StageFlow(draw, Rect{content.min.x, content.min.y, content.max.x, content.min.y + 30.0f}, vs);
@@ -85,42 +270,15 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     // ⚠️ 视口很矮时（< 约 200px）`timelineTop - kGap` 会落到 detailTop 之上，两张卡
     //    的 max.y < min.y 变成反向矩形 —— DrawShadowed / Card 会整块 return（内容
     //    静默消失）。给一个下限，宁可让时间轴压住卡片，也不产出反向矩形。
-    const float contentBottom = ViewportBottom(area);
-    // ---- 时间线面板的几何：逐项来自 CSS，**不再是写死的 118** ----
+    const float contentBottom = std::max(ViewportBottom(area), detailTop + 310.0f + kTimelinePanelH);
+    // ---- 时间线面板的几何：逐项来自 CSS，**不再是写死的 118**（常量见文件顶部）----
     //
     // 设计稿这一块是一张 `<Card title="故事板时间线 · 拖拽重排" icon="film" extra=…>`
-    // （Storyboard.jsx:145），高度由内容撑开。逐项：
-    //   `.card-h` 头        46.6        （12 + 13.5×1.6 + 12 + 1，见 kit::Card）
-    //   `.card-b` padding   16 上 / 16 下
-    //   `.timeline`         padding 8px 2px 12px（views.css:955）
-    //   `.tl-card` 高       150.8       （见 kTlCardH 的逐项拆解）
-    // ⇒ 面板 ≈ 249.4。
+    // （Storyboard.jsx:145），高度由内容撑开 ⇒ 面板 ≈ 249.4。
     //
     // ⚠️ 原来写死 `contentBottom - 118`，而 118 < 头(46.6) + 上下 padding(32) = 78.6
     //    加上时间线本身，实际可用的卡片区不足 40px —— 于是卡片被**拉伸**填满
     //    （98px 高），缩略图也只能内缩 6px 画 60px。三个数字互相耦合，所以一起改。
-    constexpr float kTlCardW = 128.0f;       // .tl-card width（views.css:959）
-    constexpr float kTlCardR = 10.0f;        // --r-md（tokens.css:11）
-    constexpr float kTlGap = 10.0f;          // .timeline gap（views.css:953）
-    constexpr float kTlThumbH = 72.0f;       // .tthumb height（views.css:977）
-    constexpr float kTlInfoPadY = 7.0f;      // .tinfo padding 7px 9px 9px（views.css:980）
-    constexpr float kTlInfoPadX = 9.0f;
-    constexpr float kTlInfoPadB = 9.0f;
-    constexpr float kTlCodeH = 11.0f * 1.6f;      // .tcode mono 11/700 → 17.6
-    constexpr float kTlActionGap = 2.0f;          // .taction margin-top（views.css:991）
-    constexpr float kTlActionH = 11.5f * 1.6f;    // .taction 11.5 → 18.4
-    constexpr float kTlDurGap = 6.0f;             // .tdur margin-top（views.css:997）
-    constexpr float kTlDurH = 10.5f * 1.6f;       // .tdur 行盒 10.5 → 16.8（里面的 .prog.thin 只有 4px）
-    // 卡的外框是 border-box：上下各 1px 边 + 缩略图 + `.tinfo` 的三段
-    constexpr float kTlCardH = 2.0f + kTlThumbH + kTlInfoPadY + kTlCodeH + kTlActionGap +
-                               kTlActionH + kTlDurGap + kTlDurH + kTlInfoPadB;  // = 150.8
-    constexpr float kTlStripPadX = 2.0f;     // .timeline padding 左右 2
-    constexpr float kTlStripPadTop = 8.0f;   // .timeline padding 上 8
-    constexpr float kTlStripPadBottom = 12.0f;  // .timeline padding 下 12
-    constexpr float kCardHeadH = 46.6f;      // kit::Card 的 `.card-h`
-    constexpr float kCardBodyPad = 16.0f;    // `.card-b { padding: 16px }`
-    constexpr float kTimelinePanelH = kCardHeadH + kCardBodyPad + kTlStripPadTop + kTlCardH +
-                                      kTlStripPadBottom + kCardBodyPad;  // = 249.4
     const float timelineTop =
         std::max(contentBottom - kTimelinePanelH, std::min(content.min.y + 120.0f, contentBottom));
     const float detailW = (content.width() - kGap) * 1.2f / 2.2f;
@@ -134,48 +292,31 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
         Empty(draw, detailBody, "clapper", "本章尚无镜头",
               "V9（叙事分镜）落库后，shots 表才会有行。");
     } else {
-        // 时长：优先 timeline_json.duration_s（秒），退回 duration_note 原文，都没有 → kDash。
-        std::string duration = kDash;
-        if (shot->durationSec > 0.0) {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.1fs", shot->durationSec);
-            duration = buf;
-        } else if (!shot->durationNote.empty()) {
-            duration = shot->durationNote;
-        }
-        auto orDash = [](RowId id) { return id > 0 ? ("#" + std::to_string(id)) : std::string(kDash); };
-        KeyValues(draw, detailBody,
-                  {{"镜头", "#" + std::to_string(shot->id)},
-                   {"场 / 序", "第 " + std::to_string(shot->sceneOrd) + " 场 · 第 " +
-                                   std::to_string(shot->ord) + " 镜"},
-                   {"动作", shot->action.empty() ? kDash : shot->action},
-                   {"表演", shot->expression.empty() ? kDash : shot->expression},
-                   {"机位", orDash(shot->cameraId)},
-                   {"光线", orDash(shot->lightingId)},
-                   {"时长", duration},
-                   {"情绪", shot->mood.empty() ? kDash : shot->mood},
-                   {"旁白", shot->narration.empty() ? kDash : shot->narration}});
+        // KV 表来自缓存（RefreshTexts），每帧只把指针递进来 —— 不再每帧构造
+        // initializer_list<pair<string,string>>。
+        KeyValues(draw, detailBody, detailKv_.data(), detailKv_.size());
         // Beat 时间轴：直接显示库里的 timeline_json 原文，不编一份示例 JSON。
         const float ty = detailBody.min.y + 190.0f;
-        static const char* kBeatLabel = "BEAT 时间轴（shots.timeline_json）";
-        draw->AddText(FontBoldAt(11.5f), 11.5f, ImVec2(detailBody.min.x, ty), ColorTextMuted(),
-                      kBeatLabel, kBeatLabel + std::strlen(kBeatLabel));
+        Text(draw, ImVec2(detailBody.min.x, ty), kBeatLabel,
+             TextStyle{.size = theme::font::kLabel, .bold = true, .color = ColorTextMuted()});
         DrawRoundRect(draw, ImVec2(detailBody.min.x, ty + 16.0f),
                       ImVec2(detailBody.max.x, ty + 104.0f), 6.0f, ColorFillMuted(), ColorLineNormal(),
                       1.0f);
         if (shot->timelineJson.empty() || shot->timelineJson == "{}") {
-            DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                            ImVec2(detailBody.min.x + 10.0f, ty + 40.0f), detailBody.width() - 20.0f,
-                            ColorTextMuted(), "这一镜没有 timeline_json。", true);
+            TextClipped(draw, ImVec2(detailBody.min.x + 10.0f, ty + 40.0f),
+                        detailBody.width() - 20.0f, kBeatEmpty,
+                        TextStyle{.size = theme::font::kHint, .color = ColorTextMuted()}, true);
         } else {
-            DrawTextClipped(draw, MonoAt(12.5f), 12.5f, ImVec2(detailBody.min.x + 10.0f, ty + 26.0f),
-                            detailBody.width() - 20.0f, ColorTextSecondary(), shot->timelineJson, true);
+            TextClipped(draw, ImVec2(detailBody.min.x + 10.0f, ty + 26.0f),
+                        detailBody.width() - 20.0f, shot->timelineJson,
+                        TextStyle{.size = theme::font::kHint, .mono = true,
+                                  .color = ColorTextSecondary()},
+                        true);
         }
         // 空间 / 转场 / 走位**无专列**（V9 只存盘到 storyboard.json）—— 如实说明，不编值。
-        DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                        ImVec2(detailBody.min.x, ty + 112.0f), detailBody.width(),
-                        ColorTextMuted(),
-                        "空间 / 转场 / 走位没有库字段，只在 work/ch<NNN>/storyboard.json", true);
+        TextClipped(draw, ImVec2(detailBody.min.x, ty + 112.0f), detailBody.width(),
+                    "空间 / 转场 / 走位没有库字段，只在 work/ch<NNN>/storyboard.json",
+                    TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()}, true);
     }
 
     // ---- 连续性 C1–C12：真实三态 ----
@@ -183,21 +324,17 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     if (!s.continuity.ran) {
         Empty(draw, continuityBody, "check", "连续性未校验", "V8 需要该章的镜头数据。");
     } else {
-        // 汇总行用真实计数：看了几镜、比对几对、失败几条、数据不足几条。
-        const std::string summary = "镜 " + std::to_string(s.continuity.shotsSeen) + " · 比对 " +
-                                    std::to_string(s.continuity.pairsChecked) + " 对 · 失败 " +
-                                    std::to_string(s.continuity.failed) + " · 数据不足 " +
-                                    std::to_string(s.continuity.unverified);
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f, continuityBody.min, continuityBody.width(),
-                        ColorTextSecondary(), summary, true);
+        // 汇总行用真实计数（缓存：RefreshTexts）。
+        TextClipped(draw, continuityBody.min, continuityBody.width(), summaryText_,
+                    TextStyle{.size = theme::font::kHint, .color = ColorTextSecondary()}, true);
         float cy = continuityBody.min.y + 24.0f;
         if (s.continuity.issues.empty()) {
             // 三态里"没报 issue"不等于"通过"——数据不足时 RunContinuityChecks 记 unverified。
             const theme::Tone tone = s.continuity.unverified > 0 ? theme::Tone::Warn : theme::Tone::Ok;
             const char* label = s.continuity.unverified > 0 ? "无不一致，但有数据不足项" : "无不一致";
             StatusDot(draw, ImVec2(continuityBody.min.x + 4.0f, cy + 6.0f), tone, false);
-            draw->AddText(FontAt(12.5f), 12.5f, ImVec2(continuityBody.min.x + 16.0f, cy),
-                          ColorTextSecondary(), label, label + std::strlen(label));
+            Text(draw, ImVec2(continuityBody.min.x + 16.0f, cy), label,
+                 TextStyle{.size = theme::font::kHint, .color = ColorTextSecondary()});
             cy += 22.0f;
         }
         // ⚠️ 下面两个循环原来都是 `if (cy + 22.0f > continuityBody.max.y) { break; }`。
@@ -218,22 +355,22 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
                 ImDrawList* ldraw = issueScroll.drawList();
                 const Rect inner = issueScroll.content();
                 float ly = inner.min.y;
-                for (const novelcore::ContinuityIssue& issue : s.continuity.issues) {
+                for (std::size_t i = 0; i < issueLabels_.size(); ++i) {
                     const theme::Tone tone =
-                        issue.severity == "high" ? theme::Tone::Danger : theme::Tone::Warn;
+                        s.continuity.issues[i].severity == "high" ? theme::Tone::Danger
+                                                                  : theme::Tone::Warn;
                     StatusDot(ldraw, ImVec2(inner.min.x + 4.0f, ly + 6.0f), tone, false);
-                    // 镜对换成镜码（`镜 #128→#131：` → `镜 S004 → S005：`）：这条 issue 说的
-                    // 就是「这两镜之间」出了什么事，写库主键的话没人对得上号。解析不出来就
-                    // 原样显示 detail —— 见 ShotPairToCodes 的注释。
-                    const std::string label = issue.code + " " + ShotPairToCodes(issue.detail, s.shots);
-                    DrawTextClipped(ldraw, FontAt(12.5f), 12.5f, ImVec2(inner.min.x + 16.0f, ly),
-                                    inner.width() - 16.0f, ColorTextSecondary(), label, true);
+                    TextClipped(ldraw, ImVec2(inner.min.x + 16.0f, ly), inner.width() - 16.0f,
+                                issueLabels_[i],
+                                TextStyle{.size = theme::font::kHint, .color = ColorTextSecondary()},
+                                true);
                     ly += 22.0f;
                 }
                 // unverified 的原因也照实列（它不是失败，但必须看得见）。
                 for (const std::string& note : s.continuity.notes) {
-                    DrawTextClipped(ldraw, FontAt(11.5f), 11.5f, ImVec2(inner.min.x, ly),
-                                    inner.width(), ColorTextMuted(), note, true);
+                    TextClipped(ldraw, ImVec2(inner.min.x, ly), inner.width(), note,
+                                TextStyle{.size = theme::font::kLabel, .color = ColorTextMuted()},
+                                true);
                     ly += 20.0f;
                 }
                 // ⚠️ 不调这一行等于没修：自绘内容全程不给 ImGui 提交 item，ContentSize
@@ -254,23 +391,21 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     Rect tlBody = Card(draw, timeline, "故事板时间线 · 拖拽重排", "film", false, false);
     {
         // 头右侧的 `extra`（`.tiny dim` = 12px muted），右对齐在标题行里。
-        static constexpr char kTlHint[] = "按住卡片拖动 · 时长条按比例";
-        ImFont* hintFont = FontAt(12.0f);
-        const float hintW = LabelWidth(hintFont, 12.0f, kTlHint);
+        const TextStyle hintStyle{.size = theme::font::kTiny, .color = ColorTextMuted()};
+        const std::string_view hintText(kTlHint, sizeof(kTlHint) - 1);
+        const float hintW = TextWidth(hintText, hintStyle);
         const Rect headRow = CardHeaderRow(timeline, "故事板时间线 · 拖拽重排", "film");
-        draw->AddText(hintFont, 12.0f,
-                      ImVec2(headRow.max.x - hintW, CenterTextY(hintFont, 12.0f, headRow.center().y)),
-                      ColorTextMuted(), kTlHint, kTlHint + sizeof(kTlHint) - 1);
+        Text(draw, ImVec2(headRow.max.x - hintW, CenterY(headRow.center().y, hintStyle)), hintText,
+             hintStyle);
     }
     // 本页最深就是这条时间轴（两张卡的下边界是 timelineTop - kGap，更浅）。
     // 自报它的高度，工作区的滚动范围从此跟着视口走 —— 不再是「滚到 2400 才看得见
     // 时间轴、而那 1400px 里什么都没有」（与总控页同一处治理，注释见那里）。
     pages::SetPageContentHeight(contentBottom - area.min.y + kGap);
     if (s.shots.empty()) {
-        DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                        ImVec2(tlBody.min.x + kTlStripPadX, tlBody.min.y + kTlStripPadTop),
-                        tlBody.width() - 2.0f * kTlStripPadX, ColorTextMuted(),
-                        "本章尚无镜头，时间线为空。", true);
+        TextClipped(draw, ImVec2(tlBody.min.x + kTlStripPadX, tlBody.min.y + kTlStripPadTop),
+                    tlBody.width() - 2.0f * kTlStripPadX, "本章尚无镜头，时间线为空。",
+                    TextStyle{.size = theme::font::kHint, .color = ColorTextMuted()}, true);
         return;
     }
     // 时长条按**本章最长镜头**归一（旧版写死 60% = 假装 6s）。
@@ -293,7 +428,6 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
     // 外框之外，贴着卡片画会被 child 裁掉（浏览器那边靠 padding 的 8px 让位）。
     const float stripLeft = tlBody.min.x + kTlStripPadX;
     const float stripRight = tlBody.max.x - kTlStripPadX;
-    constexpr float kStripH = kTlStripPadTop + kTlCardH + kTlStripPadBottom;
     kit::ScrollRegion strip("sb-timeline-strip", Rect{stripLeft, tlBody.min.y, stripRight,
                                                      tlBody.min.y + kStripH},
                             /*borders=*/false, /*horizontalScroll=*/true);
@@ -306,13 +440,14 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
         float x = inner.min.x;
         for (int i = 0; i < static_cast<int>(s.shots.size()); ++i) {
             const BookShot& row = s.shots[static_cast<std::size_t>(i)];
+            const ShotCell& cell = cells_[static_cast<std::size_t>(i)];
             // `.tl-card` 高度由内容定（缩略图 72 + `.tinfo` 三段 + 上下 1px 边框 = 150.8），
             // **不是**拉伸填满面板 —— 那是面板高度不够时的连带写法。
             const Rect card{x, stripTop, x + kTlCardW, stripTop + kTlCardH};
             const bool on = (i == s.selectedShot);
             // 一帧只命中**一次**，hovered / clicked 都从它取（同时注册两次会让
             // hover 恒假 —— 这条在全树踩过好几轮，见 kit/Widget_Core.h 的自检）。
-            const kit::Hit tlHit = HitTest(card, "sb-tl-" + std::to_string(i));
+            const kit::Hit tlHit = HitTest(card, cell.hitId);
             // `.tl-card:hover { border-color: accent-glow; box-shadow: shadow-1; translateY(-2px) }`
             //   （views.css:967-971）
             // `.tl-card.on` 走的是 **inline style**（Storyboard.jsx:154）：
@@ -372,21 +507,7 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
                 // 按镜序派生是确定的（同一镜永远同一张），不编随机数。
                 Art(sdraw, thumb, row.ord, /*cover=*/true);
             } else {
-                static constexpr char kPending[] = "待出图";
-                ImFont* tinyFont = FontAt(12.0f);            // .tiny = 12px
-                const float tinyW = LabelWidth(tinyFont, 12.0f, kPending);
-                constexpr float kPendingIcon = 20.0f;
-                constexpr float kStackGap = 4.0f;
-                constexpr float kTinyLineH = 12.0f * 1.6f;   // = 19.2
-                const float stackH = kPendingIcon + kStackGap + kTinyLineH;
-                const float stackTop = thumb.center().y - stackH * 0.5f;
-                DrawIconCentered(sdraw, "image", ImVec2(thumb.center().x, stackTop + kPendingIcon * 0.5f),
-                                 kPendingIcon, ColorTextMuted());
-                const float textTop = stackTop + kPendingIcon + kStackGap;
-                sdraw->AddText(tinyFont, 12.0f,
-                              ImVec2(thumb.center().x - tinyW * 0.5f,
-                                     CenterTextY(tinyFont, 12.0f, textTop + kTinyLineH * 0.5f)),
-                              ColorTextMuted(), kPending, kPending + sizeof(kPending) - 1);
+                PendingThumb(sdraw, thumb);
             }
             // ---- `.tinfo { padding: 7px 9px 9px }`：镜码 / 动作 / 时长 三段 ----
             const float infoX = innerL + kTlInfoPadX;
@@ -395,27 +516,23 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
             // `.tcode`：--font-mono 11px / **700** / accent
             {
                 // 镜码与侧栏树 / 检查器共用 WorkspacePages.h 的 ShotCode —— 同一个镜三处同名。
-                const std::string code = ShotCode(row.ord);
-                ImFont* codeFont = MonoAt(11.0f);
-                sdraw->AddText(codeFont, 11.0f,
-                              ImVec2(infoX, CenterTextY(codeFont, 11.0f, ty + kTlCodeH * 0.5f)),
-                              ColorAccent(), code.data(), code.data() + code.size());
+                const TextStyle codeStyle{.size = theme::font::kMicro, .mono = true,
+                                          .color = ColorAccent()};
+                Text(sdraw, ImVec2(infoX, CenterY(ty + kTlCodeH * 0.5f, codeStyle)), cell.code,
+                     codeStyle);
                 ty += kTlCodeH + kTlActionGap;
             }
             // `.taction`：11.5px / text-secondary / 单行省略
-            DrawTextClipped(sdraw, FontAt(11.5f), 11.5f,
-                            ImVec2(infoX, CenterTextY(FontAt(11.5f), 11.5f, ty + kTlActionH * 0.5f)),
-                            infoW, ColorTextSecondary(), row.action);
+            const TextStyle actionStyle{.size = theme::font::kLabel, .color = ColorTextSecondary()};
+            TextClipped(sdraw, ImVec2(infoX, CenterY(ty + kTlActionH * 0.5f, actionStyle)), infoW,
+                        row.action, actionStyle);
             ty += kTlActionH + kTlDurGap;
             // `.tdur`：flex / align-center / gap 6 / 10.5px muted ⇒ 左侧 `.prog.thin` 4px + 右侧时长
             {
-                ImFont* durFont = FontAt(10.5f);
-                const std::string durText =
-                    row.durationSec > 0.0 ? (std::to_string(row.durationSec) + "s") : std::string(kDash);
-                const float durW = LabelWidth(durFont, 10.5f, durText.c_str());
+                const TextStyle durStyle{.size = theme::font::kSmall, .color = ColorTextMuted()};
+                const float durW = TextWidth(cell.durText, durStyle);
                 const float rowCy = ty + kTlDurH * 0.5f;  // `.tdur` 行盒中心
-                constexpr float kDurGap = 6.0f;
-                const float barW = std::max(30.0f, infoW - kDurGap - durW - kDurGap);  // min-width 30
+                const float barW = std::max(30.0f, infoW - kTlDurGap - durW - kTlDurGap);  // min-width 30
                 // `.prog.thin` 高 4，在行盒里垂直居中；比例按**本章最长镜头**归一
                 // （没有 duration 就画一条空槽，不画 60%）。
                 const float barY = rowCy - 2.0f;
@@ -424,9 +541,8 @@ void StoryboardPage::Draw(Rect area, ImDrawList* draw) {
                         ? std::clamp(static_cast<float>(row.durationSec / longest), 0.0f, 1.0f)
                         : 0.0f;
                 Progress(sdraw, Rect{infoX, barY, infoX + barW, barY + 4.0f}, ratio, false, true);
-                sdraw->AddText(durFont, 10.5f,
-                              ImVec2(infoX + barW + kDurGap, CenterTextY(durFont, 10.5f, rowCy)),
-                              ColorTextMuted(), durText.data(), durText.data() + durText.size());
+                Text(sdraw, ImVec2(infoX + barW + kTlDurGap, CenterY(rowCy, durStyle)), cell.durText,
+                     durStyle);
             }
             if (tlHit.clicked) {
                 // 走 SelectBookShot 而不是就地写 `s.selectedShot` + RebuildBookSide：

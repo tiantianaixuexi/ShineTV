@@ -8,6 +8,8 @@
 //    这段必须跟着走，否则下一个人会照着 pipeline/StopPolicy.cpp 再标一遍 S1。
 #include "ui/imgui/pages/Overview.h"
 
+#include "ui/imgui/kit/Text.h"
+
 #include "novel/NovelRunLoop.h"
 
 namespace shine::pages {
@@ -45,25 +47,25 @@ Rect DrawStopRuleTable(ImDrawList* draw, Rect content, float s12Top) {
         const std::string codeText(novelcore::StopCodeName(code));
         const std::string_view cond = novelcore::StopCodeCondition(code);
         const std::string_view hint = novelcore::StopCodeHint(code);
-        draw->AddText(MonoAt(11.0f), 11.0f, ImVec2(s12Body.min.x, sry + 1.0f), ColorTextMuted(),
-                      codeText.data(), codeText.data() + codeText.size());
-        DrawTextClipped(draw, FontAt(11.5f), 11.5f, ImVec2(s12Body.min.x + 34.0f, sry),
-                        s12Body.width() * 0.56f, ColorTextSecondary(), cond, true);
+        Text(draw, ImVec2(s12Body.min.x, sry + 1.0f), codeText,
+             TextStyle{.size = theme::font::kMicro, .mono = true, .color = ColorTextMuted()});
+        TextClipped(draw, ImVec2(s12Body.min.x + 34.0f, sry), s12Body.width() * 0.56f, cond,
+                    TextStyle{.size = theme::font::kLabel, .color = ColorTextSecondary()}, true);
         // 右半列给「停下后该做什么」（`StopCodeHint`）—— 判据说明**什么时候停**，
         // 提示说明**停下之后怎么办**，两者缺一这条规则就没法用。
-        DrawTextClipped(draw, FontAt(11.0f), 11.0f,
-                        ImVec2(s12Body.min.x + s12Body.width() * 0.58f, sry),
-                        s12Body.width() * 0.42f, ColorTextMuted(), hint, true);
+        TextClipped(draw, ImVec2(s12Body.min.x + s12Body.width() * 0.58f, sry),
+                    s12Body.width() * 0.42f, hint,
+                    TextStyle{.size = theme::font::kMicro, .color = ColorTextMuted()}, true);
         sry += kStopRuleRowH;
     }
     // ⚠️ 诚实标注：这是**规则表**，不是实时状态。真正的逐条判定发生在
     //    `novelcore::EvaluateStop`，它要一整轮跑出来的现场数字（各 check_id 失败
     //    次数、评审 FAIL 累计、引用缺失计数…），而本页没有跑起来的章，没有那些数。
     //    画成「已触发 / 未触发」就是编状态 —— 那正是本轮清掉的那类假数据。
-    DrawTextClipped(draw, FontAt(10.5f), 10.5f, ImVec2(s12Body.min.x, sry + 2.0f),
-                    s12Body.width(), ColorTextMuted(),
-                    "规则表（`09` §2.2，novelcore::StopCodeCondition / StopCodeHint）。"
-                    "逐条判定发生在跑完一章之后，本页没有现场数字，故不标触发状态。");
+    TextClipped(draw, ImVec2(s12Body.min.x, sry + 2.0f), s12Body.width(),
+                "规则表（`09` §2.2，novelcore::StopCodeCondition / StopCodeHint）。"
+                "逐条判定发生在跑完一章之后，本页没有现场数字，故不标触发状态。",
+                TextStyle{.size = theme::font::kSmall, .color = ColorTextMuted()});
     return s12;
 }
 

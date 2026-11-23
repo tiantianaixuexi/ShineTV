@@ -1,5 +1,6 @@
 #include "ui/imgui/kit/Widget_Table.h"
 
+#include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Widget_Badge.h"
@@ -79,7 +80,14 @@ float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& c
         if (column.sortable) {
             const Rect hitRect = RectAt(bounds.min.x + offsets[c], y, offsets[c + 1] - offsets[c],
                                         headH);
-            if (detail::HitTestItem(hitRect, detail::UniqueId(id, static_cast<int>(c))).clicked) {
+            // 列 id 栈上拼（每帧 × 每可排序列都走这里，不许堆分配）。
+            char colIdBuf[160];
+            std::string colIdOverflow;
+            if (detail::HitTestItem(
+                    hitRect,
+                    detail::FormatUniqueId(colIdBuf, sizeof(colIdBuf), id, "", static_cast<int>(c),
+                                           &colIdOverflow))
+                    .clicked) {
                 if (sort.column == static_cast<int>(c)) {
                     sort.ascending = !sort.ascending;
                 } else {
@@ -128,15 +136,25 @@ float DataTable(ImDrawList* draw, Rect bounds, const std::vector<TableColumn>& c
     for (std::size_t r = 0; r < rows.size(); ++r) {
         const TableRow& row = rows[r];
         const Rect rowRect = RectAt(bounds.min.x, y, bounds.width(), rowH);
-        const Hit hit = detail::HitTestItem(rowRect,
-                                           detail::UniqueId(std::string(id) + "#r", static_cast<int>(r)));
+        // 行 id（"<id>#r##<r>"）栈上拼，同上。
+        char rowIdBuf[160];
+        std::string rowIdOverflow;
+        const Hit hit = detail::HitTestItem(
+            rowRect, detail::FormatUniqueId(rowIdBuf, sizeof(rowIdBuf), id, "#r",
+                                            static_cast<int>(r), &rowIdOverflow));
         if (row.selected) {
             // tr.sel（ui.css:753-759）：fill-selected 底 + inset 2px 0 0 accent 左侧条。
             draw->AddRectFilled(rowRect.min, rowRect.max, ColorFillSelected());
             draw->AddRectFilled(ImVec2(rowRect.min.x, rowRect.min.y),
                                 ImVec2(rowRect.min.x + 2.0f, rowRect.max.y), ColorAccent());
-        } else if (hit.hovered) {
-            draw->AddRectFilled(rowRect.min, rowRect.max, ColorFillHover());
+        } else {
+            // 补间版：行 hover 填色硬切换走 ch0 色补间（kDurFast，含 alpha）；settle 在
+            // 「无填色」一侧目标是全透明 ⇒ 不画，与原样逐像素相同。
+            const ImU32 rowFillNow = TransitionColorTo(
+                hit.tid, 0, hit.hovered ? ColorFillHover() : ImU32(0), kDurFast);
+            if (rowFillNow != 0) {
+                draw->AddRectFilled(rowRect.min, rowRect.max, rowFillNow);
+            }
         }
         for (std::size_t c = 0; c < columns.size() && c < row.cells.size(); ++c) {
             const TableColumn& column = columns[c];

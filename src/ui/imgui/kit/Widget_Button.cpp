@@ -1,5 +1,6 @@
 #include "ui/imgui/kit/Widget_Button.h"
 
+#include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Icon.h"
@@ -63,15 +64,19 @@ float ButtonWidth(ButtonSize size, float iconWidth, float textWidth) {
 
 bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonSpec& spec,
             std::string_view id) {
-    const Hit hit = detail::HitTestItem(bounds, id);
     const bool enabled = !spec.disabled && !spec.loading;
+    const Hit hit = detail::HitTestItem(bounds, id, enabled);
 
-    // :active scale(.97) —— 按下时整体缩到 97%，绕自身中心。
+    // :active scale(.97) —— 按下时整体缩到 97%，绕自身中心。补间版：按下/松开
+    // 都走 kDurFast 数值补间（pinned 期间直接落终值 ⇒ 取证终态与硬切换逐像素同，
+    // press01=1 时 half=0.485 与原式完全一致）。
     Rect body = bounds;
-    if (hit.held && enabled) {
+    const float press01 = TransitionFloatTo(hit.tid, 1, hit.held && enabled, kDurFast);
+    if (press01 > 0.001f) {
+        const float half = 0.5f - 0.015f * press01;
         const ImVec2 c = bounds.center();
-        body.min = ImVec2(c.x - bounds.width() * 0.485f, c.y - bounds.height() * 0.485f);
-        body.max = ImVec2(c.x + bounds.width() * 0.485f, c.y + bounds.height() * 0.485f);
+        body.min = ImVec2(c.x - bounds.width() * half, c.y - bounds.height() * half);
+        body.max = ImVec2(c.x + bounds.width() * half, c.y + bounds.height() * half);
     }
 
     const float rounding = spec.size == ButtonSize::Large ? 10.0f : 6.0f;
@@ -82,50 +87,58 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
     ImU32 border = 0;
     ImU32 text = ColorTextSecondary();
     switch (spec.variant) {
-    case ButtonVariant::Primary:
+    case ButtonVariant::Primary: {
         // .btn-primary（ui.css:51-59）：常态是**纯 accent 底** + inset 顶高光，
-        // accent-h 渐变和 --shadow-accent 辉光都只在 :hover。早先常态就画
-        // accent→accent-h 斜渐变 + 常驻 28% 外光环，比设计稿重一档。
-        if (hit.hovered && enabled) {
-            DrawRoundRect(draw, body.min, body.max, rounding, accentHover, 0, 0.0f,
-                          /*topHighlight=*/true);
-            // hover 才有的 accent 28% 外扩辉光
+        // accent-h 渐变和 --shadow-accent 辉光都只在 :hover。补间版：底色
+        // kDurFast 交叉渐变、辉光 alpha 跟 hover01 起落（kDurBase）——终值与
+        // 原硬切换逐值相同。
+        const ImU32 fillNow = TransitionColorTo(
+            hit.tid, 0, (hit.hovered && enabled) ? accentHover : accent, kDurFast);
+        const float glow01 = TransitionFloatTo(hit.tid, 2, hit.hovered && enabled, kDurBase);
+        DrawRoundRect(draw, body.min, body.max, rounding, fillNow, 0, 0.0f,
+                      /*topHighlight=*/true);
+        if (glow01 > 0.001f) {
+            // hover 才有的 accent 28% 外扩辉光（alpha 随 hover01 起落）
             const Rect halo{body.min - ImVec2(0, 2), body.max + ImVec2(0, 2)};
             DrawRoundRect(draw, halo.min, halo.max, rounding + 2.0f, 0,
-                          ColorOf(theme::CurrentDerived().btnPrimaryShadow), 2.0f);
-        } else {
-            DrawRoundRect(draw, body.min, body.max, rounding, accent, 0, 0.0f,
-                          /*topHighlight=*/true);
+                          WithAlpha(ColorOf(theme::CurrentDerived().btnPrimaryShadow), glow01),
+                          2.0f);
         }
         text = ColorAccentFg();
         break;
+    }
     case ButtonVariant::Secondary:
         // .btn-secondary（ui.css:60-68）：常态 bg-elevated + line-normal 边；
-        // hover 换 fill-hover 底并把边提到 line-strong。
-        if (hit.hovered && enabled) {
-            fill = ColorFillHover();
-            border = ColorLineStrong();
-        } else {
-            fill = ColorElevated();
-            border = ColorLineNormal();
-        }
+        // hover 换 fill-hover 底并把边提到 line-strong。两槽都补间。
+        fill = TransitionColorTo(hit.tid, 0,
+                                 (hit.hovered && enabled) ? ColorFillHover() : ColorElevated(),
+                                 kDurFast);
+        border = TransitionColorTo(hit.tid, 2,
+                                   (hit.hovered && enabled) ? ColorLineStrong() : ColorLineNormal(),
+                                   kDurFast);
         text = ColorText();
         break;
     case ButtonVariant::Danger:
         // .btn-danger（ui.css:77-85）：常态透明底 + line-normal 边，红只用在文字；
-        // hover 才升到 14% 红底 + 42% 红边。
-        if (hit.hovered && enabled) {
-            fill = WithAlpha(ColorOf(theme::Current().statusDanger), 0.14f);
-            border = WithAlpha(ColorOf(theme::Current().statusDanger), 0.42f);
-        } else {
-            fill = 0;
-            border = ColorLineNormal();
-        }
+        // hover 才升到 14% 红底 + 42% 红边。补间含 alpha 通道。
+        fill = TransitionColorTo(hit.tid, 0,
+                                 (hit.hovered && enabled)
+                                     ? WithAlpha(ColorOf(theme::Current().statusDanger), 0.14f)
+                                     : ImU32(0),
+                                 kDurFast);
+        border = TransitionColorTo(
+            hit.tid, 2,
+            (hit.hovered && enabled) ? WithAlpha(ColorOf(theme::Current().statusDanger), 0.42f)
+                                     : ColorLineNormal(),
+            kDurFast);
         text = ColorOf(theme::Current().statusDanger);
         break;
     case ButtonVariant::Ghost:
-        fill = hit.hovered && enabled ? ColorFillHover() : 0;
-        text = hit.hovered && enabled ? ColorText() : ColorTextSecondary();
+        fill = TransitionColorTo(hit.tid, 0,
+                                 (hit.hovered && enabled) ? ColorFillHover() : ImU32(0), kDurFast);
+        text = TransitionColorTo(hit.tid, 3,
+                                 (hit.hovered && enabled) ? ColorText() : ColorTextSecondary(),
+                                 kDurFast);
         break;
     }
     if (spec.variant != ButtonVariant::Primary) {
@@ -177,7 +190,7 @@ bool Button(ImDrawList* draw, Rect bounds, std::string_view label, const ButtonS
 // ------------------------------------------------------------------ 2 IconBtn
 bool IconButton(ImDrawList* draw, Rect bounds, std::string_view icon, bool active, bool disabled,
                 std::string_view id, std::string_view tip) {
-    const Hit hit = detail::HitTestItem(bounds, id);
+    const Hit hit = detail::HitTestItem(bounds, id, !disabled);
     const bool small = bounds.width() <= 24.0f;
     const float iconSize = small ? 13.0f : 16.0f;
     ImU32 fill = 0;
@@ -190,9 +203,14 @@ bool IconButton(ImDrawList* draw, Rect bounds, std::string_view icon, bool activ
     if (active) {
         fill = ColorFillSelected();
         text = ColorAccent();
-    } else if (hit.hovered && !disabled) {
-        fill = ColorFillHover();
-        text = ColorText();
+    } else {
+        // hover 底/字色补间（终值与原硬切换逐值相同）
+        fill = TransitionColorTo(hit.tid, 0,
+                                 (hit.hovered && !disabled) ? ColorFillHover() : ImU32(0),
+                                 kDurFast);
+        text = TransitionColorTo(hit.tid, 3,
+                                 (hit.hovered && !disabled) ? ColorText() : ColorTextMuted(),
+                                 kDurFast);
     }
     DrawRoundRect(draw, bounds.min, bounds.max, 6.0f, fill);
     if (disabled) {

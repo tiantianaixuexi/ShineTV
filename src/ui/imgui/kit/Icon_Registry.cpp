@@ -10,9 +10,10 @@ namespace shine::kit {
 namespace {
 
 // Icon.jsx:3-48 的 46 条 d 路径，逐字照抄（24 网格 / 1.6 描边）。
-// 末尾两个是本实现补的：minus（真正的减号，JSX 把 x 当减号用）与
-// flow（Gallery.jsx:140 传了未定义名字被兜底吞掉的 bug）。
-const std::array<std::pair<std::string_view, const char*>, 48> kIconPaths{{
+// 末尾几个是本实现补的：minus（真正的减号，JSX 把 x 当减号用）、
+// flow（Gallery.jsx:140 传了未定义名字被兜底吞掉的 bug）、
+// chevron-left（JSX 是给 `chevron` 加 CSS rotate(180deg)，本版 DrawIcon 不旋转）。
+const std::array<std::pair<std::string_view, const char*>, 50> kIconPaths{{
     {"gauge", "M12 13.5a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6Zm1.6-2.7 3.4-3.4M4 20h16M5.5 17a8 8 0 1 1 13 0"},
     {"book", "M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15.5H6.5A1.5 1.5 0 0 0 5 20V4.5ZM5 18.5A1.5 1.5 0 0 1 6.5 17H19M8.5 7h7M8.5 10h4"},
     {"masks", "M4.5 5.5c2.3-1.2 4.7-1.2 7 0v6.2c0 2.8-1.6 4.8-3.5 4.8S4.5 14.5 4.5 11.7V5.5ZM11.5 5.5c2.3-1.2 4.7-1.2 7 0v6.2c0 2.8-1.6 4.8-3.5 4.8M7 9h2.2M14 9h2.2M7.2 12.2c.9.7 1.8.7 2.7 0M14.2 12.2c.9.7 1.8.7 2.7 0"},
@@ -27,6 +28,11 @@ const std::array<std::pair<std::string_view, const char*>, 48> kIconPaths{{
     {"minus", "M5 12h14"},
     {"x", "M6 6l12 12M18 6 6 18"},
     {"chevron", "M9 5.5 15.5 12 9 18.5"},
+    // 左向 chevron。设计稿里没有这个字形 —— 它把同一个 `chevron` 用 CSS
+    // `transform: rotate(180deg)` 掉头（FileViewer.jsx:163）。本版 `DrawIcon` 是按
+    // 24 网格直接描路径、不支持旋转，所以补一条**镜像**路径：把 `chevron` 的每个顶点
+    // 按 x' = 24 - x 翻过去（9→15 / 15.5→8.5 / 9→15），与旋转 180° 视觉一致。
+    {"chevron-left", "M15 5.5 8.5 12 15 18.5"},
     {"chevdown", "M5.5 9 12 15.5 18.5 9"},
     {"check", "M4.5 12.5 10 18 19.5 6.5"},
     {"alert", "M12 8.5V13m0 3.2h.01M10.3 4.2 2.8 17a1.6 1.6 0 0 0 1.4 2.4h15.6a1.6 1.6 0 0 0 1.4-2.4L13.7 4.2a1.6 1.6 0 0 0-2.8 0Z"},
@@ -61,6 +67,9 @@ const std::array<std::pair<std::string_view, const char*>, 48> kIconPaths{{
     {"users", "M9 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm-6 8c.6-3.4 3-5.5 6-5.5s5.4 2.1 6 5.5m1-13.9a3.5 3.5 0 0 1 0 6.8m1.7 2.4c2 .7 3.5 2.4 4 4.7"},
     {"bolt2", "M8 3h8l-1 6h4L8.5 21l1.5-8H5L8 3Z"},
     {"flow", "M4 6.5A1.5 1.5 0 0 1 5.5 5h13A1.5 1.5 0 0 1 20 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-11ZM7.5 9.5h4M15 14.5h-4m2.5-2.5L12 9.5m0 5 2.5 2.5"},
+    // 音符。webui 的 Icon.jsx 在「节点式工作流」里为「音乐音效」节点补了这条，
+    // 这里同步补（否则 DrawIcon 会静默回落到 info —— 与 flow 那条同款坑）。
+    {"music", "M9 18.5V6.2l10-2v12.3M9 18.5a2.6 2.6 0 1 1-2.6-2.6A2.6 2.6 0 0 1 9 18.5Zm10-2.2a2.6 2.6 0 1 1-2.6-2.6A2.6 2.6 0 0 1 19 16.3Z"},
 }};
 
 class IconRegistry {

@@ -87,9 +87,8 @@ pipeline::StopDecision EvaluateStopPolicy(const pipeline::Budget& budget) {
 }
 
 std::string Money(double value) {
-    char buf[48];
-    std::snprintf(buf, sizeof(buf), "¥%.2f", value);
-    return buf;
+    // 浮点转字符串走 zmij 定点（kit/Fmt.h，第二十轮）—— 与 DurationText 同一条出口。
+    return kit::Fmt("¥{}", kit::Fixed(value, 2));
 }
 
 void StartRun(OverviewRun& s, int steps) {

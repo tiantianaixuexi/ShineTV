@@ -11,6 +11,8 @@ source_of_truth:
 last_verified: 2026-09-30
 ---
 
+> **本页回答**：业务层 + ImGui 界面层怎么分、线程契约、纹理与图片路径、门禁规则。
+
 # 目标架构：业务层 + ImGui 界面层
 
 > 本文描述**现状**。历史（Qt 前端、`docs/` 旧文档树、迁移期双前端共存）只在 git 里。
@@ -88,7 +90,7 @@ ConfigureAppDataSandbox()        ← 必须在读任何路径之前（它改 %AP
 | 3 | 调用点禁止硬编码颜色字面量 —— 颜色只从 `theme/` 来 |
 
 `check-colors.ps1` 只认字面量（`IM_COL32` / `ImVec4(数字…)` / `"#rrggbb"` / `0xAARRGGBB`），
-不拦从 token 来的值。**已知盲区**：抓不到 `ImU32(0x…)` 形态（实例见 `PROGRESS.md`）。
+不拦从 token 来的值。**已知盲区**：抓不到 `ImU32(0x…)` 形态（实例见 `进度.md`）。
 
 ---
 

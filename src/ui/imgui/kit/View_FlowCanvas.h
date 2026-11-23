@@ -59,6 +59,6 @@ void FlowFit(const std::vector<FlowNode>& nodes, Rect bounds, float fitInset, Fl
 // 画一整张画布。nodes 会被就地改写（拖拽/平移），selectedInOut 读写选中项。
 void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
                 const std::vector<FlowLink>& links, FlowView& view, int& selected,
-                float fitInset = 0.0f);
+                float fitInset = 0.0f, bool zoomWithCtrl = false);
 
 } // namespace shine::kit

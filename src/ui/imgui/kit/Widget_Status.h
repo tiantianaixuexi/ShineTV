@@ -21,13 +21,27 @@ void Progress(ImDrawList* draw, Rect bounds, float value, bool run, bool thin);
 // ---- 16. Empty（UI.jsx:154）----
 // 居中 gap10 pad 40/20；字形 52×52 r14 虚线边 + 24px 图标 + 4s 上下浮动；
 // 标题 13/600；正文 max-w 320
+[[nodiscard]] float EmptyHeight(float width, std::string_view title, std::string_view body);
 void Empty(ImDrawList* draw, Rect bounds, std::string_view icon, std::string_view title,
            std::string_view body);
 
 // ---- 17. KV（UI.jsx:165）----
+[[nodiscard]] constexpr float KeyValuesHeight(std::size_t rows) { return 20.0f * rows; }
 // 网格 auto 1fr gap 6px 14px，12.5；键 muted，值 primary/500
 void KeyValues(ImDrawList* draw, Rect bounds,
                const std::vector<std::pair<std::string, std::string>>& rows);
+
+// KV 表的一行（key/value 都是有主字符串）。缓存版 KeyValues 用：页面把整张表
+// 存成数组，**数据变了才改**，每帧只把指针递给绘制 —— 不再每帧构造
+// initializer_list<pair<string,string>>（那是每帧十几次分配，检查器 / 详情卡
+// 一天到晚都在画）。
+struct KVRow {
+    std::string key;
+    std::string value;
+};
+
+// 缓存版入口：直接吃数组。行数由调用方给（同一张表在不同分支可能行数不同）。
+void KeyValues(ImDrawList* draw, Rect bounds, const KVRow* rows, std::size_t count);
 
 // ---- 18. Spinner（ui.css:457）----
 // 14×14 圆环 2px 边（line-normal），顶边 accent，0.7s/圈；sm 11×11 边宽 1.5。

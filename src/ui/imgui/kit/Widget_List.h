@@ -7,6 +7,7 @@
 #include "ui/imgui/kit/Widget_Core.h"
 
 #include <functional>
+#include <optional>
 #include <string_view>
 
 namespace shine::kit {
@@ -33,7 +34,7 @@ struct ListRowSpec {
     std::string_view icon;       // 可空
     std::string_view title;      // 主文字
     std::string_view trailing;   // 可空：右侧次要文字
-    std::string_view chevron;    // 默认 "chevron"；传空串则不画
+    std::string_view chevron;    // 传 "chevron" 显示箭头，空串不画
     bool selected = false;       // 选中底（fill-selected）
     bool disabled = false;       // 降低对比度
     float iconSize = 16.0f;
@@ -55,6 +56,7 @@ struct ListRowSpec {
     // 图标色。0 = text-muted。产物行的文件夹图标是 accent-hover 色（它是个
     // 可点开实体的标记），别在迁移时统一成 muted。
     ImU32 iconColor = 0;
+    std::optional<float> rightPaddingX;  // 未指定时左右都使用 paddingX
 };
 // 返回本帧的 Hit（见上：hovered 与 clicked 必须来自同一次命中测试）。
 Hit ListRow(ImDrawList* draw, Rect bounds, const ListRowSpec& spec);

@@ -81,21 +81,22 @@ std::vector<FlowNode> MakeImageFlowNodes() {
     if (book.selectedChapter >= 0 &&
         book.selectedChapter < static_cast<int>(book.chapters.size())) {
         const BookChapterView& ch = book.chapters[static_cast<std::size_t>(book.selectedChapter)];
-        chapterSub = "第 " + std::to_string(ch.ord) + " 章" +
-                     (ch.title.empty() ? "" : " · " + ch.title);
+        chapterSub = kit::Fmt("第 {} 章{}", ch.ord,
+                              ch.title.empty() ? "" : " · " + ch.title);
         chapterState = ch.words > 0 ? FlowState::Done : FlowState::Todo;
     }
     const bool comfying = ComfyHasRunning();
     const int ready = ReadyAssetCount(book);
     const std::vector<Def> defs = {
         {1, "book", "章节", chapterSub, chapterState},
-        {2, "text", "提示词", "本章 " + std::to_string(book.shots.size()) + " 镜", chapterState},
-        {3, "masks", "角色参考", ready > 0 ? (std::to_string(ready) + " 个实体已出图")
+        {2, "text", "提示词", kit::Fmt("本章 {} 镜", book.shots.size()), chapterState},
+        {3, "masks", "角色参考", ready > 0 ? kit::Fmt("{} 个实体已出图", ready)
                                           : std::string("还没有实体出图"),
          ready > 0 ? FlowState::Done : FlowState::Todo},
         {4, "image", "姿势骨架",
-         book.shots.empty() ? kDash : (ShotCode(book.shots.front().ord) + " 起 " +
-                                       std::to_string(book.shots.size()) + " 镜"),
+         book.shots.empty() ? kDash
+                            : kit::Fmt("{} 起 {} 镜", ShotCode(book.shots.front().ord),
+                                       book.shots.size()),
          comfying ? FlowState::Running : FlowState::Todo},
         {5, "wand", "KSampler",
          comfying ? "队列里有任务在跑" : std::string("队列里没有任务"),
@@ -147,9 +148,7 @@ std::vector<FlowNode> MakeVideoFlowNodes() {
         //    （本章各镜 durationSec 之和），所以报「N 镜 / 共 Xs」；采样参数本身
         //    没有只读投影，就不编。
         {3, "wand", "H3 生成",
-         book.shots.empty() ? kDash
-                            : (std::to_string(book.shots.size()) + " 镜 / 共 " +
-                               std::to_string(totalSec) + "s"),
+         book.shots.empty() ? kDash : kit::Fmt("{} 镜 / 共 {}s", book.shots.size(), totalSec),
          comfying ? FlowState::Running : FlowState::Todo},
         {4, "zap", "RIFE 补帧", kDash, FlowState::Todo},
         {5, "encode", "编码", kDash, FlowState::Todo},

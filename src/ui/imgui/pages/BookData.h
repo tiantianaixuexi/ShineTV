@@ -73,6 +73,21 @@ struct BookShot {  // 分镜页的镜头（shots 表一行）
     // 表上还专门建了 `idx_gimg_source(source_kind, source_id)`。
     // 空 = 这一镜还没出图（或出图失败）⇒ 分镜页回退到设计稿那张 `Art` 占位。
     std::string imageRelPath;
+    // 成图那一行的**生成参数**（同一行 `generated_images`，与 imageRelPath 同一处、
+    // 同一次查询取出来的）。出图页「结果」页签的 KV 要把它们画出来 ——
+    // 设计稿 `ImageFlow.jsx:165-170` 第 4 行是 `Prompt`。
+    //
+    // ⚠️ 这一族早先被**删掉过一次**：当年因为「生成参数没有只读投影」而把那一行去掉，
+    //    中途还编过一版假的（尺寸/步数/种子/耗时），被记在案。别走回去 ——
+    //    `prompt / model / steps / width / height` 就在 `generated_images` 同一行里，
+    //    结果页签读的正是那一行的 `rel_path`。
+    // ⚠️ 全空 = 这一镜没有成图行 ⇒ 那两行 KV **不画**（不编版本号、不补默认值）。
+    //    字段为单位 0 / 空串就是「库里没记」—— 与「记了一个 0」在界面上不是同一件事。
+    std::string imagePrompt;  // generated_images.prompt
+    std::string imageModel;   // generated_images.model
+    int imageSteps = 0;       // generated_images.steps
+    int imageWidth = 0;       // generated_images.width
+    int imageHeight = 0;      // generated_images.height
 };
 
 // 检查器「关联」段的**场 → 伏笔**链路（scenes + scene_foreshadows + foreshadows）。
@@ -128,6 +143,9 @@ struct BookState {
     std::vector<std::array<int, 7>> chapterVStages;
     std::vector<BookAsset> assets;
     std::vector<BookShot> shots;  // 当前章
+    // 最近的出图产物（`generated_images`，最新在前，最多 5 条）。总控「最近产物」卡的
+    // 缩略图用它 —— 见 `BookRecentImage` 的注释（T 链账本在真实运行里恒为空）。
+    std::vector<BookRecentImage> recentImages;
     std::vector<BookSceneLink> sceneLinks;  // 当前章：场序 + 场标题 + 该场伏笔标题
     BookContinuity continuity;    // 当前章
     // V1–V7 有阶段产物 / V8 跑过连续性 —— 逐项来自真实表，不整条一起亮
@@ -158,14 +176,14 @@ struct BookState {
 // ApplyBook 并进来），不对页面之外暴露。
 BookState& Book();
 
-// 重新读一轮 novel.db。**立即**把 loading 翻真并重建外壳视图，然后派发 worker；
+// 重新读一轮 novel.db。**立即**同步 loading 到外壳视图，然后派发 worker；
 // 结果回投时按 generation 丢弃过期的那一份。
 void RequestBookReload();
 
 // 把 ContinuityIssue::detail 里的镜对从**库主键**换成镜码：`镜 #128→#131：…` →
 // `镜 S004 → S005：…`。
 //
-// ⚠️ refactor/PROGRESS.md 曾把「镜与镜的关联接不上」记成「ContinuityIssue 没有
+// ⚠️ refactor/进度.md 曾把「镜与镜的关联接不上」记成「ContinuityIssue 没有
 //    shot id，要归因必须改 src/novel/」—— **那个归因是错的**。镜对就写在 detail
 //    里（NovelContinuity.cpp 的 C1/C3/C8/C10/C12 五处，格式 `镜 #{}→#{}：…`），
 //    缺的只是「id → 镜码」这一步显示侧映射，shine_core 一个字都不用改。
@@ -201,5 +219,12 @@ void AssetTone(const std::string& status, std::string& label, theme::Tone& tone)
 
 // ---- worker 侧查询，定义在 BookQuery.cpp ----
 void LoadBook(const std::filesystem::path& root, int wantChapter, BookState& out);
+// 切章的**轻量重载**：只取「当前章切片」（场 / 镜 / 逐镜成图 / V1–V8 阶段 / 连续性），
+// 章列表（含全书正文）/ 资产 / recentImages / chapterVStages **全都不碰** ——
+// 切章不该整库重读：500 章时全书正文 ≈ 13MB，白拷一遍还把整份快照换掉、
+// 列表跟着整个刷新（「每点一章列表刷新一次」的元凶）。
+// out 只填切片字段 + error；selectedChapter 由调用方（UI 侧）定好传进来。
+void LoadBookChapterSlice(const std::filesystem::path& root, RowId chapterId, int chapterIndex,
+                          BookState& out);
 
 } // namespace shine::pages

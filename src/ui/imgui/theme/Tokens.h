@@ -135,10 +135,48 @@ inline constexpr std::string_view kFamily = "Segoe UI, Microsoft YaHei UI, PingF
 // tokens.css:195 [data-theme="inkwash"] 覆盖的 --font-ui（衬线族）。只有水墨换。
 inline constexpr std::string_view kFamilySerif = "Segoe UI, Noto Serif SC, Source Han Serif SC, SimSun, serif";
 inline constexpr std::string_view kMonoFamily = "Cascadia Code, JetBrains Mono, Consolas, monospace";
-// base.css 的 body 是 13.5px；QFont::setPixelSize 会把小数量化到整设备像素，
-// 取整到 13 与 ui.css 里显式声明最多的控件字号（.btn/.tabs/.input/.table）同族。
-inline constexpr std::array<int, 6> kSizes = {12, 13, 14, 16, 20, 28}; // xs/sm/md/lg/xl/display
-inline constexpr int kBase = 13;
+
+// ---- 字号 token（float，px）----
+//
+// R3 起**页面只传 token，不写数字字面量**（记忆.md（原 component-reuse.md） §5.2：字号可调整
+// 结构上成立的条件 —— 全局缩放进 Fonts.cpp 的 scale，token 值永远不动）。
+// ⚠️ token 值 = 设计稿的 CSS 像素，**保持半点档**（不要 snap 成整数：整数字号
+//    会让半点设计档被向上取档画大，本仓踩过这个静默偏差）。
+// R3 只定义 PageKpi / Shell_Chrome 两个收编文件用到的档；每收编一批文件把它们
+// 用到的档补进来 —— 判据是「有没有调用点」，与 kit/Fonts.cpp 的 kUiSizes 同一把尺，
+// 不是把 CSS 里出现过的字号全铺一遍。
+//
+// ⚠️ **每一档的注释写的是「设计稿在哪一档用它」，不是「它大概多大」** —— 后者
+//    读起来像参数说明，前者能回答「改这一档会不会连带改坏别处」。design-spec §1.1
+//    是 CSS 实测刻度表，下面逐档对得上它；两处对不上的（kNano）单独标出来。
+//
+// ---- 最细三档（< 11）：右栏注记族 ----
+inline constexpr float kNano = 9.0f;        // ⚠️ design-spec §1.1 刻度表**没有 9**，且
+                                            //    `Fonts.cpp` 的 kUiSizes/kMonoSizes 也没有 ⇒
+                                            //    `MonoAt(9.0f)` 取到 9.5f 那档光栅化，而
+                                            //    传给 AddText 的字号实参仍是 9.0。唯一调用点
+                                            //    是总控右栏「材质」小块的等宽字段值。
+inline constexpr float kFine = 9.5f;        // 同上小块的分组小标题（700）与等宽字段值
+inline constexpr float kSmall = 10.5f;      // kbd / tag.sm / chip.cnt / 甘特格 / 表头标签
+                                            // （design-spec §1.1）+ 侧栏 .plabel（shell.css:583-588）
+// ---- 主力档 ----
+inline constexpr float kMicro = 11.0f;      // 最细一行：查看器脚注 / 整版说明（FileViewer.jsx:49 的 .tiny.dim 11px 档）/ .cmdk-foot
+inline constexpr float kLabel = 11.5f;      // 小标签：状态栏 / KPI 标签与脚注
+inline constexpr float kTiny = 12.0f;       // .tiny（base.css:118-120）：单位 / 面包屑
+inline constexpr float kHint = 12.5f;       // 输入提示 / 副标题（.vw-sub）/ .sheet-bar 标题
+inline constexpr float kBody = 13.0f;       // 控件正文：.btn/.tabs/.input/.table 声明最多
+inline constexpr float kBodyLarge = 13.5f;  // base.css body / 顶栏品牌字
+inline constexpr float kTitle = 14.0f;      // 面板标题档：查看器头部等宽文件名（FileViewer.jsx:158 内联 14）/ .drawer-h
+// ---- 标题族（> 14）----
+inline constexpr float kCardTitle = 14.5f;  // 项目卡名（design-spec §1.1；项目中心卡 / 新建向导卡）
+inline constexpr float kModal = 15.0f;      // 弹窗标题 / 命令面板输入
+inline constexpr float kPageTitle = 16.0f;  // 小说页模式标题（两行版式里那一行最大的字）
+inline constexpr float kViewTitle = 18.0f;  // 区块 h3 / 视图大标题（design-spec §1.1 的 17/18 档）
+inline constexpr float kChapter = 20.0f;    // 章节标题
+inline constexpr float kValue = 24.0f;      // KPI 数值（views.css:444）
+inline constexpr float kHubBrand = 34.0f;   // 项目中心品牌字（第十七轮定的版式，不是刻度表那一档）
+inline constexpr float kBase = kBody;       // 默认字体档（Fonts.cpp 的 io.FontDefault）
+// 字重：msyh 只有 400/700 两档，600/800 落 Bold（kit/Fonts.h 顶部）。
 inline constexpr int kRegular = 400;
 inline constexpr int kSemibold = 600;
 } // namespace font

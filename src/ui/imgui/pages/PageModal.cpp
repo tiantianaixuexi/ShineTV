@@ -1,5 +1,6 @@
 #include "ui/imgui/pages/PageModal.h"
 
+#include "ui/imgui/kit/Text.h"
 #include "ui/imgui/pages/PageCommon.h"
 
 #include <cstring>
@@ -53,8 +54,9 @@ std::vector<int> DrawModalFooter(ImDrawList* draw, Rect footer,
 }
 
 void ModalFooterHint(ImDrawList* draw, Rect footer, std::string_view text) {
-    draw->AddText(FontAt(11.0f), 11.0f, ImVec2(footer.min.x + 20.0f, footer.center().y - 5.5f),
-                  ColorTextMuted(), text.data(), text.data() + text.size());
+    // R3 收编：裸 AddText → kit::Text；11.0 = kMicro 档（模态页脚提示，第二十二轮）。
+    const TextStyle hintStyle{.size = theme::font::kMicro, .color = ColorTextMuted()};
+    kit::Text(draw, ImVec2(footer.min.x + 20.0f, footer.center().y - 5.5f), text, hintStyle);
 }
 
 } // namespace shine::pages

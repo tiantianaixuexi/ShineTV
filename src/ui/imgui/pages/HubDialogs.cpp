@@ -6,6 +6,8 @@
 #include "ui/imgui/pages/Hub.h"
 
 #include "project/ProjectIndex.h"
+#include "ui/imgui/kit/Text.h"
+#include "ui/imgui/kit/ScrollList.h"
 #include "ui/imgui/pages/PageCommon.h"
 #include "ui/imgui/pages/PageModal.h"
 #include "util/Encoding.h"
@@ -21,108 +23,89 @@ namespace hub {
 using namespace shine::kit;
 
 void DrawOpenDialog(HubState& hub, Rect area, ImDrawList* draw) {
-    bool dismissOpen = false;
-    const ModalBox box = DrawModal(draw, area, "打开项目", "folder", 520.0f, 440.0f,
-                                   hub.dismissArmed ? &dismissOpen : nullptr);
-    if (dismissOpen) {
+    bool dismiss = false;
+    const ModalBox box = DrawModal(draw, area, "打开项目", "folder", 660.0f, 484.0f,
+                                   hub.dismissArmed ? &dismiss : nullptr);
+    if (dismiss) {
         hub.openDlg = false;
+        return;
     }
-    // 右上角标出列表的真实来源（索引文件所在目录）
-    const std::string indexDir = util::PathToUtf8(project::DefaultIndexFile().parent_path());
-    const float indexW = LabelWidth(FontAt(11.5f), 11.5f, indexDir.c_str());
-    DrawTextClipped(draw, FontAt(11.5f), 11.5f,
-                    ImVec2(box.header.max.x - 20.0f - indexW, box.header.center().y - 5.75f),
-                    indexW + 1.0f, ColorTextMuted(), indexDir);
+    // 搜索框（主屏 hub-search 同款 kit::Input）：名称 / 创意 / 路径任一命中即保留。
+    // ⚠️ 过滤必须排在输入**之后**：本帧敲进来的字立刻生效（ProjectHub 工具条同款时序）。
+    // ⚠️ 返回值必须吃：kit::Input 是 EnterReturnsTrue、回车才为真 —— 这里当
+    //    「Enter = 打开第一条命中」用；丢弃返回值 = 回车什么都不发生。
+    // openSearchRect 每帧写下：判据点它拿键盘焦点（settingsClose_ 同款「几何只有一份」）。
+    const Rect search = RectAt(box.body.min.x + 20.0f, box.body.min.y + 12.0f,
+                               box.body.width() - 40.0f, 30.0f);
+    hub.openSearchRect = search;
+    const bool submit =
+        Input(draw, search, hub.openQuery, "搜索项目名称、创意或路径…", "hub-open-search");
+    RefilterOpen(hub);
 
+    const Rect list{ImVec2(box.body.min.x + 20.0f, box.body.min.y + 52.0f),
+                    ImVec2(box.body.max.x - 20.0f, box.body.max.y - 12.0f)};
+
+    int picked = -1;
     if (hub.cards.empty()) {
-        Empty(draw, Rect{box.body.min.x, box.body.min.y, box.body.max.x, box.body.max.y}, "folder",
-              "还没有可打开的项目", "先新建一个项目，或把已有项目目录登记进来");
+        Empty(draw, list, "folder", "没有最近项目", "通过「浏览目录」打开已有项目");
+    } else if (hub.openShown.empty()) {
+        // 没匹配与没项目是两件事（同 ProjectHub 的空态口径）：搜索词还在框里，
+        // 「请换个搜索词」自己解释自己。
+        Empty(draw, list, "search", "没有匹配的项目", "请换个搜索词");
     } else {
-        float y = box.body.min.y + 6.0f;
-        for (const HubCard& card : hub.cards) {
-            const Rect row{box.body.min.x + 12.0f, y, box.body.max.x - 12.0f, y + 62.0f};
-            // 「打开…」列表行走 kit::ListCard（`.card.hoverable`，ProjectHub.jsx:226）。
-            // 两行文字块原来自己排 `row.min.y + 12` 与 `+ 34`，块中心偏上 1.875px。
-            //
-            // ⚠️ 「打开」按钮必须由 ListCard 的 footer 回调画 —— 原代码把它排在
-            // 整行 HitTest **之后**，而 ImGui 同窗口内先注册者独占 HoveredId
-            //（imgui.cpp:5161），于是那个按钮永远 clicked=false。它当时没暴露，
-            // 只因为外面还写了 `|| hit.clicked` 兜底，整卡点击把功能兜住了 ——
-            // 按钮画得出来、按下去没反应。footer 在整卡命中**之后**调用，顺序对了。
-            const std::string meta =
-                card.tplName.empty() ? ("最近 " + card.when) : (card.tplName + " · " + card.when);
-            bool openPressed = false;
-            kit::ListCardSpec spec;
-            spec.id = "hub-open-" + std::string(card.entry.id);
-            spec.icon = {}; // 缩略图走 Art，不是 kit 图标
-            spec.title = card.entry.name;
-            spec.description = meta;
-            spec.titleSize = 13.0f;
-            spec.descSize = 11.5f;
-            spec.paddingX = 12.0f;
-            // 缩略图 64 宽 + 10 左内边距 + 12 间距 ⇒ 文字从 +86 起（原代码的 nameX）。
-            spec.textInset = 64.0f + 10.0f + 12.0f;
-            const Rect rowFinal = row;
-            // 缩略图 + 类型 Tag + 「打开」按钮都排在 footer 里，而 footer 由
-            // ListCard 在整卡命中**之后**调用（顺序反了按钮永远点不动）。
-            const kit::Hit cardHit = kit::ListCard(
-                draw, row, spec, [&](ImDrawList* d, Rect footer) {
-                // 封面：程序化插画（无外部资源），64×42。
-                Art(d, Rect{rowFinal.min.x + 10.0f, rowFinal.min.y + 10.0f, rowFinal.min.x + 74.0f,
-                            rowFinal.min.y + 52.0f},
-                    card.artSeed, false);
-                // 类型 Tag 贴在标题右侧（标题行，不是卡心）。
-                if (!card.tplLabel.empty()) {
-                    const theme::Tone tone = card.tplLabel == "小说"  ? theme::Tone::Accent
-                                              : card.tplLabel == "影视" ? theme::Tone::Info
-                                                                        : theme::Tone::Idle;
-                    const float tagW = TagWidth(card.tplLabel, true, false);
-                    const float nameW = LabelWidth(FontBoldAt(13.0f), 13.0f, card.entry.name.c_str());
-                    Tag(d, RectAt(rowFinal.min.x + 86.0f + nameW + 8.0f,
-                                 rowFinal.min.y + 10.0f, tagW, TagHeight(true)),
-                        card.tplLabel, tone, true);
+        constexpr float pitch = 66.0f;
+        ScrollList recent("hub-open-recents", list, static_cast<int>(hub.openShown.size()), pitch,
+                          58.0f, 0.0f, false);
+        if (recent) {
+            for (int i = recent.firstRow(); i < recent.lastRow(); ++i) {
+                const int cardIndex = hub.openShown[static_cast<std::size_t>(i)];
+                const HubCard& card = hub.cards[static_cast<std::size_t>(cardIndex)];
+                ListCardSpec spec;
+                spec.id = card.entry.id;
+                spec.icon = TemplateIcon(card.tplLabel);
+                spec.title = card.entry.name;
+                const std::string path = util::PathToUtf8(card.entry.rootDir);
+                spec.description = path;
+                spec.titleSize = theme::font::kTitle;
+                spec.descSize = theme::font::kTiny;
+                if (ListCard(recent.drawList(), recent.RowRect(i), spec).clicked) {
+                    picked = cardIndex;
                 }
-                ButtonSpec openSpec;
-                openSpec.variant = ButtonVariant::Primary;
-                openSpec.size = ButtonSize::Small;
-                const float openW =
-                    ButtonWidth(ButtonSize::Small, 0.0f, LabelWidth(FontBoldAt(12.0f), 12.0f, "打开"));
-                const Rect openRect{rowFinal.max.x - 14.0f - openW, rowFinal.center().y - 12.0f,
-                                    rowFinal.max.x - 14.0f, rowFinal.center().y + 12.0f};
-                openPressed = Button(d, openRect, "打开", openSpec,
-                                     "hub-open-btn-" + std::string(card.entry.id));
-            });
-            // 整卡点击走 ListCard **返回的同一个 Hit**，不能再补一次 HitTest：
-            // 同窗口内先注册者独占 HoveredId，第二次永远 clicked=false。
-            if (openPressed || cardHit.clicked) {
-                // 先按值取出来：Open 会刷新列表，hub.cards 随即重建
-                const HubCard target = card;
-                hub.openDlg = false;
-                Open(hub, target);
-                return;
             }
-            y += 70.0f;
         }
     }
-
-    ModalFooterHint(draw, box.footer, "单击卡片直接打开");
-    ButtonSpec ghostSpec;
-    ghostSpec.variant = ButtonVariant::Ghost;
-    ButtonSpec folderSpec;
-    folderSpec.variant = ButtonVariant::Ghost;
-    folderSpec.icon = "folder";
-    folderSpec.disabled = hub.cards.empty();
-    const std::vector<ModalAction> actions{
-        {"打开所在文件夹", folderSpec, "hub-open-reveal"},
-        {"关闭", ghostSpec, "hub-open-close"}};
-    const std::vector<int> hit = DrawModalFooter(draw, box.footer, actions);
-    if (hit[0] != 0) {
-        const std::string error = util::ShellReveal(hub.cards.front().entry.rootDir);
-        hub.status = error.empty() ? "已在资源管理器中显示项目目录" : error;
-        hub.statusError = !error.empty();
+    if (submit && !hub.openShown.empty()) {
+        picked = hub.openShown.front(); // Enter = 打开第一条命中（搜索框的回车语义）
     }
-    if (hit[1] != 0) {
+    if (picked >= 0) {
+        Open(hub, hub.cards[static_cast<std::size_t>(picked)]);
+        hub.openDlg = !hub.leaveToWorkspace;
+        return;
+    }
+
+    if (hub.statusError && !hub.status.empty()) {
+        TextClipped(draw, ImVec2(box.footer.min.x, box.footer.min.y + 4.0f), box.footer.width() - 208.0f,
+                    hub.status, TextStyle{.size = theme::font::kTiny, .color = ToneColor(theme::Tone::Danger)},
+                    true);
+    }
+    ButtonSpec browse;
+    browse.variant = ButtonVariant::Primary;
+    browse.icon = "folder";
+    const std::vector<ModalAction> actions{
+        {"取消", ButtonSpec{.variant = ButtonVariant::Ghost}, "hub-open-close"},
+        {"浏览目录", browse, "hub-open-browse"},
+    };
+    const auto hit = DrawModalFooter(draw, box.footer, actions);
+    if (hit[0]) {
         hub.openDlg = false;
+    } else if (hit[1]) {
+        const std::string path = PickFolder();
+        if (!path.empty()) {
+            HubCard card;
+            card.entry.rootDir = util::PathFromUtf8(path);
+            Open(hub, card);
+            hub.openDlg = !hub.leaveToWorkspace;
+        }
     }
 }
 
@@ -133,9 +116,9 @@ void DrawConfirmDialog(HubState& hub, Rect area, ImDrawList* draw) {
     if (dismissConfirm) {
         hub.confirm = false;
     }
-    DrawTextClipped(draw, FontAt(12.5f), 12.5f,
-                    ImVec2(box.body.min.x + 18.0f, box.body.min.y + 18.0f),
-                    box.body.width() - 36.0f, ColorTextSecondary(), hub.confirmBody, true);
+    kit::TextClipped(draw, ImVec2(box.body.min.x + 18.0f, box.body.min.y + 18.0f),
+                     box.body.width() - 36.0f, hub.confirmBody,
+                     TextStyle{.size = theme::font::kHint, .color = ColorTextSecondary()}, true);
     ButtonSpec ghostSpec;
     ghostSpec.variant = ButtonVariant::Ghost;
     ButtonSpec dangerSpec;

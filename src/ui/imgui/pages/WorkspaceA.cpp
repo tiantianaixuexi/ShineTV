@@ -21,6 +21,8 @@
 
 #include "ui/imgui/pages/Overview.h"
 #include "ui/imgui/pages/PageCommon.h"
+#include "ui/imgui/pages/PageKpi.h"  // kKpiCardHeight / kKpiRowGap：gridTop 与卡片用同一份
+#include "ui/imgui/kit/Text.h"
 
 #include <algorithm>
 #include <cstring>
@@ -35,15 +37,26 @@ using namespace shine::kit;
 //    WorkspacePages.h 的公开声明处 —— 它不是总控页的私有物。
 Rect ViewHeader(Rect area, ImDrawList* draw, const char* icon, const char* title,
                 const char* subtitle, Rect* rightOut) {
-    DrawIcon(draw, icon, ImVec2(area.min.x, area.min.y), 20.0f, ColorAccent());
-    draw->AddText(FontBoldAt(18.0f), 18.0f, ImVec2(area.min.x + 28.0f, area.min.y - 2.0f),
-                  ColorText(), title, title + std::strlen(title));
-    draw->AddText(FontAt(12.5f), 12.5f, ImVec2(area.min.x + 28.0f, area.min.y + 22.0f),
-                  ColorTextMuted(), subtitle, subtitle + std::strlen(subtitle));
+    constexpr float pad = 20.0f;
+    const Rect head{area.min, ImVec2(area.max.x, area.min.y + 78.0f)};
+    DrawRoundRect(draw, head.min, head.max, 0.0f, ColorSurface());
+    draw->AddLine(ImVec2(head.min.x, head.max.y - 1.0f), ImVec2(head.max.x, head.max.y - 1.0f),
+                  ColorLineNormal());
+    const Rect mark = RectAt(head.min.x + pad, head.min.y + 17.0f, 42.0f, 42.0f);
+    DrawRoundRect(draw, mark.min, mark.max, 9.0f, ColorOf(theme::CurrentDerived().accentDim));
+    DrawIconCentered(draw, icon, mark.center(), 21.0f, ColorAccent());
+    const float x = mark.max.x + 14.0f;
+    const float right = head.max.x - pad;
+    const float actionsW = rightOut != nullptr ? std::min(320.0f, area.width() * 0.48f) : 0.0f;
+    const float titleW = right - actionsW - x - 12.0f;
+    TextClipped(draw, ImVec2(x, head.min.y + 14.0f), titleW, title,
+                TextStyle{.size = theme::font::kChapter, .bold = true, .color = ColorText()});
+    TextClipped(draw, ImVec2(x, head.min.y + 45.0f), titleW, subtitle,
+                TextStyle{.size = theme::font::kBody, .color = ColorTextSecondary()});
     if (rightOut != nullptr) {
-        *rightOut = Rect{area.max.x - 320.0f, area.min.y, area.max.x, area.min.y + 30.0f};
+        *rightOut = RectAt(right - actionsW, head.min.y + 23.0f, actionsW, 32.0f);
     }
-    return Rect{area.min.x, area.min.y + 48.0f, area.max.x, area.max.y};
+    return Rect{area.min.x + pad, head.max.y + 18.0f, area.max.x - pad, area.max.y};
 }
 
 // ================================================================ P5.1 总控
@@ -58,8 +71,14 @@ void DrawOverview(Rect area, ImDrawList* draw) {
                               "一句话到成片 · 阶段机 / 预算 / 账本 / 检查点", &right);
     overview::DrawHeaderActions(draw, right, s);
 
-    // 1) 运行状态卡 + StageFlow
-    const Rect flowCard{content.min.x, content.min.y, content.max.x, content.min.y + 122.0f};
+    // 1) 运行状态卡：卡头及内边距、状态行、进度条、阶段行，另留原生横向滚动条的高度。
+    const float flowCardHeight = 148.0f + ImGui::GetStyle().ScrollbarSize;
+    // 窄窗下工作区内容比视口宽，运行状态卡贴在可视区内，保证滑块和末阶段都能完整露出。
+    const float inset = content.min.x - area.min.x;
+    const float flowLeft = std::max(content.min.x, draw->GetClipRectMin().x + inset);
+    const float flowRight = std::min(content.max.x, draw->GetClipRectMax().x - inset);
+    const Rect flowCard = RectAt(flowLeft, content.min.y, std::max(0.0f, flowRight - flowLeft),
+                                 flowCardHeight);
     overview::DrawFlowCard(draw, flowCard, s);
 
     // 2) KPI 行
@@ -69,7 +88,10 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     // 3) .grid-3-1（1fr / 300px gap16）
     // ⚠️ gridTop 必须按 KPI 的**实际行数**推，不能当只有一行：auto-fit 排 4 列时
     // 5 个 KPI 会换到第二行，按一行算会让下面的甘特卡盖住第二行卡片（文字直接压在一起）。
-    const float gridTop = kpiTop + (96.0f + 14.0f) * static_cast<float>(kpiRows) + kGap;
+    // ⚠️ 卡高与行距必须取 `PageKpi.h` 的常量：这里原先写死 `(96.0f + 14.0f)`，
+    //    而卡高住在 `PageKpi.cpp` —— 改一处忘一处就会让甘特卡与第二行 KPI 重叠，
+    //    而「重叠」在静息截图上只读成「排版有点挤」。
+    const float gridTop = kpiTop + (kKpiCardHeight + kKpiRowGap) * static_cast<float>(kpiRows) + kGap;
     const float rightW = 300.0f;
     // 右栏按**可视高度**收口，不跟着 2400 的布局区高跑。
     // ⚠️ 跟着布局区高跑的后果是实测出来的：右栏 child 高 1978px，于是它成了
@@ -78,7 +100,7 @@ void DrawOverview(Rect area, ImDrawList* draw) {
     //    期望滚动上限 0）。正文流（左列甘特 + 账本）仍然按布局区高排。
     const float viewportH = pages::WorkspaceViewportHeight();
     const float rightBottom =
-        viewportH > 0.0f ? std::min(content.max.y, area.min.y + viewportH) : content.max.y;
+        std::max(gridTop + 240.0f, std::min(content.max.y, area.min.y + viewportH));
     const Rect left{content.min.x, gridTop, content.max.x - rightW - kGap, content.max.y};
     const Rect rightCol{left.max.x + kGap, gridTop, content.max.x, rightBottom};
 
@@ -89,6 +111,28 @@ void DrawOverview(Rect area, ImDrawList* draw) {
 
     // 5) 右栏四张卡（自带 ScrollRegion）
     const float rightBottomUsed = overview::DrawRightRail(rightCol, s);
+
+    // TEMP-DIAG（用后即删）：把本页的竖直线段打出来，确认 S1–S12 表与右栏是否相交。
+    {
+        static int frame = 0;
+        if (++frame % 30 == 0) {
+            if (FILE* f = std::fopen("build/_ov_layout.txt", "w")) {
+                std::fprintf(f,
+                             "gridTop=%.1f\n"
+                             "gantt=%.1f..%.1f\n"
+                             "ledger=%.1f..%.1f\n"
+                             "s12=%.1f..%.1f\n"
+                             "rightCol=%.1f..%.1f x=%.1f..%.1f\n"
+                             "rightBottomUsed=%.1f\n"
+                             "content x=%.1f..%.1f y=%.1f..%.1f\n",
+                             gridTop, gantt.min.y, gantt.max.y, ledger.min.y, ledger.max.y,
+                             s12.min.y, s12.max.y, rightCol.min.y, rightCol.max.y, rightCol.min.x,
+                             rightCol.max.x, rightBottomUsed, content.min.x, content.max.x,
+                             content.min.y, content.max.y);
+                std::fclose(f);
+            }
+        }
+    }
 
     // ---- 自报本页真实内容高度 ----
     //

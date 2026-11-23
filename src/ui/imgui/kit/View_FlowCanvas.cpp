@@ -1,4 +1,5 @@
 #include "ui/imgui/kit/View_FlowCanvas.h"
+#include "ui/imgui/kit/Scroll.h"
 
 #include <algorithm>
 #include <cmath>
@@ -121,7 +122,8 @@ void FlowFit(const std::vector<FlowNode>& nodes, Rect bounds, float fitInset, Fl
 }
 
 void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
-                const std::vector<FlowLink>& links, FlowView& view, int& selected, float fitInset) {
+                const std::vector<FlowLink>& links, FlowView& view, int& selected, float fitInset,
+                bool zoomWithCtrl) {
     if (nodes.empty()) {
         return;
     }
@@ -129,12 +131,13 @@ void FlowCanvas(ImDrawList* draw, Rect bounds, std::vector<FlowNode>& nodes,
     // ---- 滚轮以光标为锚缩放 ----
     // ⚠️ 必须先确认指针在本区域内，否则滚轮会同时把外层页面滚下去。
     //    手算而不是 ImGui::IsMouseHoveringRect —— 后者在**本工程**会 0xC0000005
-    //    （fault offset 0x8b8597），refactor/PROGRESS.md 有那次崩溃的记录。
+    //    （fault offset 0x8b8597），refactor/进度.md 有那次崩溃的记录。
     const ImVec2 mouse = ImGui::GetMousePos();
-    const bool hovered = bounds.contains(mouse);
-    if (hovered) {
+    const Rect clip{draw->GetClipRectMin(), draw->GetClipRectMax()};
+    const bool hovered = !OverlayMouseGate() && bounds.contains(mouse) && clip.contains(mouse);
+    if (hovered && (!zoomWithCtrl || ImGui::GetIO().KeyCtrl)) {
         if (const float wheel = ImGui::GetIO().MouseWheel; wheel != 0.0f) {
-            const float z2 = std::clamp(view.z * std::exp(-wheel * 0.0014f), 0.35f, 2.0f);
+            const float z2 = std::clamp(view.z * std::pow(1.12f, wheel), 0.35f, 2.0f);
             const float wx = (mouse.x - bounds.min.x - view.x) / view.z;
             const float wy = (mouse.y - bounds.min.y - view.y) / view.z;
             view.z = z2;

@@ -1,6 +1,7 @@
 #include "ui/imgui/kit/Views.h"
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 namespace shine::kit {
@@ -35,6 +36,21 @@ ImU32 Hex(std::string_view text) {
     return ImU32(value | 0xFF000000u);
 }
 
+float LinearSrgb(float channel) {
+    return channel <= 0.04045f ? channel / 12.92f
+                               : std::pow((channel + 0.055f) / 1.055f, 2.4f);
+}
+
+ImU32 Grayscale(ImU32 color) {
+    const ImVec4 srgb = ImGui::ColorConvertU32ToFloat4(color);
+    const float luminance = 0.2126f * LinearSrgb(srgb.x) + 0.7152f * LinearSrgb(srgb.y) +
+                            0.0722f * LinearSrgb(srgb.z);
+    const float gray = luminance <= 0.0031308f
+                           ? 12.92f * luminance
+                           : 1.055f * std::pow(luminance, 1.0f / 2.4f) - 0.055f;
+    return ImGui::ColorConvertFloat4ToU32(ImVec4(gray, gray, gray, srgb.w));
+}
+
 // ImVec2 没有两参聚合初始化（它有构造函数），列表里必须显式包一层。
 ImVec2 V(float x, float y) { return ImVec2(x, y); }
 
@@ -61,10 +77,18 @@ void Ridge(ImDrawList* draw, const std::vector<ImVec2>& points) {
 
 // ---------------------------------------------------------------- 18. Art
 void Art(ImDrawList* draw, Rect bounds, int seed, bool cover) {
+    if (bounds.width() <= 0.0f || bounds.height() <= 0.0f) {
+        return;
+    }
     const ArtPalette& palette = kArtPalettes[AbsMod(seed, 12)];
-    const ImU32 dark = Hex(palette.dark);
-    const ImU32 mid = Hex(palette.mid);
-    const ImU32 light = Hex(palette.light);
+    const bool grayscale = theme::ThemeUsesSerif(theme::CurrentThemeId());
+    const auto paletteColor = [grayscale](std::string_view hex) {
+        const ImU32 color = Hex(hex);
+        return grayscale ? Grayscale(color) : color;
+    };
+    const ImU32 dark = paletteColor(palette.dark);
+    const ImU32 mid = paletteColor(palette.mid);
+    const ImU32 light = paletteColor(palette.light);
 
     // viewBox 160×100，preserveAspectRatio="xMidYMid slice" → cover：
     // 缩放系数取 max(w/160, h/100)，居中裁切。
@@ -78,6 +102,7 @@ void Art(ImDrawList* draw, Rect bounds, int seed, bool cover) {
     const auto X = [&](float u) { return x0 + u * k; };
     const auto Y = [&](float v) { return y0 + v * k; };
 
+    draw->PushClipRect(bounds.min, bounds.max, true);
     // 竖直渐变天空：上 = dark，下 = mid 55% 透明
     DrawVGradient(draw, bounds.min, bounds.max, 0.0f, dark, WithAlpha(mid, 0.55f));
 
@@ -106,10 +131,14 @@ void Art(ImDrawList* draw, Rect bounds, int seed, bool cover) {
     draw->PathClear();
     Ridge(draw, layer3);
     draw->PathFillConvex(WithAlpha(dark, 0.9f));
+    draw->PopClipRect();
 }
 
 // ---------------------------------------------------------------- 19. ArtInk
 void ArtInk(ImDrawList* draw, Rect bounds, int seed, float opacity) {
+    if (bounds.width() <= 0.0f || bounds.height() <= 0.0f) {
+        return;
+    }
     // viewBox 800×260，preserveAspectRatio="xMidYMax slice"
     const float k = std::max(bounds.width() / 800.0f, bounds.height() / 260.0f);
     const float x0 = bounds.min.x + (bounds.width() - 800.0f * k) * 0.5f;
@@ -117,6 +146,17 @@ void ArtInk(ImDrawList* draw, Rect bounds, int seed, float opacity) {
     const auto X = [&](float u) { return x0 + u * k; };
     const auto Y = [&](float v) { return y0 + v * k; };
     const ImU32 ink = ColorText();
+
+    // ⚠️ **SVG 视口裁剪是元素语义的一部分，必须在这里裁**，不能指望调用方：
+    //    `slice` 把 800×260 的内容放大到 800k×260k，而元素（`.ink-band`）只有
+    //    bounds 高 —— 顶部多出来的 `260k - height` 那一截在浏览器里被 SVG 视口
+    //    **裁掉，从来不可见**。原文（UI.jsx 的 ArtInk）里 `translate(700,40)` 的
+    //    26×26 印章正落在被裁掉的那截：桌面上 k = width/800 ≥ 2 ⇒ 印章画在
+    //    `y0 + 80`，比元素顶还高 200px。
+    //    本组件原先不裁 ⇒ 那枚青色印章悬在页面右下（项目中心做成初始页、
+    //    第一次给它拍证据时才暴露：一个 52×52 的圆角方块 + 内框 + 十字，
+    //    看着像渲染坏了，实际是「少了一条裁剪」）。
+    draw->PushClipRect(bounds.min, bounds.max, true);
 
     // 远两层带 stdDeviation=7 的高斯模糊：ImGui 无模糊，用 5 层递减 alpha 的
     // 同形偏移叠出软边（已知降级：只影响远山的边缘锐度）。
@@ -171,8 +211,11 @@ void ArtInk(ImDrawList* draw, Rect bounds, int seed, float opacity) {
                   ImVec2(X(sealX) + 17.0f * k, Y(40.0f) + 13.0f * k),
                   WithAlpha(ColorAccentFg(), 0.9f * opacity), 1.6f * k);
     draw->AddLine(ImVec2(X(sealX) + 13.0f * k, Y(40.0f) + 9.0f * k),
-                  ImVec2(X(sealX) + 13.0f * k, Y(40.0f) + 17.0f * k),
-                  WithAlpha(ColorAccentFg(), 0.9f * opacity), 1.6f * k);
-}
+    ImVec2(X(sealX) + 13.0f * k, Y(40.0f) + 17.0f * k),
+    WithAlpha(ColorAccentFg(), 0.9f * opacity), 1.6f * k);
+
+    draw->PopClipRect();
+    }
+
 
 } // namespace shine::kit

@@ -4,6 +4,9 @@
 #include "gpu/GpuTextureCache.h" // TextureCache().Clear()：淘汰试验（验约束 1 的自愈）
 #include "ui/imgui/kit/Image.h"  // PendingImageCount：等真设定图异步落地
 #include "ui/imgui/kit/Scroll.h"
+#include "ui/imgui/pages/BookData.h"  // Book()：结果页签两行生成参数的投影读数
+#include "ui/imgui/pages/MediaViewer.h"  // 查看器：工程内文件那一支的取证入口
+#include "ui/imgui/pages/PageKpi.h"      // KpiGlowRgb()：KPI 柔光的合成色读数
 #include "ui/imgui/verify/Capture.h"
 #include "ui/imgui/verify/ReviewFixture.h"
 #include "ui/imgui/verify/ReviewHotspot.h"
@@ -11,7 +14,10 @@
 #include "ui/imgui/verify/ReviewOverlayProbe.h"
 #include "ui/imgui/verify/ReviewShortcutProbe.h"
 
+#include <array>
 #include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <string>
 #include <thread>
 
@@ -22,6 +28,18 @@ void RunCoverageSweep(Session& session) {
     imguiapp::Host& host = session.host;
     pages::Shell& shell = session.shell;
     const shine::theme::ThemeId base = session.base;
+
+    // ---- 第零段：**初始页**（项目中心）----
+    //
+    // 应用启动就落在它上面（`ShellLayout::hubOpen_` 初值为 true，对齐 webui
+    // `store.jsx:13` 的 `useState('hub')`），而它是**整屏替身** —— 开着的时候
+    // `Shell::DrawFrame` 只画它、工作区一帧都不提交。所以：
+    //   * 它必须排在最前（这一张拍的就是「一开机看到的那一屏」）；
+    //   * 拍完必须**显式关掉**，否则下面每一张都拍到同一屏，而 manifest 里写的
+    //     是 ws-/theme- 的名字 —— 图名与内容不符，且照样记 saved。
+    session.GrabHubDriven("hub-initial", base);
+    shell.SetHubOpen(false);
+    host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
     // ---- 第一段：当前主题下全部工作区各一张（含组件画廊）----
     for (int workspace = 0; workspace < pages::kWorkspaceCount; ++workspace) {
@@ -53,6 +71,13 @@ void RunControlledStates(Session& session) {
     const std::filesystem::path& outputDir = session.outputDir;
     const std::filesystem::path& manifest = session.manifest;
     const shine::theme::ThemeId base = session.base;
+
+    // ⚠️ 这一整段（含三族探针）都是「在工作区里摆一个状态」的取证，而项目中心现在是
+    //    **启动默认开着**的那一屏、且整屏顶替工作区。进段先显式关掉它：这里是所有
+    //    直接 `PumpFrames` 驱动的探针的共同入口，靠「上一张图刚好把它关了」是不成立的
+    //    依赖（`Shoot` 的缺省动作会关，但探针不走 `Shoot`）。
+    shell.SetHubOpen(false);
+    host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
     // ---- 第三段：底栏「校验报告」页 + 逐项详情模态 ----
     //
@@ -104,6 +129,39 @@ void RunControlledStates(Session& session) {
         shell.SetWorkspace(kWsOverview);
         host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
         session.GrabDriven("overview-bound", kWsOverview, base);
+
+        // ---- KPI 柔光的**像素**判据（同一页、紧接着拍）----
+        //
+        // 上一帧刚把总控页画过（工作区就是 overview），所以 `KpiGlowRgb()` 里是**当帧
+        // 实际用的那个合成色**。判据要回答的是「这团柔光真到像素了没有」：
+        // 这一轮把它从「按 tone 取色的 14 环径向渐变」改成 CSS 的
+        // `--accent-dim × opacity .7` + 近实心盘 + `overflow:hidden` 裁剪，
+        // 而**裁剪**这一环最容易静默失效 —— `PushClipRect` 写反或写小，
+        // 症状是整团柔光消失，而卡片、文字、静息截图全都「正常」。
+        //
+        // ⚠️ 判据要有**上下界**，只判下界是不够的 —— 这一轮实测踩到：
+        //    页面那边的 alpha 链写错（`WithAlpha` 是**调制**不是覆盖），柔光实际没画上去，
+        //    报出来的色**退化成卡片底色**（#1A2230）。只判「≥8000」时它读到 350271 像素、
+        //    判绿！—— 数的是全屏的卡底色。下界挡「没画/只画一张」，上界挡「色退化成底/面」：
+        //    这团柔光是 5 个 90px 圆被裁掉一角，**必然**只有万把像素的量级；
+        //    超过 4 万就说明数到的是一块面（卡底 35 万、页面底 更大），不是这团光。
+        constexpr int kKpiGlowMinPixels = 8000;   // > 一张卡（实测 13953/5 ≈ 2790）→ 挡「只接了一张」
+        constexpr int kKpiGlowMaxPixels = 40000;  // ≈ 2.9 × 实测总量（13953）→ 挡「色退化成面」
+        const std::uint32_t kpiGlowRgb = pages::KpiGlowRgb();
+        const int kpiGlowPixels = session.GrabCountColor("overview-kpi-glow", kWsOverview, base,
+                                                        kpiGlowRgb, /*registerDriven=*/false);
+        session.kpiGlow =
+            kpiGlowPixels >= kKpiGlowMinPixels && kpiGlowPixels <= kKpiGlowMaxPixels;
+        WriteManifest(manifest, std::string("kpi-glow=") + (session.kpiGlow ? "ok" : "BAD-PIXELS") +
+                                    " pixels=" + std::to_string(kpiGlowPixels) + " rgb=#" +
+                                    /* 统一六位十六进制，便于与 out\_colorcount.ps1 对照 */
+                                    [](std::uint32_t rgb) {
+                                        char buf[8];
+                                        std::snprintf(buf, sizeof(buf), "%06X", rgb);
+                                        return std::string(buf);
+                                    }(kpiGlowRgb) +
+                                    " want=[" + std::to_string(kKpiGlowMinPixels) + "," +
+                                    std::to_string(kKpiGlowMaxPixels) + "]");
 
         // 右栏滚到底：「章节 × V 阶段」矩阵排在最后（停止条件 → 最近产物 → 运行信息 →
         // 矩阵），默认滚动位置只能拍到前两张。
@@ -265,7 +323,26 @@ void RunControlledStates(Session& session) {
         // ⚠️ 等待条件必须**同时**满足 !loading 且 selectedChapter 真的换过去了。
         //    只等 !loading 是不够的：loading 标志是派发瞬间翻的，而视图那时还没落地，
         //    一个字不改就成立 → 一帧都不等 → 拍出来的还是上一章。
+        const auto listStorage = [] {
+            const pages::BookState& book = pages::Book();
+            const pages::BookSideView& side = pages::BookSide();
+            return std::array{reinterpret_cast<std::uintptr_t>(book.chapters.data()),
+                              reinterpret_cast<std::uintptr_t>(book.assets.data()),
+                              reinterpret_cast<std::uintptr_t>(side.chapters.data()),
+                              reinterpret_cast<std::uintptr_t>(side.assets.data())};
+        };
+        const auto beforeSwitch = listStorage();
+        const auto chapterCount = pages::BookSide().chapters.size();
+        const auto assetCount = pages::BookSide().assets.size();
+        const auto shotCount = pages::BookSide().shots.size();
+        const auto listsRetained = [&] {
+            return listStorage() == beforeSwitch && pages::BookSide().chapters.size() == chapterCount &&
+                   pages::BookSide().assets.size() == assetCount;
+        };
         pages::SelectBookChapter(2);
+        const bool keptWhileLoading = pages::BookSide().loading && listsRetained() &&
+                                      chapterCount >= 3 && assetCount > 0 && shotCount > 0 &&
+                                      pages::BookSide().shots.size() == shotCount;
         bookWaited = 0;
         while ((pages::BookSide().loading || pages::BookSide().selectedChapter != 2) &&
                bookWaited < kReportWaitFrameCap) {
@@ -274,11 +351,15 @@ void RunControlledStates(Session& session) {
             ++bookWaited;
         }
         const bool switched = !pages::BookSide().loading && pages::BookSide().selectedChapter == 2;
+        const bool reusedLists = keptWhileLoading && listsRetained();
+        const bool sliceReady = pages::BookSide().error.empty() && pages::BookSide().shots.empty();
         WriteManifest(manifest, std::string("chapter-switch=") +
                                     (switched ? "converged" : "TIMEOUT") + " after " +
                                     std::to_string(bookWaited) + " frames shots=" +
-                                    std::to_string(pages::BookSide().shots.size()));
-        session.bookSnapshotConverged = session.bookSnapshotConverged && switched;
+                                    std::to_string(pages::BookSide().shots.size()) +
+                                    " lists=" + (reusedLists ? "reused" : "changed"));
+        session.bookSnapshotConverged =
+            session.bookSnapshotConverged && switched && reusedLists && sliceReady;
         session.GrabDriven("side-tree-empty-chapter", kWsStoryboard, base);
         pages::SelectBookChapter(0);
 
@@ -305,6 +386,52 @@ void RunControlledStates(Session& session) {
                                     std::to_string(bookWaited) + " frames");
         session.assetSnapshotConverged = assetsReady;
         session.GrabDriven("assets-kind-tree", kWsAssets, base);
+
+        // ---- 总控「最近产物」那几行的真图缩略图（数据源 `generated_images`）----
+        //
+        // 判据：在这张卡上同时数两个色 ——
+        //   · `kRecentAssetColor`（fixture 的 `assets/gen_recent_ref.png`，
+        //     `source_kind='asset'`）：证明**非 shot 来源**的出图产物也在卡上。
+        //     那张卡读表时**不限 source_kind**（「最近产的东西」，不是「最近的镜图」），
+        //     只铺 shot 的 fixture 验不出「查询退化成只认 shot」。
+        //   · `kShotColor2`（`assets/shot/s2.png`，`source_kind='shot'`，在卡的第 3 行）：
+        //     证明同一张卡上 shot 来源的那几行也在（两族数据都到得了这一卡，
+        //     不是只接通了其中一族）。取第 3 行那条而不是最下面那行 —— 见 fixture 的注释
+        //     （窗口底边会把卡的最后一行裁掉一半，判据挂在上面会变成脆判据）。
+        //
+        // ⚠️ 位置不是随手放的：这一卡的数据来自 `BookSide().recentImages`，而 novel.db
+        //    快照是**异步**回投的 —— 前面那两张总控图（`overview-bound` / `overview-scrolled`）
+        //    拍在快照落地**之前**，卡上只有空态。所以判据挂在这个「快照已收敛」的位置。
+        // ⚠️ 拍之前**收起底栏**（Ctrl+J 那条路径：`Shell::ToggleDock`）。理由不是美观：
+        //    1600×960 下工作区只能从底栏上方挤出 ~700px，而右栏这一列在页面里排在
+        //    运行状态 / KPI 之下（顶端约在 y=403）——「最近产物」卡的正文落在视口之外，
+        //    只把右栏滚到顶只能拍到标题，滚到底又把它整张推出视口（它前后还有三张卡）。
+        //    收起底栏 ⇒ 工作区高 +190、右栏视口跟着 +190 ⇒ 这一卡整块进视口。
+        //    **不改窗口尺寸**：1600×960 是所有取证图（与设计稿 1:1 判据）共同的基准。
+        shell.ToggleDock();
+        kit::ScrollRegion::RequestScrollTop("workspace-scroll");
+        kit::ScrollRegion::RequestScrollTop("ov-right");
+        host.PumpFrames(2, [&shell](float dt) { shell.DrawFrame(dt); });
+        const auto recentCells = session.GrabCountTwoColors("overview-recent-products", kWsOverview,
+                                                            base, kRecentAssetColor, kShotColor2,
+                                                            /*registerDriven=*/false);
+        session.recentProductsImage = (recentCells.first > 0 && recentCells.second > 0);
+        WriteManifest(manifest, std::string("recent-products=") +
+                                    (session.recentProductsImage ? "ok" : "NO-IMAGE") +
+                                    " asset-src=" + std::to_string(recentCells.first) +
+                                    " shot-src=" + std::to_string(recentCells.second) +
+                                    " rows=" +
+                                    std::to_string(pages::BookSide().recentImages.size()));
+        shell.ToggleDock();
+        // ⚠️ 必须把**工作区还原**：`Shoot` 会把工作区设成它拍的那一页，而下面紧接着的
+        //    那一段（资产侧栏树可滚）依赖「当前就在资产页」—— 它只注册了一个滚动请求，
+        //    而**在别的工作区上那一帧不会有那棵树**，请求永远不会被核销，判据于是报
+        //    「资产侧栏树的滚动请求从没被核销（id="ov-right"）」。实测过：这条假红看着
+        //    像滚动区坏了，根因是上一条探针把页面留在别处。滚动位置一并还原成顶部。
+        kit::ScrollRegion::RequestScrollTop("workspace-scroll");
+        kit::ScrollRegion::RequestScrollTop("ov-right");
+        shell.SetWorkspace(kWsAssets);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
         // ---- 侧栏树可滚（2026-09-30）----
         //
@@ -421,6 +548,57 @@ void RunControlledStates(Session& session) {
         shell.SetAssetsOverview(false);
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
 
+        // ---- 第九段：查看器（工程内文件那一支：派生链 / 详情页 / 导出整版）----
+        //
+        // 这一族要挡的是**同一类缺陷的第三个实例**：真图是异步上屏的，而查看器用的是
+        // **另一个档位**（`kit::RequestImageFull`，2048）—— 它只在查看器开着的那一帧
+        // 才被请求。缺了下面这两条判据，「大图档压根没请求过」与「请求了但没落地」
+        // 在截图上完全一样（都画成 `Art` 占位），而 overall 照样 PASS。
+        //
+        // 判据用**像素计数**（截图跨轮不可复现，不能比图）：派生链 front 那一层在
+        // fixture 里是纯色 `#22C55E`（`ReviewFixture.h` 的 kChainColorFront），
+        // 而它同时出现在两个位点上 —— 页面里的 `.dthumb`（缩略图档）与查看器舞台
+        // （大图档）。遮罩把下层压暗，所以那部分像素**不再等于**这个色值，
+        // 数到的就只会是查看器里那张。
+        //
+        // ⚠️ 第 1 页 = 派生链「正脸」层（`AssetViewerRequest` 的页序：0 = 基线整版）。
+        //    **落在哪一页由 `OpenMediaViewer` 的第二个实参决定**，不是请求构造器 ——
+        //    写错这一处时两种写法都编译得过、截图也都有内容（拍到的只是别的一页），
+        //    而这一族的判据是「数某个纯色」，数的正是那一页的颜色。
+        pages::OpenMediaViewer(pages::AssetViewerRequest(0), /*initialIndex=*/1);
+        const int viewerPixels = session.GrabCountColor("viewer-image", kWsAssets, base,
+                                                        kChainColorFront, /*registerDriven=*/true);
+        const int viewerRequested = kit::RequestedImageFullCount();
+
+        // 「导出整版」的联系表：另一屏（2 列网格 + 逐层标签），也必须有一张图。
+        // 数基线设定图的纯色 `#FF2D55` —— 联系表第一格就是它。它与大图那一屏用在
+        // **同一条判据**里：两屏都是「查看器里真图上屏了没有」，分开写两个 bool
+        // 只会让 overall 那一行更长，判的却是同一件事。
+        pages::OpenMediaViewer(pages::AssetSheetViewerRequest(0));
+        const int gridPixels = session.GrabCountColor("viewer-sheet", kWsAssets, base, kSheetColorA,
+                                                      /*registerDriven=*/true);
+        // ⚠️ 这里用**大图档自己的** pending，不是总的 `PendingImageCount()`：
+        //    注册表是进程级的、只增不减，网格那批缩略图在上面的淘汰试验
+        //    （`gpu::TextureCache().Clear()`）之后、从总览切回详情之后就不再被绘制，
+        //    于是永远停在「Ready 但没有纹理」= pending。拿总的 pending 当判据，
+        //    这条在**任何**后续位置都等不到归零 —— 报出来的是「大图链断了」，
+        //    而实际上坏的是另一族图（没人再画它们）。实测就是这样红的第一版。
+        const int viewerPending = kit::PendingImageFullCount();
+        // 四半缺一不可（与 `sheet-images` 同一条纪律）：只看 pending==0 时，
+        // 「大图档一张都没请求过」与「全落地了」同形；只看 requested>0 时，
+        // 「请求了但还在飞」会被当成落地。再加上两屏各自的**纯色像素 > 0**
+        // 才算真的上了屏（大图那一层 + 联系表基线那一格）。
+        session.viewerFullSettled =
+            (viewerRequested > 0 && viewerPending == 0 && viewerPixels > 0 && gridPixels > 0);
+        WriteManifest(manifest, std::string("viewer-full=") +
+                                    (session.viewerFullSettled ? "settled" : "TIMEOUT") +
+                                    " requested=" + std::to_string(viewerRequested) +
+                                    " pending=" + std::to_string(viewerPending) +
+                                    " pixels=" + std::to_string(viewerPixels) +
+                                    " sheet-pixels=" + std::to_string(gridPixels));
+        pages::CloseMediaViewer();
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+
         // 检查器「关联」段：默认收起（设计稿 Shell.jsx:146 的 c:false），必须显式展开。
         // ⚠️ 这正是本轮修掉的死段头 —— 展开态以前是每帧新建的 const 局部数组。
         pages::SelectBookShot(0);
@@ -521,6 +699,48 @@ void RunControlledStates(Session& session) {
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
         session.GrabDriven("imageflow-canvas-folded", kWsImageFlow, base);
         shell.SetImageFlowFolded(false);
+        // 第四个页签「结果」：**当前选中镜的成图**（这一格早先画的是 `Art` 占位画）。
+        // 前置动作写全：明写选第 1 镜（`#FB7185` 那张）—— 不靠上一条探针留下的选中态，
+        // 那正是「拍到的其实是别的状态」那一类假绿。
+        shell.SetImageFlowPanel(3);
+        pages::SelectBookShot(0);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        const int resultPixels = session.GrabCountColor("imageflow-result-shot", kWsImageFlow, base,
+                                                        kShotColor1, /*registerDriven=*/true);
+        session.imageFlowResultImage = (resultPixels > 0);
+        WriteManifest(manifest, std::string("imageflow-result=") +
+                                    (session.imageFlowResultImage ? "ok" : "NO-IMAGE") +
+                                    " pixels=" + std::to_string(resultPixels));
+        // ---- 同一格上那两行生成参数（`Prompt` / `生成参数`）的**投影** ----
+        //
+        // 判的是「页面手里那份数据」对不对，**不是像素**：这两行在同一帧里从
+        // `BookShot` 读出来、当帧画完，没有图片那种「worker 还没解码完」的异步窗口
+        // ⇒ 没有「链断了」与「拍早了」同形的那种二义，数色值在这里没有对象可数。
+        // 它挡的是：① `BookQuery.cpp` 没把那几列 SELECT 出来（行永远空）；
+        // ② 列序读串（`steps` 当 `width`）；③ 行被「全空」判掉 ⇒ 界面上那两行
+        // 凭空少掉，而其余判据全绿。期望值来自 `ReviewFixture.h` 的**独立契约**，
+        // 不是「再查一遍库」——那等于拿同一条查询对照自己。
+        {
+            const pages::BookState& book = pages::Book();
+            const pages::BookShot* shot = book.shot();
+            const std::string prompt = shot != nullptr ? shot->imagePrompt : std::string();
+            const std::string model = shot != nullptr ? shot->imageModel : std::string();
+            const int steps = shot != nullptr ? shot->imageSteps : 0;
+            const int width = shot != nullptr ? shot->imageWidth : 0;
+            const int height = shot != nullptr ? shot->imageHeight : 0;
+            session.imageFlowParams = prompt == kShot1Prompt && model == kShot1Model &&
+                                      steps == kShot1Steps && width == kShot1Width &&
+                                      height == kShot1Height;
+            WriteManifest(manifest,
+                          std::string("imageflow-params=") +
+                              (session.imageFlowParams ? "ok" : "MISMATCH") + " prompt=" +
+                              (shot != nullptr && !prompt.empty() ? prompt : "<empty>") +
+                              " model=" + (model.empty() ? "<empty>" : model) + " steps=" +
+                              std::to_string(steps) + " size=" + std::to_string(width) + "x" +
+                              std::to_string(height) + "  期望=" + kShot1Prompt + " / " +
+                              kShot1Model + " / " + std::to_string(kShot1Steps) + " 步 / " +
+                              std::to_string(kShot1Width) + "x" + std::to_string(kShot1Height));
+        }
         shell.SetImageFlowPanel(0);
 
         // 出片页右侧面板的第二个页签「视频任务」。以前是 4 条写死的 20/40/60/80 进度条、
@@ -528,6 +748,31 @@ void RunControlledStates(Session& session) {
         shell.SetVideoFlowPanel(1);
         host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
         session.GrabDriven("videoflow-panel-tasks", kWsVideoFlow, base);
+        shell.SetVideoFlowPanel(0);
+
+        // ---- 成片条那几格的真图（逐镜成图，与分镜 `.tthumb` 同一条链）----
+        //
+        // 判据用**数纯色**：fixture 里第 1 镜的成片图是 `#FB7185`、第 2 镜是 `#34D399`
+        // （`ReviewFixture.cpp` 的 `assets/shot/s1.png` / `s2.png`，两者都刻意选在五套
+        // 主题调色板之外 ⇒ 数到它就只可能来自那两张图）。一个色 > 0 只能说「有一张真图
+        // 上了屏」，两张都数才排得掉「只接了第一格 / 只画了一张」这种半接线。
+        //
+        // ⚠️ 抓的是**第 3 个页签（成片）**，不是上面那张「视频任务」：成片条画在面板
+        //    之外（每帧都画），但抓图前必须先让这一帧与上一张**不是同一个状态**，
+        //    否则两张图逐字节相同 ⇒ `identical-driven-pairs` 假红。
+        // ⚠️ 数不到时**先看 fixture 的镜图有没有铺满**：`source_kind='shot'` 那三行
+        //    只挂在第 1/2 镜上（第 4 镜刻意登记了不存在的文件、第 3/5 镜没登记）
+        //    ⇒ 这一条同时覆盖三条分支里的①。②③ 在同一张图里（「示意」与「待出片」）。
+        shell.SetVideoFlowPanel(2);
+        host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
+        const auto shotCells = session.GrabCountTwoColors("videoflow-film-strip", kWsVideoFlow,
+                                                          base, kShotColor1, kShotColor2,
+                                                          /*registerDriven=*/true);
+        session.filmStripImages = (shotCells.first > 0 && shotCells.second > 0);
+        WriteManifest(manifest, std::string("film-strip=") +
+                                    (session.filmStripImages ? "ok" : "NO-IMAGE") +
+                                    " shot1=" + std::to_string(shotCells.first) +
+                                    " shot2=" + std::to_string(shotCells.second));
         shell.SetVideoFlowPanel(0);
 
         // 分镜页选中的镜。默认 0 = 第一张，**不显式换一张就证明不了选中态会跟着动**

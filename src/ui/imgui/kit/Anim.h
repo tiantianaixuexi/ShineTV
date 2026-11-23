@@ -52,6 +52,17 @@ inline constexpr float kDurSlow = 0.320f;
 [[nodiscard]] ImU32 TransitionColorTo(ImGuiID id, ImGuiID channel, ImU32 target,
                                      float durSeconds);
 
+// 数值补间（位移 / 缩放 / 透明度 / 指示器滑动）。语义同 TransitionTo：
+// pinned 期间直接返回 target；reduce-motion 压到 1ms 落地。
+// 缓动用 kEaseOut（位移类动效出手快、落得稳；颜色仍走上面的封装）。
+[[nodiscard]] float TransitionFloatTo(ImGuiID id, ImGuiID channel, float target,
+                                     float durSeconds);
+
+// 通道约定（同一 Hit 的 (tid, channel) 对必须每帧稳定；组内不重号）：
+//   0 = hover 主底 / 主色      1 = 按下 / 位移 / lift
+//   2 = 描边 / 辉光            3 = 文字 / 次色
+//   4+ = 指示器 / 结构性滑动（tab 下划线、开关滑块、展开高度）
+
 // 补间池的预分配。启动时调一次，避免运行中第一次悬停才扩容。
 void ReserveTweenPool(std::size_t floats, std::size_t vec2, std::size_t vec4, std::size_t ints,
              std::size_t colors);

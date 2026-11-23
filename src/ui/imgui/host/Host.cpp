@@ -19,6 +19,8 @@
 #include <GL/gl.h>
 #include <GL/glext.h> // GL_MULTISAMPLE 是 GL 1.3 的枚举，MinGW 的 gl.h 里没有
 
+#include <cstdlib> // getenv / strtof（SHINE_UI_SCALE / SHINE_IMGUI_REVIEW）
+
 // imgui_impl_win32.h 把这一行放在 #if 0 里（它不想拖 <windows.h> 进来），
 // 官方要求调用方自己抄一份到 .cpp。照做，别改成包含头里的声明。
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam,
@@ -92,8 +94,28 @@ float Host::DisplayScaledFactor() {
     return static_cast<float>(dpi) / 96.0f;
 }
 
+namespace {
+
+constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
+constexpr UINT kDefaultDpi = 96;
+constexpr int kMinClientWidth = 760;
+constexpr int kMinClientHeight = 500;
+
+RECT OuterRect(int width, int height, UINT dpi) {
+    RECT rect{0, 0, width, height};
+    AdjustWindowRectExForDpi(&rect, kWindowStyle, FALSE, 0, dpi);
+    return rect;
+}
+
+} // namespace
+
 LRESULT CALLBACK Host::WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (ImGui_ImplWin32_WndProcHandler(hwnd, message, wparam, lparam)) {
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+    const LRESULT handled = ImGui_ImplWin32_WndProcHandler(hwnd, message, wparam, lparam);
+    if (handled) {
         return 1;
     }
 
@@ -103,18 +125,39 @@ LRESULT CALLBACK Host::WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM
     }
 
     switch (message) {
-    case WM_SIZE:
-        if (wparam != SIZE_MINIMIZED) {
-            // WGL 上下文不随窗口尺寸变化，viewport 每帧按客户区重设即可，
-            // 不用重建任何缓冲 —— 这是选 GL 相对 D3D11 少一整套 ResizeBuffers 的地方。
+    case WM_DPICHANGED: {
+        if (!host->fixedUiScale_) {
+            host->uiScale_ = static_cast<float>(LOWORD(wparam)) / kDefaultDpi;
+            if (host->imguiReady_) {
+                ImGuiIO& io = ImGui::GetIO();
+                io.DisplayFramebufferScale = ImVec2(host->uiScale_, host->uiScale_);
+                for (ImFont* font : io.Fonts->Fonts) {
+                    font->CurrentRasterizerDensity = host->uiScale_;
+                }
+            }
+        }
+        const auto& rect = *reinterpret_cast<const RECT*>(lparam);
+        SetWindowPos(hwnd, nullptr, rect.left, rect.top, rect.right - rect.left,
+                     rect.bottom - rect.top, SWP_NOACTIVATE | SWP_NOZORDER);
+        return 0;
+    }
+    case WM_GETMINMAXINFO: {
+        if (!host->review_) {
+            const UINT dpi = GetDpiForWindow(hwnd);
+            const RECT minimum = OuterRect(static_cast<int>(kMinClientWidth * host->uiScale_),
+                                           static_cast<int>(kMinClientHeight * host->uiScale_),
+                                           dpi == 0 ? kDefaultDpi : dpi);
+            auto& limits = *reinterpret_cast<MINMAXINFO*>(lparam);
+            MONITORINFO monitor{sizeof(monitor)};
+            if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+                limits.ptMinTrackSize.x = std::min(minimum.right - minimum.left,
+                                                  monitor.rcWork.right - monitor.rcWork.left);
+                limits.ptMinTrackSize.y = std::min(minimum.bottom - minimum.top,
+                                                  monitor.rcWork.bottom - monitor.rcWork.top);
+            }
         }
         return 0;
-    case WM_SYSCOMMAND:
-        // 拦最小化：最小化后客户区为 0，glViewport 会拿到 0×0 并触发 GL 错误刷屏。
-        if ((wparam & 0xFFF0) == SC_MINIMIZE) {
-            return 0;
-        }
-        break;
+    }
     case WM_DESTROY:
         host->quit_ = true;
         PostQuitMessage(0);
@@ -129,6 +172,21 @@ bool Host::Initialize(const Options& options, std::string& error) {
     // DPI 感知必须在建窗口之前设，否则窗口先按系统 DPI 建出来再放大会有一次闪动。
     ImGui_ImplWin32_EnableDpiAwareness();
 
+    // 布局与输入用逻辑坐标。取证可以锁定比例，正常启动跟随窗口所在的显示器。
+    review_ = std::getenv("SHINE_IMGUI_REVIEW") != nullptr;
+    fixedUiScale_ = review_;
+    uiScale_ = review_ ? 1.0f : DisplayScaledFactor();
+    if (const char* envScale = std::getenv("SHINE_UI_SCALE")) {
+        char* end = nullptr;
+        const float parsed = std::strtof(envScale, &end);
+        if (end != envScale && *end == '\0' && parsed >= 0.5f && parsed <= 4.0f) {
+            uiScale_ = parsed;
+            fixedUiScale_ = true;
+        } else {
+            shine::log::Warn("SHINE_UI_SCALE='{}' 非法（允许 0.5~4.0），忽略", envScale);
+        }
+    }
+
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_CLASSDC;
@@ -142,15 +200,41 @@ bool Host::Initialize(const Options& options, std::string& error) {
         return false;
     }
 
-    RECT rect{0, 0, options.width, options.height};
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    hwnd_ = CreateWindowExW(0, kWindowClass, options.title, WS_OVERLAPPEDWINDOW,
-                            CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left,
-                            rect.bottom - rect.top, nullptr, nullptr, wc.hInstance, this);
+    const auto clientRectFor = [&](UINT dpi) {
+        return OuterRect(static_cast<int>(options.width * uiScale_ + 0.5f),
+                         static_cast<int>(options.height * uiScale_ + 0.5f), dpi);
+    };
+    const UINT systemDpi = GetDpiForSystem();
+    const RECT initial = clientRectFor(systemDpi == 0 ? kDefaultDpi : systemDpi);
+    hwnd_ = CreateWindowExW(0, kWindowClass, options.title, kWindowStyle,
+                            CW_USEDEFAULT, CW_USEDEFAULT, initial.right - initial.left,
+                            initial.bottom - initial.top, nullptr, nullptr, wc.hInstance, this);
     if (hwnd_ == nullptr) {
         error = "CreateWindowExW failed";
         return false;
     }
+
+    const UINT windowDpi = GetDpiForWindow(hwnd_);
+    if (!fixedUiScale_ && windowDpi != 0) {
+        uiScale_ = static_cast<float>(windowDpi) / kDefaultDpi;
+    }
+    const RECT target = clientRectFor(windowDpi == 0 ? kDefaultDpi : windowDpi);
+    LONG width = target.right - target.left;
+    LONG height = target.bottom - target.top;
+    RECT position{};
+    GetWindowRect(hwnd_, &position);
+    if (!review_) {
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+            const RECT& work = monitor.rcWork;
+            width = std::min(width, work.right - work.left);
+            height = std::min(height, work.bottom - work.top);
+            position.left = std::clamp(position.left, work.left, work.right - width);
+            position.top = std::clamp(position.top, work.top, work.bottom - height);
+        }
+    }
+    SetWindowPos(hwnd_, nullptr, position.left, position.top, width, height,
+                 SWP_NOACTIVATE | SWP_NOZORDER);
 
     if (!CreateGlContext(hwnd_, error)) {
         return false;
@@ -166,17 +250,9 @@ bool Host::Initialize(const Options& options, std::string& error) {
 
     RECT client{};
     GetClientRect(hwnd_, &client);
-    io.DisplaySize = ImVec2(static_cast<float>(client.right),
-                            static_cast<float>(client.bottom));
-    // framebuffer scale 固定 1:1，**不**按显示器 DPI 放大。
-    //
-    // ImGui 的契约：渲染后端把 ImGui 坐标乘以 DisplayFramebufferScale 落到像素上。
-    // 若这里填 1.25，则 DisplaySize 也必须除以 1.25 变回逻辑单位，整个界面被放大 1.25 倍，
-    // 顶栏变成 57.5px，右侧和底部各丢掉 20% 内容 —— 那不是 1:1。
-    //
-    // design-spec §1 的几何表全部是「100% 缩放下的 px」，1:1 验收就是拿 1600x960 的抓图
-    // 去和 webui 100% 的截图比。所以按物理像素 1:1 画：46px 顶栏就是 46 个物理像素。
-    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    io.DisplaySize = ImVec2(static_cast<float>(client.right) / uiScale_,
+                            static_cast<float>(client.bottom) / uiScale_);
+    io.DisplayFramebufferScale = ImVec2(uiScale_, uiScale_);
 
     // ---- P2.5：字体图集 ----
     // ⚠️ 顺序硬约束：必须在 ImGui_ImplOpenGL3_Init **之后**。1.92+ 的渲染后端
@@ -185,6 +261,7 @@ bool Host::Initialize(const Options& options, std::string& error) {
     // ImGuiBackendFlags_RendererHasTextures got set!"。
     // 不建图集就是满屏豆腐块且不报错，所以失败必须走日志。
     ImGui_ImplWin32_Init(hwnd_);
+    ImGui_ImplWin32_SetLogicalMouseCoordinates(true);
     // GLSL 150 = GL 3.2 core，Win10 的默认 GDI 通用实现稳定支持到这一档。
     if (!ImGui_ImplOpenGL3_Init("#version 150")) {
         error = "ImGui_ImplOpenGL3_Init failed";
@@ -198,8 +275,10 @@ bool Host::Initialize(const Options& options, std::string& error) {
 
     imguiReady_ = true;
 
-    ShowWindow(hwnd_, SW_SHOWDEFAULT);
-    UpdateWindow(hwnd_);
+    if (!review_) {
+        ShowWindow(hwnd_, SW_SHOWDEFAULT);
+        UpdateWindow(hwnd_);
+    }
 
     // ---- P1.2：补上这一行。shine::gpu 自此有宿主 ----
     {
@@ -219,8 +298,8 @@ bool Host::Initialize(const Options& options, std::string& error) {
     const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
     const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-    shine::log::Info("imgui host up: {}x{} client, framebuffer 1:1 (system dpi {:.2f}), gpu={}",
-                     client.right, client.bottom, static_cast<double>(DisplayScaledFactor()),
+    shine::log::Info("imgui host up: {}x{} client, framebuffer scale {:.2f}, gpu={}",
+                     client.right, client.bottom, static_cast<double>(uiScale_),
                      shine::gpu::Ready() ? "attached" : "MISSING");
     shine::log::Info("GL vendor={} renderer={} version={}", vendor ? vendor : "?",
                      renderer ? renderer : "?", version ? version : "?");
@@ -298,44 +377,27 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
     }
     for (int i = 0; i < frames; ++i) {
         PumpMessages();
-    PumpUi();
+        if (quit_) {
+            return;
+        }
+        PumpUi();
 
-        // 客户区可能变（拖边框、还原最小化）。WGL 上下文不用重建，viewport 跟一下即可。
         RECT client{};
         GetClientRect(hwnd_, &client);
-        ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(client.right),
-                                           static_cast<float>(client.bottom));
+        if (client.right == 0 || client.bottom == 0 || IsIconic(hwnd_)) {
+            return;
+        }
         glViewport(0, 0, client.right, client.bottom);
 
-        // 鼠标覆盖必须在**所有**后端 NewFrame 之前落地：`ImGui_ImplWin32_NewFrame`
-        // 会用真实光标覆写 io.MousePos，而 `ImGui::NewFrame` 会用它算出 g.HoveredId。
-        // 晚一步，悬停探针的「命中数」就恒为 1（真实光标所在那个 item）—— 全是噪声。
-        if (mouseOverrideSet_) {
-            ImGui::GetIO().MousePos = ImVec2(mouseOverrideX_, mouseOverrideY_);
-        }
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplayFramebufferScale = ImVec2(uiScale_, uiScale_);
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplWin32_NewFrame();
+        // Win32 后端先读物理客户区，布局仍使用逻辑设计尺寸。
+        io.DisplaySize = ImVec2(static_cast<float>(client.right) / uiScale_,
+                               static_cast<float>(client.bottom) / uiScale_);
         if (mouseOverrideSet_) {
-            // ⚠️ 这里**必须走事件队列**（`AddMousePosEvent`），不能只把 `io.MousePos`
-            //    这个**字段**再写一遍。理由是 `ImGui::NewFrame()` 里的 `UpdateMouseData`
-            //    会用 `g.InputEventsMouse.MousePos[source]` 覆盖 `io.MousePos` ——
-            //    字段上的值活不过 NewFrame。
-            //
-            //    而 win32 后端**一定会往队列里塞一个事件**：
-            //    `ImGui_ImplWin32_UpdateMouseData`（imgui_impl_win32.cpp:389-398）在
-            //    「窗口有焦点 + `bd->MouseTrackedArea == 0`」时调 `AddMousePosEvent`
-            //    把**真实光标**推进去。字段写两遍挡不住它。
-            //
-            //    排在后端 NewFrame **之后**，我们的事件是队列里最后一个；同一 source
-            //    上 `AddMousePosEvent` 直接覆盖 ⇒ NewFrame 读到的就是覆盖值。
-            //    这也正是下面 Key / MouseButton 覆盖一直用的方式 —— 唯独鼠标位置
-            //    当初写成了字段赋值，于是**只有窗口恰好没有焦点时**才生效。
-            //
-            //    症状极具迷惑性：实测 r90/r91 帧内 `io.MousePos` 恒为 (3146,50)
-            //    （用户真实光标在第二块屏幕上），11 个悬停探针的坐标各不相同却全都
-            //    hit=0，浮层探针同时报「位置注入没到位」；而 r88 同样这份代码 11/11
-            //    全过 —— 差别只是当时取证窗口没拿到焦点。
-            ImGui::GetIO().AddMousePosEvent(mouseOverrideX_, mouseOverrideY_);
+            io.AddMousePosEvent(mouseOverrideX_, mouseOverrideY_);
         }
         // 按键覆盖同理，走 ImGui 的事件队列（`NewFrame` 会把它折进按下沿）。
         // ⚠️ 必须排在后端 NewFrame **之后**：win32 后端会按真实键盘状态覆写 Key*Map。
@@ -351,6 +413,12 @@ void Host::PumpFrames(int frames, const DrawFrameFn& onFrame) {
         // 会按真实鼠标状态覆写 MouseDown。
         if (mouseButtonOverrideSet_) {
             ImGui::GetIO().AddMouseButtonEvent(0, mouseButtonOverrideDown_);
+        }
+        // 字符注入：与真实 WM_CHAR 同一条路（AddInputCharactersUTF8 → 字符队列，
+        // 当帧折给持有键盘焦点的 InputText）。同样必须在后端 NewFrame **之后**：
+        // 用法与陷阱见 Host.h 的 SetFrameTextOverride。
+        if (textOverrideSet_ && !textOverride_.empty()) {
+            ImGui::GetIO().AddInputCharactersUTF8(textOverride_.c_str());
         }
         ImGui::NewFrame();
         if (ctrlOverride_) {
@@ -402,8 +470,14 @@ void Host::RunLoop(const DrawFrameFn& onFrame) {
             break;
         }
 
+        if (IsIconic(hwnd_)) {
+            WaitMessage();
+            continue;
+        }
         PumpFrames(1, onFrame);
-        SwapBuffers(hdc_); // 垂直同步
+        if (!quit_ && !IsIconic(hwnd_)) {
+            SwapBuffers(hdc_);
+        }
     }
 }
 

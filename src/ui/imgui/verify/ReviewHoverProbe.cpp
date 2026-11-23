@@ -21,15 +21,8 @@ namespace shine::imguiverify::detail {
 // （控件没有 hover 样式 / 坐标算偏了点在空处 / 动画噪声恰好抵消），它们全都表现为
 // 「图在、manifest 记 saved、overall=PASS」。哈希相同把三种一起变成 FAIL。
 //
-// ⚠️ 鼠标位置是**在帧内注入**的（`onFrame` 里、`shell.DrawFrame` 之前），
-//    不是靠移真实光标。原因是取证跑在后台作业里：窗口不是前台窗口，
-//    `ImGui_ImplWin32_UpdateMouseData` 的 `is_app_focused` 补位分支整个跳过，
-//    WM_MOUSEMOVE 也不会送到 —— 实测 `io.MousePos` 始终停在初值 `-FLT_MAX`
-//    （ImGui 的「无鼠标」哨兵，且从不被逐帧重置）。
-//    `PumpFrames` 的顺序是 PumpMessages → NewFrame → onFrame → Render，
-//    所以在 onFrame 里写 `io.MousePos` 与后端投递对 `DrawFrame` 是**等价**的。
-//    本探针验的是**本工程的 hover 绘制**，不是 vendored ImGui 后端的消息接线
-//    （那是第三方代码，真实交互下由 RunLoop 泵消息保证）。
+// Host 在 NewFrame 前把鼠标位置送入 ImGui 的事件队列，后台窗口也能计算
+// MouseDelta 和 HoveredWindow。
 bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::path& dir,
                 const HoverTarget& target, shine::theme::ThemeId theme,
                 std::vector<std::uint64_t>& drivenHashes,
@@ -57,12 +50,15 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
         shell.SetNovelMode(target.novelMode);
     }
 
-    // kNoMouse 是 ImGui 自己用的「无鼠标」哨兵。
-    constexpr float kNoMouse = -3.402823466e+38f;
+    // 鼠标停在客户区外，坐标对 ImGui 仍然有效。InputText 通过键盘导航获得焦点后，
+    // ImGui 要看到鼠标位移才恢复鼠标 hover。从 -FLT_MAX 跳到目标的 MouseDelta 为零。
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    constexpr float kOutsideMargin = 32.0f;
+    const ImVec2 restMouse{display.x + kOutsideMargin, display.y + kOutsideMargin};
 
     // ⚠️ 三拍，不是两拍，而且顺序有讲究。
     //
-    // A、B 都是「无鼠标」帧，C 是「鼠标在目标上」。**A 必须等于 B** 才说明这一帧
+    // A、B 都是鼠标在窗外的帧，C 是鼠标移入目标的帧。**A 必须等于 B** 才说明这一帧
     // 页面是静止的 —— `kit::TickAnimation(dt)` 每帧推进时间，资产页的 Progress 微光、
     // StatusDot 的呼吸、Tag 的 busyPulse 都会让像素逐帧变。如果不先证明
     // 静止就直接比 A 与 C，那「hover 有效果」和「页面正好在闪」根本分不开，
@@ -80,10 +76,7 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
     // 算好了 ⇒ 每帧恒有 1 个 item 报 hovered，诊断信号整个是噪声。
     //
     // ⚠️ 这里同时记下**帧内 ImGui 实际看到**的 MousePos / DisplaySize，判据自证。
-    //    「命中数 = 0」这一个信号至少对应三种完全不同的原因，光看它必然改错地方：
-    //      · 覆盖没落地（`io.MousePos` 压根不是我们设的值）—— 宿主/后端层；
-    //      · 视口塌成 0×0 —— 前面所有坐标一起失效；
-    //      · 坐标落在热区外 —— 布局变了。
+    //    「命中数 = 0」还需区分坐标注入失败、视口尺寸异常、布局变化和输入状态。
     //    r90 实测 11/11 全红、浮层探针同时报「位置注入没到位」，说明是前两种；
     //    而 r89 我把原因归到「CenterTextY 的日志刷屏冲掉了驱动协议」是**错的** ——
     //    删掉那条日志重跑，11/11 照旧红。没有这条自证就会一直猜错。
@@ -117,17 +110,17 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
     int restHovered = 0;
     for (int i = 0; i < kSettleFrames; ++i) {
         kit::ResetHoveredItemCount();
-        frameWithMousePinned(kNoMouse, kNoMouse);
+        frameWithMousePinned(restMouse.x, restMouse.y);
         restHovered = std::max(restHovered, kit::HoveredItemCount());
     }
     const std::vector<std::uint8_t> restA = host.CaptureBackBuffer();
-    frameWithMousePinned(kNoMouse, kNoMouse);
+    frameWithMousePinned(restMouse.x, restMouse.y);
     const std::vector<std::uint8_t> restB = host.CaptureBackBuffer();
     const std::uint64_t restHash = HashPixels(restA);
 
     // 悬停帧：同样每帧单独归零，取最大那一帧。
     int hoveredPerFrame = 0;
-    sawAny = false;  // 只记**悬停**那一拍的读数，静息拍的 -FLT_MAX 没有诊断价值
+    sawAny = false;  // 从这里开始记录目标帧的实际坐标
     for (int i = 0; i < kSettleFrames; ++i) {
         kit::ResetHoveredItemCount();
         frameWithMousePinned(clientX, clientY);
@@ -166,9 +159,7 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
             name, clientX, clientY, sawX, sawY, sawW, sawH);
         ++tally->injectFailed;
     } else if (restHovered > 0) {
-        // 静息帧竟然命中了控件 ⇒ -FLT_MAX 哨兵没生效，后面所有比较都不可信。
-        shine::log::Error("review: {} 静息帧（鼠标用 -FLT_MAX 哨兵）仍命中了 {} 个控件，"
-                          "哨兵失效，本探针与后面全部悬停结论都不可信",
+        shine::log::Error("review: {} 静息帧（鼠标在客户区外）仍命中了 {} 个控件",
                           name, restHovered);
         ++tally->sentinelDead;
     } else if (!stable) {
@@ -179,13 +170,8 @@ bool ProbeHover(imguiapp::Host& host, pages::Shell& shell, const std::filesystem
         shine::log::Error("review: {} 静息两帧就不一致（页面在动），本探针结论不可用", name);
         ++tally->moving;
     } else if (hoveredPerFrame == 0) {
-        // ⚠️ 像素没变有**两种**完全不同的原因，只看像素差分不开：
-        //   · 坐标写偏了，鼠标没落进任何热区 —— 这是**探针**的问题，要改坐标；
-        //   · 命中了，但这个控件的 hover 分支什么都不画 —— 这是**产品**的缺陷。
-        // 少一次命中计数时，我一度把后者当成了前者去改产品。命中自检就是为了
-        // 在两者之间给出确定的答案：现在直接报「探针坐标点空了」。
-        shine::log::Error("review: {} 注入到位({:.0f},{:.0f})、页面静止，但鼠标**一个控件都没命中**"
-                          " —— 探针坐标落在热区之外（布局变了），不是产品的 hover 缺陷。改坐标，别改产品",
+        shine::log::Error("review: {} 注入到位({:.0f},{:.0f})且页面静止，鼠标没有命中控件。"
+                          "检查目标热区和鼠标输入状态",
                           name, sawX, sawY);
         ++tally->offTarget;
     } else if (!changed) {
@@ -233,14 +219,14 @@ void RunHoverProbes(Session& session) {
         //    ⇒ 下标 4 的行 = [56+4×44, +40] = [232, 272] ⇒ 取中心 252。
         {"hover-rail-ws", kWsNovel, 28.0f, 252.0f},
         // kind 树里的实体叶子（侧栏，与主区视图无关）
-        {"hover-tree-node", kWsAssets, 170.0f, 210.0f},
+        {"hover-tree-node", kWsAssets, 135.0f, 357.0f},
         // 总览网格的一张卡 —— 必须显式切回总览并清空 kind 筛选，
         // 否则上一条探针留在详情态/筛选态，这张坐标上压根没有卡片。
         {"hover-asset-card", kWsAssets, 420.0f, 200.0f, true, true},
         // 底栏第一行（默认停在「校验报告」页签）。行高 26（Shell_Reports 的 kRepRowH）。
         {"hover-dock-row", kWsOverview, 420.0f, 800.0f},
         // 检查器「属性」段头
-        {"hover-inspector-head", kWsNovel, 1400.0f, 69.0f},
+        {"hover-inspector-head", kWsNovel, 1400.0f, 129.0f},
         // 判别探针：同样的两个控件换到另一个工作区再试一次。
         // 首轮实测 novel 上的 3 个全灭、assets/overview 上的 3 个全过，所以要分清
         // 是「小说工作区整体没有 hover」还是「这几个控件本身没 hover 样式」。
@@ -250,20 +236,30 @@ void RunHoverProbes(Session& session) {
         // 坐标：6 个按钮之后 y = 56 + 6×44 = 320，再 + 分隔线(5 + 1 + 5) = 331
         //    ⇒ 第一个开关 [331, 371] ⇒ 中心 351。
         {"hover-rail-toggle", kWsOverview, 28.0f, 351.0f},
+        // 总控 KPI 卡（`.card.kpi.hoverable`，ui.css:196-200）。
+        // ⚠️ 这一条补的是一个**整条都没接**的 hover：`KpiCard` 连 `HitTest` 都没有，
+        //    所以「悬停时边框变 line-strong + 投影 shadow-1 + 上浮 2px」三件事一件都没发生，
+        //    而静息截图完全看不出来（hover 本来就不进静息图）。
+        // 坐标：KPI 第一张卡 = 内容区左上 + [0, 96→115.2]（`PageKpi.h` 的 kKpiCardHeight）。
+        //    实测卡矩形 x∈[296,538]、y∈[266,381]，取偏下 1/3 处（远离文字与柔光，
+        //    命中区是整卡，位置只要在卡内就不会偏）。
+        // y=368 = 原 330 + 38：2026-11-23 运行状态卡从 122 高改成 148+ScrollbarSize(12)
+        // 后 KPI 行整体下移 38px（WorkspaceA.cpp 的 flowCardHeight），坐标跟着布局走。
+        {"hover-kpi-card", kWsOverview, 417.0f, 368.0f},
         {"hover-dock-row-novel", kWsNovel, 420.0f, 800.0f},
         // 第七段新覆盖的视图。坐标逐个对着 out/review-* 里那些新图量的；
         // 命中数与命中的 widget id 都会进日志，坐标偏了会直接报「一个控件都没命中」
         // 而不是含糊的「悬停前后相同」。
-        // 底栏产物页第一行（fixture 造了 6 个产物，行有 hover 底色）。
-        // 行高 26（kArtRowH），第一行从 dock-body 内容顶开始。
-        {"hover-artifact-row", kWsOverview, 200.0f, 800.0f, false, false, 2},
+        // 底栏产物页第一行靠右处，能抓到行绘制或命中退回固定宽度。
+        {"hover-artifact-row", kWsOverview, ImGui::GetIO().DisplaySize.x - 100.0f, 800.0f,
+         false, false, 2},
         // 出图页右侧面板的页签。⚠️ 打的是**非选中**项「图评审」：设计稿
         // `.seg > button:hover` 只改文字色，`.on` 本来就是 text-primary，
         // 所以**选中项按设计就没有 hover 反馈**。拿选中项当探针等于测一个设计稿
         // 不承诺的东西，判据会一直红。面板本身停在 1（批量出图）以保证这一页有内容。
-        {"hover-imageflow-tab", kWsImageFlow, 1105.0f, 165.0f, false, false, 0, 1},
+        {"hover-imageflow-tab", kWsImageFlow, 1140.0f, 173.0f, false, false, 0, 1},
         // 小说页 8 个模式标签里的「设定」（以前只有 Clicked，标签不可反馈）
-        {"hover-novel-mode-tab", kWsNovel, 380.0f, 100.0f, false, false, 0, 0, 1},
+        {"hover-novel-mode-tab", kWsNovel, 465.0f, 205.0f, false, false, 0, 0, 1},
     };
     HoverTally tally;
     for (const HoverTarget& target : targets) {

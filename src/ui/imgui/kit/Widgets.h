@@ -36,6 +36,8 @@
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Icon.h"
+#include "ui/imgui/kit/Layout.h"
+#include "ui/imgui/kit/Text.h"
 #include "ui/imgui/kit/Widget_Badge.h"
 #include "ui/imgui/kit/Widget_Button.h"
 #include "ui/imgui/kit/Widget_Card.h"

@@ -3,9 +3,11 @@
 #include "ui/imgui/kit/Draw.h"
 #include "ui/imgui/kit/Fonts.h"
 #include "ui/imgui/kit/Icon.h"
+#include "ui/imgui/kit/Text.h"
 #include "ui/imgui/kit/Widget_Color.h"
 
 #include <algorithm>
+#include <span>
 
 namespace shine::kit {
 
@@ -48,15 +50,35 @@ void Progress(ImDrawList* draw, Rect bounds, float value, bool run, bool thin) {
 }
 
 // ------------------------------------------------------------------ 16 Empty
-void Empty(ImDrawList* draw, Rect bounds, std::string_view icon, std::string_view title,
-           std::string_view body) {
-    // 4s 上下浮动（±5px）
-    const float float_ = ReduceMotion() ? 0.0f : (Pulse(4.0f) - 0.5f) * 10.0f;
-    const ImVec2 glyphSize(52.0f, 52.0f);
-    const ImVec2 glyphMin(bounds.center().x - 0.5f * glyphSize.x,
-                          bounds.min.y + 40.0f + float_);
-    const Rect glyph{glyphMin, glyphMin + glyphSize};
+namespace {
 
+constexpr float kEmptyGlyphSize = 52.0f;
+constexpr float kEmptyFloat = 5.0f;
+constexpr float kEmptyTopPad = 40.0f;
+constexpr float kEmptyGlyphHeight = kEmptyGlyphSize + 2.0f * kEmptyFloat + 10.0f;
+constexpr float kEmptyTitleGap = 6.0f;
+
+struct EmptyLayout {
+    TextStyle titleStyle;
+    TextStyle bodyStyle;
+    ImVec2 titleSize;
+    float bodyY;
+    float height;
+};
+
+EmptyLayout MeasureEmpty(float width, std::string_view title, std::string_view body) {
+    const float wrapWidth = std::clamp(width - 16.0f, 1.0f, 320.0f);
+    const TextStyle titleStyle{
+        .size = theme::font::kBody, .bold = true, .wrapWidth = wrapWidth};
+    const TextStyle bodyStyle{.size = theme::font::kHint, .wrapWidth = wrapWidth};
+    const ImVec2 titleSize = TextSize(title, titleStyle);
+    const float bodyY = titleSize.y + (!title.empty() && !body.empty() ? kEmptyTitleGap : 0.0f);
+    const float lastLineSize = body.empty() ? titleStyle.size : bodyStyle.size;
+    const float bottomPad = LineBox(lastLineSize) - lastLineSize;
+    return {titleStyle, bodyStyle, titleSize, bodyY, bodyY + TextSize(body, bodyStyle).y + bottomPad};
+}
+
+void DrawEmptyGlyph(ImDrawList* draw, Rect glyph, std::string_view icon) {
     // 52×52 r14 **虚线** 边框
     const float radius = 14.0f;
     const ImU32 dash = ColorLineNormal();
@@ -87,30 +109,50 @@ void Empty(ImDrawList* draw, Rect bounds, std::string_view icon, std::string_vie
         draw->PathClear();
     }
     DrawIconCentered(draw, icon, glyph.center(), 24.0f, ColorTextMuted());
+}
 
-    float y = glyph.max.y + 10.0f;
-    if (!title.empty()) {
-        ImFont* font = FontBoldAt(13.0f);
-        const float w =
-            font->CalcTextSizeA(13.0f, 1e9f, 0.0f, title.data(), title.data() + title.size()).x;
-        DrawTextClipped(draw, font, 13.0f, ImVec2(bounds.center().x - 0.5f * w, y), bounds.width(),
-                        ColorText(), title);
-        y += 19.0f;
+} // namespace
+
+float EmptyHeight(float width, std::string_view title, std::string_view body) {
+    const float glyphHeight = width >= kEmptyGlyphSize ? kEmptyGlyphHeight : 0.0f;
+    return kEmptyTopPad + glyphHeight + MeasureEmpty(width, title, body).height;
+}
+
+void Empty(ImDrawList* draw, Rect bounds, std::string_view icon, std::string_view title,
+           std::string_view body) {
+    if (bounds.width() <= 0.0f || bounds.height() <= 0.0f) {
+        return;
     }
-    if (!body.empty()) {
-        ImFont* font = FontAt(12.5f);
-        // ⚠️ 正文框必须夹在 bounds 里。早先这里写死 320px 宽、按 bounds 中心对齐，
-        //    侧栏只有 240px 宽时，一个 320 的框从 x=-30 铺到 290，两端都溢出面板
-        //    （实测正文横穿导航栏、还被面板右缘切掉半截）。
-        const float bodyW = std::max(40.0f, std::min(320.0f, bounds.width() - 16.0f));
-        DrawTextClipped(draw, font, 12.5f, ImVec2(bounds.center().x - 0.5f * bodyW, y), bodyW,
-                        ColorTextMuted(), body, /*wrap=*/true);
+    EmptyLayout layout = MeasureEmpty(bounds.width(), title, body);
+    layout.bodyStyle.color = ColorTextMuted();
+    const float centerX = bounds.center().x;
+    const float spareHeight = bounds.height() - layout.height;
+    const bool showGlyph = bounds.width() >= kEmptyGlyphSize && spareHeight >= kEmptyGlyphHeight;
+    const float glyphHeight = showGlyph ? kEmptyGlyphHeight : 0.0f;
+    const float top = bounds.min.y + std::clamp(spareHeight - glyphHeight, 0.0f, kEmptyTopPad);
+
+    draw->PushClipRect(bounds.min, bounds.max, true);
+    if (showGlyph) {
+        // Reserve the entire animation range while keeping both text blocks stationary.
+        const float drift = ReduceMotion() ? 0.0f : (2.0f * Pulse(4.0f) - 1.0f) * kEmptyFloat;
+        DrawEmptyGlyph(draw, RectAt(centerX - kEmptyGlyphSize * 0.5f, top + kEmptyFloat + drift,
+                                   kEmptyGlyphSize, kEmptyGlyphSize), icon);
     }
+    const float textY = top + glyphHeight;
+    const float titleWidth = std::min(layout.titleSize.x, layout.titleStyle.wrapWidth);
+    Text(draw, ImVec2(centerX - titleWidth * 0.5f, textY), title, layout.titleStyle);
+    Text(draw, ImVec2(centerX - layout.bodyStyle.wrapWidth * 0.5f, textY + layout.bodyY),
+         body, layout.bodyStyle);
+    draw->PopClipRect();
 }
 
 // ------------------------------------------------------------------ 17 KV
-void KeyValues(ImDrawList* draw, Rect bounds,
-               const std::vector<std::pair<std::string, std::string>>& rows) {
+namespace {
+
+// 两种行容器（vector<pair> / KVRow 数组）共用的绘制主体。行布局只有一份 ——
+// 拆成两份实现的话，日后调行高 / 颜色必然只改得到一处。
+template <typename Rows>
+void KeyValuesRows(ImDrawList* draw, Rect bounds, const Rows& rows) {
     // 网格 auto 1fr，gap 6px 14px，字号 12.5
     ImFont* font = FontAt(12.5f);
     // ⚠️ 值列用**常规字重**，不是 bold。设计稿 `.kv .v` 是 `font-weight: 500`
@@ -129,7 +171,7 @@ void KeyValues(ImDrawList* draw, Rect bounds,
         }
         return std::min(w, bounds.width() * 0.45f);
     }();
-    const float rowHeight = 20.0f;
+    const float rowHeight = KeyValuesHeight(1);
     float y = bounds.min.y;
     for (const auto& [key, value] : rows) {
         // ⚠️ 原来 key / value 都直接画在 `y`（游标），而 rowHeight 是 20 ——
@@ -143,6 +185,18 @@ void KeyValues(ImDrawList* draw, Rect bounds,
                         bounds.width() - keyWidth - 14.0f, ColorText(), value);
         y += rowHeight;
     }
+}
+
+} // namespace
+
+void KeyValues(ImDrawList* draw, Rect bounds,
+               const std::vector<std::pair<std::string, std::string>>& rows) {
+    KeyValuesRows(draw, bounds, rows);
+}
+
+// 缓存版：页面持有的 KVRow 数组直接进来，一行都不拷贝。
+void KeyValues(ImDrawList* draw, Rect bounds, const KVRow* rows, std::size_t count) {
+    KeyValuesRows(draw, bounds, std::span<const KVRow>(rows, count));
 }
 
 // ------------------------------------------------------------------ 18 Spinner

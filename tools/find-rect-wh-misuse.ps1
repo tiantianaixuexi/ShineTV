@@ -7,8 +7,18 @@
 #   - 恰好 4 个顶层实参（2 参与 ImVec2 形式不在此列）
 #   - 第 3 个实参是「尺寸样」：**标识符以 W/w/H/h 结尾**（含 Width/Height/cardW/colW/
 #     cellW/iconW/thumbH，以及单字母的 w/h），或裸浮点字面量
-#   - 第 4 个实参是裸浮点字面量
+#   - 第 4 个实参是「尺寸样」：同上（标识符以 W/w/H/h 结尾，或裸浮点字面量）
 # 命中只说明「疑似」，要人眼看一眼：第 3/4 参若是 x+w / y+h 这种就是合法的 min/max。
+#
+# ⚠️ 第 4 条原来只认**裸浮点字面量**，于是「第 3、4 参都是标识符」这一形态整类漏网：
+#    实测是 `ProjectHub.cpp` 的项目卡
+#      `Rect{grid.min.x + …, grid.min.y + …, cardW, kCardH}`
+#    ——它把卡高写进了 max：`max=(243,265) < min=(301,307)`，于是 `DrawShadowed`
+#    见到 `max.x <= min.x` 直接 return（**卡片底板整块不画**）、封面 `Art` 画在反向
+#    区间上（整块黑 + 日轮跑到卡外），而**空态那条路径用的是真 min/max**，所以空库
+#    时看着完全正常 —— 这轮把项目中心做成初始页、第一次给它拍证据时才暴露。
+#    典型性在于「第 3 参名字带 W」是**代码作者自己起的名**（cardW/cardH），
+#    限制第 4 参为字面量等于要求作者两处风格不一致，所以这条限制本身没道理。
 #
 # ⚠️ 第 3 条原先写的是 `(?i)(width|height|cardW|panelW|boxW|\d+f?$)` —— 只认那几个
 #    具体的名字，于是 `w` / `h` / `colW` / `cellW` / `iconW` / `thumbH` **全部漏网**，
@@ -61,7 +71,9 @@ function Invoke-SelfTest([string]$dir) {
         'Rect{a, b, cellW, 40.0f};',
         'Rect{a, b, iconW, 22.0f};',
         'Rect{a, b, thumbH, 72.0f};',
-        'Rect{a, b, 128.0f, 96.0f};'           # 第 3 参是裸字面量（有意保守）
+        'Rect{a, b, 128.0f, 96.0f};',          # 第 3 参是裸字面量（有意保守）
+        'Rect{a, b, cardW, cardH};',           # 第 3/4 参**都是标识符** —— 第五轮补的形态
+        'Rect{x, y, colW, rowH};'
     )
     $fakes = @(
         'Rect{a.min.x, a.min.y, a.max.x, a.max.y};',   # 末参不是裸字面量
@@ -163,8 +175,13 @@ Get-ChildItem $root -Recurse -Include *.cpp,*.h | ForEach-Object {
                     $a3 = $args[2].Trim(); $a4 = $args[3].Trim()
                     # 第 3 参「尺寸样」= 标识符**以 W/w/H/h 结尾**（`^\w*[wh]$`，单字母
                     # 的 `w`/`h` 也算）或裸浮点字面量。按结尾字符判，不按名字枚举。
+                    # ⚠️ 第 4 参那两条**都必须带 `^`**：只写 `\d+…$` 的话，
+                    #    `y + 132.0f` / `area.max.y - 10.0f` 这种**表达式末参**会整片
+                    #    命中（实测放宽当天报出 48 条，全是真·min/max 的合法调用）。
+                    #    漏掉的 `^` 在原来那条 a3 判据里也在（`\d+(\.\d+)?f?$`），
+                    #    只是 a3 还有名字那条分支兜着、误报少，所以一直没暴露。
                     $sizeLike = ($a3 -match '(?i)(^\w*[wh]$|\d+(\.\d+)?f?$)') -and
-                                ($a4 -match '^\d+(\.\d+)?[fF]?$')
+                                ($a4 -match '(?i)(^\w*[wh]$|^\d+(\.\d+)?[fF]?$)')
                     if ($sizeLike) {
                         $line = ($text.Substring(0, $i) -split "`n").Count
                         $hits++

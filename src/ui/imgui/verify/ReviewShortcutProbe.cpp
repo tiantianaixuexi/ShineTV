@@ -76,6 +76,12 @@ void RunShortcutProbes(Session& session) {
     // Ctrl+T 会**真的换主题**，判据跑完必须还原，否则后面 30 张 theme-* 图
     // 拍的是被换走之后那个主题，而图名还写着原来的名字。
     const shine::theme::ThemeId savedTheme = shine::theme::CurrentThemeId();
+    // ⚠️ 起点必须是「项目中心关着」：`Ctrl+N` / `Ctrl+O` 的执行体是
+    //    `if (!hubOpen_) ToggleProjectHub()`，而它现在是**启动默认开着**的那一屏
+    //    （webui `store.jsx:13`）—— 起点要是开着，这两条按下去什么都不会发生，
+    //    判据会以「空动作」的样子红，而产品根本没坏。不依赖前面几段刚好关掉了它。
+    shell.SetHubOpen(false);
+    host.PumpFrames(1, [&shell](float dt) { shell.DrawFrame(dt); });
     for (const ShortcutProbe& sc : shortcuts) {
         const std::string before = readState(sc.kind);
         host.SetFrameCtrlOverride(sc.ctrl);

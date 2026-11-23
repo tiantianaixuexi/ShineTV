@@ -47,9 +47,14 @@ std::uint32_t CountColorPixels(const std::vector<std::uint8_t>& pixels, std::uin
 // 第三个出参回传像素内容哈希，供「主题真的切了没有」判据用。
 bool Shoot(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::path& dir,
            std::string_view name, int workspace, shine::theme::ThemeId theme,
-           std::uint64_t* hashOut, std::vector<std::uint8_t>* pixelsOut) {
+           std::uint64_t* hashOut, std::vector<std::uint8_t>* pixelsOut, bool hubShot) {
     shell.SetTheme(theme);
     shell.SetWorkspace(workspace);
+    // 项目中心的开态也是前置动作的一部分（理由见头文件）：这一句同时兜住两件事 ——
+    //   * 拍工作区时它保证「拍到的确实是那个工作区」；
+    //   * 拍初始页时它保证项目中心开着，而且**不依赖上一张图留下的状态**。
+    // 它不影响任何工作区页：`SetWorkspace` 只是写一个下标，页面在下一帧才读。
+    shell.SetHubOpen(hubShot);
     host.PumpFrames(kSettleFrames, [&shell](float dt) { shell.DrawFrame(dt); });
 
     // ---- 把**异步**内容也等落地（真设定图）----

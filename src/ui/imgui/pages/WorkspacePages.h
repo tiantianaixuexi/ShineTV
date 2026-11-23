@@ -5,6 +5,7 @@
 // 头 = 20px accent 图标 + .vw-title(18/800) + .vw-sub(12.5 muted) + 弹性空隙 + 控件。
 #pragma once
 
+#include "ui/imgui/kit/Fmt.h"
 #include "ui/imgui/kit/Views.h"
 #include "ui/imgui/kit/Widgets.h"
 #include "ui/imgui/theme/Theme.h"
@@ -13,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -150,9 +152,7 @@ struct BookArtifact {
     bool degraded = false;  // 走了降级（`04` §2.4「降级必须可见」）
 };
 
-// 资产工作区侧栏的一行。kind 是**实体 kind 的英文原文**（entities.kind，
-// `namespace kind` 里有 30 个取值，库里无 CHECK 约束）——不要在这里翻成中文，
-// 分类由消费者按 AssetKindLabel() 走，侧栏与资产页共用那一份映射。
+// 资产工作区侧栏的一行。kind 保留 entities.kind 原文，显示时走 AssetKindLabel()。
 struct BookAssetView {
     int index = 0;  // 在 BookSideView::assets 里的下标；**筛选后的树按下标回指这里**
     int entityId = 0;  // entities.id（别和 index 混：index 是位置，entityId 才是库主键）
@@ -184,6 +184,19 @@ struct BookRelationView {
     std::vector<std::string> foreshadows; // 伏笔标题，来自 scene_foreshadows
 };
 
+// 总控「最近产物」里的一行**出图产物**（数据源：`generated_images`，与逐镜成图同表）。
+//
+// 为什么总控要读这张表：那张卡早先只列 `pipeline::LedgerEntry`（T 链账本），而账本来自
+// `pipeline::Runner::LedgerLog()` —— 执行体未接入（`OverviewPipelineWired()==false`）
+// 时它**永远是空的**，于是「最近产物」在真实运行里一直只有空态（画得出来、永远没内容）。
+// 真正的产物在 `generated_images` 里（业务层出图时写的就是它）。
+struct BookRecentImage {
+    std::string relPath;         // UTF-8，相对工程根（与 sheet_rel_path 同一口径）
+    // 盘上文件的字节数；**-1 = 文件不在**。用负数而不是 0：0 字节的合法文件与
+    // 「文件被删了」在界面上是完全不同的两件事（前者是真产物，后者是失败记录）。
+    std::int64_t sizeBytes = -1;
+};
+
 struct BookSideView {
     bool bound = false;    // 绑没绑工程
     bool loading = false;  // worker 正在取
@@ -198,6 +211,9 @@ struct BookSideView {
     // 资产是**全量**（与 ListEntities 的取法一致），**不按 kind 预筛**：
     // 筛选是工作区 UI 态（见 BookKindFilter），筛完的树按下标回指这里。
     std::vector<BookAssetView> assets;
+    // 最近的出图产物（`generated_images`，最新在前）。总控右栏「最近产物」卡用它画缩略图 ——
+    // 与 T 链账本那份**不是同一族数据**：那份是阶段产物（json/md），这份是真图。
+    std::vector<BookRecentImage> recentImages;
     BookRelationView relation;  // 随选中项重建，给检查器「关联」段
     // 每章的 V1–V7 阶段产物数，**下标与 chapters 一一对应**（全 0 = 这一章没跑过视觉链）。
     //
@@ -216,11 +232,8 @@ struct BookSideView {
 // 这是按章内镜序拼出来的显示码。侧栏树 / 故事板卡片 / 检查器标题三处必须用同一份实现：
 // 写成 "S1" / "镜 #1" / "S001" 三种，同一个镜在不同面板上是三个名字，比缺一个码更糟。
 inline std::string ShotCode(int ord) {
-    std::string digits = std::to_string(ord);
-    while (digits.size() < 3) {
-        digits.insert(digits.begin(), '0');
-    }
-    return "S" + digits;
+    // kit::Fmt 是格式化唯一出口（第二十轮）；{:03} 的零补齐产物与旧手写循环一致。
+    return kit::Fmt("S{:03}", ord);
 }
 
 // 侧栏点击 → 改选中项。
@@ -234,14 +247,13 @@ void SelectBookShot(int index);
 // ⚠️ 它**不是**快照的一部分：设计稿里这是侧栏与主区网格**共享**的筛选态
 //    （Assets.jsx:130 和 Shell.jsx:523 读同一个 entityKind），属于工作区 UI 态。
 //    放进 BookSideView 会被 RebuildBookSide 整块重建冲掉 —— 就是上一轮那个
-//    「loading 翻真但视图没跟上」的同一类坑。kind 空串 = 全部。
-void SetBookKindFilter(std::string kind);
-[[nodiscard]] const std::string& BookKindFilter();
+//    「loading 翻真但视图没跟上」的同一类坑。nullopt 表示全部。
+void SetBookKindFilter(std::optional<std::string> kind);
+[[nodiscard]] const std::optional<std::string>& BookKindFilter();
 void SelectBookAsset(int index);
 
 // entities.kind / visual_assets.kind → 中文分类名。侧栏树的分组标签、chip 文案、
-// 资产页的「类别」行**共用这一份**。库表里没有的中文映射按表外原样回显，不编名字。
-// 实现见 BookData.cpp（与该文件里已有的 KindLabel 是同一份，不是第二份）。
+// 资产页的「类别」行共用这一份。表外 kind 回显原值，冲突时加引号。
 [[nodiscard]] std::string AssetKindLabel(const std::string& kind);
 
 // ---- P5.2 小说（novel）—— 最大的一页：8 模式标签 + 8 套视图 ----
@@ -251,6 +263,18 @@ public:
     void setMode(int mode) { mode_ = mode; }
 
 private:
+    // ---- 显示缓存（第二十轮波 3）：指纹没变就整帧复用 ----
+    // 当前章的章头 / 字数行 / 摘要行 / 状态标签、右栏属性和数据源行。
+    void RefreshTexts();
+    std::uint64_t textKey_ = 0;
+    std::string head_;
+    std::string wordsLine_;
+    std::string summaryLine_;
+    std::string statusLabel_;
+    theme::Tone statusTone_ = theme::Tone::Idle;
+    std::string assetsEmptyLine_;
+    std::array<kit::KVRow, 6> railKv_;
+    std::string dataSourceLine_;
     int mode_ = 0;
 };
 
@@ -265,6 +289,17 @@ public:
     void setSelected(int index) { selected_ = index; }
 
 private:
+    // ---- 显示缓存（第二十轮波 3）：详情页的头 / 状态 / KV / 底部说明，
+    // 指纹覆盖选中资产的全部被显示字段与 kind 筛选（kit/Hash.h）。
+    void RefreshTexts();
+    std::uint64_t textKey_ = 0;
+    std::string entityName_;
+    std::string statusLabel_;
+    theme::Tone statusTone_ = theme::Tone::Idle;
+    std::string layers_;
+    std::string filterNote_;
+    std::string missingNote_;
+    std::array<kit::KVRow, 9> kv_;
     bool overview_ = false;
     int selected_ = 0;
 };
@@ -278,6 +313,30 @@ public:
     //    拍出来的图与默认态逐字节相同却仍记 saved。已删；选中态只有 `SelectBookShot` 一条路。
 
 private:
+    // ---- 显示文本缓存（ImGui 每帧绘制 ⇒ 不在 Draw 里现拼字符串）----
+    //
+    // 页眉标题/副行、状态标签、镜头详情 KV、时间线逐镜两段文案、连续性汇总与
+    // issue 行 —— 全部在 RefreshTexts 里按**数据指纹**重建：指纹没变（还是同一个
+    // 章、同一镜、同一批字段）就直接复用上一帧的字符串，Draw 每帧零分配。
+    // 指纹算法见 kit/Hash.h（FNV-1a + HashMix）。
+    void RefreshTexts();
+
+    std::uint64_t textKey_ = 0;            // 上次重建时的数据指纹；0 = 首帧必建
+    std::string title_;                    // 页眉标题（无选中镜 = 「分镜」）
+    std::string subtitle_;                 // 页眉副行（章 + 落库镜数 + 库路径）
+    std::string canonLabel_;               // 右上状态标签（canon_status，无 → kDash）
+    std::string summaryText_;              // 连续性汇总行
+    std::array<kit::KVRow, 9> detailKv_;   // 「镜头详情」KV 表（缓存版，见 kit/Widget_Status.h）
+    std::vector<std::string> issueLabels_; // 连续性 issue 行（镜对已换算成镜码）
+    // 时间线逐镜的文案 + 命中 id（镜码 / 时长 / "sb-tl-N"）。动作与图直接读
+    // BookState 引用，不缓存 —— 命中 id 也缓存：它每帧都要递给 HitTest，
+    // 现拼一串同样是每帧分配。
+    struct ShotCell {
+        std::string code;
+        std::string durText;
+        std::string hitId;
+    };
+    std::vector<ShotCell> cells_;
 };
 
 // ---- P5.5 出图（imageflow）— 满幅画布 + FlowCanvas ----
@@ -304,6 +363,14 @@ private:
     int flowSelected_ = -1;
     // 建图时的数据指纹。变了就重建图 —— 否则真数据永远上不了屏。
     std::uint64_t flowDataKey_ = 0;
+    // ---- 显示缓存（第二十轮波 3）：标题行 / 候选行 / 结果页签 KV ----
+    // 指纹覆盖全部被显示字段；「出图状态」一行每帧按 frame.ready() 原地改值
+    // （SSO 赋值，不落堆）—— 它随图片异步加载翻转，不能进指纹。
+    void RefreshTexts();
+    std::uint64_t textKey_ = 0;
+    std::string barTitle_;
+    std::string candidatesLine_;
+    std::vector<kit::KVRow> resultKv_;
 };
 
 // ---- P5.6 出片（videoflow）----
@@ -322,6 +389,72 @@ private:
     kit::FlowView flowView_;
     int flowSelected_ = -1;
     std::uint64_t flowDataKey_ = 0;
+    // 成片页签 KV 的显示缓存（第二十轮波 3）：只随 (镜数, 逐镜时长, 资产就绪数) 变。
+    std::uint64_t filmKvKey_ = 0;
+    std::vector<kit::KVRow> filmKv_;
+};
+
+// ---- P5.7 工作流（workflow）— 节点式视频生产线 ----
+// 与 ImageFlowPage 的分工：两者都用 kit::FlowView 做平移/缩放，但**节点渲染不复用
+// kit::FlowCanvas**（那个是单端口 + 固定 150×76，本页要多端口 + 类型着色 + 拖拽连线）。
+// 依据 refactor/workflow-ui-plan.md §4；视觉基准 webui/src/views/Workflow.jsx。
+class WorkflowPage {
+public:
+    void Draw(kit::Rect area, ImDrawList* draw);
+    void setPanelTab(int tab) { panelTab_ = tab; }
+    void setFolded(bool on) { folded_ = on; }
+    // 取证用：直接把 Skill 指令塞进输入框并生成（真机里要逐字敲）。
+    void SubmitSkill(const std::string& instruction);
+
+private:
+    struct Node {
+        int id = 0;
+        int type = 0;          // 节点类型表下标（见 Page_Workflow.cpp 的 Types()）
+        float x = 0.0f;        // 世界坐标
+        float y = 0.0f;
+        int state = 0;         // todo / blocked / queued / running / done / failed / skipped
+        int progress = 0;      // 0..100，仅 running 有意义
+        std::string preview;   // 副行（参数摘要）
+        bool charLock = false; // 是否挂了角色锁
+        std::string charName;
+        int charSeed = 0;
+    };
+    struct Link {
+        int from = 0;
+        int fromPort = 0;
+        int to = 0;
+        int toPort = 0;
+    };
+
+    void BuildGraph();
+    void FitView(const kit::Rect& canvas);
+    void RunAll();
+    void DrawCanvas(ImDrawList* draw, const kit::Rect& canvas, bool stacked);
+    void DrawTopBar(ImDrawList* draw, const kit::Rect& bar, const kit::Rect& skill);
+    void DrawLibrary(ImDrawList* draw, const kit::Rect& box, float itemWidth);
+    void DrawSkillFeed(ImDrawList* draw, const kit::Rect& box);
+    void DrawInspector(ImDrawList* draw, const kit::Rect& panel);
+    [[nodiscard]] const Node* Selected() const;
+
+    std::vector<Node> nodes_;
+    std::vector<Link> links_;
+    int selected_ = 0;
+    kit::FlowView view_;
+    bool fitted_ = false;
+    int panelTab_ = 0;
+    bool folded_ = false;
+
+    std::string skillInput_;
+    std::vector<std::string> feed_;
+    bool busy_ = false;
+    float busyUntil_ = 0.0f;
+
+    // 拖拽连线（跨帧）
+    int wiringFrom_ = -1;
+    int wiringPort_ = 0;
+    float wiringCursorX_ = 0.0f;
+    float wiringCursorY_ = 0.0f;
+    bool wiring_ = false;
 };
 
 // ---- P4.11 项目中心（全屏，不套外壳）----

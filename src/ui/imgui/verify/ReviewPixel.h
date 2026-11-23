@@ -42,11 +42,21 @@ std::uint64_t HashPixels(const std::vector<std::uint8_t>& pixels);
 // 不能靠比两张图。
 std::uint32_t CountColorPixels(const std::vector<std::uint8_t>& pixels, std::uint32_t rgb);
 
-// 一张图的完整动作：显式设主题 + 显式设工作区 → 推进 kSettleFrames 帧 →
-// 读后备缓冲 → 存 PNG。hashOut 回传像素内容哈希（可传 nullptr）。
+// 一张图的完整动作：显式设主题 + 显式设工作区 + **显式定项目中心开态** →
+// 推进 kSettleFrames 帧 → 读后备缓冲 → 存 PNG。hashOut 回传像素内容哈希（可传 nullptr）。
 // pixelsOut 回传同一块缓冲的副本，供 `CountColorPixels` 用（可传 nullptr）。
+//
+// ⚠️ `hubShot` 就是那第三件「前置动作」：项目中心是整屏替身
+//    （`Shell::DrawFrame` 在 `hubOpen_` 为真时**只画它**），而**应用启动就落在它上面**
+//    （webui `store.jsx:13` 的 `useState('hub')` ⇒ C++ 侧 `ShellLayout::hubOpen_` 初值
+//    为 true）。所以：
+//      * `hubShot = false`（缺省，拍工作区）—— 必须先把项目中心**关掉**，否则 89 张
+//        证据图会整屏都是项目中心那一页，而 manifest 里写的却是 ws-/theme- 的名字
+//        （图名与内容不符，且**照样 saved**）；
+//      * `hubShot = true` —— 拍的就是这个初始页本身，必须让它开着。
 bool Shoot(imguiapp::Host& host, pages::Shell& shell, const std::filesystem::path& dir,
            std::string_view name, int workspace, shine::theme::ThemeId theme,
-           std::uint64_t* hashOut, std::vector<std::uint8_t>* pixelsOut = nullptr);
+           std::uint64_t* hashOut, std::vector<std::uint8_t>* pixelsOut = nullptr,
+           bool hubShot = false);
 
 } // namespace shine::imguiverify::detail

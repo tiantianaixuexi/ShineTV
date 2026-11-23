@@ -1,0 +1,16 @@
+# memsearch 项目级配置（优先级高于 ~/.memsearch/config.toml）
+#
+# 目的：把本项目的记忆索引与其它项目隔离。
+# 注意：milvus.db 本身是全局的（~/.memsearch/milvus.db）——已实测
+# project 层的 `milvus.uri` 不会生效（改绝对路径也不生效），能覆盖的只有 collection。
+# 所以隔离靠 collection 名，不靠 db 路径。
+#
+# 记忆正文以仓库内 .memsearch/memory/*.md 为唯一真源；db 只是可重建的派生缓存。
+# 工程知识库文档（KnowledgeBase/ + refactor/ 长文层）另用 collection：shinetv_kb，索引时命令行指定。
+
+[milvus]
+collection = "shinetv_memory"
+
+[embedding]
+provider = "onnx"                 # 本地 bge-m3-onnx-int8，无需 API Key
+model = "gpahal/bge-m3-onnx-int8"

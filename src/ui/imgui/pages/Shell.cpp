@@ -25,8 +25,10 @@
 #include "ui/imgui/kit/Anim.h"
 #include "ui/imgui/kit/Overlays.h"
 #include "ui/imgui/kit/Scroll.h"
+#include "ui/imgui/kit/Text.h"
 #include "ui/imgui/pages/BookData.h"
 #include "ui/imgui/pages/Gallery.h"
+#include "ui/imgui/pages/Hub.h"
 #include "ui/imgui/pages/WorkspacePages.h"
 #include "util/Encoding.h"
 #include "util/File.h"
@@ -72,6 +74,7 @@ const char* WorkspaceIcon(int workspace) {
     case 3: return "clapper";
     case 4: return "image";
     case 5: return "film";
+    case 6: return "layers";
     default: break;
     }
     return "grid";
@@ -85,6 +88,7 @@ const char* WorkspaceLabel(int workspace) {
     case 3: return "分镜";
     case 4: return "出图";
     case 5: return "出片";
+    case 6: return "工作流";
     default: break;
     }
     return "组件画廊";
@@ -98,6 +102,7 @@ const char* WorkspaceSubtitle(int workspace) {
     case 3: return "分镜工作区";
     case 4: return "出图工作区";
     case 5: return "出片工作区";
+    case 6: return "节点式视频生产线";
     default: break;
     }
     return "组件画廊";
@@ -111,6 +116,7 @@ const char* WorkspaceTarget(int workspace) {
     case 3: return "storyboard";
     case 4: return "imageflow";
     case 5: return "videoflow";
+    case 6: return "workflow";
     default: break;
     }
     return "gallery";
@@ -161,7 +167,11 @@ void Shell::ApplyShortcuts() {
     // 浮层的关闭键。设计稿的三处都写了 Esc 关闭（校验报告 modal 的 footer、
     // 设置向导、命令面板），补齐后浮层才算真正可用。
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        if (paletteOpen_) {
+        // 查看器排在最前：它是**最上面**的那层浮层（`DrawFrame` 里最后画），
+        // Esc 必须关掉用户实际看到的那一个。
+        if (MediaViewerOpen()) {
+            CloseMediaViewer();
+        } else if (paletteOpen_) {
             paletteOpen_ = false;
         } else if (settingsOpen_) {
             settingsOpen_ = false;
@@ -169,7 +179,7 @@ void Shell::ApplyShortcuts() {
             reportDetail_ = -1;
         } else if (themeMenuOpen_) {
             themeMenuOpen_ = false;
-        } else if (hubOpen_) {
+        } else if (hubOpen_ && !hubDialogOpen_) {
             hubOpen_ = false;
         }
     }
@@ -212,9 +222,27 @@ void Shell::SetTheme(shine::theme::ThemeId id) {
     (void)theme::PersistTheme(theme::DefaultThemeFile());
 }
 
-void Shell::ToggleSidePanel() { layout_.sidePanelVisible = !layout_.sidePanelVisible; }
+void Shell::ToggleSidePanel() {
+    if (preferInspectorInCompact_ && layout_.sidePanelVisible && layout_.inspectorVisible &&
+        ImGui::GetIO().DisplaySize.x < kRailWidth + layout_.sidePanelWidth +
+                                        layout_.inspectorWidth + kPreferredWorkspaceWidth) {
+        preferInspectorInCompact_ = false;
+        return;
+    }
+    layout_.sidePanelVisible = !layout_.sidePanelVisible;
+    preferInspectorInCompact_ = false;
+}
 void Shell::ToggleDock() { layout_.dockVisible = !layout_.dockVisible; }
-void Shell::ToggleInspector() { layout_.inspectorVisible = !layout_.inspectorVisible; }
+void Shell::ToggleInspector() {
+    if (!preferInspectorInCompact_ && layout_.sidePanelVisible && layout_.inspectorVisible &&
+        ImGui::GetIO().DisplaySize.x < kRailWidth + layout_.sidePanelWidth +
+                                        layout_.inspectorWidth + kPreferredWorkspaceWidth) {
+        preferInspectorInCompact_ = true;
+        return;
+    }
+    layout_.inspectorVisible = !layout_.inspectorVisible;
+    preferInspectorInCompact_ = true;
+}
 void Shell::ToggleCommandPalette() {
     paletteOpen_ = !paletteOpen_;
     if (paletteOpen_) {
@@ -383,6 +411,16 @@ void Shell::DrawFrame(float dt) {
     kit::TickAnimation(dt);
     ApplyShortcuts();
 
+    // ---- 浮层闸门（每帧、最早写）----
+    //
+    // 与下面 `chromeInteractive_` 同源（都是 `OverlayBlocksMouse()` 那一份开态清单），
+    // 但作用面不同：那个管外壳 chrome 的 item 提不提交，这个管**所有** `ScrollRegion`
+    // （`BeginChild`）要不要退出命中测试 —— child 会抢走 `HoveredWindow`，而 ImGui
+    // **不把** `NoMouseInputs` 传给嵌套 child，所以只给工作区那一层加标志是不够的
+    // （实测：查看器的 × 因为分镜页的时间线 child 而点不动）。
+    // 写在 DrawFrame 最前面是因为项目中心那条早退分支里也有 child。
+    kit::SetOverlayMouseGate(OverlayBlocksMouse());
+
     // Comfy 会话：ImGui 前端原先**从没初始化过**它（AppEntry 只 Init 了 log/async/gallery），
     // 所以顶栏状态点与底栏队列只能画假的。这里按 AppSettings 的地址起一次会话，
     // 每帧只跑 ComfySession::Tick —— 它内部是纯定时器 + 非阻塞 socket，不碰同步 HTTP。
@@ -427,36 +465,42 @@ void Shell::DrawFrame(float dt) {
     // 中心关着时也要清：否则探针在中心关闭后仍会读到「上一个对话框开着」。
     hubDialogOpen_ = false;
 
-    const float dockH = layout_.dockVisible ? static_cast<float>(layout_.dockHeight) : 0.0f;
-    const float sideW = layout_.sidePanelVisible ? static_cast<float>(layout_.sidePanelWidth) : 0.0f;
-    const float inspW = layout_.inspectorVisible ? static_cast<float>(layout_.inspectorWidth) : 0.0f;
+    const float dockH = layout_.dockVisible
+                            ? std::min(static_cast<float>(layout_.dockHeight), H * 0.30f)
+                            : 0.0f;
+    float sideW = layout_.sidePanelVisible ? static_cast<float>(layout_.sidePanelWidth) : 0.0f;
+    float inspW = layout_.inspectorVisible ? static_cast<float>(layout_.inspectorWidth) : 0.0f;
+    if (sideW > 0.0f && inspW > 0.0f &&
+        W - kRailWidth - sideW - inspW < kPreferredWorkspaceWidth) {
+        if (preferInspectorInCompact_) {
+            sideW = 0.0f;
+        } else {
+            inspW = 0.0f;
+        }
+    }
     const float bodyTop = kTopBarHeight;
     const float bodyBottom = H - kStatusBarHeight - dockH;
 
-    // ---- 浮层闸门：先算「chrome 现在接不接受鼠标」，再登记主题菜单的外部关闭 ----
+    // ---- 浮层闸门：决定 chrome 是否接收鼠标 ----
     //
-    // 四个开态正好对应 DrawFrame 尾部那四个在**根窗口**里提交 item 的浮层
-    // （命令面板 / 设置模态 / 报告模态 / 主题菜单）。开着的时候 chrome 走
+    // 这几个开态正好对应 DrawFrame 尾部那几个在**根窗口**里提交 item 的浮层
+    // （命令面板 / 设置模态 / 报告模态 / 主题菜单 / 查看器）。开着的时候 chrome 走
     // ChromeHit()、工作区 child 带 NoMouseInputs，于是浮层按钮拿得到
     // HoveredWindow，底下的侧栏 / 顶栏 / 工作区也点不动。
     // 机制（imgui.cpp:6573 / 6607 / 5156 / 5161）写在 ChromeHit 的注释里。
-    chromeInteractive_ = !(paletteOpen_ || settingsOpen_ || reportDetail_ >= 0 || themeMenuOpen_);
-    themeOutsideHit_ = kit::Hit{};
-    if (themeMenuOpen_) {
-        // 必须**先于** chrome 注册：同窗口内先注册者独占 HoveredId，晚了就抢不到。
-        const ImVec2 d = ImGui::GetIO().DisplaySize;
-        themeOutsideHit_ = kit::HitTest(Rect{0.0f, 0.0f, d.x, d.y}, "theme-outside");
-    }
+    chromeInteractive_ = !OverlayBlocksMouse();
 
+    ImGui::BeginDisabled(!chromeInteractive_);
     DrawTopBar(RectAt(0, 0, W, kTopBarHeight), draw);
+    ImGui::EndDisabled();
     DrawRail(RectAt(0, bodyTop, kRailWidth, bodyBottom - bodyTop), draw);
 
     const float centerX = kRailWidth + sideW;
     const float centerW = W - kRailWidth - sideW - inspW;
-    if (layout_.sidePanelVisible) {
+    if (sideW > 0.0f) {
         DrawSidePanel(RectAt(kRailWidth, bodyTop, sideW, bodyBottom - bodyTop), draw);
     }
-    if (layout_.inspectorVisible) {
+    if (inspW > 0.0f) {
         DrawInspector(RectAt(W - inspW, bodyTop, inspW, bodyBottom - bodyTop), draw);
     }
 
@@ -473,6 +517,9 @@ void Shell::DrawFrame(float dt) {
     DrawSettingsModal();
     DrawReportModal();
     DrawThemeMenu(themeMenuAnchor_, ImGui::GetForegroundDrawList());
+    // 查看器：**最后画**（它是最上面的那一层浮层），且走前景 draw list ——
+    // 与其它浮层画在同一条 list 上时，z 序由这里的调用顺序决定，放前面会被盖住。
+    DrawMediaViewer(ImGui::GetForegroundDrawList());
     DrawOverlays(draw);
 
     ImGui::End();
@@ -488,8 +535,13 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     //    一律 hovered=false）。判定提成了 `OverlayBlocksMouse()`，因为**侧栏的滚动区
     //    也要吃同一个开态**（两个 child 各算一遍就是两个真相源）。
     //    项目中心不走这里（整屏替身，浮层在 hub-scroll child 内部提交，本来就能点）。
-    kit::ScrollRegion region("workspace-scroll", area, /*borders=*/false, /*horizontal=*/false,
-                             /*noMouseInputs=*/OverlayBlocksMouse());
+    // 4 出图 / 5 出片 / 6 工作流：都是全屏画布页，内容按真实可视宽重排，不套 2400 高。
+    const bool flow = layout_.workspace >= 4 && layout_.workspace <= 6;
+    struct WorkspaceScope {
+        explicit WorkspaceScope(int workspace) { ImGui::PushID(workspace); }
+        ~WorkspaceScope() { ImGui::PopID(); }
+    } scope(layout_.workspace);
+    kit::ScrollRegion region("workspace-scroll", area, /*borders=*/false, /*horizontal=*/true);
     if (!region) {
         return;
     }
@@ -499,13 +551,13 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     // draw list。传父窗口的 draw 进去，内容会一路溢出盖住底栅和状态栏（实测过）。
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    // ⚠️ 满幅画布页（出图/出片）不能撑高：它们的画布是「铺满可视区」语义，
-    //    撑到 2400 会让 FlowCanvas 的 fit 按 2400 高居中，y 偏移直接顶出视口，
-    //    结果一个节点都看不见（实测 canvas=644x2400 → y=1112）。这两页自带
-    //    内部滚动，不需要外壳再撑一次。
-    const bool fullBleed = layout_.workspace == 4 || layout_.workspace == 5;
-    const kit::Rect view{origin.min,
-                         ImVec2(origin.max.x, origin.min.y + (fullBleed ? origin.height() : 2400.0f))};
+    // 流程页按真实可视宽度重排，表格与多栏文档保留自己的最小内容宽。
+    const float contentWidth = flow ? origin.width() : std::max(origin.width(), 764.0f);
+    if (contentWidth > origin.width()) {
+        region.setContentWidth(contentWidth);
+    }
+    const kit::Rect view = RectAt(origin.min.x, origin.min.y, contentWidth,
+                                 flow ? std::max(origin.height(), 500.0f) : 2400.0f);
 
     // 页面要自建视口（侧栏 / 面板 / 列）时必须知道**真正能看见多少**，
     // 而不是下面那个 2400 的布局区高。见 WorkspacePages.h 的说明。
@@ -521,17 +573,20 @@ void Shell::DrawWorkspace(Rect area, ImDrawList* /*draw*/) {
     case 3: storyboard_.Draw(view, draw); break;
     case 4: imageflow_.Draw(view, draw); break;
     case 5: videoflow_.Draw(view, draw); break;
+    case 6: workflow_.Draw(view, draw); break;
     default: gallery_.Draw(view, draw); break;
     }
     // ⚠️ 这行是整个外壳**唯一**让工作区能滚的地方，缺了它滚轮怎么转都停在原地。
     //    页面是纯自绘的，全程没给 ImGui 提交过 item，高度必须显式报上去。
     //
     //    高度优先用页面**自报的真实内容高**（`SetPageContentHeight`），没有自报的
-    //    页面退回 2400 的布局区。2400 是「够用」不是「刚好」：页面若按它铺卡片就会
+    //    页面退回 2400 的布局区。出图/出片两页现在**必自报**（宽窗 = 布局区高，
+    //    窄窗 = 画布 + 胶片条 + 任务面板的堆叠高，见两个 Page_*Flow.cpp）。
+    //    2400 是「够用」不是「刚好」：页面若按它铺卡片就会
     //    铺出巨型空盒子（实测总控页「账本」卡 1750px 高、只有 6 行），并让工作区
     //    多出上千 px 只能滚到空白的滚动范围。
     const float reported = pages::PageContentHeight();
-    region.setContentHeight(reported > 0.0f ? reported : view.height());
+    region.setContentHeight(reported > 0.0f ? reported : (flow ? view.height() : origin.height()));
 }
 
 
@@ -551,11 +606,13 @@ void Shell::DrawProjectHubScreen(Rect area, ImDrawList* draw) {
                   GlassColor());
     draw->AddLine(ImVec2(area.min.x, area.min.y + kTopBarHeight - 0.5f),
                   ImVec2(area.max.x, area.min.y + kTopBarHeight - 0.5f), ColorLineSubtle(), 1.0f);
+    ImGui::BeginDisabled(hubDialogOpen_);
     const float cy = 0.5f * kTopBarHeight;
-    DrawIcon(draw, "grid", ImVec2(area.min.x + 18.0f, cy - 8.0f), 16.0f, ColorAccent());
-    static constexpr char kHubTitle[] = "项目中心";
-    draw->AddText(FontBoldAt(13.5f), 13.5f, ImVec2(area.min.x + 40.0f, cy - 6.75f), ColorText(),
-                  kHubTitle, kHubTitle + sizeof(kHubTitle) - 1);
+    kit::LogoMark(draw, RectAt(area.min.x + 16.0f, cy - 12.0f, 24.0f, 24.0f), 6.0f, 12.0f);
+    static constexpr char kHubTitle[] = "ShineTV Studio";
+    Text(draw, ImVec2(area.min.x + 50.0f, CenterY(cy, TextStyle{.size = theme::font::kBodyLarge})),
+         std::string_view(kHubTitle, sizeof(kHubTitle) - 1),
+         TextStyle{.size = theme::font::kBodyLarge, .bold = true, .color = ColorText()});
     {
         ButtonSpec backSpec;
         backSpec.variant = ButtonVariant::Secondary;
@@ -565,10 +622,7 @@ void Shell::DrawProjectHubScreen(Rect area, ImDrawList* draw) {
             ToggleProjectHub();
         }
     }
-    if (Button(draw, RectAt(16.0f, cy - 14.0f, 26.0f, 28.0f), "←", ButtonSpec{},
-               "hub-esc")) {
-        ToggleProjectHub();
-    }
+    ImGui::EndDisabled();
 
     const Rect view{area.min.x, area.min.y + kTopBarHeight, area.max.x, area.max.y};
     kit::ScrollRegion region("hub-scroll", view);
@@ -585,6 +639,18 @@ void Shell::DrawProjectHubScreen(Rect area, ImDrawList* draw) {
     //    编译器不报错、像素看不出来，只有真去滚才发现。
     pages::ResetPageContentHeight();
     DrawProjectHub(region.content(), ImGui::GetWindowDrawList());
+    // 离场信号（Hub.h `leaveToWorkspace`）：打开 / 创建项目成功的那一帧置位，
+    // 这里消费一次 —— 绑定工程（顺带 BindOverview/BindNovel + SaveLayout）并退回
+    // 工作区。此前这条链**根本没接线**（打开后 hub 不退、工作区也不绑，要手点
+    // 「返回工作区」），Shell.h 的既定语义注释悬空了一个月。
+    if (hub::S().leaveToWorkspace) {
+        hub::S().leaveToWorkspace = false;
+        if (const std::optional<project::ProjectRef> cur = hub::S().service.Current()) {
+            SetProjectRoot(cur->rootDir, cur->name);
+            PushLog("info", "已切换到项目工作区：" + cur->name);
+        }
+        hubOpen_ = false;
+    }
     const float hubContentH = pages::PageContentHeight();
     if (hubContentH <= 0.0f) {
         // 只报一次。真没上报时这属于覆盖洞（项目卡够不着），静默返回等于把它藏起来。

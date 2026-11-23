@@ -6,6 +6,7 @@
 // 那段注释因此留在函数开头，不是注释洁癖，是这份代码的全部内容。
 #include "ui/imgui/pages/Hub.h"
 
+#include "ui/imgui/kit/Text.h"
 #include "ui/imgui/pages/PageCommon.h"
 #include "util/Encoding.h"
 #include "util/Shell.h"
@@ -18,124 +19,37 @@ namespace hub {
 
 using namespace shine::kit;
 
-bool DrawCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect bounds, float bodyWidth) {
-    // ⚠️ 整卡热区在**页脚四个按钮之后**才注册，方向不能反。
-    //
-    //    ImGui 同一窗口内是「**先注册者独占** HoveredId / ActiveId」：
-    //    `ItemHoverable` 里 `if (g.HoveredId != 0 && g.HoveredId != id && !AllowOverlap)
-    //    return false;`（imgui.cpp:5161），随后 `SetHoveredID(id)`。所以先注册整卡
-    //    ⇒ 页脚四个按钮**永远 hovered=false / clicked=false**，而整卡在它们的像素上
-    //    照样 clicked=true —— 症状是「点『…』不是弹移除确认，而是直接把项目打开」，
-    //    另外三个键连 hover 底色都不出。**这里原来的注释断言「后命中的 item 优先」，
-    //    与 ImGui 的规则正好相反**，所以那个 bug 一直没人看出来。
-    //
-    //    先注册按钮之后，落在页脚像素上的那次点击归按钮，落在卡片正文的归整卡 ——
-    //    效果等价于 webui 里 pfoot 上的 e.stopPropagation()，而且是 ImGui 自己做的，
-    //    不依赖下面那串 `!openPressed && …` 兜底（兜底仍保留，双保险）。
-    //
-    //    代价：边框的高亮要手算鼠标位置，不能用 hit.hovered（那时还没注册）。
-    //    ⚠️ 只能用 bounds.contains() 手算，**不要**用 ImGui::IsMouseHoveringRect ——
-    //    本工程调它会 0xC0000005（fault offset 0x8b8597），已改成手算比较。
-    const ImVec2 mouse = ImGui::GetIO().MousePos;
-    const bool cardHovered = bounds.contains(mouse);
-    constexpr float radius = 10.0f;
-    // `.card.hoverable:hover { transform: translateY(-2px) }`（ui.css:196-204）。
-    // 这张卡是手写的 `DrawShadowed`，原本只有边框与投影跟着 hover 变，**卡片不动** ——
-    // 等于只接了半条 hover。
-    //
-    // 位移对**绘制与卡内控件**都生效（CSS 里 transform 会带着子元素一起走，
-    // 页脚那四个按钮也在卡片坐标系里）；唯独**整卡热区**保留位移前的矩形：
-    // 热区跟着动会让鼠标停在卡片下缘 2px 内时状态来回抖
-    //（hovered → 卡片上移 → 鼠标出界 → 落回 → 又 hovered）。
-    // 这一点与 `kit::Card()` 同构，它也是「按原矩形命中、按位移后的矩形画」。
-    const Rect boundsHit = bounds;
-    const float lift = CardHoverLift(cardHovered, true);
-    bounds.min.y += lift;
-    bounds.max.y += lift;
-    // `.card.proj-card.hoverable.glow`（ProjectHub.jsx:167）。命中的是
-    // `.card.glow:hover`（ui.css:201-203 → border accent-glow + shadow-accent）；
-    // `views.css:117` 的 `.proj-card:hover`（shadow-2）在**本元素上是死规则** ——
-    // 特异度 0,2,0 输给 glow 的 0,3,0，与 CSS 引入顺序无关。
-    DrawShadowed(draw, bounds.min, bounds.max, radius, ColorPanel(),
-                 cardHovered ? ColorAccentGlow() : ColorLineSubtle(), 1.0f,
-                 cardHovered ? theme::ShadowTier::Accent : theme::ShadowTier::None);
+bool DrawCard(ImDrawList* draw, HubState& hub, const HubCard& card, Rect bounds) {
+    const float y = bounds.center().y;
+    constexpr float actionWidth = 38.0f;
+    constexpr float openWidth = 52.0f;
+    const float actionsX = bounds.max.x - openWidth - actionWidth * 3.0f - 16.0f;
+    const Rect body{bounds.min, ImVec2(actionsX - 8.0f, bounds.max.y)};
+    const bool hovered = !hub.dismissArmed && bounds.contains(ImGui::GetIO().MousePos);
+    DrawRoundRect(draw, bounds.min, bounds.max, 0.0f, hovered ? ColorFillHover() : ColorPanel());
+    draw->AddLine(ImVec2(bounds.min.x, bounds.max.y - 1.0f),
+                  ImVec2(bounds.max.x, bounds.max.y - 1.0f), ColorLineNormal());
+    const float x = bounds.min.x + 16.0f;
+    const TextStyle title{.size = theme::font::kTitle, .bold = true, .color = ColorText()};
+    const TextStyle details{.size = theme::font::kTiny, .color = ColorTextSecondary()};
+    const std::string path = util::PathToUtf8(card.entry.rootDir);
+    TextClipped(draw, ImVec2(x, y - 18.0f), body.max.x - x, card.entry.name, title);
+    TextClipped(draw, ImVec2(x, y + 4.0f), body.max.x - x, path, details);
 
-    // 封面满幅（views.css:82 .cover 无内缩）。这版 ImGui 没有 PushClipPath，
-    // 卡片顶部的两个圆角用同色三角补掉。
-    draw->PushClipRect(bounds.min, bounds.max, true);
-    Art(draw, Rect{bounds.min.x, bounds.min.y, bounds.max.x, bounds.min.y + 120.0f}, card.artSeed,
-        true);
-    draw->PopClipRect();
-    draw->PathClear();
-    draw->PathLineTo(ImVec2(bounds.min.x, bounds.min.y));
-    draw->PathLineTo(ImVec2(bounds.min.x + radius, bounds.min.y));
-    draw->PathLineTo(ImVec2(bounds.min.x, bounds.min.y + radius));
-    draw->PathFillConvex(ColorPanel());
-    draw->PathClear();
-    draw->PathLineTo(ImVec2(bounds.max.x, bounds.min.y));
-    draw->PathLineTo(ImVec2(bounds.max.x - radius, bounds.min.y));
-    draw->PathLineTo(ImVec2(bounds.max.x, bounds.min.y + radius));
-    draw->PathFillConvex(ColorPanel());
-    if (!card.tplLabel.empty()) {
-        Tag(draw, RectAt(bounds.min.x + 10.0f, bounds.min.y + 10.0f, TagWidth(card.tplLabel, true, false),
-                         TagHeight(true)),
-            card.tplLabel, theme::Tone::Accent, true);
-    }
-
-    const float bodyX = bounds.min.x + 14.0f;
-    float y = bounds.min.y + 120.0f + 12.0f;
-    // 项目名：索引里的 name（与 project.json 同源）
-    DrawTextClipped(draw, FontBoldAt(14.5f), 14.5f, ImVec2(bodyX, y), bodyWidth, ColorText(),
-                    card.entry.name);
-    y += 21.0f;
-    // 副行：一句话创意。没有就整行留空 —— 不拿模板名之类的字段顶替
-    if (!card.premise.empty()) {
-        DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(bodyX, y), bodyWidth, ColorTextMuted(),
-                        card.premise);
-    }
-    y += 21.0f;
-    // meta：模板名 · lastOpened 相对时间
-    DrawIcon(draw, "book", ImVec2(bodyX, y + 2.0f), 12.0f, ColorTextMuted());
-    const std::string meta =
-        card.tplName.empty() ? card.when : (card.tplName + " · " + card.when);
-    DrawTextClipped(draw, FontAt(12.0f), 12.0f, ImVec2(bodyX + 20.0f, y), bodyWidth - 20.0f,
-                    ColorTextMuted(), meta);
-    y += 20.0f;
-    DrawRoundRect(draw, ImVec2(bodyX, y), ImVec2(bounds.max.x - 14.0f, y + 1.0f), 0.0f,
-                  ColorLineSubtle());
-    y += 11.0f;
-
-    bool open = false;
-    ButtonSpec openSpec;
-    openSpec.variant = ButtonVariant::Primary;
-    openSpec.size = ButtonSize::Small;
-    const float openW = ButtonWidth(ButtonSize::Small, 0.0f, LabelWidth(FontBoldAt(12.0f), 12.0f, "打开"));
-    const Rect openRect{bodyX, y, bodyX + openW, y + ButtonHeight(ButtonSize::Small)};
-    const bool openPressed =
-        Button(draw, openRect, "打开", openSpec, "hub-open-" + card.entry.id);
-
-    float fx = openRect.max.x + 6.0f;
-    const float iconSize = 22.0f;
-    const float iconH = ButtonHeight(ButtonSize::Small);
-    const bool revealPressed =
-        IconButton(draw, RectAt(fx, y, iconSize, iconH), "folder", false, false,
-                   "hub-reveal-" + card.entry.id, "在资源管理器中显示");
-    fx += iconSize + 6.0f;
-    const bool morePressed = IconButton(draw, RectAt(fx, y, iconSize, iconH), "dots", false, false,
-                                        "hub-more-" + card.entry.id, "更多");
-    const bool themePressed = IconButton(
-        draw, RectAt(bounds.max.x - 14.0f - iconSize, y, iconSize, iconH), "palette", false, false,
-        "hub-theme-" + card.entry.id, "切换主题");
-
-    // ⚠️ 整卡热区**必须排在页脚四个按钮之后**（理由见函数开头那段）。
-    // ⚠️ 用 `boundsHit`（位移**前**的矩形），不是位移后的 `bounds` —— 见函数上方那段。
-    const Hit hit = HitTest(boundsHit, "hub-card-" + card.entry.id);
-
-    // 整卡点击要扣掉页脚按钮：ImGui 的 IsItemClicked 只看「光标在本 item 矩形内」，
-    // 页脚按钮压在卡片上，不扣掉的话点「移除」会顺手把项目也打开
-    // （等价 webui 里 pfoot 上的 e.stopPropagation）。
-    // 改成「按钮先注册」之后 ImGui 自己就把这两次点击分开了，这串判定是双保险。
-    open = hit.clicked && !openPressed && !revealPressed && !morePressed && !themePressed;
+    const bool open = HitTest(body, "hub-card-" + card.entry.id).clicked;
+    const bool openPressed = Button(draw, RectAt(actionsX, y - 14.0f, openWidth, 28.0f),
+                                    "打开", ButtonSpec{.variant = ButtonVariant::Secondary},
+                                    "hub-open-" + card.entry.id);
+    const float fx = actionsX + openWidth + 4.0f;
+    const bool revealPressed = IconButton(draw, RectAt(fx, y - 14.0f, 32.0f, 28.0f),
+                                          "folder", false, false, "hub-reveal-" + card.entry.id,
+                                          "在资源管理器中显示");
+    const bool morePressed = IconButton(draw, RectAt(fx + actionWidth, y - 14.0f, 32.0f, 28.0f),
+                                        "dots", false, false, "hub-more-" + card.entry.id, "更多");
+    const bool themePressed = IconButton(draw, RectAt(fx + actionWidth * 2.0f, y - 14.0f,
+                                                      32.0f, 28.0f),
+                                         "palette", false, false, "hub-theme-" + card.entry.id,
+                                         "切换主题");
 
     if (revealPressed) {
         const std::string error = util::ShellReveal(card.entry.rootDir);

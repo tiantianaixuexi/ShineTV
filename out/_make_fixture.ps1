@@ -52,6 +52,20 @@ $vv = & $sqlite $Db 'select count(*) from volumes;'
 # 逐镜成片图（分镜页 `.tthumb`）。`source_kind='shot'` 的行数必须 > 0 ——
 # 这张表在 2026-09-30 之前**一行都没有**，于是「镜 → 图」这条链在证据图里从来没有输入。
 $gi = & $sqlite $Db "select count(*) from generated_images where source_kind='shot' and rel_path<>'';"
+# 总控「最近产物」卡的输入（`generated_images` 全表，不限 source_kind）：
+#   $gr 有路径的行数（期望 >= 4）      $gk 不同 source_kind 的个数（期望 >= 2）
+# 为什么至少要 2 种 kind：那张卡读表时**不限 source_kind**，只铺 shot 的话
+# 「查询被写成 source_kind='shot'」这种退化不会被任何证据发现。
+$gr = & $sqlite $Db "select count(*) from generated_images where rel_path<>'';"
+$gk = & $sqlite $Db "select count(distinct source_kind) from generated_images where rel_path<>'';"
+# 出图页「结果」页签那两行生成参数的输入（`_fixture_seed.sql` 末尾那四条 UPDATE）：
+#   $gp 参数**五列齐全**的 shot 行数（期望 >= 3，缺一列那页就少一行 KV）
+#   $gs 这些行里不同 steps 的个数、$gw 不同的「宽x高」个数 —— 期望都 >= 2
+# 为什么 distinct 也要卡：判据会拿第 1 镜的 steps / 尺寸去核期望值。几行填成同一个值，
+# 「steps 与 width/height 被读串了列」这种错在证据里**完全看不出来**（两列的值相等）。
+$gp = & $sqlite $Db "select count(*) from generated_images where source_kind='shot' and rel_path<>'' and prompt<>'' and model<>'' and steps>0 and width>0 and height>0;"
+$gs = & $sqlite $Db "select count(distinct steps) from generated_images where source_kind='shot' and rel_path<>'';"
+$gw = & $sqlite $Db "select count(distinct width||'x'||height) from generated_images where source_kind='shot' and rel_path<>'';"
 # 下面两行是**编码自检**：中文正常就说明没被 GBK 码页重编码过。
 $f1 = & $sqlite $Db 'select title from foreshadowings where id=1;'
 $t1 = & $sqlite $Db 'select title from scenes where id=1;'
@@ -66,6 +80,8 @@ $t1 = & $sqlite $Db 'select title from scenes where id=1;'
 "visual_assets     = $va  (distinct status = $vs / 8)"
 "visual_artifacts  = $aa  (status = $as / 4, layer = $al / 4, degraded = $ad)"
 "shot images       = $gi  (generated_images where source_kind='shot' and rel_path<>'')"
+"recent images     = $gr  (generated_images with rel_path<>'' · distinct source_kind = $gk)"
+"shot params       = $gp  (prompt/model/steps/width/height 全非空 · distinct steps = $gs, distinct size = $gw)"
 "foreshadow#1      = $f1"
 "scene#1 title     = $t1"
 
@@ -79,6 +95,11 @@ if ($as -ne 4) { throw "visual_artifacts 只覆盖了 $as/4 种层状态（PENDI
 if ($al -ne 4) { throw "visual_artifacts 只覆盖了 $al/4 层（kChain: front|turnaround|base_body|wardrobe）" }
 if ($ad -lt 1) { throw "没有一条 degraded=1 的产物 ⇒ K28「降级必须可见」那条分支验不到" }
 if ($gi -lt 1) { throw "没有 source_kind='shot' 的成片图 ⇒ 分镜页的 .tthumb 永远只能画「待出图」占位（这条链没有任何输入）" }
+if ($gr -lt 4) { throw "generated_images 里有路径的行只有 $gr 条 ⇒ 总控「最近产物」那几行没有足够的输入" }
+if ($gk -lt 2) { throw "generated_images 只有 $gk 种 source_kind ⇒ 总控那条**不限来源**的查询退化成「只认 shot」也验不出来" }
+if ($gp -lt 3) { throw "generated_images 里参数五列齐全的 shot 行只有 $gp 条 ⇒ 出图页结果页签那两行 KV 没有完整输入（判据会以「少一行」的样子红）" }
+if ($gs -lt 2) { throw "shot 行的 steps 只有 $gs 种取值 ⇒ 「steps 与尺寸读串了列」这种错在证据里看不出来（两列的值相等）" }
+if ($gw -lt 2) { throw "shot 行的宽×高只有 $gw 种 ⇒ 同上：读错列不会有可辨认的读数差" }
 
 # 自检同时落一份盘。控制台回显在本机会零星吞掉整行（`entities` / `foreshadow#1`
 # 两行稳定显示为空，但门禁比字符串证明它们的值是对的）—— 门禁过了不等于**看得见**，
@@ -90,6 +111,8 @@ $check = @(
     "entity_kinds=$($ek -join ',')",
     "visual_assets=$va", "visual_asset_statuses=$vs",
     "visual_artifacts=$aa", "artifact_statuses=$as", "artifact_layers=$al", "artifacts_degraded=$ad",
+    "generated_images=$gr", "generated_image_kinds=$gk",
+    "generated_image_params=$gp", "generated_image_param_steps=$gs", "generated_image_param_sizes=$gw",
     "foreshadow_1=$f1", "scene_1_title=$t1"
 )
 $checkFile = Join-Path $dir "fixture-selfcheck.txt"

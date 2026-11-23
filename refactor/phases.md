@@ -10,10 +10,12 @@ source_of_truth:
 last_verified: 2026-09-30
 ---
 
+> **本页回答**：P0–P7 历史实施步骤留档（查某个 P 编号指什么）——已完成的历史留档，不再改动。
+
 # 实施步骤 P0–P7
 
 > **⏹ 本文是历史记录，不是待办。** P0–P7 共 51 步**已全部完成并验收**
-> （结论与实测值见 [`PROGRESS.md`](PROGRESS.md)）。现在读它的唯一理由是：
+> （结论与实测值见 [`进度.md`](进度.md)）。现在读它的唯一理由是：
 > 源码注释里到处引用「phases.md P3.6 / P4 / P6.1」这种编号，需要查它在讲哪一步。
 >
 > ⚠️ 文中仍写着 **Qt 迁移期**的做法（`SHINE_UI_QT` 双前端共存、D3D11 后端、
@@ -21,10 +23,10 @@ last_verified: 2026-09-30
 > Qt 前端已整体删除，后端是 **OpenGL 3.3（WGL）**，`third/imgui` 已在库里。
 > 按本文操作前先对照 [`architecture.md`](architecture.md) 的现状分层。
 >
-> **当前施工对象是 `PROGRESS.md` §「视觉 1:1 符合性审计」那张偏差表**，不是这里的 P 编号。
+> **当前施工对象是 `进度.md` §「视觉 1:1 符合性审计」那张偏差表**，不是这里的 P 编号。
 
 每一步都写清：**目标 / 改动 / 验收**。验收不通过不进下一步。
-进度记录在 [`PROGRESS.md`](PROGRESS.md)。
+进度记录在 [`进度.md`](进度.md)。
 
 **贯穿全程的验证顺序**（现状版，以 [`../AGENTS.md`](../AGENTS.md) 为准）：
 
@@ -381,7 +383,7 @@ upload eye compare link zap panel panelL dock moon target clock users bolt2`
    - 修掉那个**根本不存在的 `-DSHINE_QT_UI=ON`**（`package-qt.ps1:18`）
    - 保留 MSYS2 MinGW64 工具链段
 6. 更新 `AGENTS.md` 的分层规则（Qt 相关条款作废）
-7. 实测并记录产物体积 → 填进 `PROGRESS.md`
+7. 实测并记录产物体积 → 填进 `进度.md`
 
 **收尾判据**：
 ```
